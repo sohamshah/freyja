@@ -2,7 +2,7 @@
 """Run computer-use episodes against the mock environments and score them.
 
     uv run python evals/computer_use/run.py list
-    uv run python evals/computer_use/run.py run airline vertex --reps 3 --jobs 4 --tag after
+    uv run python evals/computer_use/run.py run airline console --reps 3 --jobs 4 --tag after
     uv run python evals/computer_use/run.py run airline/select --quirk upsell_modal=off
     uv run python evals/computer_use/run.py run airline --jev-root ../baseline --tag before
     uv run python evals/computer_use/run.py report results/<dir> [results/<dir> ...]
@@ -64,7 +64,6 @@ def make_server(port: int = 0) -> Any:
     return EnvServer(
         [
             *(EnvSpec(n, b.SITE, b.backend, b.init) for n, b in own),
-            EnvSpec("vertex", FIXTURES),
             EnvSpec("basics", FIXTURES),
         ],
         port=port,
@@ -339,8 +338,9 @@ def _index_html(tasks: list[Any], base: str) -> str:
 
     from computer_use import envs  # noqa: PLC0415
 
+    order = {e: i for i, e in enumerate(dict.fromkeys(t.env for t in tasks))}
     rows, env = [], None
-    for t in tasks:
+    for t in sorted(tasks, key=lambda t: order[t.env]):
         if t.env != env:
             env = t.env
             rows.append(f"<h2>{html.escape(env)}</h2>")

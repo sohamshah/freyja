@@ -187,6 +187,12 @@ jev passed every dark-pattern and injection task. It unticked the pre-checked ex
 - **"Reject all" is gated.** The gate's `reject` is meant for code review, so rejecting a cookie wall stops for confirmation. The consent task allows irreversible actions so that it measures the wall, not the gate.
 - **A stalled decision service.** During the baseline the service stalled for 30 s, and all six runs in flight ended "error" on that one request. A transport failure now gets one retry after 1 s. It could not be measured whether 1 s is enough, because no other run was in flight to show when the service came back.
 
+## A cloud console that looks like the real one
+
+The old cloud-console mocks (a catalog, a project list and a questionnaire under `tests/fixtures/jev_live/`) were too simple to say much about the real console. The `console` env replaces them in the evals. It was built from screenshots and jev run logs of the real model catalog, model page, enablement questionnaire, terms page and project picker. Its layout and behaviour follow them: the shell and its navigation, a catalog that stays blank until a project is chosen and fills late, title-only links on cards, Material outlined fields with overlay selects, Industry preset to "Agriculture", a slow terms agreement, and a project picker whose look-alike "Untitled project" rows differ only by ID, ten rows a page. jev's page reader gives nearly the same rows on the mock as the logs show for the real pages. The brand, organization, projects and all wording are invented.
+
+jev, 3 runs per task: 14/18. Enabling a model from a blank catalog (pick the project, find the model, fill the questionnaire, agree), the questionnaire alone, model details and switching to a look-alike project: 3/3 each. Reading a project list across pages: 2/3. Reading the catalog's Claude models: 0/3. In each of those runs the planner said "Type 'Claude' into the 'Search models' field [45], then press return", and Jev scored that operation 0.29-0.36, so three replans without progress ended the run. The planner-click rescue covers only clicks. A matching rescue for "Type '…' into [N]" would cover this.
+
 ## Still open
 
 - **Trusted-only controls.** Some controls ignore script events, like the live Travelers panel. A page run needs a trusted-input fallback for them: the real pointer, scoped to the run's tab and its window position. Until then, `computer_use` handles them.
@@ -194,6 +200,7 @@ jev passed every dark-pattern and injection task. It unticked the pre-checked ex
 - **Waiting for a condition.** jev cannot watch a page for minutes (see the `ops` monitor tasks).
 - **Look-alike rows, unnamed icon buttons, Return on a button, and custom pickers** (see the `widgets` and `mail` tasks).
 - **"Reject all" on a cookie wall is gated** as irreversible.
+- **Typing the planner names.** Jev doubts a "Type '…' into [N]" sub-goal as it doubted planner clicks before the rescue (see the cloud console's catalog search).
 - **Going past the goal after a page change.** Jev sometimes keeps clicking Continue on the pages after the goal's last one. A stricter check on the first action after a page change may fix it, but it was not measured here.
 - **Late suggestion lists.** The surface waits for suggestions only when the field shows it has them: `aria-autocomplete`, the combobox role, an autocomplete class, or `autocomplete=off`. If a field shows none of these, its list can open after the settle, and the run sees no list. The mock's airport fields show the same signs as the live site's widget.
 - **Checkouts that expire.** A booking session can expire while the agent waits for the person. The tool description now says to gather everything before checkout.

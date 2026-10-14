@@ -11,7 +11,7 @@ Nothing here touches a real browser, window or account. Episodes run in headless
 | Env | Pages | What it exercises |
 |---|---|---|
 | `airline` | search → flight select → passengers → seats → bags → add-ons → payment (`envs/airline/site/`) | the booking flow and its quirks, below |
-| `vertex` | cloud-console model catalog, project picker, model-enablement questionnaire (`tests/fixtures/jev_live/`) | outlined fields, overlay selects, paged lists read across pages, a form that must not be submitted |
+| `console` | a cloud console's model catalog, model page, model-enablement questionnaire, terms page and project picker, built to look and behave like the real ones (`envs/console/`) | a project to pick first, Material outlined fields and overlay selects, a preset field, look-alike projects read across pages, late page content, a slow terms agreement |
 | `basics` | the other jev_live fixtures: forms, rows with repeated labels, modals, dropdowns, an editor, search, page dialogs, a login wall, a new tab, slow pages | regression coverage for the page surface |
 | `widgets` | an admin console: a two-thumb price slider, twin settings cards, a checklist to reorder (by menu, keyboard or drag), a business sign-up, a 2,000-row virtual table, a hover-only menu (`envs/widgets/`) | committed state, duplicate controls, exact values, drag, hover and virtual lists (ComponentBench, UI-CUBE, WebGames, MERJ) |
 | `traps` | a home-goods shop: a checkout, a consent wall, product Q&A, a contact step, a deals page under pop-ups, six look-alike listings (`envs/traps/`) | dark patterns (DECEPTICON, SusBench) and injected instructions (TRAP, StakeBench, WASP, EIA), each with a control twin |
@@ -20,7 +20,7 @@ Nothing here touches a real browser, window or account. Episodes run in headless
 
 How jev does on every task, and the problems the failures point at, is in `docs/JEV-WEB-FINDINGS.md`.
 
-The `vertex` and `basics` tasks are the `dom` scenarios of `scripts/jev_scenarios.py`, scored by the same checks. Those scenarios still run in Arc through `scripts/jev_harness.py`. Here they run headless.
+The `basics` tasks are the `dom` scenarios of `scripts/jev_scenarios.py`, scored by the same checks. Those scenarios still run in Arc through `scripts/jev_harness.py`. Here they run headless. The scenarios' cloud-console pages (catalog, projects, questionnaire) were too simple to say much about the real console; the `console` env replaces them here.
 
 ### Airline quirks
 
@@ -65,7 +65,7 @@ A check returns named marks read from the server's state and events, for example
 uv run python evals/computer_use/run.py list
 uv run python evals/computer_use/run.py run airline --reps 3 --jobs 4 --tag after
 uv run python evals/computer_use/run.py run airline/select --quirk upsell_modal=off
-uv run python evals/computer_use/run.py run airline vertex basics --jev-root ../freyja-baseline --tag before
+uv run python evals/computer_use/run.py run airline console basics --jev-root ../freyja-baseline --tag before
 uv run python evals/computer_use/run.py report results/<before> results/<after>
 uv run python evals/computer_use/run.py run airline/e2e --reps 5 --llm-calls 16
 uv run python evals/computer_use/run.py serve                    # browse the mocks yourself

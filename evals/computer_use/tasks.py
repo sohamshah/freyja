@@ -72,7 +72,9 @@ class Task:
 # ─── the old live fixtures (tests/fixtures/jev_live), as regression tasks ───
 
 FIXTURES = REPO / "tests" / "fixtures" / "jev_live"
-VERTEX = {"questionnaire", "picker_list", "catalog_read", "catalog_details"}
+# The cloud-console scenarios: the `console` env replaces their pages here, which
+# were too simple to say much about the real console. The Arc harness keeps them.
+CONSOLE = {"questionnaire", "picker_list", "catalog_read", "catalog_details"}
 
 
 def _fixture_tasks() -> list[Task]:
@@ -83,9 +85,9 @@ def _fixture_tasks() -> list[Task]:
 
     out = []
     for s in js.SCENARIOS:
-        if s.group != "dom" or "items" in s.args:
+        if s.group != "dom" or "items" in s.args or s.name in CONSOLE:
             continue  # for-each runs go through run_items, which episodes do not drive yet
-        env = "vertex" if s.name in VERTEX else "basics"
+        env = "basics"
 
         def check(
             st: dict[str, Any], ev: list[dict[str, Any]], run: dict[str, Any], _s: Any = s
