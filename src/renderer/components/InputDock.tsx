@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useHarness } from '../state/store'
 import { matchSlash, type SlashCommand } from '../lib/slash'
 import { couldRecall, stepHistory, type HistoryCursor } from '../lib/composerHistory'
@@ -305,6 +305,43 @@ export function InputDock() {
     const el = inputRef.current
     return () => releaseTextareaCopy(el)
   }, [])
+
+  // The placeholder in its longest form that fits on the field's one line.
+  // A longer one wraps out of sight partway through ("…files, /").
+  const hasAttachments = pendingAttachments.length > 0
+  const placeholders = useMemo(
+    () =>
+      hasAttachments
+        ? ['Add a caption or send as-is']
+        : [
+            `Type @ to mention files, / for commands, ~/ for paths, paste images${isGeminiSession ? ' or videos' : ''} to attach`,
+            'Type @ to mention files, / for commands, ~/ for paths',
+            '@ files, / commands, ~/ paths',
+            '@ files, / commands',
+          ],
+    [hasAttachments, isGeminiSession],
+  )
+  const [placeholderIndex, setPlaceholderIndex] = useState(0)
+  useLayoutEffect(() => {
+    const el = inputRef.current
+    const ctx = document.createElement('canvas').getContext('2d')
+    if (!el || !ctx) return
+    let width = el.clientWidth
+    const pick = () => {
+      const cs = getComputedStyle(el)
+      ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
+      const i = placeholders.findIndex((p) => ctx.measureText(p).width <= width)
+      setPlaceholderIndex(i === -1 ? placeholders.length - 1 : i)
+    }
+    const observer = new ResizeObserver((entries) => {
+      width = entries[entries.length - 1].contentRect.width
+      pick()
+    })
+    observer.observe(el)
+    // Canvas measures with a fallback face until the web font loads.
+    void document.fonts?.ready.then(pick)
+    return () => observer.disconnect()
+  }, [placeholders])
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -971,105 +1008,123 @@ export function InputDock() {
                 onClick={onSelect}
                 onSelect={onSelect}
                 onPaste={onPaste}
-                placeholder={
-                  pendingAttachments.length > 0
-                    ? 'Add a caption or send as-is'
-                    : isGeminiSession
-                      ? 'Type @ to mention files, / for commands, ~/ for paths, paste images or videos to attach'
-                      : 'Type @ to mention files, / for commands, ~/ for paths, paste images to attach'
-                }
+                placeholder={placeholders[Math.min(placeholderIndex, placeholders.length - 1)]}
                 className="min-h-[22px] flex-1 self-start resize-none bg-transparent text-[12.5px] text-fg-0 placeholder:text-fg-2 focus:outline-none"
                 style={{ lineHeight: 1.55, maxHeight: `${MAX_PX}px` }}
               />
             </div>
-            <div className="font-mono flex items-center gap-3 pl-[22px] pr-0.5 text-[10px] text-fg-2/80">
+            {/* The footer row is a size container (`.composer-foot`): as
+                the composer narrows, hints that no longer fit drop whole,
+                and the buttons drop words (`fit-*`) instead of spilling
+                past the edge. */}
+            <div className="composer-foot font-mono flex items-center gap-3 pl-[22px] pr-0.5 text-[10px] text-fg-2/80">
               <div
-                className={`flex min-w-0 items-center gap-3 overflow-hidden transition-opacity duration-150 ${
+                className={`flex h-5 min-w-0 flex-1 flex-wrap content-start items-center gap-x-3 overflow-hidden transition-opacity duration-150 ${
                   focused || isStreaming
                     ? 'opacity-100'
                     : 'pointer-events-none opacity-0'
                 }`}
               >
+                {/* A flex line always takes its first item, even one too
+                    wide for it. This zero-width item is that first item, so
+                    every real hint shows whole or wraps out of sight. */}
+                <span aria-hidden className="-mr-3 h-5 w-0" />
                 {isStreaming && !history ? (
                   <>
-                    <span className="shrink-0 whitespace-nowrap" title="Send now; the agent reads it at its next step">
-                      <kbd className="kbd">↵</kbd> next step
-                    </span>
-                    <span className="shrink-0 whitespace-nowrap" title="Run it as its own turn once this one ends">
-                      <kbd className="kbd">⇥</kbd> after turn
-                    </span>
-                    <span className="shrink-0 whitespace-nowrap" title="Cut in: the agent stops its current step and reads it now">
-                      <kbd className="kbd">⌃</kbd>
-                      <kbd className="kbd ml-1">↵</kbd> cut in
-                    </span>
+                    <Hint keys={['↵']} title="Send now; the agent reads it at its next step">
+                      next step
+                    </Hint>
+                    <Hint keys={['⇥']} title="Run it as its own turn once this one ends">
+                      after turn
+                    </Hint>
+                    <Hint keys={['⌃', '↵']} title="Cut in: the agent stops its current step and reads it now">
+                      cut in
+                    </Hint>
                     {pendingFollowups && pendingFollowups.length > 0 && (
-                      <span className="shrink-0 whitespace-nowrap" title="Take waiting messages back into the composer (↑ takes the newest)">
-                        <kbd className="kbd">esc</kbd> take back
-                      </span>
+                      <Hint keys={['esc']} title="Take waiting messages back into the composer (↑ takes the newest)">
+                        take back
+                      </Hint>
                     )}
                   </>
                 ) : history ? (
                   <>
-                    <span className="text-accent">
+                    <Hint className="text-accent">
                       history {history.index + 1}/{history.total}
-                    </span>
-                    <span>
-                      <kbd className="kbd">↑</kbd>
-                      <kbd className="kbd ml-1">↓</kbd> browse
-                    </span>
-                    <span className="truncate">
-                      <kbd className="kbd">↓</kbd> at the end restores your draft
-                    </span>
+                    </Hint>
+                    <Hint keys={['↑', '↓']}>browse</Hint>
+                    <Hint keys={['↓']}>at the end restores your draft</Hint>
                   </>
                 ) : (
                   <>
-                    <span>
-                      <kbd className="kbd">⌘</kbd>
-                      <kbd className="kbd ml-1">K</kbd> palette
-                    </span>
-                    <span>
-                      <kbd className="kbd">/</kbd> commands
-                    </span>
-                    <span>
-                      <kbd className="kbd">@</kbd> files
-                    </span>
-                    <span>
-                      <kbd className="kbd">~/</kbd> paths
-                    </span>
+                    <Hint keys={['⌘', 'K']}>palette</Hint>
+                    <Hint keys={['/']}>commands</Hint>
+                    <Hint keys={['@']}>files</Hint>
+                    <Hint keys={['~/']}>paths</Hint>
                   </>
                 )}
               </div>
-              <div className="ml-auto flex min-w-0 items-center gap-1.5">
-                {runningChildren > 0 && (
-                  <button
-                    onClick={() => stopSubagents()}
-                    title="Stop this session's background sub-agents. The conversation (and any running turn) keeps going."
-                    className="shrink-0 rounded-md bg-white/[0.04] px-2 py-[2px] text-[10px] text-fg-2 ring-hairline hover:bg-danger/15 hover:text-danger"
-                  >
-                    ■ stop {runningChildren} agent{runningChildren === 1 ? '' : 's'}
-                  </button>
-                )}
-                {isStreaming ? (
-                  <button
-                    onClick={() => cancel()}
-                    title="Stop this turn. Background sub-agents keep running — stop them separately. Also bound to ⌘⎋."
-                    className="shrink-0 rounded-md bg-danger/15 px-2 py-[2px] text-[10px] text-danger ring-1 ring-danger/30 hover:bg-danger/25"
-                  >
-                    ■ stop turn (⌘esc)
-                  </button>
-                ) : (
-                  runningChildren === 0 && (
-                    <span className="truncate text-fg-2/70">
-                      {workspaceLabel} · {modelLabel}
-                    </span>
-                  )
-                )}
-              </div>
+              {runningChildren > 0 || isStreaming ? (
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {runningChildren > 0 && (
+                    <button
+                      onClick={() => stopSubagents()}
+                      title={`Stop this session's ${runningChildren} background sub-agent${runningChildren === 1 ? '' : 's'}. The conversation (and any running turn) keeps going.`}
+                      className="whitespace-nowrap rounded-md bg-white/[0.04] px-2 py-[2px] text-[10px] text-fg-2 ring-hairline hover:bg-danger/15 hover:text-danger"
+                    >
+                      ■ <span className="fit-md">stop </span>
+                      {runningChildren} agent{runningChildren === 1 ? '' : 's'}
+                    </button>
+                  )}
+                  {isStreaming && (
+                    <button
+                      onClick={() => cancel()}
+                      title="Stop this turn. Background sub-agents keep running — stop them separately. Also bound to ⌘⎋."
+                      className="whitespace-nowrap rounded-md bg-danger/15 px-2 py-[2px] text-[10px] text-danger ring-1 ring-danger/30 hover:bg-danger/25"
+                    >
+                      ■ stop<span className="fit-sm"> turn</span>
+                      <span className="fit-lg"> (⌘esc)</span>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <span
+                  className={`min-w-0 truncate text-fg-2/70 ${focused ? 'max-w-[55%]' : ''}`}
+                  title={`${workspaceLabel} · ${modelLabel}`}
+                >
+                  {workspaceLabel} · {modelLabel}
+                </span>
+              )}
             </div>
           </div>
         </div>
       </div>
     </div>
+  )
+}
+
+/** One key hint in the composer footer. The hint row is one line tall, so
+ *  a hint that does not fit wraps whole onto the hidden second line rather
+ *  than being cut mid-word. */
+function Hint({
+  keys = [],
+  title,
+  className = '',
+  children,
+}: {
+  keys?: string[]
+  title?: string
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    <span title={title} className={`flex h-5 shrink-0 items-center gap-1 whitespace-nowrap ${className}`}>
+      {keys.map((k, i) => (
+        <kbd key={i} className="kbd">
+          {k}
+        </kbd>
+      ))}
+      <span>{children}</span>
+    </span>
   )
 }
 

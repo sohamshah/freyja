@@ -968,6 +968,21 @@ select {
   border-radius: 4px;
 }
 
+/* Composer footer row. The buttons drop words as the row narrows:
+   `fit-lg` goes first, then `fit-md`, then `fit-sm`. */
+.composer-foot {
+  container: composer-foot / inline-size;
+}
+@container composer-foot (max-width: 560px) {
+  .fit-lg { display: none; }
+}
+@container composer-foot (max-width: 360px) {
+  .fit-md { display: none; }
+}
+@container composer-foot (max-width: 260px) {
+  .fit-sm { display: none; }
+}
+
 /* Small caps / label style — Departure Mono is perfect for this */
 .label {
   font-family: var(--font-mono);
