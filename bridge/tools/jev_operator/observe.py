@@ -736,7 +736,12 @@ _QUOTED = re.compile(
     r"|(?<!\w)'(.{1,200}?)'(?!\w)"
     r"|(?<!\w)‘(.{1,200}?)’(?!\w)"
 )
-_NUMBERISH = re.compile(r"(?<![\w.])[-+]?\d[\d,]*(?:\.\d+)?(?![\w.])")
+# A number in the goal, with thousands commas inside it but not the sentence's
+# own punctuation after it: "mobile number 5550100, ZIP code 80202." gave
+# "5550100," (typed into a phone field) and no ZIP at all.
+# Digit groups joined by / or - (dates, phone numbers).
+_JOINED = re.compile(r"(?<![\w./-])\d{1,4}(?:[/-]\d{1,4}){1,3}(?![\w]|[/-]\d)")
+_NUMBERISH = re.compile(r"(?<![\w.])[-+]?\d(?:[\d,]*\d)?(?:\.\d+)?(?![\w]|\.\d)")
 
 
 def quoted_literals(text: str) -> list[str]:
@@ -760,8 +765,16 @@ def literals_from_goal(goal: str) -> list[str]:
         s = next(g for g in m.groups() if g is not None).strip()
         if s and s not in out:
             out.append(s)
+    # Dates and phone numbers are one literal ("06/23/1992", "303-555-0147"),
+    # never their parts: "1992" alone was typed into a date-of-birth field.
+    joined = [m.span() for m in _JOINED.finditer(goal)]
+    for m in _JOINED.finditer(goal):
+        if m.group(0) not in out:
+            out.append(m.group(0))
     for m in _NUMBERISH.finditer(goal):
         s = m.group(0)
+        if any(a <= m.start() < b for a, b in joined):
+            continue
         if s not in out:
             out.append(s)
     return out[:12]

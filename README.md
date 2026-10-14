@@ -436,6 +436,9 @@ uv run python -m bridge.freyja_bridge
 | `docs/SLACK-GATEWAY.md` | Slack gateway protocol, manifest, and scopes reference |
 | `docs/mcp.md` | MCP servers, OAuth, plugins, catalog, `/mcp` and `/plugin` command reference |
 | `docs/SESSION-REPAIR.md` | What fixes a broken session by itself, what `/repair` does, and fixing a transcript by hand |
+| `docs/jev-operator.md` | How `jev_computer_use` reads and drives apps and web pages |
+| `docs/JEV-WEB-FINDINGS.md` | Why jev failed on a real booking site, what changed, and the measured effect |
+| `evals/computer_use/README.md` | Mock web environments with ground-truth rewards for testing computer-use agents |
 | `docs/TRAJECTORY-TRAINING.md` | Session trajectory export formats |
 | `docs/WARP-FILE-EDIT-UX-RESEARCH.md` | File-edit UX research and design notes |
 

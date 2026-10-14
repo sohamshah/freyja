@@ -132,7 +132,9 @@ report ("… and report the price of X", "list every project's name and ID"):
 the values come back under `Read:`, including ones read on earlier pages of a
 list, and `page:` names where the run ended. Controls below the visible area
 are reachable directly; dropdown options are listed as rows, and a custom
-dropdown's options appear once a click opens it.
+dropdown's options appear once a click opens it. An embedded frame (another
+site's widget inside the page) cannot be read or clicked by a page run: the
+result names it; do that step with `computer_use`.
 
 It runs in the BACKGROUND by default: the call returns at once with a run id,
 and the result (summary plus a handoff block when it did not finish cleanly)
@@ -148,6 +150,9 @@ Write the goal well. Put the person's exact wording and every literal value
 typed verbatim (e.g. type "hello world"). Merge consecutive micro-steps into
 one goal ("open Notes, create a note titled "Plan" with the body ...") instead
 of making one call per click. State what must not happen ("do not submit").
+Give a multi-page flow one goal per page or step. Before starting a checkout,
+get everything you will need from the person: a checkout left idle while you
+wait for an answer can expire and send the page back to the start.
 
 For a repeated procedure over a list (the same steps for each of N names,
 rows, files), pass `items` (up to 50 short strings, text data only). The same

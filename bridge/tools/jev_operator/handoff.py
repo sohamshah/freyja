@@ -163,9 +163,15 @@ class LLMHelper:
                 "You are the planner behind a fast operator working on one web page in a browser. "
                 "The table lists the page's controls, including ones below the visible area (using one "
                 "scrolls it into view). The operator can click a listed control, type into a listed field "
-                "(typing replaces the field's contents), choose a listed option, press only return, escape "
-                "or tab, scroll, and open a web address. It cannot use the browser's address bar, tabs, "
-                "menus or keyboard shortcuts. It asked for help. Decide what to do next.\n"
+                "(typing replaces the field's contents and focuses the field: never ask it to "
+                "click a text field first, text fields are not click targets), choose a listed "
+                "option, press only return, escape, tab, down or up, scroll, and open a web "
+                "address. It cannot use the browser's address bar, tabs, menus or keyboard "
+                "shortcuts. A field with an open suggestion list takes its value only when a "
+                "suggestion is picked: click the suggestion if it is listed, or press down and "
+                "then return. A [dialog] at the top of the screen text covers the page, and only "
+                "its controls are listed until it closes. An [embedded frame] cannot be read or "
+                "clicked by the operator. It asked for help. Decide what to do next.\n"
                 'Return JSON: {"status": "continue"|"done"|"give_up", "subgoal": string|null, '
                 '"direct_action": null | {"kind": "open_url", "url": string}, "note": string}.\n'
                 "subgoal is one concrete instruction the operator can execute against listed controls in "

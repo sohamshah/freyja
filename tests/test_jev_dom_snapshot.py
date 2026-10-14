@@ -108,8 +108,13 @@ class Page:
             f"window.__freyjaJev.act({json.dumps(id_)},{json.dumps(op)},{json.dumps(arg)},{json.dumps(guard)})"))
 
 
-@pytest.fixture(scope="module")
-def page():
+import contextlib
+
+PATTERNS = ROOT / "tests/fixtures/jev_dom/patterns.html"
+
+
+@contextlib.contextmanager
+def _open(fixture):
     chrome = _chrome()
     if not chrome:
         pytest.skip("no Chrome available")
@@ -120,14 +125,15 @@ def page():
     proc = subprocess.Popen(
         [chrome, "--headless=new", f"--remote-debugging-port={port}", f"--user-data-dir={tmp}",
          "--no-first-run", "--no-default-browser-check", "--window-size=800,600",
-         FIXTURE.as_uri()],
+         fixture.as_uri()],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         target = None
         for _ in range(100):
             try:
                 tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=2))
-                target = next((t for t in tabs if t.get("type") == "page" and "basic.html" in t.get("url", "")), None)
+                pages = [t for t in tabs if t.get("type") == "page"]
+                target = next((t for t in pages if fixture.name in t.get("url", "")), None)
                 if target:
                     break
             except Exception:
@@ -150,6 +156,18 @@ def page():
         except subprocess.TimeoutExpired:
             proc.kill()
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+@pytest.fixture(scope="module")
+def page():
+    with _open(FIXTURE) as p:
+        yield p
+
+
+@pytest.fixture()
+def patterns():
+    with _open(PATTERNS) as p:
+        yield p
 
 
 def _by_label(snap, label):
@@ -226,7 +244,7 @@ def test_covered_rejected_and_click(page):
     s = page.snap()
     cov = _by_label(s, "Covered")[0]
     page.eval("document.getElementById('cover').style.display='block'")
-    assert page.act(cov["id"], "click", None, cov["guard"])["reason"] == "covered"
+    assert page.act(cov["id"], "click", None, cov["guard"])["reason"].startswith("covered")
     page.eval("document.getElementById('cover').style.display='none'")
     page.eval("window.__clicked=0;document.getElementById('cov').addEventListener('click',()=>window.__clicked++)")
     assert page.act(cov["id"], "click", None, cov["guard"])["ok"] is True
@@ -283,7 +301,8 @@ def test_an_open_dropdown_still_covers_the_field_under_it(page):
     s = page.snap()
     hq, uc = _by_label(s, "Headquarters")[0], _by_label(s, "Use cases")[0]
     assert page.act(hq["id"], "click")["ok"] is True
-    assert page.act(uc["id"], "fill", {"text": "x", "mode": "replace"})["reason"] == "covered"
+    refused = page.act(uc["id"], "fill", {"text": "x", "mode": "replace"})
+    assert refused["reason"].startswith("covered")
     assert page.act(0, "key", "Escape")["ok"] is True
     assert page.eval("!!document.getElementById('panel')") is False
     assert page.act(uc["id"], "fill", {"text": "x", "mode": "replace"})["ok"] is True
@@ -298,3 +317,158 @@ def test_enter_opens_a_focused_combobox(page):
     page.act(0, "key", "Escape")
     page.eval("document.activeElement.blur()")
     assert page.act(0, "key", "Enter")["reason"] == "no_editable_focused"
+
+
+# ─── page patterns from a real booking run (tests/fixtures/jev_dom/patterns.html) ───
+
+
+def test_drawn_radios_are_listed_by_column_and_row_and_clicked_through_their_box(patterns):
+    """A fare grid draws each choice as a box around a zero-size radio, and the
+    radios' own labels repeat across columns. The run saw no fares at all."""
+    s = patterns.snap()
+    fares = [a for a in s["actions"] if a["role"] == "radio"]
+    assert len(fares) == 6
+    biz = [a for a in fares if a["label"].startswith("Business Bundle: $275 Standard")]
+    assert len(biz) == 2 and "Biz fare" in biz[0]["label"]
+    # Same label in two rows: each is told apart by its row, not the section heading.
+    assert "9:05 PM" in biz[0]["context"] and "6:02 AM" in biz[1]["context"]
+    eco = [a for a in fares if a["label"].startswith("Economy Bundle: $130 Standard")]
+    assert eco and "6:02 AM" in eco[0]["context"]
+    r = patterns.act(biz[0]["id"], "click", None, biz[0]["guard"])
+    assert r["ok"] and patterns.eval("document.title") == "fare:z1"
+    assert [a for a in patterns.snap()["actions"] if a["id"] == biz[0]["id"]][0]["checked"] is True
+
+
+def test_an_icon_control_with_no_name_is_named_from_its_image(patterns):
+    s = patterns.snap()
+    search = [a for a in s["actions"] if a["label"] == "search"]
+    assert search and "search_btn.svg" in search[0]["hint"]
+    assert patterns.act(search[0]["id"], "click")["ok"]
+    assert patterns.eval("document.title") == "searched"
+
+
+def test_a_read_only_field_is_offered_as_a_click_with_its_value(patterns):
+    who = [a for a in patterns.snap()["actions"] if a["label"] == "Travelers"][0]
+    assert who["kind"] == "click" and who["value"] == "1 Adult"
+    assert patterns.act(who["id"], "click")["ok"]
+    assert patterns.eval("document.getElementById('who').value") == "panel open"
+
+
+def test_suggestion_rows_without_roles_are_options_and_a_click_picks_one(patterns):
+    """Airport suggestions were list items with no role and a tabindex=-1 wrapper:
+    the run typed the city over and over and never committed it."""
+    city = [a for a in patterns.snap()["actions"] if a["label"] == "City"][0]
+    patterns.act(city["id"], "fill", {"text": "San", "mode": "replace"})
+    rows = [a for a in patterns.snap()["actions"] if a["role"] == "option"]
+    assert [a["label"] for a in rows] == [
+        "San Francisco (SFO)", "San Jose (SJC)", "Santa Ana (SNA)"]
+    assert patterns.act(rows[0]["id"], "click")["ok"]
+    picked = patterns.eval("document.getElementById('cityPicked').textContent")
+    assert picked == "picked:San Francisco (SFO)"
+
+
+def test_down_then_enter_picks_a_suggestion_without_submitting(patterns):
+    city = [a for a in patterns.snap()["actions"] if a["label"] == "City"][0]
+    patterns.act(city["id"], "fill", {"text": "San J", "mode": "replace"})
+    focused = [a for a in patterns.snap()["actions"] if a["focused"]][0]
+    assert focused["enter"] == "pick"
+    assert patterns.act(0, "key", "ArrowDown")["ok"]
+    assert patterns.act(0, "key", "Enter")["ok"]
+    picked = patterns.eval("document.getElementById('cityPicked').textContent")
+    assert picked == "picked:San Jose (SJC)"
+
+
+def test_a_click_on_a_plain_div_commits_the_field_typed_last(patterns):
+    """A real press moves focus, so the field fires change; a synthetic click on a
+    div did not, and a form that binds values on change never saw the last one."""
+    s = patterns.snap()
+    zip_ = [a for a in s["actions"] if a["label"] == "Zip code"][0]
+    nxt = [a for a in s["actions"] if a["label"] == "Next step"][0]
+    assert nxt["inferred"] is True
+    patterns.act(zip_["id"], "fill", {"text": "80202", "mode": "replace"})
+    assert patterns.act(nxt["id"], "click")["ok"]
+    assert patterns.eval("document.title") == "next:model:80202"
+
+
+def test_a_modal_layer_is_a_dialog_and_hides_what_is_behind_it(patterns):
+    """An upsell with no dialog role was appended after a long page; its text was
+    cut off and the run waited on a page it could not see was blocked."""
+    btn = [a for a in patterns.snap()["actions"] if a["label"] == "Open offer"][0]
+    patterns.act(btn["id"], "click")
+    s = patterns.snap()
+    assert s["dialog"]["title"] == "Join the club"
+    assert s["text"].startswith("[dialog] Join the club")
+    assert sorted(a["label"] for a in s["actions"]) == ["No thanks, continue", "SIGN UP"]
+    assert s["behind"] > 5
+    covered = [a for a in patterns.snap()["actions"] if a["label"] == "SIGN UP"]
+    assert covered
+    no = [a for a in s["actions"] if a["label"] == "No thanks, continue"][0]
+    assert patterns.act(no["id"], "click")["ok"] and patterns.eval("document.title") == "declined"
+    assert patterns.snap()["dialog"] is None
+
+
+def test_a_covered_control_names_what_covers_it(patterns):
+    s = patterns.snap()
+    target = [a for a in s["actions"] if a["label"] == "Save slowly"][0]
+    patterns.eval("document.getElementById('overlay').style.display='flex'")
+    r = patterns.act(target["id"], "click", None, target["guard"])
+    assert r["reason"].startswith("covered by div#overlay") and "Join the club" in r["reason"]
+
+
+def test_frames_are_reported(patterns):
+    s = patterns.snap()
+    assert len(s["frames"]) == 1 and s["frames"][0]["title"] == "offers"
+
+
+def test_requests_an_action_started_keep_the_page_busy(patterns):
+    """A Continue that posts and navigates when the server answers looked
+    settled after 3 s; the run judged it a no-op."""
+    slow = [a for a in patterns.snap()["actions"] if a["label"] == "Save slowly"][0]
+    assert patterns.act(slow["id"], "click")["ok"]
+    q = json.loads(patterns.eval("window.__freyjaJev.quiet()"))
+    assert q["p"] == 1
+    time.sleep(1.5)
+    q = json.loads(patterns.eval("window.__freyjaJev.quiet()"))
+    assert q["p"] == 0 and patterns.eval("document.title") == "saved"
+
+
+def test_a_panel_parked_beside_the_window_is_not_on_the_page(patterns):
+    """Six closed slide-in panels each listed a "Close" button on every page of a
+    real booking site; something in a side-scrolling carousel still counts."""
+    labels = [a["label"] for a in patterns.snap()["actions"]]
+    assert "Close" not in labels and "Book this deal" in labels
+
+
+def test_typing_the_same_value_again_reopens_the_suggestions(patterns):
+    """An autocomplete searches only when the value changes; a run retyped an
+    airport code over itself and the suggestion list never came back."""
+    city = [a for a in patterns.snap()["actions"] if a["label"] == "City"][0]
+    patterns.act(city["id"], "fill", {"text": "San", "mode": "replace"})
+    patterns.eval("document.getElementById('menu').style.display='none'")
+    patterns.act(city["id"], "fill", {"text": "San", "mode": "replace"})
+    assert patterns.eval("document.getElementById('menu').style.display") == "block"
+
+
+def test_repeated_day_links_are_named_by_their_month_not_by_a_nav_link(patterns):
+    """A real date picker's first line was its "Prev" link: day links read
+    "29 (Prev)" and "29 (Next)", and the run picked the 31st, the one day without."""
+    actions = patterns.snap()["actions"]
+    days = [a for a in actions if a["label"] == "29"]
+    assert [d["context"] for d in days] == ["October 2026", "November 2026"]
+    # A day only one month offers (the 12th of October is past) names its month too.
+    twelve = [a for a in actions if a["label"] == "12"]
+    assert [d["context"] for d in twelve] == ["November 2026"]
+
+
+def test_a_panel_that_only_its_opener_closes_is_closed_before_the_click(patterns):
+    """A travelers panel ignored Escape and presses outside it; only its own
+    field closed it. Three clicks on Search behind it were refused and the run
+    stopped with the form filled in."""
+    s = patterns.snap()
+    guests = [a for a in s["actions"] if a["label"] == "Guests"][0]
+    patterns.act(guests["id"], "click")
+    go = [a for a in patterns.snap()["actions"] if a["label"] == "Go"][0]
+    r = patterns.act(go["id"], "click")
+    assert r["ok"] and "Guests" in r["closedFirst"]
+    assert patterns.eval("document.title") == "go"
+    assert patterns.eval("document.getElementById('pax').getAttribute('aria-expanded')") == "false"

@@ -113,6 +113,7 @@ _IRREVERSIBLE = re.compile("|".join(IRREVERSIBLE_PATTERNS), re.I)
 # only produces false stops (TextEdit's "Format" menu, a file named "Remove me.txt").
 GATED_ROLES = {"AXButton", "AXMenuItem", "AXLink", "AXMenuButton", "AXToolbarButton"}
 MAX_VERIFY_ROUNDS = 2
+PROBE_RETRIES = 2
 # Besides the final screen, the end-state check reads every other line the run
 # saw (each once, in order) and the planner's notes: a list read page by page is
 # gone from the final screen. Capped to keep the check one moderate call.
@@ -306,6 +307,14 @@ class RunResult:
         if self.surface.startswith("dom"):
             # A web page: scripting it through osascript skips every check a run
             # makes (irreversible controls, page dialogs, what changed).
+            frame = re.search(r"\[embedded frame from ([^,\]]+)", self.final_screen_text or "")
+            if frame and self.status != "done":
+                return (
+                    f"part of this page is an embedded frame from {frame.group(1)}, which a page "
+                    "run can neither read nor click; do that part with computer_use "
+                    "(screenshots), then continue with jev on the rest; do not script the page "
+                    "through osascript"
+                )
             if self.status == "blocked":
                 return (
                     "read the summary for what stopped it; if a dialog or login is in the way ask "
@@ -386,6 +395,7 @@ class Operator:
         self.log_path = RUN_DIR / f"{self.run_id}.jsonl"
         self._subgoal: str | None = None
         self._subgoal_steps = 0
+        self._subgoal_at = 0  # len(self.history) when the planner set the sub-goal
         self._replans_since_progress = 0
         # (window, role, label, text) of the last step when it appended text to a
         # text area; any other step clears it.
@@ -409,6 +419,9 @@ class Operator:
         self._notes = ""
         self._app_notes = ""
         self._site_notes: dict[str, str] = {}  # host -> notes, looked up once per host
+        self._progress_since_verify = False  # a meaningful action since the last end-state check
+        # (action, screen fingerprint after it), newest last
+        self._recent: list[tuple[str, str]] = []
         self._repeat_key: str | None = None
         self._repeat_count = 0
         self._repeat_replanned = False
@@ -446,8 +459,13 @@ class Operator:
                 self._log({"event": "surface_probe", "ok": False, "detail": "unsupported browser", "bundle": target.bundle})
             return
         ok, detail = await asyncio.to_thread(dom_surface.probe, target.bundle)
-        if not ok and "did not answer" in detail:
-            # A busy browser can miss the first 3 s: wait once more before giving up.
+        for attempt in range(PROBE_RETRIES):
+            if ok or "did not answer" not in detail:
+                break
+            # A busy browser can miss the first 3 s, and a heavy page that is still
+            # loading (a flight results page) can take ~20 s: wait before giving up.
+            if attempt:
+                await asyncio.sleep(2.0)
             ok, again = await asyncio.to_thread(
                 dom_surface.probe, target.bundle, None, dom_surface.PROBE_RETRY_TIMEOUT_S
             )
@@ -870,6 +888,15 @@ class Operator:
                 meaningful = meaningful_change(before, obs) or own_effect(
                     pending, target_key, before, obs
                 )
+                # The same action putting the screen back where it was two actions
+                # ago is a toggle undoing itself (open, close, open a panel), not
+                # progress: a run once flipped a travelers panel eight times.
+                fp = obs.fingerprint()
+                act_key = f"{pending.get('kind')}: {pending.get('action')}"
+                if meaningful and len(self._recent) >= 2 and self._recent[-2] == (act_key, fp):
+                    meaningful = False
+                self._recent.append((act_key, fp))
+                del self._recent[:-4]
                 entry = {**pending, "changed": changed, "diff": diff}
                 self.history.append(entry)
                 kind = pending.get("kind")
@@ -885,6 +912,8 @@ class Operator:
                     self._track_repeat(pending, meaningful)
                 if meaningful:
                     self._replans_since_progress = 0
+                    if kind != "wait":
+                        self._progress_since_verify = True
                 await self._say(f"  → {'changed' if changed else 'no change'}: {diff}")
                 self._log({"event": "outcome", "step": step, **entry, "meaningful": meaningful})
                 pending = None
@@ -939,6 +968,9 @@ class Operator:
                     notes=self._notes,
                     urls=urls or None,
                     key_options=getattr(self.surface, "key_options", None),
+                    subgoal_actions=[
+                        str(h.get("action") or "") for h in self.history[self._subgoal_at :]
+                    ],
                 )
             except DecisionError as exc:
                 return finish("error", f"Decision provider failed: {exc}")
@@ -972,6 +1004,12 @@ class Operator:
                     f"  sub-goal complete (p={d.subgoal_done_p:.2f}); back to the main goal"
                 )
                 self._subgoal = None
+                if d.operation == "done":
+                    # Asked to work on a sub-goal first, Jev's "done" means the
+                    # sub-goal: decide again against the goal itself rather than
+                    # spend an end-state check on a half-filled form (one passenger
+                    # form drew three such checks and ended blocked).
+                    continue
 
             if cfg.dry_run:
                 self.history.append(
@@ -997,6 +1035,12 @@ class Operator:
                             screen=obs.screen_text,
                             report=self._report(out),
                         )
+                    # A disagreement after real progress (the run filled more of
+                    # a long form since the last check) starts the count again:
+                    # only done-claims with nothing done in between end the run.
+                    if self._progress_since_verify:
+                        verify_rounds = 1
+                    self._progress_since_verify = False
                     if verify_rounds >= MAX_VERIFY_ROUNDS:
                         return finish(
                             "blocked",
@@ -1263,7 +1307,9 @@ class Operator:
         if self.surface.name == "dom" and focused is not None:
             # What Enter does in this field, as the page snapshot reports it.
             hint = getattr(focused, "enter_hint", "") or "unknown"
-            if hint in ("search", "form"):
+            # "pick": the field's suggestion list is open, and Enter takes the
+            # highlighted suggestion (an airport, a city) without submitting.
+            if hint in ("search", "form", "pick"):
                 return None
             if hint.startswith("form:"):
                 label = hint[5:]
@@ -1418,6 +1464,7 @@ class Operator:
         if isinstance(s, str) and s.strip():
             self._subgoal = s.strip()[:400]
             self._subgoal_steps = 0
+            self._subgoal_at = len(self.history)
 
     def _log_llm(self, since: int) -> None:
         if self.llm is not None:
@@ -1490,7 +1537,10 @@ class Operator:
     async def _replan(self, obs: Observation, target: Target, *, reason: str) -> RunResult | None:
         """Returns a RunResult when the run should end, None to continue."""
         self._replans_since_progress += 1
-        if self.llm is None or self.llm.budget_left <= 0 or self._replans_since_progress > 2:
+        # The last LLM call is kept for the end-state check: a search run that
+        # reached its results spent every call on replans and ended "blocked"
+        # with the goal met on screen.
+        if self.llm is None or self.llm.budget_left <= 1 or self._replans_since_progress > 2:
             # Jev can stall right after the goal was met (e.g. by a planner click);
             # check the end state before reporting the run as stuck.
             check = None

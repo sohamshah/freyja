@@ -1,0 +1,33 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Flights & Low-Cost Airline Tickets | Kestrel Air</title><link rel="stylesheet" href="style.css"></head>
+<body data-page="home">
+<main>
+<div id="notice" class="errors hidden"></div>
+<div class="hero">
+<form class="book" id="book" onsubmit="return false">
+  <div class="row trip">
+    <label class="rb"><input type="radio" name="trip" value="roundtrip" checked><span class="dot"></span>Round-trip</label>
+    <label class="rb"><input type="radio" name="trip" value="oneway"><span class="dot"></span>One-way</label>
+  </div>
+  <div class="row">
+    <div class="field"><label class="lab" for="origin">From*</label><input id="origin" name="origin" class="ui-autocomplete-input" autocomplete="off"></div>
+    <div class="field"><label class="lab" for="destination">To*</label><input id="destination" name="destination" type="text" disabled></div>
+  </div>
+  <div class="row">
+    <div class="field"><label class="lab" for="departureDate">Depart Date*</label><input type="text" role="textbox" id="departureDate" title="Departure Date" readonly disabled>
+      <img src="calendar.svg" id="departureDateIcon" class="cal-icon" alt="" onclick="document.getElementById('departureDate').focus();"></div>
+    <div class="field"><label class="lab" for="returnDate">Return Date*</label><input type="text" role="textbox" id="returnDate" title="Arrival Date" readonly disabled>
+      <img src="calendar.svg" id="returnDateIcon" class="cal-icon" alt="" onclick="document.getElementById('returnDate').focus();"></div>
+  </div>
+  <div class="row"><div class="field"><label class="lab" for="passengersInput">Travelers*</label><input id="passengersInput" name="passengersInput" readonly value="1 Adult" style="cursor:pointer"></div></div>
+  <div class="row">
+    <div class="field"><label class="lab" for="promocode">Promo Code</label><input type="text" id="promocode" maxlength="8"></div>
+    <div class="field"><span class="lab">Search By*</span><a href="" id="btnSearch" class="btn btn--search"><img src="search_btn.svg" class="SearchSVG"></a></div>
+  </div>
+  <div id="formError" class="errors hidden"></div>
+  <a href="#" style="color:#cfe9da;font-size:13px">New Bag Policy and Optional Services</a>
+</form>
+<div class="promo-side"><h2>Low fares. Lots of places.</h2><p>Bundle and save on bags, seats and flexibility.</p><a href="#" style="color:#fff">BUNDLE &amp; SAVE — LEARN MORE</a></div>
+</div>
+<div class="card"><h2>Deals</h2><p>Turn your flexibility into unlimited flights for one low price! <a href="#">LEARN MORE</a></p><p>KESTREL Miles is the most rewarding loyalty program in the sky! <a href="#">JOIN NOW</a></p></div>
+</main>
+<script src="app.js"></script></body></html>

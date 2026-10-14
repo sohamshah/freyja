@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Purchase | Kestrel Air</title><link rel="stylesheet" href="style.css"></head>
+<body data-page="payment">
+<main>
+<h1>Payment</h1>
+<div id="pageErrors" class="errors hidden"></div>
+<div class="card" id="cartLines"><h2>YOUR TRIP</h2></div>
+<div class="card"><p id="payTotal"></p></div>
+<div class="card pform"><h2>Payment Information</h2><div class="grid">
+<label>Cardholder Name *<input type="text" autocomplete="cc-name"></label>
+<label>Card Number *<input type="text" autocomplete="cc-number"></label>
+<label>Expiration Date *<input type="text" placeholder="MM/YY"></label>
+<label>CVC/CVV/CID *<input type="text"></label>
+<label>Address 1 *<input type="text"></label>
+<label>City *<input type="text"></label>
+<label>State *<input type="text"></label>
+<label>Zip Code *<input type="text" id="payZip"></label>
+<label>Email Address *<input type="email" id="payEmail"></label>
+</div></div>
+<div class="card"><p class="muted">All bookings are refundable within 24 hours of purchase unless booked within 7 days of the first flight's departure.</p>
+<label><input type="checkbox" id="terms"> I accept the Contract of Carriage, Customer Service Plan and Privacy Policy.</label></div>
+<button type="button" class="btn" id="btnPurchase">PURCHASE &amp; ACCEPT</button>
+</main>
+<script src="app.js"></script></body></html>

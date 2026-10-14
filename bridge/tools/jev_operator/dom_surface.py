@@ -37,13 +37,23 @@ from bridge.tools.jev_operator.observe import (
 
 JS_FILE = Path(__file__).with_name("dom_snapshot.js")
 RUN_TIMEOUT_S = 5.0
+# How long a click or key may keep the page busy (requests it started still
+# open, or a navigation under way) before the run reads the page anyway. A real
+# airline's Continue answered after ~10 s; at 3 s the run judged it a no-op.
+BUSY_MAX_S = 15.0
 PROBE_TIMEOUT_S = 3.0
 PROBE_RETRY_TIMEOUT_S = 8.0
 OPEN_TIMEOUT_S = 10.0
 # After an action, wait until the page stops changing (same mutation count and
 # URL on two reads ~0.25 s apart, document complete), at most this long.
-SETTLE_S = {"click": 3.0, "key": 3.0, "type": 1.5, "scroll": 1.0, "open_url": 12.0}
+SETTLE_S = {"click": 3.0, "key": 3.0, "type": 1.5, "scroll": 1.0, "open_url": 12.0, "suggest": 2.5}
+# After typing into a field that shows suggestions, wait at least this long:
+# widgets wait ~300 ms after the last keystroke, then fetch.
+SUGGEST_WAIT_S = 0.8
 MAX_OPTIONS = 25
+# Page rows carry more than an app's: a grid cell's column and row ("Business Bundle:
+# $361 Standard (9:05 PM DEN -> 2:48 AM MCO ...)"). At 80 characters the row was cut off.
+DOM_LABEL_CHARS = 150
 
 # bundle id -> application name. Both expose `execute <tab> javascript <text>`
 # and tab ids through AppleScript.
@@ -116,10 +126,13 @@ KIND_ROLES = {
     "select": "AXComboBox",
     "toggle": "AXCheckBox",
 }
-KEY_MAP = {"return": "Enter", "enter": "Enter", "escape": "Escape", "esc": "Escape", "tab": "Tab"}
+KEY_MAP = {"return": "Enter", "enter": "Enter", "escape": "Escape", "esc": "Escape", "tab": "Tab",
+           "down": "ArrowDown", "up": "ArrowUp"}
 # The keys a page understands; browser shortcuts (cmd+l, cmd+t) act on the
-# browser window, which this surface does not see.
-DOM_KEYS = ("return", "escape", "tab")
+# browser window, which this surface does not see. Down and Up move through a
+# suggestion list ("use up and down arrow keys to navigate", as an airport field
+# said while the run had no way to press them).
+DOM_KEYS = ("return", "escape", "tab", "down", "up")
 _SECURE = re.compile(r"password|passcode|\bpin\b|secure", re.I)
 _WS = re.compile(r"\s+")
 _VERSION = re.compile(r"var VERSION = (\d+);")
@@ -267,6 +280,10 @@ class DOMElement(Element):
 
     def row(self, *args: Any, **kwargs: Any) -> str:
         text = super().row(*args, **kwargs)
+        if self.enter_hint == "pick":
+            # Typed text in an autocomplete field commits nothing: one of the
+            # suggestions listed right after this row has to be picked.
+            text += " (suggestions open: pick one)"
         if self.expanded is not None:
             text += " (expanded)" if self.expanded else " (collapsed)"
         if self.below:
@@ -483,19 +500,31 @@ class DOMSurface:
         if min_s:
             await asyncio.sleep(min_s)
         need = 3 if kind == "open_url" else 1
-        deadline = time.perf_counter() + SETTLE_S.get(kind, 2.0)
+        start = time.perf_counter()
+        deadline = start + SETTLE_S.get(kind, 2.0)
+        # A click or key whose requests are still open, or that started a
+        # navigation, keeps the page busy: wait for it, up to BUSY_MAX_S.
+        busy_s = BUSY_MAX_S if kind in ("click", "key") else 4.0 if kind == "suggest" else 0.0
+        busy_until = start + busy_s
         last: tuple[Any, Any] | None = None
         quiet = 0
-        while time.perf_counter() < deadline:
+        busy = False
+        while time.perf_counter() < (busy_until if busy else deadline):
             try:
                 q = await self._js("quiet()", count=False)
             except DOMUnavailable:
-                if kind == "open_url":  # still loading: the page may not answer yet
+                if kind == "open_url" or busy:  # still loading: the page may not answer yet
                     await asyncio.sleep(0.4)
                     continue
                 return
             if not isinstance(q, dict):
                 return
+            busy = bool(q.get("p")) or bool(q.get("nav"))
+            if busy and time.perf_counter() < busy_until:
+                quiet = 0
+                last = None
+                await asyncio.sleep(0.25)
+                continue
             key = (q.get("m"), q.get("u"))
             quiet = quiet + 1 if q.get("rs") == "complete" and key == last else 0
             if quiet >= need:
@@ -535,9 +564,19 @@ class DOMSurface:
             role = KIND_ROLES.get(kind, "AXButton")
             if kind == "toggle" and a.get("role") in ("radio", "menuitemradio"):
                 role = "AXRadioButton"  # one choice of a group, not an on/off box
+            if a.get("inferred") and a.get("role") == "option":
+                role = "AXMenuItem"  # a row of a suggestion list the page draws without roles
             raw = str(a.get("label") or "").strip()
             ctx = str(a.get("context") or "").strip()
-            label = f"{raw} ({ctx})" if raw and ctx else raw or ctx or kind
+            hint = str(a.get("hint") or "").strip()
+            notes = "; ".join(x for x in (hint, ctx) if x)
+            # A control with no name is never labelled with its surroundings alone:
+            # a Search link around an image read "Search By* Promo Code ..." and no
+            # run clicked it.
+            if raw:
+                label = f"{raw} ({notes})" if notes else raw
+            else:
+                label = f"(no name) near: {ctx}" if ctx else f"(no name {kind})"
             secure = kind == "fill" and bool(_SECURE.search(f"{a.get('role', '')} {raw}"))
             value = a.get("value")
             value_s = None if value in (None, "") else str(value)
@@ -548,7 +587,7 @@ class DOMSurface:
             add(
                 role=role,
                 subrole="AXSecureTextField" if secure else None,
-                label=_clip(label, MAX_LABEL_CHARS),
+                label=_clip(label, DOM_LABEL_CHARS),
                 value=value_s,
                 focused=bool(a.get("focused")),
                 kind="type" if kind in ("fill", "select") else "click",
@@ -585,6 +624,16 @@ class DOMSurface:
                         dom_kind="option",
                         option_value=str(o.get("v") if o.get("v") is not None else text),
                     )
+        # Suggestions a page appends at the end of the document belong to the
+        # field being typed in: list them right after it.
+        picking = next((e for e in elements if e.focused and e.enter_hint == "pick"), None)
+        if picking is not None:
+            opts = [e for e in elements if e.dom_kind == "click" and e.role == "AXMenuItem"]
+            rest = [e for e in elements if e not in opts]
+            at = rest.index(picking) + 1
+            elements = rest[:at] + opts + rest[at:]
+            for i, e in enumerate(elements, 1):
+                e.index = i
         truncated = len(elements) > MAX_ROWS
         if truncated:
             near = [e for e in elements if not e.below]
@@ -593,6 +642,14 @@ class DOMSurface:
             for i, e in enumerate(elements, 1):
                 e.index = i
         text = str(snap.get("text") or "")
+        frames = [f for f in (snap.get("frames") or []) if isinstance(f, dict)]
+        if frames:
+            # A frame's content is invisible to this surface: say so up front, so
+            # the run and its caller know why controls seen on screen are missing.
+            text = "\n".join(_frame_line(f) for f in frames) + "\n" + text
+        behind = int(snap.get("behind") or 0)
+        if behind:
+            text = f"[{behind} controls behind the dialog are not listed until it closes]\n" + text
         shown = []
         for d in snap.get("dialogs") or []:
             if not isinstance(d, dict):
@@ -613,7 +670,7 @@ class DOMSurface:
             focused_window=window,
             elements=list(elements),
             screen_text=text,
-            dialog=None,
+            dialog=_dialog(snap.get("dialog")),
             menu_open=False,
             node_count=len(elements),
             read_ms=read_ms,
@@ -644,7 +701,11 @@ class DOMSurface:
         if action == "press":
             key = KEY_MAP.get(str(args[0]).lower())
             if key is None:
-                return await self._fail("press_key", f"{args[0]} is not a page key (the DOM surface sends Return, Escape, Tab)")
+                return await self._fail(
+                    "press_key",
+                    f"{args[0]} is not a page key "
+                    "(the DOM surface sends Return, Escape, Tab, Down, Up)",
+                )
             return await self._act_on(None, "key", key, f"Press {args[0]}", "press_key", settle="key")
         if action == "scroll":
             down = bool(kwargs.get("down", True))
@@ -731,9 +792,15 @@ class DOMSurface:
                 return done(False, f"readback mismatch: typed {want!r}, field shows {got!r}")
         if res.get("newTab"):
             await self._follow_new_tab()
+        elif res.get("suggest"):
+            # Suggestions arrive after the field's pause and a fetch; a run read
+            # the page before they came and moved on with the city uncommitted.
+            await self.settle("suggest", min_s=SUGGEST_WAIT_S)
         elif settle:
             await self.settle(settle)
         rec = done(True)
+        if res.get("closedFirst"):
+            rec.description += f" (closed the open panel first: {res['closedFirst']})"
         _note_dialogs(rec, res.get("dialogs"))
         return rec
 
@@ -747,6 +814,25 @@ class DOMSurface:
             return matches[0]
         what = "gone from the page" if not matches else f"matches {len(matches)} elements now"
         return f"stale: {el.label!r} is {what}; re-read the page and choose again"
+
+
+def _dialog(d: Any) -> dict[str, str] | None:
+    """The modal layer the snapshot found over the page, as the AX surface reports a dialog."""
+    if not isinstance(d, dict):
+        return None
+    return {
+        "title": _clip(str(d.get("title") or ""), 120),
+        "text": _clip(str(d.get("text") or ""), 600),
+    }
+
+
+def _frame_line(f: dict[str, Any]) -> str:
+    where = f" {f['offscreen']} the visible area" if f.get("offscreen") else ""
+    return (
+        f"[embedded frame from {f.get('host') or 'another page'}, {f.get('w')}x{f.get('h')} at "
+        f"({f.get('x')}, {f.get('y')}){where}: "
+        "its content cannot be read or clicked through the page]"
+    )
 
 
 def _note_dialogs(rec: ActionRecord, dialogs: Any) -> None:

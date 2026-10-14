@@ -1,0 +1,109 @@
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.4 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: #1d2b22; background: #f1f4f2; }
+a { color: #0b6b3a; }
+header.top { background: #0b5d34; color: #fff; display: flex; align-items: center; gap: 22px; padding: 14px 40px; }
+header.top a { color: #fff; text-decoration: none; font-weight: 600; }
+header.top .logo img { height: 26px; }
+header.top .acct { margin-left: auto; font-size: 13px; }
+nav.progress { display: flex; gap: 18px; background: #e3ebe6; padding: 8px 40px; font-size: 13px; }
+nav.progress a { text-decoration: none; color: #46594e; }
+nav.progress a.on { font-weight: 700; color: #0b5d34; }
+main { max-width: 1120px; margin: 24px auto; padding: 0 20px 140px; }
+.card { background: #fff; border-radius: 8px; padding: 18px 22px; margin-bottom: 18px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+h1 { font-size: 24px; margin: 0 0 12px; }
+h2 { font-size: 17px; margin: 0 0 10px; letter-spacing: .02em; }
+.btn { display: inline-block; background: #0b6b3a; color: #fff; border: 0; padding: 11px 26px; border-radius: 4px; font-weight: 700; text-decoration: none; cursor: pointer; }
+.btn.secondary { background: #fff; color: #0b6b3a; border: 1px solid #0b6b3a; }
+.errors { background: #fde8e8; color: #8a1c1c; border: 1px solid #f3b9b9; padding: 10px 14px; border-radius: 4px; margin: 10px 0; }
+.hidden { display: none !important; }
+.muted { color: #6b7a71; font-size: 13px; }
+/* home */
+.hero { display: flex; gap: 30px; }
+form.book { width: 420px; background: #23332a; color: #fff; padding: 18px; border-radius: 6px; }
+form.book .row { display: flex; gap: 10px; margin-bottom: 12px; }
+form.book .field { flex: 1; display: flex; flex-direction: column; position: relative; }
+form.book label.lab { font-size: 12px; margin-bottom: 3px; }
+form.book input { height: 40px; border: 0; border-radius: 3px; padding: 0 10px; font-size: 15px; }
+form.book input:disabled { background: #b8c2bc; cursor: not-allowed; }
+form.book .cal-icon { position: absolute; right: 8px; bottom: 12px; width: 16px; height: 16px; cursor: pointer; }
+form.book .trip label { margin-right: 18px; cursor: pointer; }
+.rb input { position: absolute; opacity: 0; width: 0; height: 0; }
+.rb .dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid #fff; vertical-align: -2px; margin-right: 5px; }
+.rb input:checked + .dot { background: #7fd1a5; }
+.btn--search { display: block; text-align: center; height: 42px; padding: 8px; background: #2c7a4b; border-radius: 4px; }
+.btn--search img { height: 24px; }
+.promo-side { flex: 1; background: linear-gradient(135deg, #0b5d34, #2e8b57); color: #fff; border-radius: 6px; padding: 40px; }
+/* autocomplete */
+ul.ui-autocomplete { position: absolute; z-index: 1000; list-style: none; margin: 0; padding: 4px 0; background: #fff; color: #1d2b22; border: 1px solid #9fb2a6; max-height: 280px; overflow: auto; }
+ul.ui-autocomplete li.ui-autocomplete-category { font-size: 11px; color: #6b7a71; padding: 4px 10px; text-transform: uppercase; }
+ul.ui-autocomplete .ui-menu-item-wrapper { display: flex; gap: 8px; padding: 6px 10px; }
+ul.ui-autocomplete .ui-menu-item-wrapper img { width: 22px; height: 22px; }
+ul.ui-autocomplete .ui-state-active { background: #e2f1e8; }
+ul.ui-autocomplete .state { font-size: 12px; color: #6b7a71; }
+ul.ui-autocomplete.accessible [role=option] { cursor: pointer; }
+.ui-helper-hidden-accessible { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+/* datepicker */
+.ui-datepicker { position: absolute; z-index: 1001; background: #fff; color: #1d2b22; border: 1px solid #9fb2a6; padding: 8px; display: flex; gap: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.2); }
+.ui-datepicker .month { width: 230px; }
+.ui-datepicker .ui-datepicker-title { text-align: center; font-weight: 700; margin-bottom: 4px; }
+.ui-datepicker table { width: 100%; border-collapse: collapse; }
+.ui-datepicker td { text-align: center; padding: 2px; }
+.ui-datepicker td a { display: block; padding: 4px 0; text-decoration: none; color: #0b5d34; border-radius: 3px; }
+.ui-datepicker td a:hover { background: #e2f1e8; }
+.ui-datepicker td.ui-state-disabled span { color: #c0c8c3; }
+.ui-datepicker .nav { position: absolute; top: 6px; font-size: 13px; }
+.ui-datepicker .ui-datepicker-prev { left: 8px; }
+.ui-datepicker .ui-datepicker-next { right: 8px; }
+/* travelers */
+.passengers-popup { position: absolute; z-index: 1002; width: 380px; background: #fff; color: #1d2b22; border: 1px solid #9fb2a6; padding: 12px 16px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+.passengers-popup .prow { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eef2ef; }
+.passengers-popup button { width: 30px; height: 30px; border-radius: 50%; border: 1px solid #0b6b3a; background: #fff; color: #0b6b3a; font-size: 18px; cursor: pointer; }
+/* cookie banner */
+.cookie { position: fixed; left: 0; right: 0; bottom: 0; background: #0b5d34; color: #fff; padding: 16px 40px; display: flex; gap: 20px; align-items: center; z-index: 900; }
+.cookie p { flex: 1; margin: 0; font-size: 13px; }
+/* closed slide-in panels parked off the right edge of the window */
+.tpl-modal { position: fixed; top: 0; left: calc(100vw + 400px); width: 360px; height: 100vh; background: #fff; padding: 10px; }
+/* select page */
+.summary { display: flex; gap: 14px; align-items: center; font-weight: 700; }
+.summary .total { margin-left: auto; font-size: 18px; }
+.ribbon { display: flex; gap: 8px; margin: 10px 0; }
+.ribbon button { flex: 1; background: #fff; border: 1px solid #cfdad3; padding: 8px; border-radius: 4px; cursor: pointer; }
+.ribbon button.on { border-color: #0b6b3a; background: #e2f1e8; }
+.legend { display: grid; grid-template-columns: 330px repeat(4, 1fr); gap: 8px; font-size: 12px; font-weight: 700; color: #46594e; padding: 6px 0; }
+.results { border: 1px solid #dbe4de; border-radius: 6px; background: #fff; }
+.results.nested { max-height: 520px; overflow-y: auto; }
+.frow { display: grid; grid-template-columns: 330px repeat(4, 1fr); gap: 8px; padding: 12px; border-bottom: 1px solid #eef2ef; align-items: center; }
+.frow .times { font-weight: 700; }
+.frow .meta { font-size: 12px; color: #6b7a71; }
+.farebox { border: 1px solid #cfdad3; border-radius: 5px; padding: 8px; text-align: center; cursor: pointer; font-size: 13px; position: relative; }
+.farebox.selected { border-color: #0b6b3a; background: #e2f1e8; box-shadow: inset 0 0 0 2px #0b6b3a; }
+.farebox .dd { color: #6b7a71; font-size: 12px; }
+.farebox .std { font-weight: 700; font-size: 16px; }
+.customRadio input.zero { position: absolute; width: 0; height: 0; opacity: 0; margin: 0; }
+.details { background: #f6faf7; border-top: 1px dashed #cfdad3; padding: 8px 12px; font-size: 13px; grid-column: 1 / -1; }
+.fare-bar { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; border-top: 2px solid #0b6b3a; padding: 12px 40px; display: flex; gap: 40px; z-index: 950; }
+.fare-bar .opt { flex: 1; display: flex; align-items: center; gap: 16px; }
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 2000; display: flex; align-items: center; justify-content: center; }
+.overlay .box { background: #fff; width: 520px; border-radius: 8px; padding: 26px; position: relative; }
+.overlay .box .close { position: absolute; right: 10px; top: 8px; background: none; border: 0; font-size: 22px; cursor: pointer; }
+/* passengers */
+.pform .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.pform label { display: flex; flex-direction: column; font-size: 13px; gap: 3px; }
+.pform input, .pform select { height: 36px; border: 1px solid #b9c7be; border-radius: 3px; padding: 0 8px; font-size: 14px; }
+/* seats */
+.seatwrap { display: flex; gap: 24px; }
+.seatwrap .who { width: 360px; }
+.seatmap { display: grid; grid-template-columns: repeat(3, 42px) 26px repeat(3, 42px); gap: 6px; }
+.seatmap button { height: 36px; border-radius: 6px; border: 1px solid #9fb2a6; background: #fff; cursor: pointer; font-size: 11px; }
+.seatmap button.legroom { background: #ece2fb; border-color: #8a63d2; }
+.seatmap button.preferred { background: #e0eefa; }
+.seatmap button:disabled { background: #d9dedb; color: #9aa59f; cursor: not-allowed; }
+.seatmap button.mine { background: #0b6b3a; color: #fff; }
+.seatmap .aisle { text-align: center; font-size: 11px; color: #9aa59f; padding-top: 10px; }
+/* extras */
+.offer-frame { width: 100%; height: 330px; border: 0; }
+.cars { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.cars .car { border: 1px solid #dbe4de; padding: 8px; border-radius: 4px; font-size: 13px; }
+.choice { display: flex; gap: 12px; }
+.choice label { flex: 1; border: 1px solid #cfdad3; border-radius: 6px; padding: 12px; cursor: pointer; }
+.spinner { position: fixed; inset: 0; background: rgba(255,255,255,.6); z-index: 3000; }

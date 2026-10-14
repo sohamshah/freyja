@@ -1,0 +1,26 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Trip protection</title>
+<style>body{font:14px sans-serif;margin:0;padding:6px;color:#1d2b22}h3{margin:0;height:24px;line-height:24px}.row{display:flex;gap:10px;margin-bottom:12px;height:90px}
+.opt{flex:1;border:1px solid #cfdad3;border-radius:6px;padding:12px;cursor:pointer;position:relative;box-sizing:border-box;height:90px}.opt.on{border-color:#0b6b3a;background:#e2f1e8}
+.opt input{position:absolute;opacity:0;width:0;height:0}</style></head>
+<body>
+<h3>DISRUPTION ASSISTANCE</h3>
+<div class="row" data-kind="disruption">
+<div class="opt" data-choice="yes"><input type="radio" name="disruption">Add Disruption Assistance — $19.00 per passenger. Rebook on another airline if your flight is disrupted.</div>
+<div class="opt" data-choice="no"><input type="radio" name="disruption">No thanks – I don't want to add this option</div>
+</div>
+<h3>CANCEL FOR ANY REASON</h3>
+<div class="row" data-kind="cfar">
+<div class="opt" data-choice="yes"><input type="radio" name="cfar">Add Cancel For Any Reason — $54.00 per passenger. Cancel up to 1 hour before departure.</div>
+<div class="opt" data-choice="no"><input type="radio" name="cfar">No thanks – Keep my trip non-refundable</div>
+</div>
+<script>
+var ep = new URLSearchParams(location.search).get('ep');
+document.querySelectorAll('.opt').forEach(function (o) {
+  o.addEventListener('click', function () {
+    var row = o.parentElement, kind = row.getAttribute('data-kind'), choice = o.getAttribute('data-choice');
+    row.querySelectorAll('.opt').forEach(function (x) { x.classList.remove('on'); });
+    o.classList.add('on'); o.querySelector('input').checked = true;
+    fetch('/airline/api/offer?ep=' + ep, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: kind, choice: choice }) });
+  });
+});
+</script></body></html>

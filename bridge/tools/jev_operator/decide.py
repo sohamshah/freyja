@@ -206,6 +206,7 @@ async def decide(
     notes: str = "",
     urls: list[str] | None = None,
     key_options: tuple[str, ...] | None = None,
+    subgoal_actions: list[str] | None = None,
 ) -> Decision:
     questions = build_questions(
         obs,
@@ -230,6 +231,8 @@ async def decide(
         thresholds=thresholds,
         urls=urls,
         goal_text=f"{goal}\n{subgoal or ''}",
+        subgoal=subgoal or "",
+        subgoal_actions=subgoal_actions or [],
     )
 
 
@@ -242,6 +245,8 @@ def interpret(
     thresholds: Thresholds,
     urls: list[str] | None = None,
     goal_text: str = "",
+    subgoal: str = "",
+    subgoal_actions: list[str] | None = None,
 ) -> Decision:
     reasons: list[str] = []
     op = answers.choice("operation")
@@ -251,7 +256,14 @@ def interpret(
         operation = "need_help"
     if op.confidence < thresholds.operation and operation not in ("wait",):
         reasons.append(f"operation confidence {op.confidence:.2f} < {thresholds.operation}")
-        operation = "need_help"
+        if not (
+            operation == "click"
+            and op.confidence >= RESCUE_OPERATION
+            and _planner_click(answers, obs, subgoal, subgoal_actions or [], thresholds)
+        ):
+            operation = "need_help"
+        else:
+            reasons[-1] += ", taken: the planner's sub-goal starts with this click"
     if operation == "done" and op.p("done") < thresholds.done:
         reasons.append(f"done probability {op.p('done'):.2f} < {thresholds.done}")
         operation = "need_help"
@@ -365,6 +377,36 @@ def interpret(
 # taken when its label is written in the goal: "In the Members tab" and a target
 # labelled "Members" at 0.48 cost a 7 s replan to confirm the obvious.
 RESCUE_TARGET = 0.3
+
+
+# A click Jev scored below the operation threshold but at least this high is
+# still taken when the planner's sub-goal starts by naming that row and Jev picks
+# it. After "Click [14] 'Select seat for Ada Lovelace ...'" Jev chose [14] at 0.77
+# but scored the click 0.40, three times, and the run stopped one seat short; a
+# paged list stopped the same way on "Click the 'Next 10 rows' button [17]".
+RESCUE_OPERATION = 0.3
+# "Click" first, then the row number within the same step (before any "then").
+_PLANNER_CLICK = re.compile(r"\s*click\b(?:(?!\bthen\b)[^.;\[])*\[(\d+)\]", re.I)
+
+
+def _planner_click(
+    answers: Answers,
+    obs: Observation,
+    subgoal: str,
+    subgoal_actions: list[str],
+    thresholds: Thresholds,
+) -> bool:
+    m = _PLANNER_CLICK.match(subgoal)
+    if m is None or "click_target" not in answers.answers:
+        return False
+    ct = answers.choice("click_target")
+    target = _resolve(ct.choice, obs.click_targets)
+    if target is None or ct.choice != m.group(1) or ct.confidence < thresholds.target:
+        return False
+    # The row number comes from the planner's screen, so the label must match
+    # too; once the run has clicked it under this sub-goal, that step is done.
+    clicked = any(repr(target.label) in a for a in subgoal_actions)
+    return _label_in_goal(target, subgoal) and not clicked
 
 
 def _label_in_goal(el: Element | None, goal_text: str) -> bool:
