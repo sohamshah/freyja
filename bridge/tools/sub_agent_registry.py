@@ -40,8 +40,10 @@ class SubAgentRecord:
     end_time: float | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
     done_event: threading.Event = field(default_factory=threading.Event)
-    input_tokens: int = 0
+    input_tokens: int = 0            # input the prompt cache did not cover
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     context_tokens: int = 0
     iterations: int = 0
     tools_called: int = 0

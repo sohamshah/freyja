@@ -48,6 +48,32 @@ export interface LedgerTurn {
   trigger: string | null
 }
 
+export interface LedgerTotals {
+  calls: number
+  input: number
+  cacheRead: number
+  cacheWrite: number
+  output: number
+  reread: number
+  cost: number
+}
+
+/** The whole session: every turn's calls summed. */
+export function ledgerTotals(turns: LedgerTurn[]): LedgerTotals {
+  return turns.reduce(
+    (a, t) => ({
+      calls: a.calls + t.calls.length,
+      input: a.input + t.input,
+      cacheRead: a.cacheRead + t.cacheRead,
+      cacheWrite: a.cacheWrite + t.cacheWrite,
+      output: a.output + t.output,
+      reread: a.reread + t.reread,
+      cost: a.cost + t.cost,
+    }),
+    { calls: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reread: 0, cost: 0 },
+  )
+}
+
 /** Lines worth parsing; everything else is skipped before JSON.parse. */
 const NEEDLES = [
   'llm_call_metric',

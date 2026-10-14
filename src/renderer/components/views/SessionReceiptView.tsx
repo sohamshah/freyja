@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { sessionCostBreakdown, useHarness } from '../../state/store'
+import { sessionCostBreakdown, useHarness, type SessionSlice } from '../../state/store'
 import { ScrambleText } from '../ScrambleText'
 import { formatCost, formatDuration, formatTokens } from '../../lib/format'
 import type { Message, SubagentRecord, ToolCallRecord } from '@shared/events'
-import type { LedgerTurn } from '@shared/turnLedger'
+import { ledgerTotals, type LedgerTurn } from '@shared/turnLedger'
 
 /**
  * SessionReceiptView — the session-specific activity/metrics view.
@@ -135,7 +135,9 @@ function deriveAnatomy(
       state: s.state,
       start: (s.startedAt - t0) / MIN,
       dur: Math.max(0, (s.elapsedMs ?? 0) / MIN),
-      tokensIn: s.tokensIn ?? 0,
+      // Everything it read: `tokensIn` is only the input the cache didn't
+      // cover, a few tokens per call once the cache is warm.
+      tokensIn: (s.tokensIn ?? 0) + (s.tokensCacheRead ?? 0) + (s.tokensCacheWrite ?? 0),
       tokensOut: s.tokensOut ?? 0,
     }))
     .sort((a, b) => a.start - b.start)
@@ -1052,6 +1054,31 @@ function useTurnLedger(sessionId: string, refreshKey: unknown): LedgerTurn[] | n
   return state && state.sessionId === sessionId ? state.turns : null
 }
 
+interface TokenTotals {
+  /** Input the cache did not cover: fresh input plus cache writes. */
+  newInput: number
+  cacheRead: number
+  output: number
+}
+
+/** The session's tokens, summed over every call in the ledger. The live
+ *  `usage` counters restart with each turn, so they stand in only until the
+ *  ledger loads, or for a log without call metrics. */
+function sessionTokenTotals(
+  turns: LedgerTurn[] | null,
+  usage: SessionSlice['usage'],
+): TokenTotals {
+  if (turns && turns.length > 0) {
+    const t = ledgerTotals(turns)
+    return { newInput: t.input + t.cacheWrite, cacheRead: t.cacheRead, output: t.output }
+  }
+  return {
+    newInput: usage.totalInputTokens + usage.totalCacheWriteTokens,
+    cacheRead: usage.totalCacheReadTokens,
+    output: usage.totalOutputTokens,
+  }
+}
+
 /** A turn re-read enough of its context to be worth a look. A healthy turn
  *  re-reads close to nothing, so this flags any real cache miss: a changed
  *  system prompt or tool list, edited history, a compaction, an expired cache. */
@@ -1092,18 +1119,7 @@ function TurnLedger({
     }
   }, [messages])
 
-  const totals = turns.reduce(
-    (a, t) => ({
-      calls: a.calls + t.calls.length,
-      input: a.input + t.input,
-      cacheRead: a.cacheRead + t.cacheRead,
-      cacheWrite: a.cacheWrite + t.cacheWrite,
-      output: a.output + t.output,
-      reread: a.reread + t.reread,
-      cost: a.cost + t.cost,
-    }),
-    { calls: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reread: 0, cost: 0 },
-  )
+  const totals = ledgerTotals(turns)
   const hot = turns.filter(rereadHot)
   const causes = new Map<string, number>()
   for (const t of turns) {
@@ -1351,7 +1367,8 @@ export function SessionReceiptView() {
     }
   }, [spend.unresolved])
 
-  const readTotal = usage.totalInputTokens + usage.totalCacheReadTokens
+  const totals = useMemo(() => sessionTokenTotals(turnLedger, usage), [turnLedger, usage])
+  const readTotal = totals.newInput + totals.cacheRead
   const idleMin = anatomy ? anatomy.gaps.reduce((a, g) => a + (g[1] - g[0]), 0) : 0
   // busy[] spans N+1 minute buckets (0..N inclusive), so clamp to the
   // span — a 1-minute session with both buckets touched is 100%, not 200%.
@@ -1512,12 +1529,8 @@ export function SessionReceiptView() {
             n="no calls, no agents"
             sand={idleMin >= 30}
           />
-          <Tile k="tokens read" v={tok(readTotal)} n="fresh input + cache reads" />
-          <Tile
-            k="tokens written"
-            v={tok(usage.totalOutputTokens)}
-            n="everything it said or did"
-          />
+          <Tile k="tokens read" v={tok(readTotal)} n="new input + cache reads" />
+          <Tile k="tokens written" v={tok(totals.output)} n="everything it said or did" />
           <Tile
             k="swarm reading"
             v={tok(swarmTokIn)}
@@ -1573,24 +1586,23 @@ export function SessionReceiptView() {
             <Funnel
               tip={tip.bind}
               rows={[
-                { k: 'fresh input', v: usage.totalInputTokens, c: ICE_4 },
-                { k: 'cache read', v: usage.totalCacheReadTokens, c: ICE_2 },
-                { k: 'output', v: usage.totalOutputTokens, c: ICE_0 },
+                { k: 'new input', v: totals.newInput, c: ICE_4 },
+                { k: 'cache read', v: totals.cacheRead, c: ICE_2 },
+                { k: 'output', v: totals.output, c: ICE_0 },
               ]}
             />
-            {usage.totalOutputTokens > 0 && (
+            {totals.output > 0 && (
               <p className="mt-3.5 border-t border-white/[0.03] pt-3 font-mono text-[10.5px] leading-relaxed text-fg-2">
                 <span className="text-fg-1">
-                  {Math.round(readTotal / usage.totalOutputTokens)} tokens read for every 1
-                  written.
+                  {Math.round(readTotal / totals.output)} tokens read for every 1 written.
                 </span>{' '}
                 {readTotal > 0 &&
-                  (usage.totalCacheReadTokens / readTotal >= 0.995 ? (
+                  (totals.cacheRead / readTotal >= 0.995 ? (
                     <>Essentially every read hit cache.</>
                   ) : (
                     <>
-                      {Math.round((usage.totalCacheReadTokens / readTotal) * 100)}% of the reads
-                      hit cache — the rest billed at full input rate.
+                      {Math.round((totals.cacheRead / readTotal) * 100)}% of the reads hit cache
+                      — the rest was new input, billed at the input or cache-write rate.
                     </>
                   ))}
               </p>

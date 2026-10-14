@@ -1615,13 +1615,15 @@ Parameters:
                 model = payload.get("model") or child_model
                 in_tok = int(payload.get("input_tokens", 0) or 0)
                 out_tok = int(payload.get("output_tokens", 0) or 0)
+                cr_tok = int(payload.get("cache_read_tokens", 0) or 0)
+                cw_tok = int(payload.get("cache_write_tokens", 0) or 0)
                 # Running totals for `subagents status`; the terminal path
                 # overwrites them with the runner's own usage.
                 record.input_tokens += in_tok
                 record.output_tokens += out_tok
+                record.cache_read_tokens += cr_tok
+                record.cache_write_tokens += cw_tok
                 record.iterations = turn_counter["n"]
-                cr_tok = int(payload.get("cache_read_tokens", 0) or 0)
-                cw_tok = int(payload.get("cache_write_tokens", 0) or 0)
                 cost = compute_cost(
                     model,
                     input_tokens=in_tok,
@@ -2055,6 +2057,8 @@ Parameters:
         usage = runner.usage
         record.input_tokens = int(getattr(usage, "input", 0) or 0)
         record.output_tokens = int(getattr(usage, "output", 0) or 0)
+        record.cache_read_tokens = int(getattr(usage, "cache_read", 0) or 0)
+        record.cache_write_tokens = int(getattr(usage, "cache_write", 0) or 0)
         try:
             record.context_tokens = int(usage.effective_context_tokens())
         except Exception:  # noqa: BLE001
@@ -2866,6 +2870,8 @@ def _record_to_dict(record: SubAgentRecord) -> dict[str, Any]:
         "elapsedMs": int(record.elapsed * 1000),
         "tokensIn": record.input_tokens,
         "tokensOut": record.output_tokens,
+        "tokensCacheRead": record.cache_read_tokens,
+        "tokensCacheWrite": record.cache_write_tokens,
         "toolsCalled": record.tools_called,
     }
 

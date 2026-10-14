@@ -65,6 +65,24 @@ def test_models_without_cache_writes_keep_their_input() -> None:
         assert (usage.input_tokens, usage.cache_write_tokens) == (4_000, 0)
 
 
+def test_sub_agent_records_report_cache_reads_and_writes() -> None:
+    # Once the cache is warm, input_tokens is a few tokens per call; the
+    # receipt adds the cache fields to show what the sub-agent read.
+    from bridge.tools.sub_agent_registry import SubAgentRecord
+    from bridge.tools.sub_agent_tool import _record_to_dict
+
+    record = SubAgentRecord(id="sub_1", label="scan", task="scan", mode="background")
+    record.input_tokens = 6
+    record.cache_read_tokens = 15_481
+    record.cache_write_tokens = 15_723
+    fields = _record_to_dict(record)
+    assert (fields["tokensIn"], fields["tokensCacheRead"], fields["tokensCacheWrite"]) == (
+        6,
+        15_481,
+        15_723,
+    )
+
+
 # ─── screenshot pruning ───────────────────────────────────────────────
 
 

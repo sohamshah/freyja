@@ -82,8 +82,13 @@ export interface SubagentRecord {
   agentType?: string
   startedAt: number
   elapsedMs: number
+  /** Input the prompt cache did not cover. */
   tokensIn: number
   tokensOut: number
+  /** Input read from, and written to, the prompt cache. Together with
+   *  `tokensIn` this is everything the sub-agent read. */
+  tokensCacheRead?: number
+  tokensCacheWrite?: number
   toolsCalled: number
   parentId?: string
   result?: string
