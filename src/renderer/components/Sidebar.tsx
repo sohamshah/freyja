@@ -19,6 +19,9 @@ import { TopoBackdrop } from './TopoBackdrop'
 
 type Section = 'sessions' | 'skills' | 'subagents' | 'memory' | 'runs'
 
+/** Id prefix of scheduled-run sessions (bridge/scheduler/runtime.py). */
+const SCHEDULER_SESSION_PREFIX = 'scheduler:'
+
 /** Token-prefix match: every token in `tokens` must appear as a
  *  prefix of some whitespace-separated word in `haystack`. Both
  *  sides should already be lowercase. */
@@ -449,8 +452,23 @@ export function Sidebar() {
   // agent rows for parents the user isn't looking at.
   const sessionTree: Array<SessionSnapshot & { depth: number; hasChildren: boolean; isExpanded: boolean }> = useMemo(() => {
     const ids = new Set(sessions.map((s) => s.id))
+    const searching = searchTokens.length > 0
     const byParent = new Map<string | null, SessionSnapshot[]>()
     for (const s of sessions) {
+      // A child whose parent row is missing normally falls back to the top
+      // level. That is wrong for a child of a scheduled run: those parents
+      // are kept out of _index.json on purpose (see the "scheduled runs"
+      // section), so every sub-agent the run spawns — a loop fires the skill
+      // drafter fork every few turns — would surface as a top-level session.
+      // They stay reachable through the run row (the active session's
+      // children are listed separately) and through search.
+      if (
+        !searching &&
+        s.parentSessionId?.startsWith(SCHEDULER_SESSION_PREFIX) &&
+        !ids.has(s.parentSessionId)
+      ) {
+        continue
+      }
       const pid =
         s.parentSessionId && ids.has(s.parentSessionId) ? s.parentSessionId : null
       if (!byParent.has(pid)) byParent.set(pid, [])
@@ -505,7 +523,7 @@ export function Sidebar() {
     }
     walk(null, 0)
     return out
-  }, [sessions, activeAncestors, expandedSessions, collapsedSessions, matchedSessionIds, lastUserAt])
+  }, [sessions, activeAncestors, expandedSessions, collapsedSessions, matchedSessionIds, lastUserAt, searchTokens])
 
   const orderedSubagents: SubagentRecord[] = useMemo(() => {
     return subagentOrder.map((id) => subagents[id]).filter(Boolean) as SubagentRecord[]
