@@ -36,6 +36,8 @@ pub struct WindowInfo {
     pub id: u32,
     pub pid: i32,
     pub bundle: String,
+    /// The app's display name as the window server reports it (kCGWindowOwnerName).
+    pub owner: String,
     pub title: String,
     pub x: f64,
     pub y: f64,
@@ -142,12 +144,13 @@ fn decode_window_dict(
     if w <= 0.0 || h <= 0.0 {
         return None;
     }
-    let bundle = resolve_bundle_for_pid(pid).unwrap_or(name);
+    let bundle = resolve_bundle_for_pid(pid).unwrap_or_else(|| name.clone());
     let is_frontmost = frontmost_pid == Some(pid) && layer == 0;
     Some(WindowInfo {
         id,
         pid,
         bundle,
+        owner: name,
         title,
         x,
         y,

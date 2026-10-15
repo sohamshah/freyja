@@ -7,6 +7,7 @@ import { Widget } from './Widget'
 import { ParallelToolGroup } from './ParallelToolGroup'
 import { SubagentCard } from './SubagentCard'
 import { SubagentSwarmGrid } from './SubagentSwarmGrid'
+import { AppshotChip } from './AppshotCard'
 import { JevResultSummary, JevRunView, jevStatus } from './JevRun'
 import { looksLikeJevLog, parseJevResult } from '../lib/jevLog'
 import { ChildSessionBreadcrumb } from './ChildSessionBreadcrumb'
@@ -1383,7 +1384,22 @@ const MessageView = memo(function MessageView({ message }: { message: Message })
         {message.attachments && message.attachments.length > 0 && (
           <div className="flex max-w-[76%] flex-wrap justify-end gap-1.5">
             {message.attachments.map((att) =>
-              att.type === 'video' ? (
+              att.type === 'appshot' || att.appshot ? (
+                // An appshot is its picture (when the image part worked) with
+                // a line under it naming the window and what was read.
+                <div key={att.id} className="flex max-w-full flex-col items-end gap-1">
+                  {att.previewUrl && (
+                    <img
+                      src={att.previewUrl}
+                      alt="appshot"
+                      className="max-h-[180px] rounded-lg ring-1 ring-accent/20"
+                      loading="lazy"
+                      decoding="async"
+                    />
+                  )}
+                  {att.appshot && <AppshotChip appshot={att.appshot} />}
+                </div>
+              ) : att.type === 'video' ? (
                 <video
                   key={att.id}
                   src={att.previewUrl}

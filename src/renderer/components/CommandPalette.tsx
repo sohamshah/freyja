@@ -129,6 +129,16 @@ export function CommandPalette() {
           close(false)
         },
       },
+      {
+        id: 'appshot:capture',
+        title: 'Appshot',
+        subtitle: 'Capture the window behind Freyja, picture and text, into the composer',
+        group: 'Command',
+        action: () => {
+          close(false)
+          void useHarness.getState().captureAppshot('palette')
+        },
+      },
     )
     {
       const st = useHarness.getState()

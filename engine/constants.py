@@ -346,6 +346,7 @@ LOOP_DETECTION_EXEMPT_TOOLS: frozenset[str] = frozenset({
     "cursor_position",
     "wait",
     "inspect_region",
+    "appshot",
     "computer_use",
 })
 """Tools exempt from consecutive-call loop detection.

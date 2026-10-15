@@ -1054,6 +1054,7 @@ class AgentRunner:
                 logger.info(
                     f"Context pressure ({usage_fraction:.1%}): halved {pruned} old tool results"
                 )
+            session.transcript.prune_old_appshot_text()
 
         if usage_fraction > CONTEXT_COMPACTION_THRESHOLD:
             ctx.state = RunnerState.COMPACTING
@@ -3296,6 +3297,7 @@ class AsyncAgentRunner:
             pruned = session.transcript.prune_old_tool_results(
                 keep_recent=KEEP_RECENT_TOOL_RESULTS
             )
+            pruned += session.transcript.prune_old_appshot_text()
             if pruned > 0:
                 logger.info(
                     "Pre-request pressure (%.1f%%): halved %d old tool results | session=%s",

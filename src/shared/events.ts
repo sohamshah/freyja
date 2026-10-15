@@ -240,12 +240,52 @@ export interface MessagePart {
   mcpAction?: string
 }
 
+/** A capture of one window: its image plus the text the app exposes through
+ *  accessibility, including text scrolled out of view. The bridge builds it
+ *  (`bridge/appshot.py`); the renderer holds it in the composer until the
+ *  operator sends. */
+export interface AppshotMeta {
+  app: string
+  bundleId: string
+  windowTitle: string
+  windowId: number
+  pid: number
+  /** ISO-8601 UTC. */
+  capturedAt: string
+  /** Reader-mode text, raw. The bridge escapes it when it builds the
+   *  `<appshot>` block for the model. */
+  text: string
+  textStatus: 'ok' | 'partial' | 'unavailable'
+  /** Why the text is partial or missing. */
+  textReason?: string
+  truncated: boolean
+  chars: number
+  imageStatus: 'ok' | 'unavailable'
+  imageReason?: string
+  ms: { image?: number; text?: number; total: number }
+}
+
+/** What a sent message keeps of an appshot. The text itself stays in the
+ *  transcript, so the persisted message carries a summary only. */
+export type AppshotSummary = Pick<
+  AppshotMeta,
+  | 'app'
+  | 'bundleId'
+  | 'windowTitle'
+  | 'capturedAt'
+  | 'textStatus'
+  | 'chars'
+  | 'truncated'
+  | 'imageStatus'
+>
+
 export interface MessageAttachmentRef {
   id: string
   /** `video` is currently Gemini-only; the bridge drops it with a
    *  transcript annotation if the active session isn't on a google
-   *  family model. */
-  type: 'image' | 'video'
+   *  family model. `appshot` is a text-only appshot (the image part of
+   *  the capture failed); `previewUrl` is empty then. */
+  type: 'image' | 'video' | 'appshot'
   /** For images: a data: URL that <img> can render directly. For
    *  videos: a blob: URL that <video> can play, or empty if the
    *  renderer chose to show a glyph card instead of a real preview. */
@@ -253,6 +293,8 @@ export interface MessageAttachmentRef {
   name?: string
   mimeType?: string
   sizeBytes?: number
+  /** Set when the attachment is an appshot (image or text-only). */
+  appshot?: AppshotSummary
 }
 
 export type InboxKind = 'spawn' | 'talk' | 'followup' | 'memo'
@@ -284,12 +326,13 @@ export interface PendingFollowup {
    *  restores them to the composer tray intact. */
   composerAttachments?: Array<{
     id: string
-    type: 'image' | 'video'
+    type: 'image' | 'video' | 'appshot'
     mimeType: string
     dataBase64: string
     previewUrl: string
     filename?: string
     sizeBytes?: number
+    appshot?: AppshotMeta
   }>
   /** Ctrl+Enter / "now" — the bridge is cutting the current step short. */
   force: boolean
@@ -421,8 +464,9 @@ export interface CommandAttachment {
   /** Both flow as base64. `video` is Gemini-only — the bridge silently
    *  drops it (with a transcript note) when the active session model
    *  isn't on the google family, so the renderer is expected to gate
-   *  before sending. */
-  type: 'image' | 'video'
+   *  before sending. `appshot` is a text-only appshot: its image part
+   *  failed, so `dataBase64` is empty and the text rides in `appshot`. */
+  type: 'image' | 'video' | 'appshot'
   mimeType: string
   dataBase64: string
   /** Optional display metadata. Filename is used by the bridge for
@@ -430,6 +474,10 @@ export interface CommandAttachment {
    *  is for the renderer's pill UI only. */
   filename?: string
   sizeBytes?: number
+  /** An appshot travels as an image attachment (or, when the image
+   *  failed, as type 'appshot') with its text and metadata here. The
+   *  bridge turns it into the image block plus an `<appshot>` text block. */
+  appshot?: AppshotMeta
 }
 
 // ── Voice (Galdr) shared types ─────────────────────────────────────
@@ -708,6 +756,14 @@ export type BridgeCommand =
     }
   | { type: 'set_computer_enabled'; enabled: boolean }
   | { type: 'computer.emergency_stop'; reason?: string }
+  /** Capture the frontmost window that is not Freyja's. The bridge answers
+   *  with an `appshot_captured` event carrying the same requestId. */
+  | {
+      type: 'appshot_capture'
+      requestId: string
+      source: 'hotkey' | 'button' | 'palette'
+      windowId?: number
+    }
   | {
       // Edit a user message in place. Truncates the engine transcript to
       // BEFORE the message at `messageOrdinal` (0-indexed across user +
@@ -1582,6 +1638,31 @@ export type BridgeEvent =
       type: 'voice_hotkey'
       accelerator: string | null
       label: string | null
+    }
+  | {
+      /** Which global hotkey the main process registered for appshots.
+       *  Same fallback-chain idea as `voice_hotkey`; null when every
+       *  candidate was taken, and the composer button still works. */
+      type: 'appshot_hotkey'
+      accelerator: string | null
+      label: string | null
+    }
+  | {
+      /** Result of an `appshot_capture` command. `image` is null when the
+       *  image part failed but the text arrived; `appshot.textStatus` says
+       *  the same for the text. `error` is set only when `ok` is false. */
+      type: 'appshot_captured'
+      requestId: string
+      source: string
+      ok: boolean
+      error?: string
+      appshot?: AppshotMeta
+      image?: {
+        mimeType: string
+        dataBase64: string
+        width: number
+        height: number
+      } | null
     }
 
 // --- Channel names ---

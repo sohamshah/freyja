@@ -1,5 +1,7 @@
 import { create, type StateCreator } from 'zustand'
 import type {
+  AppshotMeta,
+  AppshotSummary,
   BridgeCommand,
   BridgeEvent,
   BridgeMode,
@@ -30,6 +32,12 @@ import {
   type FrameRef,
 } from '../lib/frameMedia'
 import { extractConversationSummary } from '../lib/conversationSummary'
+import {
+  addAppshotAttachment,
+  appshotToAttachment,
+  appshotToast,
+  type PendingAttachment,
+} from '../lib/appshotAttachment'
 import {
   mcpMessageIsOneLiner,
   normalizeMcpRow,
@@ -428,15 +436,15 @@ export interface HarnessState extends SessionSlice {
   // Attachments queued for the next send. Videos are Gemini-only —
   // attachVideo refuses to enqueue when the active session isn't on a
   // google-family model. The bridge re-checks at message-build time.
-  pendingAttachments: Array<{
-    id: string
-    type: 'image' | 'video'
-    mimeType: string
-    dataBase64: string
-    previewUrl: string
-    filename?: string
-    sizeBytes?: number
-  }>
+  // An appshot rides here too: an image entry (or a text-only `appshot`
+  // entry when its image failed) that carries the captured window's text.
+  pendingAttachments: PendingAttachment[]
+  /** Label of the global appshot hotkey main registered ("⌃⌥⌘a"), or null
+   *  when every candidate was taken. Read by the composer's hint. */
+  appshotHotkeyLabel: string | null
+  /** Bumped when something wants the composer focused (a finished appshot,
+   *  so the operator can type the question at once). */
+  composerFocusNonce: number
   /** Operator messages sent while a session's turn was running, keyed by
    *  session id, waiting for the bridge to slide them in. They render as
    *  pending bubbles above the composer and become real user messages
@@ -672,6 +680,10 @@ export interface HarnessActions {
    *  for non-Files-API content). */
   attachVideo(file: File): Promise<void>
   removeAttachment(id: string): void
+  /** Ask the bridge to capture the frontmost window that is not Freyja's.
+   *  The result arrives as an `appshot_captured` event and lands in the
+   *  composer tray. The global hotkey sends the same command from main. */
+  captureAppshot(source: 'button' | 'palette'): Promise<void>
   /** Edit a user message in place — local state truncates to before the
    *  message and reinserts a new user message; bridge truncates the
    *  engine transcript and runs a fresh turn. */
@@ -769,6 +781,20 @@ const FILE_WRITE_TOOLS = new Set([
 ])
 
 let messageCounter = 0
+/** The part of an appshot a sent message keeps. */
+function appshotSummary(a: AppshotMeta): AppshotSummary {
+  return {
+    app: a.app,
+    bundleId: a.bundleId,
+    windowTitle: a.windowTitle,
+    capturedAt: a.capturedAt,
+    textStatus: a.textStatus,
+    chars: a.chars,
+    truncated: a.truncated,
+    imageStatus: a.imageStatus,
+  }
+}
+
 function nextId(prefix = 'm'): string {
   messageCounter += 1
   return `${prefix}_${Date.now().toString(36)}_${messageCounter}`
@@ -1360,6 +1386,8 @@ function emptyState(): HarnessState {
     skillRejectedCache: null,
     skillPromotedCache: null,
     pendingAttachments: [],
+    appshotHotkeyLabel: null,
+    composerFocusNonce: 0,
     pendingFollowups: {},
     inputDraft: '',
     commandPaletteOpen: false,
@@ -3006,6 +3034,24 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           },
         }
       }
+      if (ev.type === 'appshot_hotkey') {
+        return { ...prev, appshotHotkeyLabel: ev.label }
+      }
+      if (ev.type === 'appshot_captured') {
+        if (!ev.ok || !ev.appshot) {
+          const why = ev.error || 'could not capture the window'
+          queueMicrotask(() => useHarness.getState().showToast(`Appshot failed: ${why}`, 'warn'))
+          return prev
+        }
+        const att = appshotToAttachment(nextId('att'), { appshot: ev.appshot, image: ev.image })
+        const toast = appshotToast({ appshot: ev.appshot, image: ev.image })
+        queueMicrotask(() => useHarness.getState().showToast(toast, 'ok'))
+        return {
+          ...prev,
+          pendingAttachments: addAppshotAttachment(prev.pendingAttachments, att),
+          composerFocusNonce: prev.composerFocusNonce + 1,
+        }
+      }
       if (ev.type === 'plugin_command_result') {
         let message = ev.message || ''
         if (!message && Array.isArray(ev.plugins)) {
@@ -4121,6 +4167,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
             name: a.filename,
             mimeType: a.mimeType,
             sizeBytes: a.sizeBytes,
+            // The text stays out of the persisted message: it is in the
+            // transcript, and a long page would bloat every session save.
+            ...(a.appshot ? { appshot: appshotSummary(a.appshot) } : {}),
           }))
         : undefined
     if (followup) {
@@ -4203,6 +4252,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         dataBase64: a.dataBase64,
         ...(a.filename ? { filename: a.filename } : {}),
         ...(a.sizeBytes ? { sizeBytes: a.sizeBytes } : {}),
+        ...(a.appshot ? { appshot: a.appshot } : {}),
       }))
     }
     if (api) {
@@ -4955,6 +5005,21 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       return {
         pendingAttachments: prev.pendingAttachments.filter((a) => a.id !== id),
       }
+    })
+  },
+
+  async captureAppshot(source) {
+    const api = (window as any).harness
+    if (!api) {
+      useHarness.getState().showToast('Appshots need the live app', 'warn')
+      return
+    }
+    // No toast on start: the capture takes about a second, and the result
+    // toast follows. A "capturing" toast first would flash and vanish.
+    await api.sendCommand({
+      type: 'appshot_capture',
+      requestId: nextId('appshot'),
+      source,
     })
   },
 

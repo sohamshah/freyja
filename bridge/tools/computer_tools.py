@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from bridge.tools.appshot_tool import AppshotTool
 from bridge.tools.base import (
     ImageBlock,
     PermissionLevel,
@@ -2561,4 +2562,5 @@ def build_computer_tools(spec: ComputerToolSpec) -> list[Any]:
         ReadAxTreeTool(spec),
         FindElementTool(spec),
         CursorPositionTool(spec),
+        AppshotTool(spec),
     ]

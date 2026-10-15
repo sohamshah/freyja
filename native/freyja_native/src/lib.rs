@@ -20,6 +20,7 @@
 //!   focus_window(window_id)
 //!   get_frontmost_window()          -> WindowInfo
 //!   read_ax_tree(window_id)         -> JSON string
+//!   read_window_text(pid, ...)      -> JSON string (reader mode)
 //!   find_ax_element(role, label)    -> Option<Bounds>
 
 use pyo3::exceptions::PyRuntimeError;
@@ -29,6 +30,7 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 mod ax;
 mod capture;
 mod input;
+mod reader;
 mod windows;
 
 /// Error converter for the crate: anything we produce as an `anyhow::Error`-ish
@@ -145,6 +147,7 @@ fn list_windows(py: Python<'_>) -> PyResult<Py<PyList>> {
         dict.set_item("id", w.id)?;
         dict.set_item("pid", w.pid)?;
         dict.set_item("bundle", w.bundle)?;
+        dict.set_item("owner", w.owner)?;
         dict.set_item("title", w.title)?;
         dict.set_item("bounds", (w.x, w.y, w.w, w.h))?;
         dict.set_item("is_frontmost", w.is_frontmost)?;
@@ -163,6 +166,7 @@ fn get_frontmost_window(py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
     dict.set_item("id", w.id)?;
     dict.set_item("pid", w.pid)?;
     dict.set_item("bundle", w.bundle)?;
+    dict.set_item("owner", w.owner)?;
     dict.set_item("title", w.title)?;
     dict.set_item("bounds", (w.x, w.y, w.w, w.h))?;
     dict.set_item("is_frontmost", true)?;
@@ -197,6 +201,40 @@ fn read_ax_tree(
 ) -> PyResult<String> {
     py.allow_threads(|| ax::read_ax_tree(pid, max_depth, budget_ms, max_nodes))
         .map_err(err)
+}
+
+/// Text of one window in reading order, as JSON (see `reader.rs`). Appshots
+/// use it. `window_frame` is the window's CoreGraphics bounds, which picks the
+/// matching AX window. Releases the GIL like the other AX reads.
+#[pyfunction]
+#[pyo3(signature = (pid, window_frame=None, window_title=None, budget_ms=3000, max_chars=24000, max_nodes=8000, enable_web=true))]
+#[allow(clippy::too_many_arguments)]
+fn read_window_text(
+    py: Python<'_>,
+    pid: i32,
+    window_frame: Option<(f64, f64, f64, f64)>,
+    window_title: Option<String>,
+    budget_ms: u64,
+    max_chars: usize,
+    max_nodes: usize,
+    enable_web: bool,
+) -> PyResult<String> {
+    let opts = reader::ReadOptions {
+        budget_ms,
+        max_chars,
+        max_nodes,
+        window_frame,
+        window_title,
+        enable_web,
+    };
+    py.allow_threads(|| reader::read_window_text(pid, opts))
+        .map_err(err)
+}
+
+/// Stop every running `read_window_text` at its next node.
+#[pyfunction]
+fn cancel_window_reads() {
+    reader::cancel_reads();
 }
 
 #[pyfunction]
@@ -285,6 +323,8 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // ax
     m.add_function(wrap_pyfunction!(read_ax_tree, m)?)?;
     m.add_function(wrap_pyfunction!(find_ax_element, m)?)?;
+    m.add_function(wrap_pyfunction!(read_window_text, m)?)?;
+    m.add_function(wrap_pyfunction!(cancel_window_reads, m)?)?;
     m.add_function(wrap_pyfunction!(ax_press, m)?)?;
     m.add_function(wrap_pyfunction!(ax_perform, m)?)?;
     m.add_function(wrap_pyfunction!(check_accessibility_permission, m)?)?;

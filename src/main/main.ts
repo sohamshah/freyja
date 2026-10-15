@@ -15,6 +15,7 @@ import {
   handleSlackSetAllowlist,
   handleSlackVerifyTokens,
 } from './gatewayBridge.js'
+import { spawn as spawnProcess } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -348,6 +349,7 @@ function createWindow() {
   // this the UI hints would fall back to the default label after ⌘R.
   mainWindow.webContents.on('did-finish-load', () => {
     announceVoiceHotkey()
+    announceAppshotHotkey()
   })
 
   const withBackdrop = !!process.env.FREYJA_SCREENSHOT
@@ -371,6 +373,14 @@ function createWindow() {
 }
 
 function forwardBridgeEvent(event: any): void {
+  // A hotkey appshot lands in the composer, and the operator types the
+  // question next. Bring the window forward only now that the capture is
+  // done: raising it earlier would make Freyja the frontmost window, and the
+  // bridge would capture Freyja itself. A failed capture does not raise the
+  // window, since there is nothing to type about.
+  if (event?.type === 'appshot_captured' && event.ok === true && event.source === 'hotkey') {
+    showMainWindowForAppshot()
+  }
   if (rendererReady) {
     mainWindow?.webContents.send(IPC.bridgeEvent, event)
   } else {
@@ -445,6 +455,73 @@ function announceVoiceHotkey(): void {
     accelerator: activeVoiceHotkey,
     label: activeVoiceHotkey ? hotkeyLabel(activeVoiceHotkey) : null,
   })
+}
+
+// ── Appshot hotkey ──────────────────────────────────────────────────────
+// One keypress captures the frontmost window (image plus its accessibility
+// text) into the composer. Same fallback chain as the voice hotkey, and the
+// chords are deliberately awkward: a global hotkey takes the combo away from
+// every other app, so a chord an app already uses would break that app.
+// Both-Command-keys, the chord OpenAI uses, needs a key monitor with the
+// Input Monitoring permission, and it starts macOS dictation.
+const APPSHOT_HOTKEY_CANDIDATES = ['Control+Alt+Command+A', 'Control+Alt+Shift+A']
+
+let activeAppshotHotkey: string | null = null
+
+function registerAppshotHotkey(handler: () => void): string | null {
+  const override = (process.env.FREYJA_APPSHOT_HOTKEY || '').trim()
+  const candidates = override ? [override, ...APPSHOT_HOTKEY_CANDIDATES] : APPSHOT_HOTKEY_CANDIDATES
+  for (const accelerator of candidates) {
+    try {
+      if (globalShortcut.register(accelerator, handler)) {
+        console.info(`[main] appshot hotkey registered: ${accelerator}`)
+        return accelerator
+      }
+      console.warn(`[main] appshot hotkey unavailable (taken): ${accelerator}`)
+    } catch (err) {
+      console.warn(`[main] appshot hotkey rejected: ${accelerator}`, err)
+    }
+  }
+  console.warn('[main] no appshot hotkey could be registered — use the composer button')
+  return null
+}
+
+function announceAppshotHotkey(): void {
+  forwardBridgeEvent({
+    type: 'appshot_hotkey',
+    accelerator: activeAppshotHotkey,
+    label: activeAppshotHotkey ? hotkeyLabel(activeAppshotHotkey) : null,
+  })
+}
+
+/** A short click so the operator knows the keypress registered before the
+ *  capture finishes. Fire and forget: a missing sound must not block it. */
+function playAppshotSound(): void {
+  try {
+    const child = spawnProcess('afplay', ['/System/Library/Sounds/Tink.aiff'], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    child.on('error', () => {})
+    child.unref()
+  } catch {
+    /* no sound is fine */
+  }
+}
+
+function captureAppshotFromHotkey(): void {
+  playAppshotSound()
+  const requestId = `appshot-${crypto.randomUUID()}`
+  bridge?.sendCommand({ type: 'appshot_capture', requestId, source: 'hotkey' }).catch((err: unknown) => {
+    console.warn('[main] appshot capture command failed:', err)
+  })
+}
+
+function showMainWindowForAppshot(): void {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.focus()
 }
 
 function initBridge() {
@@ -1394,6 +1471,8 @@ app.whenReady().then(async () => {
     mainWindow.webContents.send(IPC.voiceToggle)
   })
   announceVoiceHotkey()
+  activeAppshotHotkey = registerAppshotHotkey(captureAppshotFromHotkey)
+  announceAppshotHotkey()
 
   if (SCREENSHOT_PATH && mainWindow) {
     const w = mainWindow
@@ -1497,6 +1576,7 @@ let persistenceFlushedForQuit = false
 app.on('will-quit', (event) => {
   try {
     if (activeVoiceHotkey) globalShortcut.unregister(activeVoiceHotkey)
+    if (activeAppshotHotkey) globalShortcut.unregister(activeAppshotHotkey)
   } catch {}
   // Session saves are written off-thread; the last ones (the renderer
   // flushes its pending saves as the window goes away) may still be in

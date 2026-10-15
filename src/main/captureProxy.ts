@@ -24,11 +24,22 @@ import { desktopCapturer, screen } from 'electron'
  *
  *  Endpoint: GET /capture?display_id=<n>&max_dim=<n>&format=jpeg&quality=75
  *    - display_id: optional numeric CGDirectDisplayID. Omit for main.
+ *    - window_id: optional CGWindowID. Captures that one window instead of
+ *      a display (appshots). display_id is ignored then.
+ *    - w, h: with window_id, the window's size in points (CGWindowList
+ *      bounds). The thumbnail is requested at that size times the scale of
+ *      the display that holds the window, so a Retina window comes back at
+ *      full resolution. Without them the request is 3840x2400 and the
+ *      capturer fits the window into that box.
+ *    - x, y: with window_id, the window's origin in points. Only used to
+ *      find which display holds the window and so which scale factor to use.
  *    - max_dim: optional long-edge cap in pixels. Omit for full res.
  *    - format: 'jpeg' (default) or 'png'.
  *    - quality: JPEG quality 1-100 (ignored for PNG).
  *
- *  Response body: raw image bytes. 200 on success, 4xx/5xx on error.
+ *  Response body: raw image bytes. 200 on success, 4xx/5xx on error. A
+ *  window_id that is not among the capturable windows (closed or
+ *  minimized) gets a 404 with a plain-text reason.
  *
  *  We bind to 127.0.0.1 exclusively and pick an ephemeral port so the
  *  endpoint is not reachable from off-machine. The URL is passed to
@@ -38,6 +49,114 @@ import { desktopCapturer, screen } from 'electron'
 export interface CaptureProxy {
   url: string
   close(): void
+}
+
+/** Downscale to `maxDimParam` (long edge, pixels) when given, encode, and
+ *  answer. Shared by the display and the window path. */
+function sendImage(
+  res: http.ServerResponse,
+  source: Electron.NativeImage,
+  maxDimParam: string | null,
+  format: string,
+  quality: number,
+): void {
+  let img = source
+  if (maxDimParam) {
+    const maxDim = parseInt(maxDimParam, 10)
+    const size = img.getSize()
+    const longEdge = Math.max(size.width, size.height)
+    if (longEdge > maxDim) {
+      const scale = maxDim / longEdge
+      img = img.resize({
+        width: Math.round(size.width * scale),
+        height: Math.round(size.height * scale),
+        quality: 'better',
+      })
+    }
+  }
+
+  let bytes: Buffer
+  let contentType: string
+  if (format === 'png') {
+    bytes = img.toPNG()
+    contentType = 'image/png'
+  } else {
+    bytes = img.toJPEG(Math.max(1, Math.min(100, quality)))
+    contentType = 'image/jpeg'
+  }
+
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Length': bytes.length,
+    'Cache-Control': 'no-store',
+  })
+  res.end(bytes)
+}
+
+/** Scale factor of the display that holds the point (x, y), else 2, which
+ *  is what every current Mac panel uses. */
+function scaleAt(x: number | null, y: number | null): number {
+  if (x === null || y === null) return 2
+  try {
+    return screen.getDisplayNearestPoint({ x: Math.round(x), y: Math.round(y) }).scaleFactor || 2
+  } catch {
+    return 2
+  }
+}
+
+function numberParam(url: URL, key: string): number | null {
+  const raw = url.searchParams.get(key)
+  if (raw === null || raw === '') return null
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : null
+}
+
+/** Capture one window. desktopCapturer names a window source
+ *  `window:<CGWindowID>:<n>`, so the id Python got from CGWindowList finds
+ *  its source directly. */
+async function serveWindow(
+  url: URL,
+  windowIdParam: string,
+  maxDimParam: string | null,
+  format: string,
+  quality: number,
+  res: http.ServerResponse,
+): Promise<void> {
+  const windowId = parseInt(windowIdParam, 10)
+  if (!Number.isFinite(windowId)) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' })
+    res.end(`bad window_id: ${windowIdParam}`)
+    return
+  }
+  const w = numberParam(url, 'w')
+  const h = numberParam(url, 'h')
+  const scale = scaleAt(numberParam(url, 'x'), numberParam(url, 'y'))
+  const thumbnailSize =
+    w !== null && h !== null && w > 0 && h > 0
+      ? { width: Math.ceil(w * scale), height: Math.ceil(h * scale) }
+      : { width: 3840, height: 2400 }
+
+  const sources = await desktopCapturer.getSources({
+    types: ['window'],
+    thumbnailSize,
+    fetchWindowIcons: false,
+  })
+  const prefix = `window:${windowId}:`
+  const src = sources.find((s) => s.id === `${prefix}0`) ?? sources.find((s) => s.id.startsWith(prefix))
+  if (!src) {
+    res.writeHead(404, { 'Content-Type': 'text/plain' })
+    res.end(
+      `window ${windowId} is not among the ${sources.length} capturable windows ` +
+        '(it may be closed or minimized)',
+    )
+    return
+  }
+  if (src.thumbnail.isEmpty()) {
+    res.writeHead(500, { 'Content-Type': 'text/plain' })
+    res.end('thumbnail empty — Screen Recording permission missing for this process')
+    return
+  }
+  sendImage(res, src.thumbnail, maxDimParam, format, quality)
 }
 
 export async function startCaptureProxy(): Promise<CaptureProxy> {
@@ -54,6 +173,12 @@ export async function startCaptureProxy(): Promise<CaptureProxy> {
       const maxDimParam = url.searchParams.get('max_dim')
       const format = (url.searchParams.get('format') || 'jpeg').toLowerCase()
       const quality = parseInt(url.searchParams.get('quality') || '75', 10)
+
+      const windowIdParam = url.searchParams.get('window_id')
+      if (windowIdParam) {
+        await serveWindow(url, windowIdParam, maxDimParam, format, quality, res)
+        return
+      }
 
       const displays = screen.getAllDisplays()
       let target = screen.getPrimaryDisplay()
@@ -96,37 +221,7 @@ export async function startCaptureProxy(): Promise<CaptureProxy> {
         return
       }
 
-      // Optional downscale.
-      if (maxDimParam) {
-        const maxDim = parseInt(maxDimParam, 10)
-        const size = img.getSize()
-        const longEdge = Math.max(size.width, size.height)
-        if (longEdge > maxDim) {
-          const scale = maxDim / longEdge
-          img = img.resize({
-            width: Math.round(size.width * scale),
-            height: Math.round(size.height * scale),
-            quality: 'better',
-          })
-        }
-      }
-
-      let bytes: Buffer
-      let contentType: string
-      if (format === 'png') {
-        bytes = img.toPNG()
-        contentType = 'image/png'
-      } else {
-        bytes = img.toJPEG(Math.max(1, Math.min(100, quality)))
-        contentType = 'image/jpeg'
-      }
-
-      res.writeHead(200, {
-        'Content-Type': contentType,
-        'Content-Length': bytes.length,
-        'Cache-Control': 'no-store',
-      })
-      res.end(bytes)
+      sendImage(res, img, maxDimParam, format, quality)
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'text/plain' })
       res.end(`error: ${String(err)}`)

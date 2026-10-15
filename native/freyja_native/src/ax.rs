@@ -122,20 +122,20 @@ const A_CHILDREN: usize = 12;
 /// is still read, since it is one of few siblings.
 const OFFSCREEN_SIBLINGS: usize = 30;
 
-type Rect = (f64, f64, f64, f64);
+pub(crate) type Rect = (f64, f64, f64, f64);
 
 /// Limits for one tree walk. A busy browser such as Arc exposes tens of
 /// thousands of nodes, and every node costs about a dozen AX calls that can
 /// each wait out the messaging timeout. Without a budget one read took 100+
 /// seconds, and once 2.4 hours (2026-10-06).
-struct Budget {
-    deadline: Instant,
-    nodes_left: usize,
-    exhausted: bool,
+pub(crate) struct Budget {
+    pub(crate) deadline: Instant,
+    pub(crate) nodes_left: usize,
+    pub(crate) exhausted: bool,
 }
 
 impl Budget {
-    fn spend(&mut self) -> bool {
+    pub(crate) fn spend(&mut self) -> bool {
         if self.exhausted {
             return false;
         }
@@ -149,7 +149,7 @@ impl Budget {
 }
 
 /// How long one AX call may wait on a busy app. The system default is 6 s.
-const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.5;
+pub(crate) const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.5;
 
 /// Check whether our process currently has Accessibility permission.
 /// Uses the non-prompting variant.
@@ -382,7 +382,7 @@ fn walk(
     names: &CFArray<CFString>,
     clip: Option<Rect>,
 ) -> (AxNode, bool) {
-    let vals = read_attrs(elem, names);
+    let vals = read_attrs(elem, names, &NODE_ATTRS);
     let get = |i: usize| vals.get(i).and_then(|v| v.as_ref());
     let role = get(A_ROLE).and_then(cf_string).unwrap_or_else(|| "Unknown".into());
     let frame = get(A_FRAME).and_then(cf_rect);
@@ -438,8 +438,13 @@ fn walk(
     (node, outside)
 }
 
-/// The NODE_ATTRS values of `elem`, None where it has no such attribute.
-fn read_attrs(elem: &AXUIElement, names: &CFArray<CFString>) -> Vec<Option<CFType>> {
+/// The values of `elem` for `names` (the CFString form of `fallback`), None
+/// where it has no such attribute.
+pub(crate) fn read_attrs(
+    elem: &AXUIElement,
+    names: &CFArray<CFString>,
+    fallback: &[&str],
+) -> Vec<Option<CFType>> {
     let mut out: CFArrayRef = std::ptr::null();
     let err = unsafe {
         AXUIElementCopyMultipleAttributeValues(
@@ -464,7 +469,7 @@ fn read_attrs(elem: &AXUIElement, names: &CFArray<CFString>) -> Vec<Option<CFTyp
         // again per attribute would wait out the timeout a dozen times.
         return Vec::new();
     }
-    NODE_ATTRS
+    fallback
         .iter()
         .map(|n| elem.attribute(&AXAttribute::<CFType>::new(&CFString::new(n))).ok())
         .collect()
@@ -478,11 +483,11 @@ fn is_ax_error(v: &CFType) -> bool {
     }
 }
 
-fn cf_string(v: &CFType) -> Option<String> {
+pub(crate) fn cf_string(v: &CFType) -> Option<String> {
     v.downcast::<CFString>().map(|s| s.to_string())
 }
 
-fn cf_bool(v: &CFType) -> Option<bool> {
+pub(crate) fn cf_bool(v: &CFType) -> Option<bool> {
     if let Some(b) = v.downcast::<CFBoolean>() {
         return Some(bool::from(b));
     }
@@ -492,7 +497,7 @@ fn cf_bool(v: &CFType) -> Option<bool> {
 /// AXValue as text. Checkboxes, radio buttons, switches, and sliders report a
 /// CFBoolean or CFNumber rather than a string, so reading strings only lost
 /// their state.
-fn cf_value(v: &CFType) -> Option<String> {
+pub(crate) fn cf_value(v: &CFType) -> Option<String> {
     if let Some(s) = v.downcast::<CFString>() {
         Some(s.to_string())
     } else if let Some(b) = v.downcast::<CFBoolean>() {
@@ -506,7 +511,7 @@ fn cf_value(v: &CFType) -> Option<String> {
     }
 }
 
-fn cf_rect(v: &CFType) -> Option<Rect> {
+pub(crate) fn cf_rect(v: &CFType) -> Option<Rect> {
     unsafe {
         if v.type_of() != AXValueGetTypeID() {
             return None;
@@ -523,7 +528,7 @@ fn cf_rect(v: &CFType) -> Option<Rect> {
     }
 }
 
-fn cf_elements(v: &CFType) -> Vec<AXUIElement> {
+pub(crate) fn cf_elements(v: &CFType) -> Vec<AXUIElement> {
     if !v.instance_of::<CFArray>() {
         return Vec::new();
     }
@@ -534,11 +539,11 @@ fn cf_elements(v: &CFType) -> Vec<AXUIElement> {
         .collect()
 }
 
-fn has_area(r: Rect) -> bool {
+pub(crate) fn has_area(r: Rect) -> bool {
     r.2 > 0.0 && r.3 > 0.0
 }
 
-fn intersect(clip: Option<Rect>, frame: Option<Rect>) -> Option<Rect> {
+pub(crate) fn intersect(clip: Option<Rect>, frame: Option<Rect>) -> Option<Rect> {
     let Some(f) = frame else { return clip };
     let Some(c) = clip else { return Some(f) };
     let (x0, y0) = (c.0.max(f.0), c.1.max(f.1));
@@ -549,7 +554,7 @@ fn intersect(clip: Option<Rect>, frame: Option<Rect>) -> Option<Rect> {
 /// True when `frame` has an area and does not overlap `clip`. Elements
 /// without a frame, or with an empty one, count as visible: some containers
 /// report no size while their children do.
-fn is_outside(frame: Option<Rect>, clip: Option<Rect>) -> bool {
+pub(crate) fn is_outside(frame: Option<Rect>, clip: Option<Rect>) -> bool {
     match (frame, clip) {
         (Some(f), Some(c)) if has_area(f) => {
             f.0 + f.2 <= c.0 || c.0 + c.2 <= f.0 || f.1 + f.3 <= c.1 || c.1 + c.3 <= f.1
@@ -575,7 +580,7 @@ fn custom_string(elem: &AXUIElement, name: &str) -> Option<String> {
 }
 
 /// Read AXFrame as (x, y, w, h): an AXValue wrapping a CGRect.
-fn frame_of(elem: &AXUIElement) -> Option<(f64, f64, f64, f64)> {
+pub(crate) fn frame_of(elem: &AXUIElement) -> Option<(f64, f64, f64, f64)> {
     let attr = AXAttribute::<CFType>::new(&CFString::from_static_string("AXFrame"));
     cf_rect(&elem.attribute(&attr).ok()?)
 }

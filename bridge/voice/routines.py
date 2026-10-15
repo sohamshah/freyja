@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 INFO_VERBS: frozenset[str] = frozenset(
     {
         "computer.see",
+        "computer.read",
         "screen.look",
         "app.frontmost",
         "spotify.now_playing",

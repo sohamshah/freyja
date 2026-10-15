@@ -59,6 +59,8 @@ class WindowInfo:
     bounds: Bounds
     is_frontmost: bool
     layer: int
+    # The app's display name ("Safari"), where `bundle` is its id.
+    owner: str = ""
 
 
 @dataclass(frozen=True)
@@ -166,20 +168,43 @@ def _parse_image_dimensions(data: bytes) -> tuple[int, int]:
     return 0, 0
 
 
+def _capture_proxy_url() -> str:
+    """The Electron main process capture proxy. The bridge exports it as
+    FREYJA_CAPTURE_URL; AGENT_HARNESS_CAPTURE_URL is the older name."""
+    import os
+    return (
+        os.environ.get("FREYJA_CAPTURE_URL", "").strip()
+        or os.environ.get("AGENT_HARNESS_CAPTURE_URL", "").strip()
+    )
+
+
 def _proxy_screenshot(
-    proxy_url: str, *, display_id: int | None, max_dim: int | None,
-    format: str, quality: int,
+    proxy_url: str, *, display_id: int | None, window_id: int | None = None,
+    window_bounds: tuple[float, float, float, float] | None = None,
+    max_dim: int | None, format: str, quality: int,
 ) -> ScreenshotFrame:
-    import time, urllib.parse, urllib.request
+    import time, urllib.error, urllib.parse, urllib.request
     params: list[tuple[str, str]] = [("format", format), ("quality", str(int(quality)))]
-    if display_id is not None:
+    if window_id is not None:
+        params.append(("window_id", str(int(window_id))))
+        if window_bounds is not None:
+            # Points. The proxy multiplies by the scale of the display that
+            # holds the window; x and y only say which display that is.
+            x, y, w, h = window_bounds
+            params += [("x", str(x)), ("y", str(y)), ("w", str(w)), ("h", str(h))]
+    elif display_id is not None:
         params.append(("display_id", str(int(display_id))))
     if max_dim is not None:
         params.append(("max_dim", str(int(max_dim))))
     url = f"{proxy_url}/capture?{urllib.parse.urlencode(params)}"
     t0 = time.perf_counter()
-    with urllib.request.urlopen(url, timeout=10) as resp:
-        data = resp.read()
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = resp.read()
+    except urllib.error.HTTPError as exc:
+        # The proxy says why in the body (window not capturable, no permission).
+        detail = exc.read().decode("utf-8", "replace").strip()
+        raise RuntimeError(f"capture proxy {exc.code}: {detail}") from exc
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     w, h = _parse_image_dimensions(data)
     return ScreenshotFrame(png=data, width=w, height=h, format=format.lower(), capture_ms=elapsed_ms)
@@ -187,17 +212,27 @@ def _proxy_screenshot(
 
 def screenshot(
     *, display_id: int | None = None, window_id: int | None = None,
+    window_bounds: tuple[float, float, float, float] | None = None,
     max_dim: int | None = None, format: str = "png", quality: int = 75,
 ) -> ScreenshotFrame:
-    """Capture a screenshot with automatic proxy fallback for Screen Recording TCC."""
-    import os, time
+    """Capture a screenshot with automatic proxy fallback for Screen Recording TCC.
+
+    `window_bounds` (x, y, w, h in points) only matters on the proxy path,
+    where it sizes the capture of `window_id`."""
+    import time
     have_sr = Permissions.screen_recording()
-    proxy_url = os.environ.get("AGENT_HARNESS_CAPTURE_URL", "").strip()
-    if not have_sr and proxy_url and window_id is None:
+    proxy_url = _capture_proxy_url()
+    if not have_sr and proxy_url:
         try:
-            return _proxy_screenshot(proxy_url, display_id=display_id, max_dim=max_dim, format=format, quality=quality)
+            return _proxy_screenshot(
+                proxy_url, display_id=display_id, window_id=window_id,
+                window_bounds=window_bounds, max_dim=max_dim, format=format, quality=quality,
+            )
         except Exception:
-            pass
+            if window_id is not None:
+                # The native path would return a privacy-filtered image of the
+                # window, which is worse than an error.
+                raise
     t0 = time.perf_counter()
     if window_id is not None:
         raw = _native.capture_window(int(window_id), max_dim, format, int(quality))
@@ -218,6 +253,7 @@ def _window_from_raw(raw: dict[str, Any]) -> WindowInfo:
         id=int(raw["id"]), pid=int(raw["pid"]), bundle=str(raw["bundle"]),
         title=str(raw["title"]), bounds=Bounds(x=float(x), y=float(y), w=float(w), h=float(h)),
         is_frontmost=bool(raw["is_frontmost"]), layer=int(raw["layer"]),
+        owner=str(raw.get("owner") or ""),
     )
 
 
@@ -354,6 +390,30 @@ def find_ax_element(pid: int, *, role: str | None = None, label: str | None = No
     x, y, w, h = result
     return Bounds(x=float(x), y=float(y), w=float(w), h=float(h))
 
+def read_window_text(
+    pid: int, *, window_frame: Sequence[float] | None = None, window_title: str | None = None,
+    budget_ms: int = 3000, max_chars: int = 24000, max_nodes: int = 8000, enable_web: bool = True,
+) -> dict[str, Any]:
+    """Reader mode: the text of one window, in reading order.
+
+    Returns a dict with `text`, `status` ("ok", "partial" or "unavailable"),
+    `reason`, `truncated`, `chars`, `nodes`, `ms`, `window_matched`,
+    `window_title`, `focused`, `selected_text`, `page_url` and `web_enabled`.
+    `window_frame` is the window's (x, y, w, h) from `list_windows`; it picks
+    the matching accessibility window. A Chromium or Electron app that shows
+    no web content at first is asked to build it, and put back after the read,
+    so a read of such an app can take a few seconds."""
+    import json
+    frame = tuple(float(v) for v in window_frame) if window_frame is not None else None
+    raw = _native.read_window_text(
+        int(pid), frame, window_title, int(budget_ms), int(max_chars), int(max_nodes), bool(enable_web),
+    )
+    return json.loads(raw)
+
+def cancel_window_reads() -> None:
+    """Stop every running `read_window_text` at its next node."""
+    _native.cancel_window_reads()
+
 def ax_press(pid: int, x: float, y: float, role: str, bounds: Sequence[float]) -> bool:
     """AXPress the `role` element of app `pid` under (x, y) whose frame is
     `bounds` (x, y, w, h). False when no such element exists or it cannot be
@@ -374,5 +434,6 @@ __all__ = [
     "list_displays", "screenshot", "list_windows", "get_frontmost_window",
     "focus_window", "focus_app", "click", "move_mouse", "type_text",
     "press_key", "key_down", "key_up", "scroll", "cursor_position",
-    "read_ax_tree", "find_ax_element", "ax_press", "ax_perform",
+    "read_ax_tree", "read_window_text", "cancel_window_reads", "find_ax_element",
+    "ax_press", "ax_perform",
 ]

@@ -221,6 +221,10 @@ Streaming text, tool calls and results, inline computer-use frames, pasted image
 
 Drive macOS directly: screenshot, click, type, scroll, move mouse, inspect windows, read accessibility trees, find elements, query displays, and execute multi-step UI automation loops. Requires Screen Recording, Accessibility, and Input Monitoring permissions — granted once when using the signed `.app` bundle.
 
+### Appshots
+
+One keypress sends the window you are looking at to Freyja: a picture of it plus its text, including text scrolled out of view. Press `⌃⌥⌘A` in any app and the capture lands as a card in the composer, where you can read the exact text before you send. The composer's `◰ appshot` button does the same for the window behind Freyja. Agents get the same view through the `appshot` tool, and Galdr through the `computer.read` verb. Password manager windows and Freyja's own windows are never captured. See `docs/APPSHOTS.md`.
+
 ### Subagent swarms
 
 Spawn background subagents with dedicated profiles for different roles. The active coordination strategy controls how they collaborate:
@@ -295,7 +299,7 @@ The full tool surface, organized by category:
 | **Shell** | `bash` |
 | **Web / search** | `web_search`, `web_fetch`, `web_research` |
 | **Browser** | `browser_execute_js`, `browser_screenshot` |
-| **Computer use** | `screenshot`, `click`, `type_text`, `press_key`, `key_down`, `key_up`, `scroll`, `move_mouse`, `cursor_position`, `focus_window`, `list_windows`, `list_displays`, `inspect_region`, `find_element`, `read_ax_tree`, `wait`, `computer_use` |
+| **Computer use** | `screenshot`, `click`, `type_text`, `press_key`, `key_down`, `key_up`, `scroll`, `move_mouse`, `cursor_position`, `focus_window`, `list_windows`, `list_displays`, `inspect_region`, `find_element`, `read_ax_tree`, `appshot`, `wait`, `computer_use` |
 | **Creative media** | `generate_image`, `generate_svg`, `analyze_video`, `view_image`, `send_attachment` |
 | **Generative UI** | `widget_spec`, `show_widget` |
 | **Memory / knowledge** | `memory`, `session_memory`, `working_memory`, `recall`, `record_user_preference` |
@@ -437,6 +441,7 @@ uv run python -m bridge.freyja_bridge
 | `docs/mcp.md` | MCP servers, OAuth, plugins, catalog, `/mcp` and `/plugin` command reference |
 | `docs/SESSION-REPAIR.md` | What fixes a broken session by itself, what `/repair` does, and fixing a transcript by hand |
 | `docs/jev-operator.md` | How `jev_computer_use` reads and drives apps and web pages |
+| `docs/APPSHOTS.md` | Appshots: the hotkey, the `appshot` tool and voice verb, how reader mode reads a window, limits and safety |
 | `docs/JEV-WEB-FINDINGS.md` | Why jev failed on a real booking site, what changed, and the measured effect |
 | `evals/computer_use/README.md` | Mock web environments with ground-truth rewards for testing computer-use agents |
 | `docs/TRAJECTORY-TRAINING.md` | Session trajectory export formats |

@@ -10,6 +10,7 @@ Provides:
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from collections.abc import Callable
@@ -50,7 +51,18 @@ COMPUTER_IMAGE_TOOL_NAMES: frozenset[str] = frozenset({
     "scroll",
     "wait",
     "inspect_region",
+    "appshot",
 })
+
+# An appshot's text block, as written by bridge/appshot.py: the opening tag, a
+# body of one or more lines, the closing tag. `<` in the body is escaped, so the
+# first closing tag always ends the block.
+_APPSHOT_BLOCK_RE = re.compile(r"(<appshot\b[^>\n]*>)\n(.*?)\n</appshot>", re.DOTALL)
+_APPSHOT_STATUS_RE = re.compile(r'text-status="[^"]*"')
+# The newest appshots keep their text however old they are.
+KEEP_RECENT_APPSHOT_TEXTS = 2
+# Shorter bodies are not worth the history rewrite (and a removed body is shorter).
+MIN_APPSHOT_PRUNE_CHARS = 1500
 
 
 @dataclass
@@ -466,6 +478,88 @@ class TranscriptManager:
             logger.info(f"Halved {pruned_count} old tool results")
 
         return pruned_count
+
+    def prune_old_appshot_text(
+        self,
+        keep_recent: int = KEEP_RECENT_APPSHOT_TEXTS,
+        min_chars: int = MIN_APPSHOT_PRUNE_CHARS,
+    ) -> int:
+        """
+        Replace the text of old appshots with a short note.
+
+        An appshot is a window's text, often tens of thousands of characters,
+        and it describes a screen that has changed since. The newest
+        ``keep_recent`` keep their text. Older ones keep their opening tag
+        (app, window title, time) and the image reference stays in its message,
+        so the model still knows what was captured and can capture again.
+
+        Like halving old tool results, this rewrites history, so the runner
+        calls it only under context pressure.
+        """
+        holders: list[tuple[Any, str]] = []  # (container, kind): kind "msg" or "block"
+        for entry in self._entries:
+            msg = entry.message
+            if msg is None:
+                continue
+            if isinstance(msg.content, str):
+                if "<appshot" in msg.content:
+                    holders.append((msg, "msg"))
+                continue
+            for block in msg.content:
+                if isinstance(block, TextBlock) and "<appshot" in block.text:
+                    holders.append((block, "block"))
+                elif isinstance(block, ToolResultBlock) and not isinstance(block.content, str):
+                    holders.extend(
+                        (b, "block")
+                        for b in block.content
+                        if isinstance(b, TextBlock) and "<appshot" in b.text
+                    )
+
+        def text_of(holder: tuple[Any, str]) -> str:
+            obj, kind = holder
+            return obj.content if kind == "msg" else obj.text
+
+        counts = [len(_APPSHOT_BLOCK_RE.findall(text_of(h))) for h in holders]
+        total = sum(counts)
+        stale = max(0, total - max(0, int(keep_recent)))
+        if stale == 0:
+            return 0
+
+        pruned = 0
+        seen = 0
+        for holder, count in zip(holders, counts):
+            if seen >= stale:
+                break
+            first_index = seen
+            seen += count
+            text = text_of(holder)
+
+            def replace(match: re.Match[str]) -> str:
+                nonlocal pruned, first_index
+                index = first_index
+                first_index += 1
+                body = match.group(2)
+                if index >= stale or len(body) < min_chars:
+                    return match.group(0)
+                pruned += 1
+                head = _APPSHOT_STATUS_RE.sub('text-status="removed"', match.group(1))
+                return (
+                    f"{head}\n[The text of this appshot ({len(body):,} characters) was removed "
+                    "from history to save context. Capture the window again for its current "
+                    "content.]\n</appshot>"
+                )
+
+            new_text = _APPSHOT_BLOCK_RE.sub(replace, text)
+            if new_text != text:
+                obj, kind = holder
+                if kind == "msg":
+                    obj.content = new_text
+                else:
+                    obj.text = new_text
+
+        if pruned > 0:
+            logger.info("Removed the text of %d old appshot(s)", pruned)
+        return pruned
 
     def prune_old_tool_result_images(
         self,

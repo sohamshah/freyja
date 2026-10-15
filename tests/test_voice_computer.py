@@ -158,6 +158,7 @@ def _assert_grid_frame(res, w=1280, h=800):
 
 _GATE_ARGS = {
     "computer.see": {},
+    "computer.read": {},
     "computer.click": {"x": 10, "y": 10},
     "computer.type": {"text": "hello"},
     "computer.press": {"key": "enter"},
@@ -821,3 +822,71 @@ async def test_see_all_returns_a_labeled_overview(desk, monkeypatch):
 async def test_single_screen_keeps_the_old_shape(rig):
     res = await _run(rig, "computer.see")
     assert "displays" not in res.data and "display" not in res.data
+
+
+# ── computer.read (window text + picture, no app match needed) ─────────────
+
+
+def _fake_shot(**kw):
+    from bridge.appshot import Appshot, AppshotImage
+
+    shot = Appshot(
+        app="Safari",
+        bundle_id="com.apple.Safari",
+        window_title="Docs",
+        window_id=7,
+        pid=42,
+        captured_at="2026-10-14T10:00:00Z",
+        body="the page text",
+        text_status="ok",
+        image=AppshotImage(data=_png_bytes(640, 400), mime_type="image/png", width=640, height=400),
+        image_status="ok",
+    )
+    for k, v in kw.items():
+        setattr(shot, k, v)
+    return shot
+
+
+async def test_read_returns_the_window_text_and_a_picture(rig, monkeypatch):
+    from bridge import appshot
+
+    seen = {}
+
+    async def fake_capture(**kw):
+        seen.update(kw)
+        return _fake_shot()
+
+    monkeypatch.setattr(appshot, "capture", fake_capture)
+    res = await _run(rig, "computer.read")
+    assert res.ok and res.summary == "read Safari: Docs"
+    assert "<appshot app=\"Safari\"" in res.data["text"] and "the page text" in res.data["text"]
+    assert (res.image_w, res.image_h) == (640, 400) and res.image_b64
+    # No app named: the window the operator was last in, and a voice-sized text limit.
+    assert seen["app"] is None and seen["source"] == "voice" and seen["max_chars"] == 12_000
+    # It reads only: no screenshot or accessibility tool ran.
+    assert all(tool.calls == [] for tool in rig.tools.values())
+
+
+async def test_read_passes_an_app_name_through(rig, monkeypatch):
+    from bridge import appshot
+
+    seen = {}
+
+    async def fake_capture(**kw):
+        seen.update(kw)
+        return _fake_shot()
+
+    monkeypatch.setattr(appshot, "capture", fake_capture)
+    await _run(rig, "computer.read", {"app": "Slack"})
+    assert seen["app"] == "Slack"
+
+
+async def test_read_reports_a_capture_error(rig, monkeypatch):
+    from bridge import appshot
+
+    async def fake_capture(**kw):
+        return _fake_shot(error='no open window matches "Figma"')
+
+    monkeypatch.setattr(appshot, "capture", fake_capture)
+    res = await _run(rig, "computer.read", {"app": "Figma"})
+    assert res.ok is False and "Figma" in res.error and res.image_b64 is None

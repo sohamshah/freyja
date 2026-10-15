@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { useHarness } from '../state/store'
 import { matchSlash, type SlashCommand } from '../lib/slash'
 import { couldRecall, stepHistory, type HistoryCursor } from '../lib/composerHistory'
+import { AppshotCard } from './AppshotCard'
 
 /** Auto-grow a textarea to fit its content, up to a max height in px.
  *
@@ -186,6 +187,9 @@ export function InputDock() {
   const attachVideo = useHarness((s) => s.attachVideo)
   const removeAttachment = useHarness((s) => s.removeAttachment)
   const pendingAttachments = useHarness((s) => s.pendingAttachments)
+  const captureAppshot = useHarness((s) => s.captureAppshot)
+  const appshotHotkeyLabel = useHarness((s) => s.appshotHotkeyLabel)
+  const composerFocusNonce = useHarness((s) => s.composerFocusNonce)
   const fileMatches = useHarness((s) => s.fileMatches)
   const requestFileMatches = useHarness((s) => s.requestFileMatches)
   const activeSessionId = useHarness((s) => s.activeSessionId)
@@ -346,6 +350,13 @@ export function InputDock() {
   useEffect(() => {
     inputRef.current?.focus()
   }, [])
+
+  // A finished appshot asks for the composer, so the operator can type the
+  // question straight away. Skips the first render: the effect above already
+  // focused it, and a nonce of 0 means nobody asked.
+  useEffect(() => {
+    if (composerFocusNonce > 0) inputRef.current?.focus()
+  }, [composerFocusNonce])
 
   // Switching sessions switches the history the arrows walk, so any
   // in-flight recall (and the draft stashed behind it) is stale.
@@ -916,7 +927,14 @@ export function InputDock() {
           {/* Attachment tray */}
           {pendingAttachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
-              {pendingAttachments.map((a) => (
+              {pendingAttachments.map((a) =>
+                a.appshot ? (
+                  <AppshotCard
+                    key={a.id}
+                    attachment={a}
+                    onRemove={() => removeAttachment(a.id)}
+                  />
+                ) : (
                 <div
                   key={a.id}
                   className="group relative flex items-center gap-2 rounded-lg bg-white/[0.04] px-2 py-1.5 ring-hairline"
@@ -975,7 +993,8 @@ export function InputDock() {
                     ✕
                   </button>
                 </div>
-              ))}
+                ),
+              )}
             </div>
           )}
 
@@ -1063,6 +1082,15 @@ export function InputDock() {
                   </>
                 )}
               </div>
+              <button
+                onClick={() => void captureAppshot('button')}
+                title={`Capture the window behind Freyja: its picture and its text${
+                  appshotHotkeyLabel ? ` (${appshotHotkeyLabel} from any app)` : ''
+                }`}
+                className="shrink-0 whitespace-nowrap rounded-md bg-white/[0.04] px-2 py-[2px] text-[10px] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+              >
+                ◰<span className="fit-md"> appshot</span>
+              </button>
               {runningChildren > 0 || isStreaming ? (
                 <div className="flex shrink-0 items-center gap-1.5">
                   {runningChildren > 0 && (

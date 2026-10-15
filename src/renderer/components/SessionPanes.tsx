@@ -6,6 +6,7 @@ import { formatDuration, formatTokens } from '../lib/format'
 import { Conversation } from './Conversation'
 import { ToolCallChip } from './ToolCallChip'
 import { Widget } from './Widget'
+import { AppshotChip } from './AppshotCard'
 import { ScopedErrorBoundary } from './ScopedErrorBoundary'
 import { JevRunView, jevStatus } from './JevRun'
 import { looksLikeJevLog, parseJevResult } from '../lib/jevLog'
@@ -229,17 +230,33 @@ function PaneMessage({
       <div className="flex flex-col items-end gap-2">
         {attachments.length > 0 && (
           <div className="flex max-w-[86%] flex-wrap justify-end gap-1.5">
-            {attachments.map((attachment) => (
-              <img
-                key={attachment.id}
-                src={attachment.previewUrl}
-                alt="attached"
-                className="max-h-[120px] rounded-md ring-1 ring-accent/20"
-                loading="lazy"
-                decoding="async"
-                draggable={false}
-              />
-            ))}
+            {attachments.map((attachment) =>
+              attachment.type === 'appshot' || attachment.appshot ? (
+                <div key={attachment.id} className="flex max-w-full flex-col items-end gap-1">
+                  {attachment.previewUrl && (
+                    <img
+                      src={attachment.previewUrl}
+                      alt="appshot"
+                      className="max-h-[120px] rounded-md ring-1 ring-accent/20"
+                      loading="lazy"
+                      decoding="async"
+                      draggable={false}
+                    />
+                  )}
+                  {attachment.appshot && <AppshotChip appshot={attachment.appshot} />}
+                </div>
+              ) : (
+                <img
+                  key={attachment.id}
+                  src={attachment.previewUrl}
+                  alt="attached"
+                  className="max-h-[120px] rounded-md ring-1 ring-accent/20"
+                  loading="lazy"
+                  decoding="async"
+                  draggable={false}
+                />
+              ),
+            )}
           </div>
         )}
         {text && (

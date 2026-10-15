@@ -4,6 +4,7 @@ import os from 'node:os'
 import { Worker } from 'node:worker_threads'
 import { imageBlockBase64, inlineStoredImages } from './mediaStore'
 import { buildTurnLedger, type LedgerTurn } from '../shared/turnLedger.js'
+import { stripAppshotBlocks } from '../shared/appshot.js'
 
 /**
  * Disk-backed session persistence. Lives under Electron's main process so
@@ -713,12 +714,16 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
     }
     // Runtime framing the bridge wraps around operator text (a stop
     // notice, the mid-turn follow-up header) is for the model, not the
-    // transcript view.
+    // transcript view. An <appshot> block is the captured window's text, which
+    // can run to tens of thousands of characters, so it shows as a one-line
+    // placeholder: the picture is already an attachment.
     if (msg.role === 'user') {
       for (let i = parts.length - 1; i >= 0; i--) {
         const p = parts[i]
         if (p.type !== 'text' || typeof p.text !== 'string') continue
-        const stripped = p.text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>\s*/g, '')
+        const stripped = stripAppshotBlocks(
+          p.text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>\s*/g, ''),
+        )
         if (stripped.trim()) p.text = stripped
         else if (stripped !== p.text) parts.splice(i, 1)
       }
