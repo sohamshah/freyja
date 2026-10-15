@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>lists</title>
+<style>
+  body { font: 14px sans-serif; margin: 8px; }
+  .grid { display: table; }
+  .grid [role=row] { display: table-row; }
+  .grid [role=cell] { display: table-cell; padding: 2px 8px; }
+  .item { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
+  .card { border: 1px solid #ccc; padding: 6px; margin: 6px 0; }
+</style>
+</head>
+<body>
+<!-- A members table: each row has a Suspend button, and two rows share a name. -->
+<div class="grid" role="table" aria-label="Members">
+  <div role="row"><div role="cell">Grace Hopper</div><div role="cell">grace.hopper.1347@example.com</div><div role="cell">Member</div><div role="cell"><span>Active</span></div><div role="cell"><button type="button">Suspend</button></div></div>
+  <div role="row"><div role="cell">Grace Hopper</div><div role="cell">grace.hopper.1437@example.com</div><div role="cell">Member</div><div role="cell"><span>Active</span></div><div role="cell"><button type="button">Suspend</button></div></div>
+  <div role="row"><div role="cell">Grace Hooper</div><div role="cell">grace.hooper.1437@example.com</div><div role="cell">Member</div><div role="cell"><span>Active</span></div><div role="cell"><button type="button">Suspend</button></div></div>
+  <div role="row"><div role="cell">Ada Carter</div><div role="cell">ada.carter@example.com</div><div role="cell">Admin</div><div role="cell"><span>Active</span></div><div role="cell"><button type="button">Suspend</button></div></div>
+</div>
+
+<!-- A plain list with no table roles: look-alike names, an Edit button each. -->
+<div class="list">
+  <div class="item"><div>Alan Turing</div><div>alan.turing.1@example.com</div><button type="button">Edit</button></div>
+  <div class="item"><div>Alan Turing</div><div>alan.turing.2@example.com</div><button type="button">Edit</button></div>
+  <div class="item"><div>Alan Tuning</div><div>alan.tuning@example.com</div><button type="button">Edit</button></div>
+  <div class="item"><div>Barbara Liskov</div><div>barbara.liskov@example.com</div><button type="button">Edit</button></div>
+</div>
+
+<!-- A search box and an airport field, each with its suggestion list open. -->
+<div><input type="search" id="q" aria-label="Search models" role="combobox" aria-expanded="true" aria-controls="qs" autocomplete="off">
+<ul id="qs" role="listbox"><li role="option">Claude Sonnet 5.5</li><li role="option">Claude Opus 5.5</li></ul></div>
+<div><input type="text" id="from" aria-label="From airport" role="combobox" aria-expanded="true" aria-controls="fs" autocomplete="off">
+<ul id="fs" role="listbox"><li role="option">Denver (DEN)</li></ul></div>
+
+<!-- Two cards with headings: their fields keep the heading as their name. -->
+<div class="card"><h3>Passenger 1</h3><label>First name <input type="text"></label></div>
+<div class="card"><h3>Passenger 2</h3><label>First name <input type="text"></label></div>
+</body>
+</html>

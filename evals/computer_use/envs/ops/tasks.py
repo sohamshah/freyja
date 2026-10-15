@@ -147,7 +147,19 @@ _WORDS = {w: i for i, w in enumerate(
 )}
 
 
+# Dates and times are not counts: a run that never gave a number passed because
+# its summary named "the reviews between Jul 13 and Jul 4", and the answer was 13.
+_MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?"
+_DATES = re.compile(
+    rf"\b{_MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?"
+    rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTH}(?:\s+\d{{4}})?"
+    r"|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|\b\d{1,2}:\d{2}\b",
+    re.I,
+)
+
+
 def numbers_in(text: str) -> set[int]:
+    text = _DATES.sub(" ", text)
     out = {int(n) for n in re.findall(r"\b\d+\b", text)}
     out |= {v for w, v in _WORDS.items() if re.search(rf"\b{w}\b", text, re.I)}
     return out

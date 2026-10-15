@@ -276,7 +276,9 @@ class DOMElement(Element):
     expanded: bool | None = None
     below: str | None = None  # "above" / "below": outside the viewport, scrolled into view on use
     option_value: str | None = None  # for an option row: the value to select
-    enter_hint: str = ""  # what Enter does in this field: search | form:<submit label> | form | unknown
+    # What Enter does in this field: search | form:<submit label> | form | unknown, or
+    # with suggestions open, pick | search-pick.
+    enter_hint: str = ""
 
     def row(self, *args: Any, **kwargs: Any) -> str:
         text = super().row(*args, **kwargs)
@@ -284,6 +286,8 @@ class DOMElement(Element):
             # Typed text in an autocomplete field commits nothing: one of the
             # suggestions listed right after this row has to be picked.
             text += " (suggestions open: pick one)"
+        elif self.enter_hint == "search-pick":
+            text += " (suggestions open: Return searches for the typed text; Down, then Return, picks one)"
         if self.expanded is not None:
             text += " (expanded)" if self.expanded else " (collapsed)"
         if self.below:
@@ -626,7 +630,9 @@ class DOMSurface:
                     )
         # Suggestions a page appends at the end of the document belong to the
         # field being typed in: list them right after it.
-        picking = next((e for e in elements if e.focused and e.enter_hint == "pick"), None)
+        picking = next(
+            (e for e in elements if e.focused and e.enter_hint in ("pick", "search-pick")), None
+        )
         if picking is not None:
             opts = [e for e in elements if e.dom_kind == "click" and e.role == "AXMenuItem"]
             rest = [e for e in elements if e not in opts]

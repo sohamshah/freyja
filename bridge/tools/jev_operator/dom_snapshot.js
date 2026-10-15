@@ -9,6 +9,10 @@
   if (prior && prior.observer) { try { prior.observer.disconnect(); } catch (e) { /* ignore */ } }
 
   var MAX_ACTIONS = 250, MAX_LABEL = 200, MAX_VALUE = 500, MAX_CTX = 300, MAX_TEXT = 6000;
+  // A row's text as a context: enough for a name, an email and a status.
+  var ROW_CTX = 140;
+  // Look-alike contexts are compared pairwise only in groups up to this size.
+  var LOOKALIKE_MAX = 80;
   var MAX_OPTIONS = 25;
   var ids = new WeakMap(), byId = new Map(), nextId = 1, mutations = 0;
 
@@ -107,6 +111,29 @@
   var SEARCHY = /search|filter|find|query|lookup/i;
 
   function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
+  // Two texts a reader could mistake for each other: the same, or at most two
+  // letters apart (Hooper and Hopper), ignoring case. Different numbers are not
+  // look-alikes: "Passenger 1" and "Passenger 2" are read exactly.
+  function lookAlike(a, b) {
+    if (!a || !b) return false;
+    a = a.toLowerCase(); b = b.toLowerCase();
+    if (a === b) return true;
+    if (a.replace(/\D/g, '') !== b.replace(/\D/g, '')) return false;
+    if (Math.min(a.length, b.length) < 6 || Math.abs(a.length - b.length) > 2) return false;
+    var prev = [], cur, i, j;
+    for (j = 0; j <= b.length; j++) prev[j] = j;
+    for (i = 1; i <= a.length; i++) {
+      cur = [i];
+      var low = i;
+      for (j = 1; j <= b.length; j++) {
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        if (cur[j] < low) low = cur[j];
+      }
+      if (low > 2) return false;
+      prev = cur;
+    }
+    return prev[b.length] <= 2;
+  }
   function clip(s, n) { s = norm(s); return s.length > n ? s.slice(0, n) : s; }
   function attr(el, n) { return el.getAttribute(n); }
 
@@ -401,13 +428,16 @@
   // "form:<submit label>" (submits that form), "form" (a form with no submit
   // button), or "unknown" (page scripts decide; a chat box may send).
   function enterOf(el) {
-    // A field whose suggestion list is open: Enter picks the highlighted
-    // suggestion (after Down), which commits a value, not a form.
-    if (el === deepActive() && openList(el)) return 'pick';
     var hay = [attr(el, 'type'), attr(el, 'role'), attr(el, 'aria-label'), attr(el, 'placeholder'),
       attr(el, 'name'), el.id, nameOf(el)].join(' ');
-    if ((el.type || '').toLowerCase() === 'search' || attr(el, 'role') === 'searchbox' ||
-        (el.closest && el.closest('[role=search]')) || SEARCHY.test(hay)) return 'search';
+    var search = (el.type || '').toLowerCase() === 'search' || attr(el, 'role') === 'searchbox' ||
+        (el.closest && el.closest('[role=search]')) || SEARCHY.test(hay);
+    // A field whose suggestion list is open: Enter picks the highlighted
+    // suggestion (after Down), which commits a value, not a form. In a search
+    // box Enter on the typed text runs the search: told to pick, a catalog run
+    // pressed Down and Return and opened the first model instead.
+    if (el === deepActive() && openList(el)) return search ? 'search-pick' : 'pick';
+    if (search) return 'search';
     var f = el.form;
     if (f) {
       var b = f.querySelector('button[type=submit],button:not([type]),input[type=submit],input[type=image]');
@@ -705,8 +735,30 @@
       if (!g) groups.set(key, g = []);
       g.push(e);
     });
-    var controls = new Set();
+    var controls = new Set(), repeated = new Set();
     out.forEach(function (e) { controls.add(e.el); if (e.proxy) controls.add(e.proxy); });
+    groups.forEach(function (g) {
+      if (g.length > 1) g.forEach(function (e) { repeated.add(e.el); if (e.proxy) repeated.add(e.proxy); });
+    });
+    // The text of a control's own part of the page, its blocks (cells, lines)
+    // joined with " · ". The text of controls repeated on every row ("Suspend",
+    // "Edit") is left out; a row's own link (the person's name) is kept.
+    function regionText(own, e) {
+      var parts = [], last = null, w = document.createTreeWalker(own, NodeFilter.SHOW_TEXT, null), n;
+      outer: while ((n = w.nextNode())) {
+        var t = norm(n.nodeValue), p = n.parentElement;
+        if (!t || !p || !isVisibleLoose(p)) continue;
+        for (var a = p; a && a !== own; a = a.parentElement) {
+          if (a === e.el || a === e.proxy || repeated.has(a)) continue outer;
+        }
+        var b = p;
+        while (b !== own && getComputedStyle(b).display === 'inline') b = b.parentElement;
+        if (b === last && parts.length) parts[parts.length - 1] += ' ' + t;
+        else parts.push(t);
+        last = b;
+      }
+      return parts.join(' · ');
+    }
     // Repeated labels ("First Name *" in each passenger's card) are told apart by
     // their own part of the page: the largest ancestor holding no other control
     // of the same label, named by its heading when it has one ("Passenger 2
@@ -726,6 +778,15 @@
           own = a;
         }
         if (!own) return;
+        e._own = own;
+        // A table row is read across, cell by cell: its first cell alone named
+        // five "Suspend" buttons "Ada Carter", and the email that tells them
+        // apart was in the next cell.
+        if (own.matches('tr,[role=row]')) {
+          var cells = regionText(own, e);
+          if (cells && cells !== e.label) e.context = clip(cells, ROW_CTX);
+          return;
+        }
         var h = own.querySelector('h1,h2,h3,h4,h5,h6,legend,caption,[role=heading]');
         // No heading: its leading text ("October 2026" over a month of day
         // links), not all of it. Text of controls does not count: a real date
@@ -733,6 +794,20 @@
         var lead = leadText(own, controls);
         var t = h ? textOf(h) : (lead.length >= 3 && lead !== e.label ? lead : textOf(own));
         if (t && t !== e.label) e.context = clip(t, MAX_CTX);
+      });
+      // Controls that still read alike, the same or a letter or two apart, get
+      // all of their own part's text: "Suspend (Grace Hooper)" beside "Suspend
+      // (Grace Hopper)" was clicked for grace.hopper.1437, which neither showed.
+      if (g.length > LOOKALIKE_MAX) return;
+      var alike = new Set();
+      for (var i = 0; i < g.length; i++) {
+        for (var j = i + 1; j < g.length; j++) {
+          if (lookAlike(g[i].context, g[j].context)) { alike.add(g[i]); alike.add(g[j]); }
+        }
+      }
+      alike.forEach(function (e) {
+        var all = e._own ? regionText(e._own, e) : '';
+        if (all && all !== e.label && all.length > e.context.length) e.context = clip(all, ROW_CTX);
       });
     });
     // A grid cell is told apart by its row (the flight's times), not by the

@@ -48,7 +48,11 @@ _OUT = " (out of view: choosing it scrolls it into view first)"
 OPERATION_OPTIONS: dict[str, str] = {
     "click": "click a button, link, row, tab, menu, checkbox, or other listed control (one marked out of view too: the operator scrolls to it first)",
     "double_click": "double-click a listed row or item to open it",
-    "type": "type text into a listed text field (the field is chosen in type_target)",
+    "type": (
+        "type text into a listed text field (the field is chosen in type_target); typing "
+        "focuses the field itself, so it needs no click first, and a field out of view is "
+        "scrolled into view first"
+    ),
     "key": "press a key or shortcut from key_target",
     "scroll_down": "scroll down to reveal controls or text that are not listed yet",
     "scroll_up": "scroll up to reveal controls or text that are not listed yet",
@@ -256,14 +260,19 @@ def interpret(
         operation = "need_help"
     if op.confidence < thresholds.operation and operation not in ("wait",):
         reasons.append(f"operation confidence {op.confidence:.2f} < {thresholds.operation}")
-        if not (
+        if (
             operation == "click"
             and op.confidence >= RESCUE_OPERATION
             and _planner_click(answers, obs, subgoal, subgoal_actions or [], thresholds)
         ):
-            operation = "need_help"
-        else:
             reasons[-1] += ", taken: the planner's sub-goal starts with this click"
+        elif _planner_type(answers, obs, subgoal, subgoal_actions or [], thresholds, literals):
+            operation = "type"
+            reasons[-1] += (
+                ", taken as type: the planner's sub-goal starts by typing this text into this field"
+            )
+        else:
+            operation = "need_help"
     if operation == "done" and op.p("done") < thresholds.done:
         reasons.append(f"done probability {op.p('done'):.2f} < {thresholds.done}")
         operation = "need_help"
@@ -287,11 +296,21 @@ def interpret(
             reasons.append("click_target none or unknown")
             operation = "need_help"
         elif ct.confidence < thresholds.target and not (
-            ct.confidence >= RESCUE_TARGET and _label_in_goal(target, goal_text)
+            ct.confidence >= RESCUE_TARGET
+            and _label_in_goal(target, _first_step(goal_text, subgoal), obs)
         ):
             reasons.append(f"click_target confidence {ct.confidence:.2f} < {thresholds.target}")
             operation = "need_help"
             target = None
+        else:
+            exact = _exact_twin(target, obs, goal_text)
+            if exact is not None:
+                twin, ident = exact
+                reasons.append(
+                    f"[{target.index}] has only a look-alike of {ident!r}; took [{twin.index}], "
+                    "the same control on the row that has it"
+                )
+                target = twin
     elif operation == "type":
         if "type_target" not in answers.answers:
             reasons.append("type chosen without type targets")
@@ -406,16 +425,159 @@ def _planner_click(
     # The row number comes from the planner's screen, so the label must match
     # too; once the run has clicked it under this sub-goal, that step is done.
     clicked = any(repr(target.label) in a for a in subgoal_actions)
-    return _label_in_goal(target, subgoal) and not clicked
+    return _label_in_goal(target, subgoal, obs) and not clicked
 
 
-def _label_in_goal(el: Element | None, goal_text: str) -> bool:
+# The same for a typing step: Jev puts the planner's text in the planner's field,
+# each at 0.95 or more, but spreads the operation over the steps typing does
+# itself. "Type 'Claude' into the 'Search models' field [45]" drew scroll up 0.42,
+# click 0.40 (with no click target) and type 0.15 for a field above the visible
+# area, three times, and the run stopped there.
+_PLANNER_TYPE = re.compile(
+    r"""\s*type\s+(?:"([^"\n]+)"|“([^”\n]+)”|'([^'\n]+)'|‘([^’\n]+)’)\s+in(?:to)?\b"""
+    r"""(?:(?!\bthen\b)[^.;\[])*\[(\d+)\]""",
+    re.I,
+)
+
+
+def _planner_type(
+    answers: Answers,
+    obs: Observation,
+    subgoal: str,
+    subgoal_actions: list[str],
+    thresholds: Thresholds,
+    literals: list[str],
+) -> bool:
+    m = _PLANNER_TYPE.match(subgoal)
+    if m is None or "type_target" not in answers.answers or "text_source" not in answers.answers:
+        return False
+    text = next(g for g in m.groups()[:4] if g is not None)
+    tt, ts = answers.choice("type_target"), answers.choice("text_source")
+    field = _resolve(tt.choice, obs.type_targets)
+    if field is None or tt.choice != m.group(5) or tt.confidence < thresholds.target:
+        return False
+    i = ts.choice[3:]
+    if not (
+        ts.choice.startswith("lit")
+        and i.isdigit()
+        and int(i) < len(literals)
+        and literals[int(i)] == text
+        and ts.confidence >= thresholds.text
+    ):
+        return False
+    if field.value == text or any(
+        a.startswith(f"type {text!r} into") and repr(field.label) in a for a in subgoal_actions
+    ):
+        return False
+    # Typing focuses the field (fields are not click targets, so a click with no
+    # target can only mean that) and scrolls a field out of view into view.
+    op = answers.choice("operation")
+    p = op.p("type")
+    if "click_target" not in answers.answers or answers.choice("click_target").choice == "none":
+        p += op.p("click")
+    toward = _scroll_toward(field, obs)
+    if toward:
+        p += op.p(toward)
+    return p >= thresholds.operation and _label_in_goal(field, subgoal, obs)
+
+
+def _first_step(goal_text: str, subgoal: str) -> str:
+    """The goal, and of the planner's sub-goal only its first step: "Click Cobalt
+    Parts [10], then click Save changes [14]" rescued a 0.43 Save before the
+    vendor was chosen, and the order was saved with the old vendor."""
+    if not subgoal or not goal_text.endswith(subgoal):
+        return goal_text
+    first = re.split(r",?\s*\bthen\b|;", subgoal, maxsplit=1)[0]
+    return goal_text[: len(goal_text) - len(subgoal)] + first
+
+
+def _scroll_toward(el: Element, obs: Observation) -> str | None:
+    """The scroll operation that brings `el` into view, when it is out of view."""
+    side = getattr(el, "below", None)
+    if side in ("above", "below"):
+        return "scroll_up" if side == "above" else "scroll_down"
+    if el.offscreen:
+        return {"up": "scroll_up", "down": "scroll_down"}.get(obs.scroll_toward(el).way)
+    return None
+
+
+# Identifiers a goal names exactly: an email, or a code with digits ("Q-20455",
+# "sys-4821", "grace.hopper.1437@example.com").
+_IDENT = re.compile(
+    r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"  # an email
+    r"|\b(?=[\w.-]*\d)(?=[\w.-]*[a-z])[\w][\w.-]{3,}[\w]\b",  # letters and digits, 5+ long
+    re.I,
+)
+
+
+def _twins(el: Element, obs: Observation) -> list[Element]:
+    """The other listed controls with the same name: one action, many rows."""
+    name = (getattr(el, "raw_label", "") or el.label or "").strip().lower()
+    return [
+        e
+        for e in obs.elements
+        if e is not el
+        and e.kind == el.kind
+        and (getattr(e, "raw_label", "") or e.label or "").strip().lower() == name
+    ]
+
+
+def _exact_twin(el: Element, obs: Observation, text: str) -> tuple[Element, str] | None:
+    """The twin of `el` whose row has an identifier the text names exactly, when
+    `el`'s row has only a look-alike of it. With every row's email in its name,
+    Jev still chose grace.hooper.1437's Suspend at 0.65 for grace.hopper.1437,
+    two rows above it: the decision model reads the two alike."""
+    twins = _twins(el, obs)
+    if not twins:
+        return None
+    mine = el.label.lower()
+    for ident in dict.fromkeys(m.group(0).lower().rstrip(".") for m in _IDENT.finditer(text)):
+        if ident in mine:
+            return None
+        exact = [t for t in twins if ident in t.label.lower()]
+        near = any(_near(ident, tok) for tok in re.findall(r"[\w.@+-]+", mine))
+        if len(exact) == 1 and near:
+            return exact[0], ident
+    return None
+
+
+def _near(a: str, b: str) -> bool:
+    """At most two edits apart (and not equal)."""
+    if a == b or abs(len(a) - len(b)) > 2:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        if min(cur) > 2:
+            return False
+        prev = cur
+    return prev[-1] <= 2
+
+
+def _says(needle: str, text: str) -> bool:
+    return re.search(r"(?<![a-z0-9])" + re.escape(needle) + r"(?![a-z0-9])", text) is not None
+
+
+def _label_in_goal(el: Element | None, goal_text: str, obs: Observation | None = None) -> bool:
     if el is None:
         return False
     label = (getattr(el, "raw_label", "") or el.label or "").strip().lower()
-    if len(label) < 3:
+    text = goal_text.lower()
+    if len(label) < 3 or not _says(label, text):
         return False
-    return re.search(r"(?<![a-z0-9])" + re.escape(label) + r"(?![a-z0-9])", goal_text.lower()) is not None
+    if obs is None:
+        return True
+    # A label every row repeats ("Suspend") names no row: one of the row's own
+    # words must be in the text too, and one its twins do not share. "Then click
+    # the Suspend button" took a wrong member's row three times in one run.
+    twins = _twins(el, obs)
+    if not twins:
+        return True
+    theirs = " · ".join(str(getattr(t, "context", "") or "") for t in twins).lower()
+    own = [s.strip() for s in str(getattr(el, "context", "") or "").lower().split(" · ")]
+    return any(len(s) >= 4 and _says(s, text) and not _says(s, theirs) for s in own)
 
 
 def _resolve(choice: str, candidates: list[Element]) -> Element | None:

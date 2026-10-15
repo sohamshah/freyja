@@ -24,8 +24,12 @@ ENV_BASE_URL = "TYPESAFE_AI_BASE_URL"
 ENV_LOCAL_BASE_URL = "DECISIONS_LOCAL_BASE_URL"
 # A request that fails in transport (timed out, reset, dropped) is sent once more
 # after this wait. The service once stalled for 30 s and every run in flight ended
-# "error" on that one request. An HTTP answer, even an error, is not retried.
+# "error" on that one request.
 TRANSPORT_RETRY_S = 1.0
+# So is one the service answers with an error of its own: 408, 429, a 5xx, and
+# 499, which it returns as "internal_server_error". Two eval runs in an hour ended
+# "error" on one such answer. Other answers, such as 400 or 401, are not retried.
+RETRY_STATUSES = {408, 429, 499, 500, 502, 503, 504}
 
 
 class DecisionError(RuntimeError):
@@ -88,6 +92,9 @@ class TypeSafeProvider:
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     resp = await client.post(url, headers=headers, json=body)
+                if retry and resp.status_code in RETRY_STATUSES:
+                    await asyncio.sleep(TRANSPORT_RETRY_S)
+                    continue
                 break
             except httpx.TransportError as exc:
                 if not retry:
@@ -106,6 +113,9 @@ class TypeSafeProvider:
             try:
                 with httpx.Client(timeout=self.timeout) as client:
                     resp = client.post(url, headers=headers, json=body)
+                if retry and resp.status_code in RETRY_STATUSES:
+                    time.sleep(TRANSPORT_RETRY_S)
+                    continue
                 break
             except httpx.TransportError as exc:
                 if not retry:

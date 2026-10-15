@@ -198,8 +198,8 @@ def test_dynamic_options_are_required(tmp_path):
 
 def test_a_transport_failure_is_retried_once(monkeypatch):
     """The decision service once stalled for 30 s, and every jev run in flight
-    ended "error" on that one request. A transport failure gets one more try; an
-    HTTP answer is final."""
+    ended "error" on that one request. A transport failure gets one more try, and
+    there is only one retry in all."""
     import asyncio
 
     import httpx
@@ -231,3 +231,41 @@ def test_a_transport_failure_is_retried_once(monkeypatch):
     with pytest.raises(prov.DecisionError, match="transport error: ReadTimeout"):
         asyncio.run(p.decide({}, qs))
     assert len(calls) == 2
+
+
+def test_a_server_error_answer_is_retried_once(monkeypatch):
+    """The service answers some failures itself, as HTTP 499 "internal_server_error";
+    two eval runs in an hour ended "error" on one. A 400 means the request is wrong
+    and is not sent again."""
+    import asyncio
+
+    import httpx
+
+    from bridge.decisions import provider as prov
+    from bridge.decisions.types import Choice
+
+    monkeypatch.setattr(prov, "TRANSPORT_RETRY_S", 0.0)
+    calls = []
+    answer = {"type": "choice", "choice": "a", "probabilities": {"a": 0.9, "b": 0.1}}
+    ok = {"answers": {"op": answer}}
+
+    def post_with(first):
+        async def post(self, url, **kw):
+            calls.append(url)
+            req = httpx.Request("POST", url)
+            if len(calls) == 1:
+                return httpx.Response(first, text='{"detail": "internal_error"}', request=req)
+            return httpx.Response(200, json=ok, request=req)
+
+        return post
+
+    p = prov.TypeSafeProvider(api_key="k")
+    qs = {"op": Choice(instructions="pick", options={"a": "A", "b": "B"})}
+    monkeypatch.setattr(httpx.AsyncClient, "post", post_with(499))
+    assert asyncio.run(p.decide({}, qs)).choice("op").choice == "a" and len(calls) == 2
+
+    calls.clear()
+    monkeypatch.setattr(httpx.AsyncClient, "post", post_with(400))
+    with pytest.raises(prov.DecisionError, match="HTTP 400"):
+        asyncio.run(p.decide({}, qs))
+    assert len(calls) == 1

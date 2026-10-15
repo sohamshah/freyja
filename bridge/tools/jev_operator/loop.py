@@ -28,7 +28,7 @@ from bridge.tools.jev_operator.decide import (
     decide,
     describe,
 )
-from bridge.tools.jev_operator.handoff import LLMHelper
+from bridge.tools.jev_operator.handoff import MAX_WAIT_S, LLMHelper
 from bridge.tools.jev_operator.observe import (
     STATE_ROLES,
     WINDOW_CHROME,
@@ -123,6 +123,8 @@ BELOW_MARK = "[below the visible area]"
 # The same action this many times in a row with no meaningful change forces a
 # replan; the same thing again after that ends the run blocked.
 MAX_REPEATS = 3
+# A planner wait leaves this much of the run's time for what comes after it.
+WAIT_MARGIN_S = 20.0
 HANDOFF_STATUSES = ("blocked", "budget_exhausted", "error", "needs_confirmation")
 HANDOFF_ROWS = 60
 HANDOFF_SCREEN_CHARS = 300
@@ -138,6 +140,11 @@ APP_DIRS = [
 _URL = re.compile(r"https?://[^\s\"'<>()\[\]{}“”‘’]+", re.I)
 _QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”')
 _OPEN_VERB = re.compile(r"\b(?:open|go to|visit|navigate to|load|browse to)\s*$", re.I)
+
+
+def _top(probs: dict[str, float], n: int) -> dict[str, float]:
+    """The n likeliest options, rounded, likeliest first."""
+    return {k: round(v, 3) for k, v in sorted(probs.items(), key=lambda kv: -kv[1])[:n]}
 
 
 def urls_from_goal(goal: str) -> list[str]:
@@ -415,6 +422,7 @@ class Operator:
         self._seen_lines: set[str] = set()
         self._seen_chars = 0
         self._planner_notes: list[str] = []
+        self._start_screen = ""  # the first screen with text, for the planner
         self._last_obs: Observation | None = None
         self._last_frame: tuple[bytes, str] | None = None
         self._finish_logged = False
@@ -670,6 +678,8 @@ class Operator:
         self._seen_windows.update(w for w in obs.windows if w != "(untitled window)")
         if self._start_windows is None:
             self._start_windows = list(obs.windows)
+        if not self._start_screen and obs.screen_text.strip():
+            self._start_screen = obs.screen_text
         return obs
 
     def _window_bounds(
@@ -990,6 +1000,9 @@ class Operator:
                     "node_count": obs.node_count,
                     "read_ms": obs.read_ms,
                     "answers": d.answers.compact(),
+                    # The whole operation distribution: a low top choice is often a
+                    # split between two operations, which the choice alone hides.
+                    "op_probs": _top(d.answers.choice("operation").probabilities, 5),
                     "decision": describe(d),
                     "op_conf": round(d.op_confidence, 3),
                     "target_conf": round(d.target_confidence, 3),
@@ -1047,6 +1060,20 @@ class Operator:
                     if self._progress_since_verify:
                         verify_rounds = 1
                     self._progress_since_verify = False
+                    wait_s = out.get("wait_seconds")
+                    if isinstance(wait_s, (int, float)) and wait_s >= 1:
+                        # "Not yet" on a goal that waits: the claim was early, not
+                        # wrong about the screen. Two such checks ended a watch
+                        # run "blocked" a minute into its two.
+                        verify_rounds -= 1
+                        self._set_subgoal(out.get("subgoal"))
+                        await self._say(f"  not yet: {summary}; sub-goal: {self._subgoal}")
+                        waited = await self._planner_wait(
+                            {"seconds": wait_s}, obs, target, by="check"
+                        )
+                        if waited is not None:
+                            return waited
+                        continue
                     if verify_rounds >= MAX_VERIFY_ROUNDS:
                         return finish(
                             "blocked",
@@ -1081,7 +1108,11 @@ class Operator:
                 self._consecutive_waits += 1
                 if self._consecutive_waits > 3:
                     out = await self._replan(
-                        obs, target, reason="the screen did not settle after repeated waits"
+                        obs,
+                        target,
+                        reason=f"Jev chose wait {self._consecutive_waits} times in a row, under a "
+                        "second each; the page may still be loading, or the goal waits for "
+                        "something that has not happened yet",
                     )
                     if out is not None:
                         return out
@@ -1268,6 +1299,9 @@ class Operator:
                 "step": step,
                 "kind": kind,
                 "action": action_desc,
+                # Run seconds when it ran: a watch goal's time limit is judged by
+                # how old the last reading is.
+                "t": round(time.perf_counter() - self._t_start),
                 **(
                     {"target_key": (d.target.window, d.target.role, d.target.label)}
                     if d.target is not None
@@ -1314,8 +1348,9 @@ class Operator:
             # What Enter does in this field, as the page snapshot reports it.
             hint = getattr(focused, "enter_hint", "") or "unknown"
             # "pick": the field's suggestion list is open, and Enter takes the
-            # highlighted suggestion (an airport, a city) without submitting.
-            if hint in ("search", "form", "pick"):
+            # highlighted suggestion (an airport, a city) without submitting;
+            # "search-pick": the same in a search box, where Enter searches.
+            if hint in ("search", "form", "pick", "search-pick"):
                 return None
             if hint.startswith("form:"):
                 label = hint[5:]
@@ -1546,6 +1581,12 @@ class Operator:
             media_type=shot[0].mime_type if shot else "image/jpeg",
             app_notes=self._notes,
             surface=self.surface.name,
+            # Its own earlier notes: without them a watch run noted "the starting
+            # backlog is 385, page at 424", then "treat 422 as the baseline", then
+            # "the starting value was not recorded".
+            planner_notes=self._planner_notes,
+            run_seconds=round(time.perf_counter() - self._t_start),
+            start_screen=self._start_screen,
         )
         self._log_llm(since)
         self._log({"event": "replan", "reason": reason, "out": out, "screenshot": shot is not None})
@@ -1572,6 +1613,13 @@ class Operator:
                     return self._finish(
                         "done", summary, screen=obs.screen_text, report=self._report(check)
                     )
+                wait_s = (check or {}).get("wait_seconds")
+                if isinstance(wait_s, (int, float)) and wait_s >= 1 and self.llm.budget_left >= 1:
+                    # Not stuck: the goal waits on the world, and a call is left for
+                    # the next check. A watch run ended "blocked" here with the
+                    # check asking for 15 more seconds.
+                    self._set_subgoal(check.get("subgoal"))
+                    return await self._planner_wait({"seconds": wait_s}, obs, target, by="check")
             if self.llm is not None and self.llm.budget_left <= 1 and self._replans_since_progress <= 2:
                 # Still making progress: the run is out of calls, not stuck, and the
                 # caller can continue from this page. "blocked" told it to take over.
@@ -1620,6 +1668,8 @@ class Operator:
         self._set_subgoal(out.get("subgoal"))
         await self._say(f"  sub-goal: {self._subgoal}")
         da = out.get("direct_action")
+        if isinstance(da, dict) and da.get("kind") == "wait" and not self.cfg.dry_run:
+            return await self._planner_wait(da, obs, target)
         # Pointer and key actions need the screenshot they were read from; an
         # address to open does not.
         if isinstance(da, dict) and not self.cfg.dry_run and (shot is not None or da.get("kind") == "open_url"):
@@ -1642,6 +1692,65 @@ class Operator:
                         "diff": f"refused: {exc}",
                     }
                 )
+        return None
+
+    async def _planner_wait(
+        self, da: dict[str, Any], obs: Observation, target: Target, *, by: str = "planner"
+    ) -> RunResult | None:
+        """Let time pass for a goal that waits on the world (a dashboard value, a
+        job, a code), then look again. A wait the screen changed during is progress:
+        watching is the work. Jev's own wait is under a second, so a watch run
+        replanned every few seconds and ended "stuck" 35 s in."""
+        try:
+            want = float(da.get("seconds") or 0)
+        except (TypeError, ValueError):
+            want = 0.0
+        left = self.cfg.max_runtime_s - (time.perf_counter() - self._t_start) - WAIT_MARGIN_S
+        secs = max(0.0, min(want, MAX_WAIT_S, left))
+        if secs < 1:
+            self.history.append(
+                {
+                    "step": len(self.history) + 1,
+                    "kind": "wait",
+                    "action": f"{by} wait {want:g} s refused",
+                    "ok": False,
+                    "changed": False,
+                    "diff": "refused: not enough run time left",
+                }
+            )
+            return None
+        await self._say(f"  → waiting {secs:.0f} s")
+        end = time.perf_counter() + secs
+        while (now := time.perf_counter()) < end:
+            if self.spec.cancel_event.is_set():
+                return self._finish(
+                    "cancelled", "Cancelled by emergency stop.", screen=obs.screen_text
+                )
+            await asyncio.sleep(min(0.5, end - now))
+        try:
+            after = await self._observe(target)
+        except SurfaceFailed as exc:
+            return self._finish_blocked(obs, f"the app could not be read after a wait ({exc})")
+        changed, diff = diff_observations(obs, after)
+        moved = meaningful_change(obs, after)
+        if moved:
+            self._replans_since_progress = 0
+            self._progress_since_verify = True
+        # Jev's own short waits start again; without this its next one asked the
+        # planner at once.
+        self._consecutive_waits = 0
+        entry = {
+            "step": len(self.history) + 1,
+            "kind": "wait",
+            "action": f"{by} wait {secs:.0f} s",
+            "ok": True,
+            "changed": changed,
+            "diff": diff,
+            "t": round(time.perf_counter() - self._t_start),
+        }
+        self.history.append(entry)
+        self._log({"event": "outcome", **entry, "meaningful": moved})
+        await self._say(f"  → {'changed' if changed else 'no change'}: {diff}")
         return None
 
     def _allowed_hosts(self) -> set[str]:
@@ -1793,6 +1902,7 @@ class Operator:
             app_notes=self._notes,
             earlier_text=self._earlier_text(obs),
             planner_notes=self._planner_notes,
+            run_seconds=round(time.perf_counter() - self._t_start),
         )
         self._log_llm(since)
         self._log({"event": "verify", "out": out})

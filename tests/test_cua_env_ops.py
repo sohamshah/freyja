@@ -390,3 +390,14 @@ def test_the_virtual_list_keeps_about_25_rows_in_the_dom(virtual):
         assert max(counts) <= 26, counts
     else:
         assert counts[-1] == 140, counts
+
+
+def test_a_date_in_the_answer_is_not_a_count():
+    """A run that never gave a number passed: its summary named "the reviews
+    between Jul 13 and Jul 4", and the answer was 13."""
+    from computer_use.envs.ops.tasks import numbers_in
+
+    assert 13 not in numbers_in("The reviews between Jul 13 and Jul 4 were never read.")
+    assert 13 not in numbers_in("Updated 09:13 on 2026-10-13, 10/13 and 13 Oct 2026.")
+    assert 13 in numbers_in("I found 13 one- or two-star reviews that mention battery.")
+    assert 13 in numbers_in("Thirteen reviews mention the battery (as of Oct 11).")

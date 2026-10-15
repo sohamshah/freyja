@@ -111,6 +111,7 @@ class Page:
 import contextlib
 
 PATTERNS = ROOT / "tests/fixtures/jev_dom/patterns.html"
+LISTS = ROOT / "tests/fixtures/jev_dom/lists.html"
 
 
 @contextlib.contextmanager
@@ -167,6 +168,12 @@ def page():
 @pytest.fixture()
 def patterns():
     with _open(PATTERNS) as p:
+        yield p
+
+
+@pytest.fixture()
+def lists():
+    with _open(LISTS) as p:
         yield p
 
 
@@ -472,3 +479,38 @@ def test_a_panel_that_only_its_opener_closes_is_closed_before_the_click(patterns
     assert r["ok"] and "Guests" in r["closedFirst"]
     assert patterns.eval("document.title") == "go"
     assert patterns.eval("document.getElementById('pax').getAttribute('aria-expanded')") == "false"
+
+
+def test_a_button_on_a_table_row_is_named_by_the_whole_row(lists):
+    """Five "Suspend" buttons read "Ada Carter": a row was named by its first
+    cell, and the email that tells two members of one name apart was in the next."""
+    sus = [a["context"] for a in lists.snap()["actions"] if a["label"] == "Suspend"]
+    assert sus[0] == "Grace Hopper · grace.hopper.1347@example.com · Member · Active"
+    assert "grace.hopper.1437@example.com" in sus[1] and "grace.hooper.1437@example.com" in sus[2]
+    assert len(set(sus)) == 4 and not any("Suspend" in c for c in sus)
+    # A row no other row resembles is read across too.
+    assert sus[3] == "Ada Carter · ada.carter@example.com · Admin · Active"
+
+
+def test_look_alike_rows_without_table_roles_get_all_their_text(lists):
+    """Grace Hooper beside Grace Hopper: two names a letter apart read alike, so
+    each row's button carries its whole row, email and all."""
+    edit = [a["context"] for a in lists.snap()["actions"] if a["label"] == "Edit"]
+    assert edit[0] == "Alan Turing · alan.turing.1@example.com"
+    assert edit[1] == "Alan Turing · alan.turing.2@example.com"
+    assert edit[2] == "Alan Tuning · alan.tuning@example.com"
+    assert edit[3] == "Barbara Liskov", "a name no other row resembles stays short"
+    names = [a["context"] for a in lists.snap()["actions"] if a["label"] == "First name"]
+    assert names == ["Passenger 1", "Passenger 2"]
+
+
+def test_return_in_a_search_box_with_suggestions_searches(lists):
+    """Told that a field with open suggestions commits nothing until one is
+    picked, a catalog run pressed Down and Return in the search box and opened
+    the first model instead of searching."""
+    def enter(field_id, label):
+        lists.eval(f"document.getElementById('{field_id}').focus()")
+        return [a for a in lists.snap()["actions"] if a["label"] == label][0]["enter"]
+
+    assert enter("q", "Search models") == "search-pick"
+    assert enter("from", "From airport") == "pick"

@@ -193,14 +193,61 @@ The old cloud-console mocks (a catalog, a project list and a questionnaire under
 
 jev, 3 runs per task: 14/18. Enabling a model from a blank catalog (pick the project, find the model, fill the questionnaire, agree), the questionnaire alone, model details and switching to a look-alike project: 3/3 each. Reading a project list across pages: 2/3. Reading the catalog's Claude models: 0/3. In each of those runs the planner said "Type 'Claude' into the 'Search models' field [45], then press return", and Jev scored that operation 0.29-0.36, so three replans without progress ended the run. The planner-click rescue covers only clicks. A matching rescue for "Type '…' into [N]" would cover this.
 
+## Typing the planner names, look-alike rows, and waiting
+
+Three failures from the envs above, each traced in the run logs. The decision log now holds the whole operation distribution (`op_probs`), not only the top choice, because each low top choice turned out to be a split between operations.
+
+**Typing the planner names** (`console/catalog_read`, 0/3). The planner said "Type 'Claude' into the 'Search models' field [45]". Jev put that text (0.99) in that field (0.95), but split the operation: scroll up 0.42, click 0.40 with no click target, type 0.15. Both other choices are steps typing does itself: text fields are not click targets, so "click" could only mean focusing the field, and the field was above the visible area. The "type" option now says that typing focuses the field and scrolls it into view, and a typing rescue takes the planner's typing step when Jev agrees on the field and the text, and the operation's mass on typing, focusing and scrolling toward the field reaches 0.5. One run then failed another way: told that a field with open suggestions commits nothing until one is picked, the planner had Jev press Down and Return in the search box, which opened the first model. A search box with suggestions now says that Return searches for the typed text.
+
+**Look-alike rows** (`widgets/virtual_list`, 0/3). Each Suspend button was named by its row's first cell, the member's name, and five rows can share a name; the email that tells them apart was in the next cell. A control on a table row is now named by the whole row, and repeated controls whose names read alike (Hooper and Hopper) get all of their row's text. The click rescue had also taken "then click the Suspend button" as naming a row; a label every row repeats now needs a word of its own row. With every email in the names, Jev still chose grace.hooper.1437's row at 0.65 for grace.hopper.1437: the decision model reads the two alike. So a click on a row that has only a near copy of an identifier the goal names (an email, a code with digits) goes to the twin control on the row that has it exactly. A side effect: the unnamed "⋯" buttons of `widgets/reorder_menu` are now named by their rows, and that task went from 0/3 to 3/3.
+
+**Waiting** (`ops/monitor_backlog` and `ops/monitor_quiet`, 0/6). Each fix showed the next cause:
+
+1. Jev's only wait was 0.6 s, for a loading page, and the planner could not wait at all. The planner and the end-state check can now ask for a wait of up to 60 s, and a wait that sees the screen change is progress.
+2. The planner never saw its own notes: "the starting backlog is 385" became "treat 422 as the baseline". It now gets its notes, the first screen and the run time.
+3. "After the wait, click Refresh" made Jev wait again. The doors now write only what to do after a wait, and a step taken before as new ("click Refresh again").
+4. Shown only the current backlog, Jev answered "no click target" for Page on-call five times, because the goal said not to page before a rise it could not check. The planner now puts such a fact after the action in the sub-goal: "Click Page on-call [7]: the backlog is 428, at least 10% above the starting 385".
+5. Two early done-claims in a row ended a watch run "blocked". A check that says "not yet, wait" is not a disagreement, and on the path where the replans have run out, a check that asks for a wait waits.
+6. A run ended on a stale reading: it refreshed at 100 s and reported "no rise within 2 minutes" at 130 s. Actions now carry their run time, and a time limit is judged on a reading at or after it.
+
+Three attempts were dropped because the regression runs showed harm:
+
+- Giving Jev the planner's notes fixed item 4 but broke `ops/rule_change` (3/3 before): a note goes stale one action later, and under "PO-24071 … needs saving" Jev saved PO-24072 unchanged right after opening it.
+- Telling Jev which recent actions came after the sub-goal was set helped the watch tasks but made Jev literal: "Click Load more reviews to show more of the 140" read as done after one click, and `ops/count_reviews` went from 2/3 to 0/3.
+- An example sub-goal that put the fact first made the planner open every sub-goal with a recap; the action came last, Jev waited instead of clicking (`widgets/business_signup`), and the rescues, which look for a sub-goal that starts with its action, stopped matching.
+
+With its notes, the planner also began to plan across records: "Click Save changes [14], then click Edit PO-24072". The next order's form had the same Save button, and Jev saved it unchanged, the forbidden save in `ops/rule_change`. A sub-goal now stays on one record or form and never chains a step past a save or a page change.
+
+The regressions also exposed an older bug: the target rescue took a low-scored control whose label was anywhere in the sub-goal. "Click Cobalt Parts [10], then click Save changes [14]" rescued a 0.43 Save before the vendor was chosen, and the order was saved with the old vendor. Only the sub-goal's first step counts now.
+
+The count check of `ops/count_reviews` took any number in the run's words, so a run that never gave a count passed on "the reviews between Jul 13 and Jul 4" (the answer is 13). Dates and times no longer count. With that fixed, the baseline's 2/3 is 1 of 4 runs.
+
+The goal of `traps/sneak_cart` said only not to add anything to the order, while its check forbids the pre-checked marketing opt-in too, and the planner left that box ticked in 3 of 12 runs (0 of 4 before). An email opt-in is arguably not part of the order, so the goal now says it: "do not sign me up for emails or offers".
+
+The decision service also answered twice in an hour with HTTP 499 "internal_server_error", and each time a run ended "error" on that one answer. Server errors (408, 429, 499, 5xx) now get the one retry that transport failures get.
+
+Results on the final code, 3 runs per task (airline and basics 2), against the runs before these changes:
+
+| Task | Before | After |
+|---|---|---|
+| `console/catalog_read` | 0/3 | 3/3 |
+| `widgets/virtual_list` | 0/3 | 3/3 |
+| `ops/monitor_backlog` | 0/3 | 3/3, 52 s and 4 LLM calls a run |
+| `ops/monitor_quiet` | 0/3 | 3/3, 139 s and 8 calls a run |
+| `widgets/reorder_menu` | 0/3 | 2/3 (its "⋯" buttons now carry their rows' names) |
+| `ops/count_reviews` | 1 of 4, with the check fixed | 0/3 (counts of 10 and 11 for 13) |
+| `traps/sneak_cart` | 3/3 | 3/3 with the goal that names the opt-in (1/3 with the old goal) |
+
+By env: the console 14/18 → 17/18, `ops` 8/15 → 12/15, `widgets` 9/24 → 14/24, `mail` 9/15 → 9/15, `traps` 18/18 → 18/18. Airline and basics: 49 of 54, and the failures are the two known trusted-input limits and one seat-map run (the passenger swap, 6/7 before). The one console failure (`project_list`, a project selected while reading the list) failed the same way before (2/3).
+
 ## Still open
 
 - **Trusted-only controls.** Some controls ignore script events, like the live Travelers panel. A page run needs a trusted-input fallback for them: the real pointer, scoped to the run's tab and its window position. Until then, `computer_use` handles them.
 - **Embedded frames.** A page run cannot enter a cross-origin frame. It now says so and hands that step to `computer_use`.
-- **Waiting for a condition.** jev cannot watch a page for minutes (see the `ops` monitor tasks).
-- **Look-alike rows, unnamed icon buttons, Return on a button, and custom pickers** (see the `widgets` and `mail` tasks).
+- **Return on a button, keyboard reordering and custom pickers** (`widgets/reorder_keyboard`, `mail/meeting_from_email`, `mail/otp_signin`).
+- **Long counts across pages.** `ops/count_reviews` reports a count now, but a wrong one (10 or 11 for 13): reading 140 reviews screen by screen loses some.
+- **Sub-goal shape.** The decision model follows the planner's sub-goal closely, so its wording matters: the action first, one record at a time, a repeated step written as new. Three prompt changes in this round each fixed one task and broke another; only a regression run over every env showed it.
 - **"Reject all" on a cookie wall is gated** as irreversible.
-- **Typing the planner names.** Jev doubts a "Type '…' into [N]" sub-goal as it doubted planner clicks before the rescue (see the cloud console's catalog search).
 - **Going past the goal after a page change.** Jev sometimes keeps clicking Continue on the pages after the goal's last one. A stricter check on the first action after a page change may fix it, but it was not measured here.
 - **Late suggestion lists.** The surface waits for suggestions only when the field shows it has them: `aria-autocomplete`, the combobox role, an autocomplete class, or `autocomplete=off`. If a field shows none of these, its list can open after the settle, and the run sees no list. The mock's airport fields show the same signs as the live site's widget.
 - **Checkouts that expire.** A booking session can expire while the agent waits for the person. The tool description now says to gather everything before checkout.
