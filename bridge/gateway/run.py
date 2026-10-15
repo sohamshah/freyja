@@ -1775,8 +1775,11 @@ class GatewayDaemon:
             return
         sessions = getattr(self.state, "sessions", {})
         if session_key in sessions:
-            # Best-effort cancel before drop.
+            from bridge.freyja_bridge import _stop_background_work
+
+            sessions[session_key]._background_closed = True
             self._cancel_session(session_key)
+            _stop_background_work(sessions[session_key])
             sessions.pop(session_key, None)
 
     async def _handle_verbose_subcommand(
@@ -2896,6 +2899,19 @@ class GatewayDaemon:
             except Exception:  # noqa: BLE001
                 logger.exception("control channel stop raised")
             self.control_channel = None
+        from bridge.freyja_bridge import _stop_background_work
+
+        watches = []
+        for session in getattr(self.state, "sessions", {}).values():
+            session._background_closed = True
+            _stop_background_work(session)
+            watches.extend(
+                bg._watch_task
+                for bg in getattr(session, "background_commands", {}).values()
+                if bg._watch_task is not None and not bg._watch_task.done()
+            )
+        if watches:
+            await asyncio.wait(watches, timeout=4)
         try:
             from bridge.gateway.approval import unregister_approval_adapter
             unregister_approval_adapter(Platform.SLACK.value)

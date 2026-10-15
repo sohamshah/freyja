@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 # parent. Permission-gated tools (bash) still run through the same handler.
 DEFAULT_EXCLUDED_TOOLS = frozenset(
     {
+        "monitor",  # needs a root session's inbox and lifetime
         "sub_agent",  # no recursive nesting
         "subagents",  # no orchestration from within a sub-agent
         "record_user_preference",  # user prefs come from the user, not a sub

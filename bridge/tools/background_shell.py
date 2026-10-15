@@ -95,6 +95,9 @@ class BackgroundCommand:
     ended_at: float | None = None
     # "operator" when the operator's stop ended it (no wake, memo batched).
     cancel_origin: str = ""
+    kind: str = "bash"
+    event_count: int = 0
+    suppressed_count: int = 0
     _process: Any = field(default=None, repr=False)
     _watch_task: Any = field(default=None, repr=False)
 
@@ -118,6 +121,9 @@ class ToolContext:
     output_dir: Path
     on_background_start: Callable[[BackgroundCommand], None]
     on_background_exit: Callable[[BackgroundCommand], Awaitable[None] | None]
+    background_commands: dict[str, BackgroundCommand] | None = None
+    on_monitor_event: Callable[[BackgroundCommand, str], Awaitable[None] | None] | None = None
+    is_stopping: Callable[[], bool] | None = None
 
 
 CURRENT_TOOL_CONTEXT: ContextVar[ToolContext | None] = ContextVar(

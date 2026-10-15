@@ -2174,23 +2174,28 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
     case 'inbox_event': {
       if (!ev.sessionId) return next
       const m = ev.message
-      next.inboxEvents = [
-        ...slice.inboxEvents.slice(-99),
-        {
-          id: m.id,
-          action: ev.action,
-          fromSession: m.fromSession,
-          fromLabel: m.fromLabel,
-          fromRole: m.fromRole,
-          content: m.content,
-          force: !!m.force,
-          replyTo: m.replyTo ?? null,
-          timestamp: m.timestamp,
-          sessionId: ev.sessionId,
-          ...(m.kind ? { kind: m.kind } : {}),
-          ...(m.meta ? { meta: m.meta } : {}),
-        },
-      ]
+      const entry: SessionSlice['inboxEvents'][number] = {
+        id: m.id,
+        action: ev.action,
+        fromSession: m.fromSession,
+        fromLabel: m.fromLabel,
+        fromRole: m.fromRole,
+        content: m.content,
+        force: !!m.force,
+        replyTo: m.replyTo ?? null,
+        timestamp: m.timestamp,
+        sessionId: ev.sessionId,
+        ...(m.kind ? { kind: m.kind } : {}),
+        ...(m.meta ? { meta: m.meta } : {}),
+      }
+      // Coalesced monitor events refresh their existing unread memo. Keep
+      // other action history and its timeline position rather than duplicating.
+      const existing = ev.action === 'enqueued'
+        ? slice.inboxEvents.findIndex((item) => item.id === m.id && item.action === 'enqueued')
+        : -1
+      next.inboxEvents = existing >= 0
+        ? slice.inboxEvents.map((item, index) => index === existing ? entry : item)
+        : [...slice.inboxEvents.slice(-99), entry]
       return next
     }
 

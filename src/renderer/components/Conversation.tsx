@@ -1100,6 +1100,7 @@ function MemoChip({
 }) {
   const [expanded, setExpanded] = useState(false)
   const state = meta?.state ?? 'done'
+  const isMonitor = meta?.agentType === 'monitor'
   // What the sub-agent reported, without the notice addressed to the model.
   const report = useMemo(() => {
     const m = /<subagent-report[^>]*>\n?([\s\S]*?)\n?<\/subagent-report>/.exec(content)
@@ -1107,15 +1108,17 @@ function MemoChip({
   }, [content])
   // A jev run's report is its result: draw it, and name its real outcome
   // (blocked, needs confirmation) rather than "finished".
-  const jev = useMemo(() => (report ? parseJevResult(report) : null), [report])
+  const jev = useMemo(() => (!isMonitor && report ? parseJevResult(report) : null), [isMonitor, report])
   const jevTone = jev ? jevStatus(jev.status) : null
-  const tone = jevTone
-    ? { dot: jevTone.dot, text: jevTone.text, word: jevTone.word }
-    : state === 'done'
-      ? { dot: 'bg-ok', text: 'text-ok', word: 'finished' }
-      : state === 'failed'
-        ? { dot: 'bg-danger', text: 'text-danger', word: 'failed' }
-        : { dot: 'bg-warn', text: 'text-warn', word: 'stopped' }
+  const tone = isMonitor && state === 'running'
+    ? { dot: 'bg-accent', text: 'text-fg-1', word: 'event' }
+    : jevTone
+      ? { dot: jevTone.dot, text: jevTone.text, word: jevTone.word }
+      : state === 'done'
+        ? { dot: 'bg-ok', text: 'text-ok', word: 'finished' }
+        : state === 'failed'
+          ? { dot: 'bg-danger', text: 'text-danger', word: 'failed' }
+          : { dot: 'bg-warn', text: 'text-warn', word: 'stopped' }
   const label = meta?.label || fallbackLabel
   // Otherwise the report, or a failure's error line; the memo's first line
   // is its machine header and the prose after it is what the agent reads.
@@ -1125,7 +1128,7 @@ function MemoChip({
   const stats = jev
     ? []
     : [
-        meta?.agentType && !['general', 'bash', 'stop'].includes(meta.agentType) ? meta.agentType : null,
+        meta?.agentType && !['general', 'bash', 'stop', 'monitor'].includes(meta.agentType) ? meta.agentType : null,
         meta?.elapsedMs != null ? formatDuration(meta.elapsedMs) : null,
         meta?.toolsCalled != null ? `${meta.toolsCalled} tools` : null,
       ].filter(Boolean)
@@ -1136,7 +1139,7 @@ function MemoChip({
         <span className="text-fg-3">
           {meta?.agentType === 'stop'
             ? 'background work stopped'
-            : `${jev ? 'jev run' : meta?.agentType === 'bash' ? 'command' : 'sub-agent'} ${tone.word}`}
+            : `${isMonitor ? 'monitor' : jev ? 'jev run' : meta?.agentType === 'bash' ? 'command' : 'sub-agent'} ${tone.word}`}
         </span>
         {onOpen ? (
           <button
