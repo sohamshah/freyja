@@ -1,0 +1,32 @@
+body { margin: 0; font: 15px/1.45 -apple-system, "Segoe UI", sans-serif; color: #222; background: #faf8f4; }
+header.top { display: flex; gap: 18px; align-items: center; padding: 10px 24px; background: #2d3b36; color: #f3eee4; }
+header.top a { color: #f3eee4; text-decoration: none; }
+header.top .brand { font-weight: 600; margin-right: auto; }
+ol.steps { display: flex; gap: 24px; list-style: none; margin: 0; padding: 12px 24px; background: #ece6da; }
+ol.steps li { color: #777; }
+ol.steps li.on { color: #222; font-weight: 600; }
+main { max-width: 980px; margin: 0 auto; padding: 16px 24px 80px; }
+.summary { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; padding: 10px 14px; background: #fff; border: 1px solid #ddd5c6; }
+.summary a { margin-left: auto; font-weight: 600; color: #8a5a1f; }
+form.search { display: grid; grid-template-columns: repeat(4, 1fr) auto; gap: 10px; align-items: end; margin: 12px 0; padding: 12px; background: #fff; border: 1px solid #ddd5c6; }
+form.search label { display: flex; flex-direction: column; font-size: 13px; gap: 4px; }
+form.search input, form.search select { font: inherit; padding: 6px 8px; }
+form.search button, .rate button { font: inherit; padding: 8px 14px; background: #8a5a1f; color: #fff; border: 0; cursor: pointer; }
+.errors { color: #a1261b; }
+.rooms { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0; }
+.room-card { background: #fff; border: 1px solid #ddd5c6; padding: 12px 14px; }
+.room-card h3 { margin: 0 0 4px; font-size: 17px; }
+.room-card .meta { color: #666; font-size: 13px; }
+.room-card .from { margin: 8px 0; }
+.room-card .from b { font-size: 22px; }
+.room-card a.toggle { font-weight: 600; color: #8a5a1f; }
+.room-card .left { color: #a1261b; font-size: 13px; }
+.panel { overflow: hidden; background: #fff; border: 1px solid #ddd5c6; margin-bottom: 14px; padding: 0 14px; }
+.panel.closed { height: 0; border-width: 0; }
+.panel.gone { display: none; }
+.rate { display: grid; grid-template-columns: 1fr auto; gap: 6px 18px; padding: 12px 0; border-top: 1px solid #eee; }
+.rate .price b { font-size: 20px; }
+.rate .policy { grid-column: 1 / -1; font-size: 13px; color: #444; }
+.rate .policy.closed { display: none; }
+.rate a.more { font-size: 13px; color: #8a5a1f; }
+.hidden { display: none; }

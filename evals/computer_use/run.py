@@ -101,9 +101,11 @@ async def run_episode(
         cfg["quirks"] = q
     ep = server.new_episode(task.env, cfg)
     url = task_url(server, task, ep)
-    goal = task.goal
+    # {base} is the env's own address (a goal that names a page to fall back
+    # to); {run} is the old fixtures' run id.
+    goal = task.goal.replace("{base}", f"{server.base}/{task.env}")
     if task.env not in envs.NAMES:
-        goal = goal.replace("{base}", f"{server.base}/{task.env}").replace("{run}", ep.id)
+        goal = goal.replace("{run}", ep.id)
     ctx = await browser.new_context()
     page = await browser.new_page(context=ctx)
     row: dict[str, Any] = {
