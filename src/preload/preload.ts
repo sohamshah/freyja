@@ -140,6 +140,16 @@ const api = {
   }> {
     return ipcRenderer.invoke(IPC.sessionExport, id)
   },
+  /** Save one file with the whole session: the training export, the raw
+   *  transcript, whole tool results, telemetry and compactions. */
+  async sessionDownload(id: string): Promise<{
+    ok: boolean
+    cancelled?: boolean
+    path?: string
+    error?: string
+  }> {
+    return ipcRenderer.invoke(IPC.sessionDownload, id)
+  },
   async settingsGet(): Promise<{ ok: boolean; settings?: any; error?: string }> {
     return ipcRenderer.invoke(IPC.settingsGet)
   },

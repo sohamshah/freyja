@@ -3,7 +3,7 @@
 How Freyja captures, exports, and plans to use agent interaction
 trajectories for model training and self-improvement.
 
-> **Status:** v4 export format shipping. ShareGPT converter and batch
+> **Status:** v5 export format shipping. ShareGPT converter and batch
 > runner planned for next phase.
 
 ---
@@ -11,14 +11,17 @@ trajectories for model training and self-improvement.
 ## 1. What we capture today
 
 Every Freyja session is persisted to `~/.freyja/sessions/<id>.json`
-and can be downloaded as a training-ready JSON file via the sidebar
-context menu (right-click → Download).
+and can be downloaded as one training-ready JSON file via the sidebar
+context menu (right-click → Download). The main process writes the file.
+It reads the raw transcript and the full tool outputs from disk, and it
+streams the result, so a session larger than one JavaScript string still
+downloads.
 
-### Export format (v4)
+### Export format (v5)
 
 ```json
 {
-  "version": 4,
+  "version": 5,
   "exportedAt": "2026-04-12T...",
   "app": "freyja",
 
@@ -79,8 +82,13 @@ context menu (right-click → Download).
       "id": "call_1",
       "name": "read_file",
       "arguments": { "path": "src/auth.py" },
+      "argumentsSource": "transcript",
+      "executedArguments": { "path": "src/auth.py", "resolvedPath": "/Users/.../src/auth.py" },
       "status": "success",
       "result": "# auth.py\ndef login(user, pwd):...",
+      "resultSource": "transcript",
+      "resultComplete": true,
+      "resultChars": 4210,
       "isError": false,
       "durationMs": 45,
       "startedAt": 1775960803100,
@@ -93,10 +101,14 @@ context menu (right-click → Download).
         "tool_name": "bash",
         "arguments": { "command": "pytest -q", "summary": "Run the tests" }
       },
+      "argumentsSource": "transcript",
       "invokes": "bash",
-      "invokedArguments": { "command": "pytest -q", "summary": "Run the tests" },
+      "executedArguments": { "command": "pytest -q", "summary": "Run the tests" },
       "status": "success",
       "result": "3 passed",
+      "resultSource": "transcript",
+      "resultComplete": true,
+      "resultChars": 8,
       "isError": false,
       "durationMs": 1200,
       "startedAt": 1775960804000,
@@ -134,41 +146,81 @@ context menu (right-click → Download).
 
   "systemEvents": [
     { "id": "sys_1", "subtype": "compaction_complete", "message": "...", "at": 1775960900000 }
+  ],
+
+  "rawTranscript": [
+    { "ts": 1775960803.1, "session_id": "session-local", "turn_id": "turn-1",
+      "message": { "role": "assistant", "content": "...", "tool_calls": [{ "id": "call_1", "name": "read_file", "arguments": { "path": "src/auth.py" } }],
+                   "input_tokens": 500, "output_tokens": 150, "cache_read_tokens": 400, "cache_write_tokens": 0 } }
+  ],
+  "telemetry": {
+    "llm_call_metric": [{ "model": "claude-sonnet-4-6", "input_tokens": 500, "output_tokens": 150, "cost_usd": 0.01, "duration_ms": 2100 }],
+    "tool_call_metric": [{ "tool_call_id": "call_1", "tool_name": "read_file", "result_bytes": 4210, "ok": true }]
+  },
+  "compactions": [
+    { "ts": 1775960900, "subtype": "compaction_complete", "summary_text": "…the full summary…" }
   ]
 }
 ```
 
 ### What an export records
 
-An export records what happened. It does not tidy it.
+An export records what happened. It does not tidy it, and it does not cut it.
 
-A tool call keeps the `name` and `arguments` the model sent. A `call_tool` call is `call_tool({tool_name, arguments})`, as it is in the transcript. A model trained on `call_tool` with the inner arguments alone would learn to leave out `tool_name`.
+Two logs hold the exact record. The app's own record (what the UI shows) is not exact: the bridge cuts a result's preview to 2000 characters, and the app stores a call's arguments after path normalization. So the main process reads the logs the engine writes.
 
-A wrapped call adds two fields. `invokes` is the tool that ran. `invokedArguments` is that tool's arguments as it ran them, after path normalization.
+- `~/.freyja/projects/<id>/raw_messages.jsonl` has every message as the engine appended it: each call as the model sent it, each result as the model received it. Compaction never touches it.
+- `~/.freyja/truncated/*.txt` has the whole output of a tool result the engine cut to fit the model's context. The text the model saw ends with `[Content truncated -- … Full output saved to: <path>]`.
 
-`argumentsRebuilt: true` means the app missed the model's own `arguments`. The export rebuilt them from `invokes` and `invokedArguments`. The `call_tool` shape is fixed, so the rebuild is exact except for path normalization.
+**Arguments.** `name` and `arguments` are what the model sent. A `call_tool` call is `call_tool({tool_name, arguments})`. A model trained on `call_tool` with the inner arguments alone would learn to leave out `tool_name`. The app's own copy is not the same: across three real sessions, 609 of 1852 direct calls had app arguments that differed from the model's. The app adds `resolvedPath`, and in one case it resolved `AGENTS.md` to `CLAUDE.md`.
 
-`toolStats` counts a `call_tool` call for the tool behind it. A call that never reached its tool counts for the tool it asked for.
+`argumentsSource` says where `arguments` came from. `transcript` is exact. `app` is the app's record: exact for a `call_tool` call, but for a direct call it may be after path normalization. `rebuilt` means the app lost the model's wrapper args, so the export rebuilt them from `invokes` and the executed arguments. The `call_tool` shape is fixed, so that is exact except for path normalization.
 
-`groupId` is the same for tool calls that came from one model response.
+`executedArguments` are the arguments the tool ran with. It is present for a wrapped call, and for any call whose executed arguments differ from the ones the model sent. `invokes` is the tool a `call_tool` call ran.
 
-`result` is the preview the bridge sends to the app. It is cut to 2000 characters, with the middle removed and a `… [truncated N chars] …` marker where it was cut. The result as the model received it is in the bundle's `raw_transcript` (see below). The engine can cut a very large result before the model sees it, and records a `tool_truncation` system event when it does.
+**Results.** `result` is the whole result as the model received it, as text. A result with several text blocks has them joined by a newline. If the engine cut the result for the model, the export reads the whole output back from the file the engine saved, and checks that the cut text is the start of that file before it uses it. It reads only files under `~/.freyja/truncated/`, because the path comes from text a tool returned.
 
-Images are not in the file. A `frame` or `resultImages` entry keeps the size, type and label, and leaves out the bytes.
+`resultSource` says how whole the result is:
 
-`call_tool` calls recorded before commit `f71f478` have the inner arguments under `name: "call_tool"`, and no `invokes`. The app lost the tool name for those. Their exact calls are in the bundle's `raw_transcript`, and the `/export` trace reads the tool name from it.
+| `resultSource` | Meaning | `resultComplete` |
+|---|---|---|
+| `transcript` | The transcript text is the whole result. | `true` |
+| `original` | The engine cut it for the model. This is the whole output, read back from the saved file. | `true` |
+| `transcript-truncated` | The engine cut it and the saved file is gone. Only the cut text remains. `resultOriginalChars` has the size the engine reported. | `false` |
+| `preview` | There is no transcript entry. This is the bridge's preview, cut to 2000 characters with a `… [truncated N chars] …` marker if it was longer. | `false` if the marker is there |
+
+This was checked on real sessions. Every restored result had the same byte length as `result_bytes` in the telemetry, which the engine records before it cuts the result.
+
+**The rest.**
+
+- `toolStats` counts a `call_tool` call for the tool behind it. A call that never reached its tool counts for the tool it asked for.
+- `groupId` is the same for tool calls that came from one model response.
+- Images are not in `toolCalls`. A `frame` or `resultImages` entry keeps the size, type and label. The images the model saw are in `rawTranscript`, inline.
+- `systemEvents` is the app's rolling buffer of the last 100. It is the one cap left. The compaction, pressure and tool-call records are whole in `telemetry` and `compactions`, and `goalLoop` keeps the goal state out of the buffer.
+- `call_tool` calls recorded before commit `f71f478` have the inner arguments under `name: "call_tool"` in the app's record. The export recovers `invokes` and the wrapper arguments from the raw transcript.
+- A sub-agent is a session of its own with its own raw transcript. Export it by its own id. `childSessionIds` lists them.
+
+### The download
+
+The download is one file. It has everything above, then the whole record from disk:
+
+| Key | Holds |
+|---|---|
+| `rawTranscript` | Every message as the model sent and received it, one per line of `raw_messages.jsonl`, with stored images put back inline so the file stands on its own. Each result is as the model received it, so one the engine cut is cut here. Read `toolCalls[].result` for the whole result. |
+| `telemetry` | The session's telemetry rows, by row type. `llm_call_metric` has one row per model call: model, input and output tokens, cache read and write tokens, cost and duration. `tool_call_metric` has one row per tool call, with the size of the full result. Rows have a `turn_id`, so they join to `rawTranscript`. Rows for sub-agents are in their own sessions' exports. |
+| `compactions` | Every compaction, runtime and agent driven, with its full summary text. |
 
 ### The `/export` command
 
-`/export` writes three files, and together they hold the exact record.
+`/export` writes three files for the active session. None is cut.
 
 | File | Holds |
 |---|---|
-| `<name>.json` | The saved session, as the app stored it. Tool calls carry `invokes`, `wrapperArguments` and the executed `arguments`. |
-| `<name>.bundle.json` (v3) | `raw_transcript`: every message as the model sent and received it, with each tool result as the model received it. `live_transcript`: what the app shows. `compactions`: every compaction with its full summary. `telemetry`: one row list per row type for this session. |
-| `<name>.trace.txt` | A condensed trace to read. Args and results are cut, and each cut says how many characters it removed. A `call_tool` line reads `TOOL call_tool -> bash`. |
+| `<name>.json` | The saved session, as the app stored it, with each tool result whole. Each tool call record gains `resultSource`, `resultComplete` and `resultChars`. A `call_tool` record from before `f71f478` gains `invokes` and `wrapperArguments`. Its `arguments` stay what the tool ran with. |
+| `<name>.bundle.json` (v4) | `raw_transcript`: every message as the model sent and received it. `full_tool_results`: each result the engine cut, whole. `live_transcript`: what the app shows. `telemetry`: as above. `compactions`: as above. |
+| `<name>.trace.txt` | The session as text to read. Each call shows its arguments as the model sent them, then `ran with:` when the executed arguments differ. A `call_tool` line reads `TOOL call_tool -> bash`. Each result is whole and indented, with a note on where it came from. Images are left out. |
 
-`telemetry.llm_call_metric` has one row per model call: model, input and output tokens, cache read and write tokens, cost and duration. `telemetry.tool_call_metric` has one row per tool call, with the size of the full result. Rows for sub-agents are in their own sessions' exports.
+Every file is written a piece at a time, and appears only when it is whole.
 
 ### What each field enables
 
@@ -178,13 +230,14 @@ Images are not in the file. A `frame` or `resultImages` entry keeps the size, ty
 | `taskDescription` | RFT/DPO: identifies the task for pairing trajectories |
 | `messages` with `parts` | SFT: the core training signal (user→assistant→tool→assistant) |
 | `messages[].parts[type=thinking]` | ATLaS: training on reasoning traces is 3x more effective |
-| `toolCalls` with `arguments` + `result` | SFT: learning tool usage patterns. `arguments` is what the model sent, so the pair is valid. |
+| `toolCalls` with `arguments` + `result` | SFT: learning tool usage patterns. `arguments` is what the model sent and `result` is whole, so the pair is valid. |
 | `toolStats` | Quality filtering: reject trajectories with high tool failure rates. Counted by the tool that ran. |
 | `thinkingTraces` | Critical step selection: identify which steps matter most |
 | `subagents` | Multi-agent training: how to decompose and delegate |
 | `usage` | Cost analysis and token budget optimization |
 | `session.model` | Provider-specific fine-tuning |
 | `groupId` | Which tool calls one model response made |
+| `rawTranscript` + `telemetry` | Exact per-model-call record: tokens, cache use, cost, duration, and every message as sent |
 
 ---
 
@@ -192,9 +245,9 @@ Images are not in the file. A `frame` or `resultImages` entry keeps the size, ty
 
 ### Training approaches and what they need
 
-| Approach | What it needs beyond our v4 export | Effort to add |
+| Approach | What it needs beyond our v5 export | Effort to add |
 |---|---|---|
-| **SFT** (supervised fine-tuning on expert trajectories) | Nothing — v4 has everything | Ready now |
+| **SFT** (supervised fine-tuning on expert trajectories) | Nothing — v5 has everything | Ready now |
 | **RFT** (rejection sampling) | Binary outcome signal per session, multiple rollouts per task | Add outcome field + batch runner |
 | **DPO** (preference optimization) | Paired (chosen/rejected) trajectories for same task | Manual annotation or LLM judge |
 | **RL** (reinforcement learning) | Per-trajectory scalar reward, reference answers | Custom reward functions |
@@ -243,7 +296,7 @@ Task (instruction.md + Dockerfile + tests/)
 1. **ATIF v1.6** is the trajectory interchange standard. It supports
    per-step reasoning, tool calls with observation linking,
    multimodal content, subagent trajectory refs, and per-step
-   token IDs + logprobs for RL. Our v4 export maps cleanly to it.
+   token IDs + logprobs for RL. Our v5 export maps cleanly to it.
 
 2. **22+ agent adapters** — Claude Code, OpenHands, Codex, Aider,
    Cursor, SWE-Agent, etc. Each adapter converts the agent's native
@@ -318,9 +371,9 @@ Task (instruction.md + Dockerfile + tests/)
 }
 ```
 
-**Freyja v4 → ATIF field mapping:**
+**Freyja v5 → ATIF field mapping:**
 
-| Freyja v4 field | ATIF v1.6 field |
+| Freyja v5 field | ATIF v1.6 field |
 |---|---|
 | `systemPrompt` | Step with `source: "system"` |
 | `messages[role=user]` | Steps with `source: "user"` |

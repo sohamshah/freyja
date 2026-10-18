@@ -57,6 +57,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import json
 import logging
 import re
 import time
@@ -343,6 +344,10 @@ class _StreamState:
     # heartbeat filter).
     pending_tool_names: dict[str, str] = field(default_factory=dict)
     pending_tool_args: dict[str, dict] = field(default_factory=dict)
+    # Calls kept out of the chat (heartbeats). A call_tool call sends two
+    # tool_input_end events for one id, so the second must know the first
+    # was dropped.
+    suppressed_tool_ids: set[str] = field(default_factory=set)
 
     # Inline image attachments accumulated during the turn for final
     # delivery via stop_stream(blocks=…). Each entry is a dict with
@@ -806,16 +811,24 @@ class SlackStreamConsumer:
         args just landed. The completion chunk fires later on
         tool_result."""
         tool_id = str(event.get("id") or "")
+        if tool_id in self._state.suppressed_tool_ids:
+            return
         args = event.get("arguments") or {}
         if not isinstance(args, dict):
             args = {}
         tool_name = self._state.pending_tool_names.get(tool_id, "?")
+        # A call_tool call is shown as the tool it runs. Keep that name for
+        # the result card too.
+        tool_name, args = _unwrap_call_tool(tool_name, args, str(event.get("toolName") or ""))
+        if tool_id in self._state.pending_tool_names:
+            self._state.pending_tool_names[tool_id] = tool_name
 
         # Heartbeat suppression — pure noise in chat.
         if self._is_heartbeat(tool_name, args):
             # Drop the entry from pending tracking so tool_result
             # doesn't render a completion card for it either.
             self._state.pending_tool_names.pop(tool_id, None)
+            self._state.suppressed_tool_ids.add(tool_id)
             return
 
         # Cache args for the later tool_result chunk.
@@ -1266,6 +1279,33 @@ class SlackStreamConsumer:
 
 
 # ─── module-level helpers (preserved from prior implementation) ────────
+
+
+def _unwrap_call_tool(
+    name: str, args: dict[str, Any], declared: str = ""
+) -> tuple[str, dict[str, Any]]:
+    """The tool a ``call_tool`` call runs, with that tool's own arguments.
+
+    ``call_tool`` runs a deferred tool by name, and a card that says
+    "call_tool" tells the reader nothing. The first ``tool_input_end`` for the
+    call carries ``{tool_name, arguments}``. The bridge then re-enters the tool
+    path for the inner tool under the same id, and that event names the tool
+    (``toolName``) and carries its args. Either one is enough to name the card.
+    """
+    if name != "call_tool":
+        return name, args
+    inner = args.get("tool_name")
+    if isinstance(inner, str) and inner.strip():
+        inner_args = args.get("arguments")
+        if isinstance(inner_args, str):
+            try:
+                inner_args = json.loads(inner_args) if inner_args.strip() else {}
+            except ValueError:
+                inner_args = {}
+        return inner.strip(), inner_args if isinstance(inner_args, dict) else {}
+    if declared and declared != "call_tool":
+        return declared, args
+    return name, args
 
 
 def _summarize_tool_args(name: str, args: dict[str, Any]) -> str:

@@ -29,6 +29,7 @@ import { isBinaryType, isStreamableType, mimeTypeForPath } from '../shared/mime.
 import {
   deleteSession as persistDeleteSession,
   exportSessionToFile as persistExportSession,
+  writeSessionDownload as persistWriteSessionDownload,
   listSessions as persistListSessions,
   loadSession as persistLoadSession,
   readActionLedger as persistReadActionLedger,
@@ -1101,6 +1102,31 @@ function setupIpc() {
       // Reveal the exported file in Finder so the user doesn't have
       // to go hunting for it.
       shell.showItemInFolder(res.jsonPath)
+      return res
+    } catch (err) {
+      return { ok: false, error: String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.sessionDownload, async (_event, id: string) => {
+    // One file with the whole session. Main writes it: it reads the raw
+    // transcript and the full tool outputs from disk, and streams the result.
+    try {
+      const sess = persistLoadSession(id)
+      if (!sess) return { ok: false, error: 'session not found' }
+      const safeName = (sess.title || 'session')
+        .replace(/[^a-zA-Z0-9-_ ]/g, '')
+        .replace(/\s+/g, '-')
+        .slice(0, 50)
+      const focused = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+      const saveRes = await dialog.showSaveDialog(focused ?? undefined as any, {
+        title: 'Download session',
+        defaultPath: `freyja-${safeName}-${id.slice(-8)}.json`,
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      })
+      if (saveRes.canceled || !saveRes.filePath) return { ok: false, cancelled: true }
+      const res = await persistWriteSessionDownload(id, saveRes.filePath)
+      if (res.ok) shell.showItemInFolder(res.path)
       return res
     } catch (err) {
       return { ok: false, error: String(err) }

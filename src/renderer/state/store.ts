@@ -32,7 +32,6 @@ import {
   type FrameRef,
 } from '../lib/frameMedia'
 import { extractConversationSummary } from '../lib/conversationSummary'
-import { exportToolCall, exportToolStats } from '../lib/toolCall'
 import {
   addAppshotAttachment,
   appshotToAttachment,
@@ -5574,202 +5573,29 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
   },
 
   async downloadSession(sessionId) {
-    // Helper hoisted inside the function so we don't pollute the module
-    // surface — only used by this exporter.
-    //
-    // EVERYTHING IS CHRONOLOGICAL (oldest → newest) — matches `verdictHistory`
-    // on the bridge and reads top-to-bottom like a session transcript.
-    // Future analyzers (including any LLM asked to summarize a goal run)
-    // should iterate the verdicts array in array order to follow the loop
-    // forward in time.
-    function collectGoalLoopForExport(events: SystemEventRecord[] | undefined): {
-      goalState: Record<string, unknown> | null
-      brief: Record<string, unknown> | null
-      // Last 12 verdicts in chronological order (matches the bridge's
-      // verdict_history field). Provided as a stable per-event snapshot.
-      verdictHistory: Record<string, unknown>[]
-      // Every goal_judge event's full verdict, chronological. Preserved
-      // even if the rolling 100-event renderer buffer dropped early ones,
-      // because the bridge's verdictHistory carries them through.
-      verdicts: Array<{
-        at: number
-        turnsUsed: number | null
-        verdict: Record<string, unknown>
-      }>
-      // Convenience: every goal event in chronological order. Useful for
-      // reconstructing the timeline (set / continue / pause / done) when
-      // analyzing a session externally.
-      events: Array<{ at: number; subtype: string; message: string }>
-    } | null {
-      if (!events || events.length === 0) return null
-      const goalEvents = events
-        .filter((e) => (e.subtype ?? '').startsWith('goal_'))
-        .sort((a, b) => a.at - b.at) // chronological
-      if (goalEvents.length === 0) return null
-      const latest = goalEvents[goalEvents.length - 1]
-      const latestDetails = (latest.details as Record<string, unknown> | undefined) ?? {}
-      const judgeEvents = goalEvents.filter((e) => e.subtype === 'goal_judge')
-      return {
-        goalState: (latestDetails.goalState as Record<string, unknown> | null) ?? null,
-        brief: (latestDetails.judgeRules as Record<string, unknown> | null) ?? null,
-        verdictHistory:
-          (latestDetails.verdictHistory as Record<string, unknown>[] | undefined) ?? [],
-        verdicts: judgeEvents.map((e) => {
-          const d = (e.details as Record<string, unknown> | undefined) ?? {}
-          const gs = d.goalState as Record<string, unknown> | undefined
-          return {
-            at: e.at,
-            turnsUsed: typeof gs?.turnsUsed === 'number' ? (gs.turnsUsed as number) : null,
-            verdict: (d.verdict as Record<string, unknown>) ?? {},
-          }
-        }),
-        events: goalEvents.map((e) => ({
-          at: e.at,
-          subtype: e.subtype ?? '',
-          message: e.message ?? '',
-        })),
-      }
-    }
-
+    // The main process writes the file: it reads the raw transcript and the
+    // full tool outputs from disk, which the app does not hold, and streams
+    // the result so a large session cannot hit a string limit. It builds from
+    // the saved session, so save the live state first.
     const state = useHarness.getState()
-    // Build the export payload: session snapshot + full slice + metadata
-    const snapshot = state.sessions.find((s) => s.id === sessionId)
-    if (!snapshot) {
+    const api = (window as any).harness
+    if (!api?.sessionDownload) {
+      state.showToast('Download is not available in this build', 'warn')
+      return
+    }
+    if (!state.sessions.some((s) => s.id === sessionId)) {
       state.showToast('Session not found', 'warn')
       return
     }
-    // Get the slice — either from the active state or the archive
-    let slice: SessionSlice | undefined
-    if (sessionId === state.activeSessionId) {
-      slice = sliceFromState(state)
-    } else {
-      slice = state.sessionArchive[sessionId]
-      if (!slice) {
-        // Try loading from disk
-        const loaded = await state.loadPersistedSessionIntoArchive(sessionId)
-        if (loaded) {
-          slice = useHarness.getState().sessionArchive[sessionId]
-        }
-      }
+    try {
+      await state.persistSession(sessionId)
+    } catch {
+      // Export what is already on disk.
     }
-    if (!slice) {
-      state.showToast('Session data not found', 'warn')
-      return
-    }
-
-    // Build a rich export with all the data needed for training
-    // Build per-tool success/failure stats for training data quality
-    const toolStats = exportToolStats(Object.values(slice.toolCalls))
-
-    // Extract the initial user message as the "task description"
-    // (used for RFT pair generation and RL reward assignment)
-    const firstUserMsg = slice.messages.find((m) => m.role === 'user')
-    const taskDescription = firstUserMsg?.parts
-      .filter((p) => p.type === 'text')
-      .map((p) => p.text)
-      .join('\n') ?? ''
-
-    // Extract thinking traces from message parts
-    const thinkingTraces = slice.messages
-      .filter((m) => m.role === 'assistant')
-      .flatMap((m) =>
-        m.parts
-          .filter((p) => p.type === 'thinking' && p.text)
-          .map((p) => ({ messageId: m.id, thinking: p.text })),
-      )
-
-    const exportData = {
-      // 4: toolCalls carry what the model sent (a `call_tool` call is
-      // `call_tool({tool_name, arguments})`) plus the tool that ran, and
-      // toolStats counts by that tool.
-      version: 4,
-      exportedAt: new Date().toISOString(),
-      app: 'freyja',
-      // ─── System prompt (critical for SFT — the model needs to
-      //     know what instructions it was following) ─────────────
-      systemPrompt: slice.systemPrompt ?? null,
-      // ─── Session metadata ────────────────────────────────────
-      session: {
-        id: snapshot.id,
-        title: snapshot.title,
-        model: snapshot.model,
-        reasoningLevel: slice.reasoningLevel || snapshot.reasoningLevel,
-        workspace: snapshot.workspace,
-        createdAt: snapshot.createdAt,
-        updatedAt: snapshot.updatedAt,
-        parentSessionId: snapshot.parentSessionId,
-        childSessionIds: snapshot.childSessionIds,
-        messageCount: snapshot.messageCount,
-        totalInputTokens: snapshot.totalInputTokens,
-        totalOutputTokens: snapshot.totalOutputTokens,
-        cacheReadTokens: snapshot.cacheReadTokens,
-      },
-      // ─── Training-relevant fields ────────────────────────────
-      // Initial task/prompt for RFT pairing and reward assignment
-      taskDescription,
-      // Per-tool success/failure for quality filtering (Hermes pattern)
-      toolStats,
-      // Thinking traces (ATLaS: training on reasoning = 3x better)
-      thinkingTraces,
-      // ─── Full conversation ───────────────────────────────────
-      messages: slice.messages.map((m) => ({
-        id: m.id,
-        role: m.role,
-        parts: m.parts,
-        createdAt: m.createdAt,
-        inputTokens: m.inputTokens,
-        outputTokens: m.outputTokens,
-        attachments: m.attachments,
-      })),
-      // ─── Tool calls (trajectory actions) ─────────────────────
-      toolCalls: Object.values(slice.toolCalls).map(exportToolCall),
-      toolCallOrder: slice.toolCallOrder,
-      // ─── Sub-agents (multi-agent trajectories) ───────────────
-      subagents: Object.values(slice.subagents).map((sa) => ({
-        id: sa.id,
-        label: sa.label,
-        mode: sa.mode,
-        state: sa.state,
-        task: sa.task,
-        agentType: sa.agentType,
-        artifactPath: sa.artifactPath,
-        startedAt: sa.startedAt,
-        elapsedMs: sa.elapsedMs,
-        tokensIn: sa.tokensIn,
-        tokensOut: sa.tokensOut,
-        toolsCalled: sa.toolsCalled,
-        result: sa.result,
-      })),
-      // ─── Aggregated metrics ──────────────────────────────────
-      usage: slice.usage,
-      systemEvents: slice.systemEvents,
-      // ─── Goal loop snapshot ──────────────────────────────────
-      // Lifts goal state / brief / verdict history out of the
-      // event stream into a dedicated block so they survive the
-      // rolling 100-event buffer and analyzers don't have to scan
-      // systemEvents to find them. Pulled from the most recent
-      // goal_* event's payload (every goal event includes them).
-      goalLoop: collectGoalLoopForExport(slice.systemEvents),
-    }
-
-    // Create a downloadable file
-    const blob = new Blob(
-      [JSON.stringify(exportData, null, 2)],
-      { type: 'application/json' },
-    )
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    const safeName = (snapshot.title || 'session')
-      .replace(/[^a-zA-Z0-9-_ ]/g, '')
-      .replace(/\s+/g, '-')
-      .slice(0, 50)
-    a.href = url
-    a.download = `freyja-${safeName}-${sessionId.slice(-8)}.json`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-    state.showToast('Session downloaded', 'ok')
+    const res = await api.sessionDownload(sessionId)
+    if (res?.cancelled) return
+    if (res?.ok) state.showToast('Session downloaded', 'ok')
+    else state.showToast(`Download failed: ${res?.error ?? 'unknown'}`, 'warn')
   },
 
   async setComputerEnabled(enabled) {
