@@ -78,3 +78,61 @@ export function resolveToolCall(call: ResolvableCall): ResolvedToolCall {
   }
   return plain
 }
+
+/** Image metadata for an export. The bytes live in the media store, not in
+ *  the file, so an export carries size and kind instead. */
+function exportMedia<T extends { pngBase64?: string; byteSize?: number }>(
+  media: T,
+): Omit<T, 'pngBase64'> {
+  const { pngBase64, ...meta } = media
+  const byteSize = meta.byteSize ?? (pngBase64 ? Math.floor((pngBase64.length * 3) / 4) : undefined)
+  return byteSize === undefined ? meta : { ...meta, byteSize }
+}
+
+/** One tool call as an export records it: `name` and `arguments` are what
+ *  the model sent, so a `call_tool` call is `call_tool({tool_name, arguments})`
+ *  as in the transcript. A wrapped call adds `invokes` (the tool that ran) and
+ *  `invokedArguments` (its arguments as it ran them, after path
+ *  normalization). Without them an export pairs `call_tool` with the inner
+ *  tool's arguments, which no model call ever had. */
+export function exportToolCall(tc: ToolCallRecord) {
+  const wrapped = Boolean(tc.invokes)
+  // The first `tool_input_end` for the id, which holds the model's wrapper
+  // args, may be missing. `call_tool` has one fixed shape, so rebuild it and
+  // say so.
+  const rebuilt =
+    wrapped && !tc.wrapperArguments && tc.name === CALL_TOOL
+      ? { tool_name: tc.invokes, arguments: tc.arguments ?? {} }
+      : undefined
+  return {
+    id: tc.id,
+    name: tc.name,
+    arguments: tc.wrapperArguments ?? rebuilt ?? tc.arguments,
+    ...(rebuilt ? { argumentsRebuilt: true } : {}),
+    ...(wrapped ? { invokes: tc.invokes, invokedArguments: tc.arguments } : {}),
+    status: tc.status,
+    result: tc.result,
+    isError: tc.isError,
+    durationMs: tc.durationMs,
+    startedAt: tc.startedAt,
+    groupId: tc.groupId,
+    partialJson: tc.partialJson,
+    frame: tc.frame ? exportMedia(tc.frame) : undefined,
+    resultImages: tc.resultImages?.map((image) => exportMedia(image)),
+    fileChangeSet: tc.fileChangeSet,
+  }
+}
+
+/** Success and failure counts by the tool that ran, so a `call_tool` call
+ *  counts for the tool behind it instead of for the wrapper. */
+export function exportToolStats(calls: Iterable<ToolCallRecord>) {
+  const stats: Record<string, { count: number; success: number; failure: number }> = {}
+  for (const tc of calls) {
+    const name = resolveToolCall(tc).name
+    const entry = (stats[name] ??= { count: 0, success: 0, failure: 0 })
+    entry.count += 1
+    if (tc.isError) entry.failure += 1
+    else if (tc.status === 'success') entry.success += 1
+  }
+  return stats
+}

@@ -178,6 +178,10 @@ export interface ToolCallRecord {
    *  `call_tool`. Once set, `arguments` are that tool's own arguments,
    *  not the wrapper's. */
   invokes?: string
+  /** What the model sent to the wrapper (`{tool_name, arguments}` for
+   *  `call_tool`), kept when `arguments` is replaced by the inner tool's.
+   *  Exports pair it with `name`, so a call reads as the model made it. */
+  wrapperArguments?: Record<string, unknown>
   arguments?: Record<string, unknown>
   partialJson?: string
   status: 'running' | 'success' | 'error'

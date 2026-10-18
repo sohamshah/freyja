@@ -5,6 +5,7 @@ import { Worker } from 'node:worker_threads'
 import { imageBlockBase64, inlineStoredImages } from './mediaStore'
 import { buildTurnLedger, type LedgerTurn } from '../shared/turnLedger.js'
 import { stripAppshotBlocks } from '../shared/appshot.js'
+import { readCompactionTelemetry } from './telemetryReader.js'
 
 /**
  * Disk-backed session persistence. Lives under Electron's main process so
@@ -991,6 +992,33 @@ export function deleteSession(id: string): boolean {
   return deleted
 }
 
+interface RawToolCall {
+  name: string
+  arguments: Record<string, unknown>
+}
+
+/** The tool calls the model made, by call id, from the session's raw
+ *  transcript (``raw_messages.jsonl``). */
+function rawToolCalls(id: string): Map<string, RawToolCall> {
+  const calls = new Map<string, RawToolCall>()
+  const rawPath = path.join(
+    os.homedir(), '.freyja', 'projects', sanitizeForFsId(id), 'raw_messages.jsonl',
+  )
+  for (const row of readJsonl(rawPath) as Array<{ message?: { tool_calls?: unknown } } | null>) {
+    const list = row?.message?.tool_calls
+    if (!Array.isArray(list)) continue
+    for (const call of list) {
+      if (!call || typeof call.id !== 'string' || typeof call.name !== 'string') continue
+      const args = call.arguments
+      calls.set(call.id, {
+        name: call.name,
+        arguments: args && typeof args === 'object' && !Array.isArray(args) ? args : {},
+      })
+    }
+  }
+  return calls
+}
+
 /**
  * Produce a compact human-readable trace of a session. Includes every
  * user/assistant turn and every tool call with its arguments and the
@@ -1019,6 +1047,9 @@ export function buildSessionTrace(id: string): string | null {
 
   const messages: any[] = Array.isArray(slice.messages) ? slice.messages : []
   const toolCalls: Record<string, any> = slice.toolCalls ?? {}
+  // Read the raw transcript once, and only if a record needs it.
+  let rawByCallId: Map<string, RawToolCall> | undefined
+  const rawCalls = () => (rawByCallId ??= rawToolCalls(id))
 
   const truncate = (s: string, n: number): string =>
     s.length > n ? s.slice(0, n) + ` ...(+${s.length - n} chars)` : s
@@ -1071,12 +1102,23 @@ export function buildSessionTrace(id: string): string | null {
           lines.push(`  TOOL_CALL ${tcId}: <missing>`)
           continue
         }
-        const args = tc.arguments ?? {}
+        // A call_tool call is one model call: call_tool({tool_name, arguments}).
+        // The record keeps the model's wrapper args beside the inner tool's.
+        // A record saved before that lost them and the tool name; the raw
+        // transcript still has the call as the model sent it.
+        const sent: Record<string, unknown> | undefined = tc.wrapperArguments
+          ?? (tc.name === 'call_tool' && !tc.invokes ? rawCalls().get(tcId)?.arguments : undefined)
+        const invoked: string | undefined = tc.invokes
+          ?? (typeof sent?.tool_name === 'string' ? sent.tool_name : undefined)
+        const args = sent
+          ?? (tc.invokes ? { tool_name: tc.invokes, arguments: tc.arguments ?? {} } : tc.arguments)
+          ?? {}
         const argsJson = JSON.stringify(args)
         const dur = tc.durationMs ?? '?'
         const err = tc.isError ? ' [ERR]' : ''
+        const ran = invoked ? ` -> ${invoked}` : ''
         lines.push(
-          `  TOOL ${tc.name}${err} (${dur}ms) args=${truncate(argsJson, 300)}`,
+          `  TOOL ${tc.name}${ran}${err} (${dur}ms) args=${truncate(argsJson, 300)}`,
         )
         const resultText = describeResult(tc.result)
         if (resultText) {
@@ -1113,7 +1155,7 @@ export function buildSessionTrace(id: string): string | null {
  *     ``~/.freyja/projects/<sid>/compactions.jsonl``.
  */
 interface SessionExportBundle {
-  version: 2
+  version: 3
   exportedAt: number
   metadata: {
     id: string
@@ -1138,6 +1180,12 @@ interface SessionExportBundle {
     message: unknown
   }>
   live_transcript: unknown[]
+  /** Every telemetry row the bridge wrote for this session, by row type:
+   *  ``llm_call_metric`` is one row per model call (model, tokens, cache
+   *  read/write, cost, duration); ``tool_call_metric`` one per tool call
+   *  (full result size); also compaction, pressure and profile rows. In
+   *  file order, so oldest first. */
+  telemetry: Record<string, unknown[]>
   compactions: Array<{
     ts: number
     session_id: string
@@ -1452,7 +1500,24 @@ export function readRecall(
   }
 }
 
-function loadSessionExportBundle(id: string): SessionExportBundle | null {
+/** The session's telemetry rows, grouped by row type. Rows for other
+ *  sessions, including its sub-agents, are left out. */
+async function sessionTelemetry(id: string): Promise<Record<string, unknown[]>> {
+  const byType: Record<string, unknown[]> = {}
+  try {
+    for (const row of await readCompactionTelemetry()) {
+      const r = row as { session_id?: unknown; type?: unknown } | null
+      if (r?.session_id !== id) continue
+      const type = typeof r.type === 'string' ? r.type : 'unknown'
+      ;(byType[type] ??= []).push(row)
+    }
+  } catch {
+    // No telemetry file yet: the bundle still stands without it.
+  }
+  return byType
+}
+
+async function loadSessionExportBundle(id: string): Promise<SessionExportBundle | null> {
   const sess = loadSession(id)
   if (!sess) return null
   const safeId = sanitizeForFsId(id)
@@ -1487,7 +1552,7 @@ function loadSessionExportBundle(id: string): SessionExportBundle | null {
   const liveMessages: unknown[] = Array.isArray(slice.messages) ? slice.messages : []
 
   return {
-    version: 2,
+    version: 3,
     exportedAt: Date.now(),
     metadata: {
       id: sess.id,
@@ -1507,6 +1572,7 @@ function loadSessionExportBundle(id: string): SessionExportBundle | null {
     },
     raw_transcript: rawRows,
     live_transcript: liveMessages,
+    telemetry: await sessionTelemetry(id),
     compactions: compactionRows,
   }
 }
@@ -1515,19 +1581,19 @@ function loadSessionExportBundle(id: string): SessionExportBundle | null {
  * Export the session to a user-chosen destination as three files:
  *   - ``<dest>.json`` — the existing renderer-slice payload (back-compat
  *     for anything that reads the v1 format).
- *   - ``<dest>.bundle.json`` — the v2 three-view bundle: raw +
- *     live + compactions with full summary text.
+ *   - ``<dest>.bundle.json`` — the v3 bundle: raw + live transcripts,
+ *     compactions with full summary text, and the per-call telemetry.
  *   - ``<dest>.trace.txt`` — human-readable condensed trace.
  */
-export function exportSessionToFile(
+export async function exportSessionToFile(
   id: string,
   destPath: string,
-): {
+): Promise<{
   ok: true
   jsonPath: string
   bundlePath: string
   tracePath: string
-} | { ok: false; error: string } {
+} | { ok: false; error: string }> {
   try {
     const sess = loadSession(id)
     if (!sess) return { ok: false, error: 'session not found' }
@@ -1538,7 +1604,7 @@ export function exportSessionToFile(
     const bundlePath = `${base}.bundle.json`
     const tracePath = `${base}.trace.txt`
 
-    const bundle = loadSessionExportBundle(id)
+    const bundle = await loadSessionExportBundle(id)
     if (bundle) {
       fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2), 'utf8')
     } else {
@@ -1546,7 +1612,7 @@ export function exportSessionToFile(
       fs.writeFileSync(
         bundlePath,
         JSON.stringify(
-          { version: 2, error: 'session not found', exportedAt: Date.now() },
+          { version: 3, error: 'session not found', exportedAt: Date.now() },
           null,
           2,
         ),

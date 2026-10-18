@@ -1096,7 +1096,7 @@ function setupIpc() {
       if (saveRes.canceled || !saveRes.filePath) {
         return { ok: false, cancelled: true }
       }
-      const res = persistExportSession(id, saveRes.filePath)
+      const res = await persistExportSession(id, saveRes.filePath)
       if (!res.ok) return res
       // Reveal the exported file in Finder so the user doesn't have
       // to go hunting for it.

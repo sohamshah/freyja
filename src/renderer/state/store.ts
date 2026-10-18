@@ -32,6 +32,7 @@ import {
   type FrameRef,
 } from '../lib/frameMedia'
 import { extractConversationSummary } from '../lib/conversationSummary'
+import { exportToolCall, exportToolStats } from '../lib/toolCall'
 import {
   addAppshotAttachment,
   appshotToAttachment,
@@ -2072,10 +2073,15 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           arguments: ev.arguments,
           partialJson: undefined,
           // A wrapper (`call_tool`) re-enters the tool path under the same id,
-          // so this event names the tool that runs. Keep it: the wrapper's
-          // args, which held the name, were just overwritten.
-          invokes:
-            ev.toolName && ev.toolName !== existing.name ? ev.toolName : existing.invokes,
+          // so this event names the tool that runs and carries its args. Keep
+          // the name, and the wrapper's args that this event replaces: they
+          // are what the model sent.
+          ...(ev.toolName && ev.toolName !== existing.name
+            ? {
+                invokes: ev.toolName,
+                wrapperArguments: existing.wrapperArguments ?? existing.arguments,
+              }
+            : {}),
         },
       }
       return next
@@ -5653,13 +5659,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
 
     // Build a rich export with all the data needed for training
     // Build per-tool success/failure stats for training data quality
-    const toolStats: Record<string, { count: number; success: number; failure: number }> = {}
-    for (const tc of Object.values(slice.toolCalls)) {
-      if (!toolStats[tc.name]) toolStats[tc.name] = { count: 0, success: 0, failure: 0 }
-      toolStats[tc.name].count += 1
-      if (tc.isError) toolStats[tc.name].failure += 1
-      else if (tc.status === 'success') toolStats[tc.name].success += 1
-    }
+    const toolStats = exportToolStats(Object.values(slice.toolCalls))
 
     // Extract the initial user message as the "task description"
     // (used for RFT pair generation and RL reward assignment)
@@ -5679,7 +5679,10 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       )
 
     const exportData = {
-      version: 3,
+      // 4: toolCalls carry what the model sent (a `call_tool` call is
+      // `call_tool({tool_name, arguments})`) plus the tool that ran, and
+      // toolStats counts by that tool.
+      version: 4,
       exportedAt: new Date().toISOString(),
       app: 'freyja',
       // ─── System prompt (critical for SFT — the model needs to
@@ -5719,16 +5722,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         attachments: m.attachments,
       })),
       // ─── Tool calls (trajectory actions) ─────────────────────
-      toolCalls: Object.values(slice.toolCalls).map((tc) => ({
-        id: tc.id,
-        name: tc.name,
-        arguments: tc.arguments,
-        status: tc.status,
-        result: tc.result,
-        isError: tc.isError,
-        durationMs: tc.durationMs,
-        startedAt: tc.startedAt,
-      })),
+      toolCalls: Object.values(slice.toolCalls).map(exportToolCall),
       toolCallOrder: slice.toolCallOrder,
       // ─── Sub-agents (multi-agent trajectories) ───────────────
       subagents: Object.values(slice.subagents).map((sa) => ({

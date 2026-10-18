@@ -3,7 +3,7 @@
 How Freyja captures, exports, and plans to use agent interaction
 trajectories for model training and self-improvement.
 
-> **Status:** v3 export format shipping. ShareGPT converter and batch
+> **Status:** v4 export format shipping. ShareGPT converter and batch
 > runner planned for next phase.
 
 ---
@@ -14,11 +14,11 @@ Every Freyja session is persisted to `~/.freyja/sessions/<id>.json`
 and can be downloaded as a training-ready JSON file via the sidebar
 context menu (right-click → Download).
 
-### Export format (v3)
+### Export format (v4)
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "exportedAt": "2026-04-12T...",
   "app": "freyja",
 
@@ -27,7 +27,7 @@ context menu (right-click → Download).
   "taskDescription": "the first user message (for RFT pairing)",
 
   "toolStats": {
-    "bash": { "count": 5, "success": 4, "failure": 1 },
+    "bash": { "count": 6, "success": 5, "failure": 1 },
     "read_file": { "count": 3, "success": 3, "failure": 0 }
   },
 
@@ -83,10 +83,27 @@ context menu (right-click → Download).
       "result": "# auth.py\ndef login(user, pwd):...",
       "isError": false,
       "durationMs": 45,
-      "startedAt": 1775960803100
+      "startedAt": 1775960803100,
+      "groupId": "grp_1"
+    },
+    {
+      "id": "call_2",
+      "name": "call_tool",
+      "arguments": {
+        "tool_name": "bash",
+        "arguments": { "command": "pytest -q", "summary": "Run the tests" }
+      },
+      "invokes": "bash",
+      "invokedArguments": { "command": "pytest -q", "summary": "Run the tests" },
+      "status": "success",
+      "result": "3 passed",
+      "isError": false,
+      "durationMs": 1200,
+      "startedAt": 1775960804000,
+      "groupId": "grp_1"
     }
   ],
-  "toolCallOrder": ["call_1"],
+  "toolCallOrder": ["call_1", "call_2"],
 
   "subagents": [
     {
@@ -121,6 +138,38 @@ context menu (right-click → Download).
 }
 ```
 
+### What an export records
+
+An export records what happened. It does not tidy it.
+
+A tool call keeps the `name` and `arguments` the model sent. A `call_tool` call is `call_tool({tool_name, arguments})`, as it is in the transcript. A model trained on `call_tool` with the inner arguments alone would learn to leave out `tool_name`.
+
+A wrapped call adds two fields. `invokes` is the tool that ran. `invokedArguments` is that tool's arguments as it ran them, after path normalization.
+
+`argumentsRebuilt: true` means the app missed the model's own `arguments`. The export rebuilt them from `invokes` and `invokedArguments`. The `call_tool` shape is fixed, so the rebuild is exact except for path normalization.
+
+`toolStats` counts a `call_tool` call for the tool behind it. A call that never reached its tool counts for the tool it asked for.
+
+`groupId` is the same for tool calls that came from one model response.
+
+`result` is the preview the bridge sends to the app. It is cut to 2000 characters, with the middle removed and a `… [truncated N chars] …` marker where it was cut. The result as the model received it is in the bundle's `raw_transcript` (see below). The engine can cut a very large result before the model sees it, and records a `tool_truncation` system event when it does.
+
+Images are not in the file. A `frame` or `resultImages` entry keeps the size, type and label, and leaves out the bytes.
+
+`call_tool` calls recorded before commit `f71f478` have the inner arguments under `name: "call_tool"`, and no `invokes`. The app lost the tool name for those. Their exact calls are in the bundle's `raw_transcript`, and the `/export` trace reads the tool name from it.
+
+### The `/export` command
+
+`/export` writes three files, and together they hold the exact record.
+
+| File | Holds |
+|---|---|
+| `<name>.json` | The saved session, as the app stored it. Tool calls carry `invokes`, `wrapperArguments` and the executed `arguments`. |
+| `<name>.bundle.json` (v3) | `raw_transcript`: every message as the model sent and received it, with each tool result as the model received it. `live_transcript`: what the app shows. `compactions`: every compaction with its full summary. `telemetry`: one row list per row type for this session. |
+| `<name>.trace.txt` | A condensed trace to read. Args and results are cut, and each cut says how many characters it removed. A `call_tool` line reads `TOOL call_tool -> bash`. |
+
+`telemetry.llm_call_metric` has one row per model call: model, input and output tokens, cache read and write tokens, cost and duration. `telemetry.tool_call_metric` has one row per tool call, with the size of the full result. Rows for sub-agents are in their own sessions' exports.
+
 ### What each field enables
 
 | Field | Training use |
@@ -129,12 +178,13 @@ context menu (right-click → Download).
 | `taskDescription` | RFT/DPO: identifies the task for pairing trajectories |
 | `messages` with `parts` | SFT: the core training signal (user→assistant→tool→assistant) |
 | `messages[].parts[type=thinking]` | ATLaS: training on reasoning traces is 3x more effective |
-| `toolCalls` with `arguments` + `result` | SFT: learning tool usage patterns |
-| `toolStats` | Quality filtering: reject trajectories with high tool failure rates |
+| `toolCalls` with `arguments` + `result` | SFT: learning tool usage patterns. `arguments` is what the model sent, so the pair is valid. |
+| `toolStats` | Quality filtering: reject trajectories with high tool failure rates. Counted by the tool that ran. |
 | `thinkingTraces` | Critical step selection: identify which steps matter most |
 | `subagents` | Multi-agent training: how to decompose and delegate |
 | `usage` | Cost analysis and token budget optimization |
 | `session.model` | Provider-specific fine-tuning |
+| `groupId` | Which tool calls one model response made |
 
 ---
 
@@ -142,9 +192,9 @@ context menu (right-click → Download).
 
 ### Training approaches and what they need
 
-| Approach | What it needs beyond our v3 export | Effort to add |
+| Approach | What it needs beyond our v4 export | Effort to add |
 |---|---|---|
-| **SFT** (supervised fine-tuning on expert trajectories) | Nothing — v3 has everything | Ready now |
+| **SFT** (supervised fine-tuning on expert trajectories) | Nothing — v4 has everything | Ready now |
 | **RFT** (rejection sampling) | Binary outcome signal per session, multiple rollouts per task | Add outcome field + batch runner |
 | **DPO** (preference optimization) | Paired (chosen/rejected) trajectories for same task | Manual annotation or LLM judge |
 | **RL** (reinforcement learning) | Per-trajectory scalar reward, reference answers | Custom reward functions |
@@ -193,7 +243,7 @@ Task (instruction.md + Dockerfile + tests/)
 1. **ATIF v1.6** is the trajectory interchange standard. It supports
    per-step reasoning, tool calls with observation linking,
    multimodal content, subagent trajectory refs, and per-step
-   token IDs + logprobs for RL. Our v3 export maps cleanly to it.
+   token IDs + logprobs for RL. Our v4 export maps cleanly to it.
 
 2. **22+ agent adapters** — Claude Code, OpenHands, Codex, Aider,
    Cursor, SWE-Agent, etc. Each adapter converts the agent's native
@@ -268,9 +318,9 @@ Task (instruction.md + Dockerfile + tests/)
 }
 ```
 
-**Freyja v3 → ATIF field mapping:**
+**Freyja v4 → ATIF field mapping:**
 
-| Freyja v3 field | ATIF v1.6 field |
+| Freyja v4 field | ATIF v1.6 field |
 |---|---|
 | `systemPrompt` | Step with `source: "system"` |
 | `messages[role=user]` | Steps with `source: "user"` |
