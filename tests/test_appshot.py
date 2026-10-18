@@ -377,6 +377,23 @@ async def test_tool_error_for_a_guessed_id_names_the_open_windows(monkeypatch):
     assert result.is_error and "#2 Safari" in result.content
 
 
+async def test_tool_says_why_a_read_is_partial(monkeypatch):
+    # The reader marks a read partial when items outside the view were skipped.
+    text = {
+        "text": "Rooms\n[318 more items outside the view were not read]",
+        "status": "partial",
+        "reason": "318 items outside the view were not read",
+        "truncated": False,
+        "omitted": 318,
+    }
+    native = FakeNative([SAFARI], front=SAFARI, text=text)
+    monkeypatch.setattr(appshot, "_native", lambda: native)
+    result = await AppshotTool(_spec()).execute("c1", {})
+    head = result.content[0].text
+    assert "Text: partial, 318 items outside the view were not read" in head
+    assert 'text-status="partial"' in head
+
+
 async def test_tool_without_the_image(monkeypatch):
     native = FakeNative([SAFARI], front=SAFARI)
     monkeypatch.setattr(appshot, "_native", lambda: native)

@@ -71,9 +71,20 @@ const MAX_DEPTH: usize = 48;
 /// walk keeps 30. Reading wants more, because text scrolled out of view is the
 /// point, but a mail list with 20,000 rows must not use the whole budget.
 const OFFSCREEN_READ_CAP: usize = 120;
-/// Passes with fewer lines than this look like an app whose web content is not
-/// exposed yet (Chromium and Electron build their tree on request).
+/// The same limit inside a web page. A page lists everything in one long
+/// column, so the text below the fold is most of the page, and the character
+/// and node limits already bound the read.
+const WEB_OFFSCREEN_READ_CAP: usize = 1_500;
+/// A pass with fewer lines than this inside web areas looks like an app whose
+/// web content is not exposed yet (Chromium and Electron build their tree on
+/// request). The count is for web content only, because a browser's own
+/// sidebar and toolbar give more lines than this by themselves.
 const SPARSE_LINES: usize = 6;
+/// A web area that covers at least this share of its window is the page of a
+/// browser (or of an app built like one), and its text comes first.
+const PAGE_SHARE: f64 = 0.6;
+/// Lines of the window's own controls kept after the page text.
+const CHROME_LINES_KEPT: usize = 25;
 const SELECTED_TEXT_CAP: usize = 4_000;
 /// How long a read waits for a Chromium or Electron app to build its web tree.
 const WEB_WAIT_MS: u64 = 3_000;
@@ -125,10 +136,17 @@ pub struct ReadResult {
     pub page_url: Option<String>,
     /// True when this read switched web accessibility on for the app.
     pub web_enabled: bool,
+    /// Items left out because they lie outside the view and their parent had
+    /// more than the read allows. The text says where, and the status is
+    /// `partial`.
+    pub omitted: usize,
 }
 
 struct Pass {
     lines: Vec<String>,
+    /// Lines that came from inside a web area.
+    web_lines: usize,
+    omitted: usize,
     nodes: usize,
     truncated: bool,
     cancelled: bool,
@@ -162,31 +180,36 @@ pub fn read_window_text(pid: i32, opts: ReadOptions) -> Result<String, AxError> 
 
     let mut pass = read_once(&app, &opts, &names, my_gen, deadline);
     // Chromium and Electron apps build their web tree only when something asks
-    // for it. A first pass that found almost nothing is the sign. Ask, wait for
-    // the tree, read again, then put the setting back, so Freyja leaves no app
-    // in accessibility mode (which slows it down) after the read.
-    if opts.enable_web && !pass.cancelled && !pass.no_window && pass.lines.len() < SPARSE_LINES {
-        if let Some(false) = manual_accessibility(&app) {
-            if set_manual_accessibility(&app, true) {
-                result.web_enabled = true;
-                // The tree takes from a few hundred milliseconds to a couple of
-                // seconds to appear, so read again until it does. The first
-                // pass may have used the whole budget, so this wait has its own.
-                let web_deadline = Instant::now() + Duration::from_millis(WEB_WAIT_MS);
-                let mut wait = 250;
-                loop {
-                    std::thread::sleep(Duration::from_millis(wait));
-                    let next = read_once(&app, &opts, &names, my_gen, web_deadline);
-                    let done = next.lines.len() >= SPARSE_LINES || next.cancelled;
-                    if next.lines.len() >= pass.lines.len() {
-                        pass = next;
-                    }
-                    if done || Instant::now() >= web_deadline {
-                        break;
-                    }
-                    wait = (wait * 2).min(800);
+    // for it. A first pass that found almost no web text is the sign. A browser
+    // shows plenty of its own controls even when the page is missing, so the
+    // count is of lines inside web areas. Electron takes a setting that turns
+    // the tree on. Chrome and the browsers built on it take none, and start
+    // building the tree when the first pass queries them. Either way, wait for
+    // the tree and read again, then put the setting back, so Freyja leaves no
+    // app in accessibility mode (which slows it down) after the read.
+    if opts.enable_web && !pass.cancelled && !pass.no_window && pass.web_lines < SPARSE_LINES {
+        let switch = enable_web_tree(&app);
+        if switch.is_some() || is_chromium_app(pid) {
+            result.web_enabled = switch.is_some();
+            // The tree takes from a few hundred milliseconds to a couple of
+            // seconds to appear, so read again until it does. The first
+            // pass may have used the whole budget, so this wait has its own.
+            let web_deadline = Instant::now() + Duration::from_millis(WEB_WAIT_MS);
+            let mut wait = 250;
+            loop {
+                std::thread::sleep(Duration::from_millis(wait));
+                let next = read_once(&app, &opts, &names, my_gen, web_deadline);
+                let done = next.web_lines >= SPARSE_LINES || next.cancelled;
+                if (next.web_lines, next.lines.len()) >= (pass.web_lines, pass.lines.len()) {
+                    pass = next;
                 }
-                set_manual_accessibility(&app, false);
+                if done || Instant::now() >= web_deadline {
+                    break;
+                }
+                wait = (wait * 2).min(800);
+            }
+            if let Some(switch) = switch {
+                set_bool_attr(&app, switch, false);
             }
         }
     }
@@ -198,6 +221,7 @@ pub fn read_window_text(pid: i32, opts: ReadOptions) -> Result<String, AxError> 
     result.selected_text = pass.selected_text;
     result.page_url = pass.page_url;
     result.truncated = pass.truncated;
+    result.omitted = pass.omitted;
     result.text = pass.lines.join("\n");
     result.chars = result.text.chars().count();
     result.ms = started.elapsed().as_millis() as u64;
@@ -213,13 +237,25 @@ pub fn read_window_text(pid: i32, opts: ReadOptions) -> Result<String, AxError> 
             "the window exposes no text through accessibility (a canvas or custom drawn view)"
                 .into(),
         );
-    } else if pass.truncated {
+    } else if pass.truncated || pass.omitted > 0 {
         result.status = "partial".into();
-        result.reason = Some("the read stopped at its time or size limit".into());
+        result.reason = Some(partial_reason(pass.truncated, pass.omitted));
     } else {
         result.status = "ok".into();
     }
     to_json(&result)
+}
+
+/// Why a read is `partial`. Both causes can apply to one read.
+fn partial_reason(stopped: bool, omitted: usize) -> String {
+    let items = if omitted == 1 { "item" } else { "items" };
+    match (stopped, omitted) {
+        (true, 0) => "the read stopped at its time or size limit".into(),
+        (false, n) => format!("{n} {items} outside the view were not read"),
+        (true, n) => format!(
+            "the read stopped at its time or size limit, and {n} {items} outside the view were not read"
+        ),
+    }
 }
 
 fn to_json(r: &ReadResult) -> Result<String, AxError> {
@@ -235,6 +271,8 @@ fn read_once(
 ) -> Pass {
     let mut pass = Pass {
         lines: Vec::new(),
+        web_lines: 0,
+        omitted: 0,
         nodes: 0,
         truncated: false,
         cancelled: false,
@@ -265,6 +303,10 @@ fn read_once(
         },
         my_gen,
         out: Vec::new(),
+        in_page: Vec::new(),
+        web_depth: 0,
+        page_area: 0.0,
+        omitted: 0,
         rows: Vec::new(),
         chars: 0,
         max_chars: opts.max_chars,
@@ -276,12 +318,44 @@ fn read_once(
         page_url: None,
     };
     walk.visit(&window, MAX_DEPTH, None);
-    pass.lines = walk.out;
+    pass.web_lines = walk.in_page.iter().filter(|p| **p).count();
+    let window_area = frame_of(&window).map(|f| f.2 * f.3).unwrap_or(0.0);
+    let page_share = if window_area > 0.0 { walk.page_area / window_area } else { 0.0 };
+    pass.lines = arrange(walk.out, &walk.in_page, page_share);
+    pass.omitted = walk.omitted;
     pass.nodes = walk.nodes;
     pass.truncated = walk.truncated;
     pass.cancelled = walk.cancelled;
     pass.page_url = walk.page_url;
     pass
+}
+
+/// Put the page first. A browser window lists its sidebar and toolbar before
+/// the page, and the page is what the reader asked about. When a web area fills
+/// most of the window (`page_share`), the lines inside it come first, then a
+/// short list of the window's own controls. Any other window keeps its order,
+/// because a mail list beside a message body is content too.
+fn arrange(lines: Vec<String>, in_page: &[bool], page_share: f64) -> Vec<String> {
+    let page = in_page.iter().filter(|p| **p).count();
+    if page == 0 || page == lines.len() || page_share < PAGE_SHARE {
+        return lines;
+    }
+    let (mut page_lines, chrome): (Vec<_>, Vec<_>) = lines
+        .into_iter()
+        .zip(in_page.iter().copied())
+        .partition(|(_, p)| *p);
+    let mut out: Vec<String> = page_lines.drain(..).map(|(l, _)| l).collect();
+    out.push(String::new());
+    out.push("Window controls outside the page:".into());
+    let total = chrome.len();
+    out.extend(chrome.into_iter().take(CHROME_LINES_KEPT).map(|(l, _)| l));
+    if total > CHROME_LINES_KEPT {
+        out.push(format!(
+            "[{} more window controls were not listed]",
+            total - CHROME_LINES_KEPT
+        ));
+    }
+    out
 }
 
 // ─── Finding the window and the focus ───────────────────────────────────
@@ -372,19 +446,30 @@ fn element_attr(elem: &AXUIElement, name: &str) -> Option<AXUIElement> {
 
 // ─── Web accessibility switch (Chromium, Electron) ──────────────────────
 
-/// The current state of the app's AXManualAccessibility setting, None when the
-/// app has no such setting (native Cocoa apps).
-fn manual_accessibility(app: &AXUIElement) -> Option<bool> {
-    match attr(app, "AXManualAccessibility") {
-        Some(v) => cf_bool(&v),
-        // Chromium accepts the setting without listing it. An app that
-        // rejects it answers kAXErrorAttributeUnsupported on the set below.
-        None => Some(false),
+/// The settings that ask an app to build its web accessibility tree.
+/// Electron and some Chromium builds take `AXManualAccessibility`. Chrome and
+/// the browsers built on it take `AXEnhancedUserInterface`, which is what
+/// VoiceOver sets.
+const WEB_SWITCHES: [&str; 2] = ["AXManualAccessibility", "AXEnhancedUserInterface"];
+
+/// Turn the web tree on with the first setting the app accepts, and return its
+/// name so the caller can turn it off again. Returns None when a setting is
+/// already on (somebody else wants it left alone) or the app accepts none,
+/// which is the case for native apps.
+fn enable_web_tree(app: &AXUIElement) -> Option<&'static str> {
+    if WEB_SWITCHES
+        .iter()
+        .any(|name| attr(app, name).and_then(|v| cf_bool(&v)) == Some(true))
+    {
+        return None;
     }
+    WEB_SWITCHES
+        .into_iter()
+        .find(|name| set_bool_attr(app, name, true))
 }
 
-fn set_manual_accessibility(app: &AXUIElement, on: bool) -> bool {
-    let name = CFString::from_static_string("AXManualAccessibility");
+fn set_bool_attr(app: &AXUIElement, name: &str, on: bool) -> bool {
+    let name = CFString::new(name);
     let value = if on {
         CFBoolean::true_value()
     } else {
@@ -399,6 +484,43 @@ fn set_manual_accessibility(app: &AXUIElement, on: bool) -> bool {
     }
 }
 
+/// True when the app is built on Chromium: Electron apps, Chrome and the
+/// browsers made from it. Every one ships a renderer helper app, either beside
+/// its frameworks (Electron) or inside one of them (Chrome, Arc, Edge).
+fn is_chromium_app(pid: i32) -> bool {
+    use objc2_app_kit::NSRunningApplication;
+    use std::path::{Path, PathBuf};
+
+    fn has_renderer_helper(dir: &Path) -> bool {
+        std::fs::read_dir(dir).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with("Helper (Renderer).app"))
+        })
+    }
+
+    let bundle: Option<PathBuf> = unsafe {
+        NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+            .and_then(|app| app.bundleURL())
+            .and_then(|url| url.path())
+            .map(|p| PathBuf::from(p.to_string()))
+    };
+    let Some(frameworks) = bundle.map(|b| b.join("Contents/Frameworks")) else {
+        return false;
+    };
+    if has_renderer_helper(&frameworks) {
+        return true;
+    }
+    let Ok(entries) = std::fs::read_dir(&frameworks) else {
+        return false;
+    };
+    entries.flatten().any(|fw| {
+        fw.path().extension().is_some_and(|x| x == "framework")
+            && std::fs::read_dir(fw.path().join("Versions"))
+                .is_ok_and(|versions| versions.flatten().any(|v| has_renderer_helper(&v.path().join("Helpers"))))
+    })
+}
+
 // ─── The walk ───────────────────────────────────────────────────────────
 
 struct Walk<'a> {
@@ -406,6 +528,15 @@ struct Walk<'a> {
     budget: Budget,
     my_gen: u64,
     out: Vec<String>,
+    /// For each line of `out`: true when it came from inside a web area.
+    in_page: Vec<bool>,
+    /// How many web areas the walk is inside (a page can hold frames).
+    web_depth: usize,
+    /// The largest area of a web area seen, in points squared.
+    page_area: f64,
+    /// Items skipped because their parent held more offscreen items than the
+    /// read allows.
+    omitted: usize,
     /// Open table rows. Text found inside a row joins its collector, and the
     /// row is written as one line when it closes.
     rows: Vec<Vec<String>>,
@@ -462,6 +593,7 @@ impl Walk<'_> {
             let room = self.max_chars.saturating_sub(self.chars);
             if room > 40 {
                 self.out.push(format!("{}…", cut_chars(&line, room - 1)));
+                self.in_page.push(self.web_depth > 0);
             }
             self.truncated = true;
             self.stop = true;
@@ -469,6 +601,7 @@ impl Walk<'_> {
         }
         self.chars += used;
         self.out.push(line);
+        self.in_page.push(self.web_depth > 0);
     }
 
     /// Visit `elem`. Returns true when the element lies outside the visible
@@ -488,10 +621,15 @@ impl Walk<'_> {
         let role = get(R_ROLE).and_then(cf_string).unwrap_or_default();
         let subrole = get(R_SUBROLE).and_then(cf_string).unwrap_or_default();
         let frame = get(R_FRAME).and_then(cf_rect);
-        let outside = is_outside(frame, clip);
-        // A leaf with a frame but no area is not drawn. Containers can report
-        // no size while their children have one, so they are still entered.
-        let hidden = frame.is_some_and(|f| !has_area(f));
+        // Chromium gives an element that is scrolled out of view a frame of
+        // zero size at the edge of the page, so inside a web area a frame with
+        // no area means "out of view", and its text is part of the page.
+        let clipped_in_page = self.web_depth > 0 && frame.is_some_and(|f| !has_area(f));
+        let outside = is_outside(frame, clip) || clipped_in_page;
+        // Elsewhere a leaf with a frame but no area is not drawn. Containers can
+        // report no size while their children have one, so they are still
+        // entered.
+        let hidden = frame.is_some_and(|f| !has_area(f)) && !clipped_in_page;
         if SKIP_ROLES.contains(&role.as_str()) {
             return outside;
         }
@@ -515,6 +653,13 @@ impl Walk<'_> {
             return outside;
         }
 
+        let in_web_area = role == "AXWebArea";
+        if in_web_area {
+            self.web_depth += 1;
+            if let Some(f) = frame {
+                self.page_area = self.page_area.max(f.2 * f.3);
+            }
+        }
         let mut descend = true;
         let mut opened_row = false;
         match role.as_str() {
@@ -642,13 +787,18 @@ impl Walk<'_> {
                 "AXScrollArea" => intersect(clip, frame),
                 _ => clip,
             };
+            let cap = if self.web_depth > 0 {
+                WEB_OFFSCREEN_READ_CAP
+            } else {
+                OFFSCREEN_READ_CAP
+            };
             let mut offscreen_read = 0;
             let mut omitted = 0;
             for c in &kids {
                 if self.halted() {
                     break;
                 }
-                if offscreen_read >= OFFSCREEN_READ_CAP && is_outside(frame_of(c), clip) {
+                if offscreen_read >= cap && is_outside(frame_of(c), clip) {
                     omitted += 1;
                     continue;
                 }
@@ -656,9 +806,15 @@ impl Walk<'_> {
                     offscreen_read += 1;
                 }
             }
-            if omitted > 0 && !self.stop {
-                self.emit(format!("[{omitted} more items outside the view were not read]"));
+            if omitted > 0 {
+                self.omitted += omitted;
+                if !self.stop {
+                    self.emit(format!("[{omitted} more items outside the view were not read]"));
+                }
             }
+        }
+        if in_web_area {
+            self.web_depth -= 1;
         }
         if role == "AXHeading" {
             self.heading = false;
@@ -812,4 +968,61 @@ fn slice_value(value: &str, visible: Option<(usize, usize)>, cap: usize) -> (Str
     let text = String::from_utf16_lossy(&units[s..e]);
     let note = format!("[characters {s} to {e} of {n} shown, the rest of this field is not included]");
     (text, Some(note))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn partial_reason_names_each_cause() {
+        assert_eq!(partial_reason(true, 0), "the read stopped at its time or size limit");
+        assert_eq!(partial_reason(false, 1), "1 item outside the view were not read");
+        assert_eq!(partial_reason(false, 318), "318 items outside the view were not read");
+        assert!(partial_reason(true, 5).contains("time or size limit, and 5 items"));
+    }
+
+    #[test]
+    fn page_comes_first_when_it_fills_the_window() {
+        let all = lines(&["[Hide sidebar]", "[Tab one]", "Room rates", "Cancellation policy"]);
+        let page = [false, false, true, true];
+        let out = arrange(all, &page, 0.75);
+        assert_eq!(out[0], "Room rates");
+        assert_eq!(out[1], "Cancellation policy");
+        assert_eq!(out[2], "");
+        assert_eq!(out[3], "Window controls outside the page:");
+        assert_eq!(&out[4..], &["[Hide sidebar]", "[Tab one]"]);
+    }
+
+    #[test]
+    fn window_controls_are_cut_to_a_short_list_and_counted() {
+        let mut all: Vec<String> = (0..60).map(|i| format!("[Tab {i}]")).collect();
+        let mut page = vec![false; 60];
+        all.push("Room rates".into());
+        page.push(true);
+        let out = arrange(all, &page, 0.9);
+        assert_eq!(out[0], "Room rates");
+        let kept = out.iter().filter(|l| l.starts_with("[Tab ")).count();
+        assert_eq!(kept, CHROME_LINES_KEPT);
+        assert_eq!(out.last().unwrap(), "[35 more window controls were not listed]");
+    }
+
+    #[test]
+    fn a_small_web_area_keeps_the_window_order() {
+        // A mail list beside a message body: both are content.
+        let all = lines(&["Inbox row one", "Inbox row two", "Message body"]);
+        let page = [false, false, true];
+        assert_eq!(arrange(all.clone(), &page, 0.4), all);
+    }
+
+    #[test]
+    fn windows_without_web_text_or_with_only_web_text_keep_their_order() {
+        let all = lines(&["a", "b"]);
+        assert_eq!(arrange(all.clone(), &[false, false], 0.9), all);
+        assert_eq!(arrange(all.clone(), &[true, true], 0.9), all);
+    }
 }

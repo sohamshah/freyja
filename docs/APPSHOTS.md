@@ -81,10 +81,11 @@ The older `read_ax_tree` walk returns a JSON tree with coordinates, built for cl
 
 - It starts at one window, found by matching the window frame, then the title, then the focused window.
 - It writes text in tree order. A table row becomes one line with cells joined by ` | `. A selected row starts with `(selected)`. Buttons, links, checkboxes and tabs appear as `[Save]`, `[link] text`, `[x] label` and `[tab] Inbox *`.
-- It keeps rows that are scrolled out of view, up to 120 per parent, and says how many it left out.
+- It keeps items that are scrolled out of view, up to 120 per parent in a native window and up to 1,500 per parent in a web page, because the text below the fold is most of a page. It says how many it left out, and a read that left any out has the status `partial` with that count as the reason.
 - A text field or text area gives its whole value. A value over 12,000 characters is cut around the part you see, and a note says which characters are shown.
-- Secure text fields show `[hidden: password field]`. Closed menus and scroll bars are skipped, and so is the text of a node that has no area on screen.
-- Chromium and Electron apps (Slack, VS Code, Chrome) build their web tree only when asked. When the first read finds almost nothing, Freyja sets `AXManualAccessibility` on the app, waits for the tree, reads again, and sets it back, so no app stays in accessibility mode. A read of such an app takes a few seconds.
+- Secure text fields show `[hidden: password field]`. Closed menus and scroll bars are skipped, and so is the text of a node that has no area on screen. Inside a web page, Chromium gives a zero-size frame to every element scrolled out of view, so there a zero-size frame means out of view and the text is kept.
+- Chromium and Electron apps (Slack, VS Code, Chrome, Arc) build their web tree only when asked. The test is the number of lines inside web areas, because a browser's sidebar and toolbar give plenty of lines even when the page is missing. When the first read finds fewer than 6 web lines in an app built on Chromium, Freyja waits for the tree and reads again. Electron apps take `AXManualAccessibility`, which Freyja sets for the read and sets back, so no app stays in accessibility mode. Chrome and the browsers built on it take no setting and build the tree after the first query. A read of such an app takes up to a few seconds.
+- When a web area fills at least 60% of the window, the page text comes first, followed by up to 25 lines of the window's own controls (sidebar, toolbar) under the heading "Window controls outside the page:".
 - A newer capture stops an older read at the next node.
 
 ### One capture at a time
