@@ -10,7 +10,7 @@ The idea comes from OpenAI's Appshots in the Codex app (launched 2026-05-21, bot
 |---|---|
 | `⌃⌥⌘A` in any app | Freyja plays a click, captures the frontmost window, and comes forward with the card in the composer. `FREYJA_APPSHOT_HOTKEY` changes the key. If `⌃⌥⌘A` is taken, `⌃⌥⇧A` is tried. |
 | The `◰ appshot` button in the composer | Captures the window behind Freyja. |
-| The `appshot` tool | An agent looks at the window you were last in. Pass `app` for another app, `window_id` from `list_windows`, `include_image: false` for text only, or `max_chars` for more text. It needs Computer Control on in Settings. |
+| The `appshot` tool | An agent looks at the window you were last in. Pass `app` for another app, `window_id` from `list_windows`, `include_image: false` for text only, or `max_chars` for more text. It needs Computer Control on in Settings. A `window_id` of 0 or below is ignored, because some models fill every optional field. An id that is not open uses `app` when given, and otherwise the error lists the open windows. |
 | The `computer.read` verb in Galdr | Say "what does this error mean" or "summarize this page". Galdr gets the window text and the picture in one call. It needs Computer Control on. |
 
 The hotkey and the button do not need Computer Control, because you pressed the key yourself. The agent tool and the voice verb do, because an agent is looking at your screen.

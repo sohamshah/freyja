@@ -47,7 +47,7 @@ This tool only reads. It does not click, type, scroll or change the window. Pass
                     },
                     "window_id": {
                         "type": "integer",
-                        "description": "CGWindowID from list_windows. Takes the place of `app`.",
+                        "description": "CGWindowID from list_windows. Leave it out unless you have one from list_windows; do not guess an id, and do not send 0. Takes the place of `app`.",
                     },
                     "include_image": {
                         "type": "boolean",
@@ -70,13 +70,12 @@ This tool only reads. It does not click, type, scroll or change the window. Pass
         if self._spec.cancel_event.is_set():
             return _cancelled_result(call_id, "appshot")
 
-        window_id = arguments.get("window_id")
         shot = await appshot.capture(
             source="tool",
-            window_id=int(window_id) if window_id is not None else None,
-            app=str(arguments["app"]) if arguments.get("app") else None,
+            window_id=appshot.positive_int(arguments.get("window_id")),
+            app=str(arguments["app"]).strip() if arguments.get("app") else None,
             want_image=bool(arguments.get("include_image", True)),
-            max_chars=int(arguments.get("max_chars") or appshot.DEFAULT_MAX_CHARS),
+            max_chars=appshot.positive_int(arguments.get("max_chars")) or appshot.DEFAULT_MAX_CHARS,
         )
         return result_for(call_id, shot)
 

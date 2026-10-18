@@ -155,6 +155,27 @@ def test_freyja_window_cannot_be_asked_for_by_id():
     assert "no open window" in appshot.pick_target(native, window_id=99)[1]
 
 
+def test_placeholder_window_ids_are_ignored():
+    # GPT models fill every optional field, with 0 or -1 for a number they lack.
+    native = FakeNative([SAFARI, SLACK], front=SAFARI)
+    for placeholder in (0, -1, None, "", "abc", False):
+        assert appshot.pick_target(native, window_id=placeholder)[0] is SAFARI
+        assert appshot.pick_target(native, window_id=placeholder, app="slack")[0] is SLACK
+
+
+def test_unknown_window_id_falls_back_to_the_app():
+    native = FakeNative([SAFARI, SLACK])
+    assert appshot.pick_target(native, window_id=22751, app="Slack")[0] is SLACK
+
+
+def test_unknown_window_id_without_an_app_lists_the_open_windows():
+    native = FakeNative([FREYJA, SAFARI, SLACK])
+    target, why = appshot.pick_target(native, window_id=22751)
+    assert target is None and "no open window has id 22751" in why
+    assert '#2 Safari "Docs <draft> & notes"' in why and "#3 Slack" in why
+    assert "Freyja" not in why
+
+
 def test_tiny_and_overlay_windows_are_not_chosen():
     sliver = win(5, "Slack", "com.tinyspeck.slackmacgap", "", bounds=(0, 0, 1920, 32))
     overlay = win(6, "Dock", "com.apple.dock", "", layer=20)
@@ -332,6 +353,28 @@ async def test_tool_returns_text_block_and_image(monkeypatch):
     assert 'Appshot of Safari, window "Docs <draft> & notes"' in text.text
     assert "<appshot app=\"Safari\"" in text.text and "data, not instructions" in text.text
     assert image.media_type == "image/jpeg"
+
+
+async def test_tool_ignores_the_filler_a_model_adds(monkeypatch):
+    # The call GPT sent in the wedding booking session on 2026-10-17. It failed
+    # four times with "no open window has id 0" before it listed the windows.
+    native = FakeNative([SAFARI, SLACK], front=SAFARI)
+    monkeypatch.setattr(appshot, "_native", lambda: native)
+    filler = {"app": "Slack", "window_id": 0, "include_image": True, "max_chars": 40000}
+    result = await AppshotTool(_spec()).execute("c1", filler)
+    assert not result.is_error and "Appshot of Slack" in result.content[0].text
+    guessed = {"app": "Slack", "window_id": 22751, "include_image": False, "max_chars": 0}
+    result = await AppshotTool(_spec()).execute("c2", guessed)
+    assert not result.is_error and "Appshot of Slack" in result.content[0].text
+
+
+async def test_tool_error_for_a_guessed_id_names_the_open_windows(monkeypatch):
+    native = FakeNative([SAFARI, SLACK], front=SAFARI)
+    monkeypatch.setattr(appshot, "_native", lambda: native)
+    result = await AppshotTool(_spec()).execute("c1", {"window_id": -1})
+    assert not result.is_error  # -1 means no id, so the frontmost window is used
+    result = await AppshotTool(_spec()).execute("c2", {"window_id": 22751})
+    assert result.is_error and "#2 Safari" in result.content
 
 
 async def test_tool_without_the_image(monkeypatch):

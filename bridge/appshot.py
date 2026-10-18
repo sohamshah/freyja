@@ -268,22 +268,47 @@ def _is_normal_window(w: Any) -> bool:
     )
 
 
+def positive_int(value: Any) -> int | None:
+    """A number from a model's tool call, or None when it is a placeholder.
+
+    Some models fill every optional field of a tool, with 0 or -1 for a number
+    they have no value for. A window id or a size is never zero or negative."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _open_windows(windows: list[Any]) -> str:
+    shown = [
+        f'#{int(w.id)} {w.owner} "{_one_line(str(w.title or ""))[:50]}"' for w in windows[:10]
+    ]
+    return "; ".join(shown) or "none"
+
+
 def pick_target(
     native: Any, *, window_id: int | None = None, app: str | None = None
 ) -> tuple[Any | None, str | None]:
     """The window to capture, or (None, why not).
 
     Without arguments this is the frontmost window of the frontmost app, and
-    when that is Freyja, the topmost window of any other app."""
+    when that is Freyja, the topmost window of any other app. A window id that
+    is zero, negative or not open is a guess. With an app name the app's window
+    is used instead, and without one the error lists the open windows."""
     windows = [w for w in native.list_windows() if _is_normal_window(w)]
-    if window_id is not None:
-        w = next((w for w in windows if int(w.id) == int(window_id)), None)
-        if w is None:
-            return None, f"no open window has id {window_id}"
-        if is_freyja_window(w):
-            return None, "that window belongs to Freyja"
-        return w, None
     others = [w for w in windows if not is_freyja_window(w)]
+    window_id = positive_int(window_id)
+    if window_id is not None:
+        w = next((w for w in windows if int(w.id) == window_id), None)
+        if w is not None:
+            if is_freyja_window(w):
+                return None, "that window belongs to Freyja"
+            return w, None
+        if not app:
+            return None, f"no open window has id {window_id}. Open windows: {_open_windows(others)}"
     if app:
         needle = app.strip().lower()
         for w in others:
@@ -334,7 +359,8 @@ async def capture(
     `error`, `text_status` and `image_status` say what happened."""
     global _current, _current_key, _epoch
     started = time.perf_counter()
-    max_chars = max(500, min(int(max_chars or DEFAULT_MAX_CHARS), MAX_CHARS_LIMIT))
+    max_chars = max(500, min(positive_int(max_chars) or DEFAULT_MAX_CHARS, MAX_CHARS_LIMIT))
+    window_id = positive_int(window_id)
     try:
         native = native or _native()
     except Exception as exc:  # noqa: BLE001
