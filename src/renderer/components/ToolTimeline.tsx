@@ -1,6 +1,7 @@
 import { memo, useMemo, useRef, useState } from 'react'
 import { useHarness } from '../state/store'
 import { formatDuration } from '../lib/format'
+import { resolveToolCall } from '../lib/toolCall'
 import type { ToolCallRecord } from '@shared/events'
 import { StickyHeader } from './StickyHeader'
 
@@ -69,7 +70,7 @@ export function ToolTimeline() {
       if (!r) continue
       next.push({
         id: r.id,
-        name: r.name,
+        name: resolveToolCall(r).name,
         startedAt: r.startedAt,
         durationMs: r.durationMs,
         status: r.status,
@@ -434,7 +435,7 @@ function shortDuration(ms: number): string {
 }
 
 function summarizeShort(r: ToolCallRecord): string {
-  const args = r.arguments as Record<string, unknown> | undefined
+  const args = resolveToolCall(r).arguments
   if (!args) return ''
   const s = (k: string) => typeof args[k] === 'string' ? args[k] as string : ''
   return s('path') || s('file_path') || s('query') || s('url')?.slice(0, 50) || s('command')?.split('\n')[0]?.slice(0, 50) || ''

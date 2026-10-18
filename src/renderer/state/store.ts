@@ -2067,7 +2067,16 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       if (!existing) return next
       next.toolCalls = {
         ...slice.toolCalls,
-        [ev.id]: { ...existing, arguments: ev.arguments, partialJson: undefined },
+        [ev.id]: {
+          ...existing,
+          arguments: ev.arguments,
+          partialJson: undefined,
+          // A wrapper (`call_tool`) re-enters the tool path under the same id,
+          // so this event names the tool that runs. Keep it: the wrapper's
+          // args, which held the name, were just overwritten.
+          invokes:
+            ev.toolName && ev.toolName !== existing.name ? ev.toolName : existing.invokes,
+        },
       }
       return next
     }

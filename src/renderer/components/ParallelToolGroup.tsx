@@ -5,6 +5,7 @@ import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl } from '../lib/frameMedia'
 import { FileChangeBadge, FileChangeCard } from './FileChangeCard'
 import { describeCall, summarizePartialJson, ToolResultImages } from './ToolCallChip'
+import { resolveToolCall } from '../lib/toolCall'
 import { SearchQueryContext, HighlightText } from './searchContext'
 import { JevResultSummary } from './JevRun'
 import { parseJevResult } from '../lib/jevLog'
@@ -109,9 +110,12 @@ function ToolLane({
   const isError = record.status === 'error'
   const durationPct = record.durationMs ? Math.min(100, (record.durationMs / maxDuration) * 100) : 0
 
+  // `call_tool` is a wrapper: the lane names the tool it runs and
+  // summarizes that tool's arguments.
+  const shown = resolveToolCall(record)
   const summary =
-    summarizeArgs(record.name, record.arguments) ||
-    summarizePartialJson(record.name, record.partialJson)
+    summarizeArgs(shown.name, shown.arguments) ||
+    summarizePartialJson(shown.name, shown.partialJson)
   const hasAnyArgs = record.arguments !== undefined || !!record.partialJson
   const argsText =
     record.arguments !== undefined
@@ -125,10 +129,10 @@ function ToolLane({
     (argsText.toLowerCase().includes(q) ||
       (record.result ?? '').toLowerCase().includes(q))
   const open = (userOpen ?? (isRunning && hasAnyArgs)) || matchInBody
-  const toolCategory = getToolCategory(record.name)
+  const toolCategory = getToolCategory(shown.name)
   const jevResult = useMemo(
-    () => (record.name === 'jev_computer_use' && record.result ? parseJevResult(record.result) : null),
-    [record.name, record.result],
+    () => (shown.name === 'jev_computer_use' && record.result ? parseJevResult(record.result) : null),
+    [shown.name, record.result],
   )
 
   const statusDot = isRunning ? (
@@ -181,12 +185,12 @@ function ToolLane({
 
         {/* Tool name */}
         <span className="shrink-0 font-mono text-[11px] text-accent">
-          <HighlightText text={record.name} query={searchQuery} />
+          <HighlightText text={shown.name} query={searchQuery} />
         </span>
 
         {/* Args summary */}
         {summary && (
-          <span className="min-w-0 truncate font-mono text-[10.5px] text-fg-2">
+          <span className="min-w-0 truncate font-mono text-[10.5px] text-fg-2" title={summary}>
             <HighlightText text={summary} query={searchQuery} />
           </span>
         )}

@@ -1,6 +1,7 @@
 import { useContext, useEffect, useState } from 'react'
 import { useHarness } from '../state/store'
 import { formatDuration } from '../lib/format'
+import { resolveToolCall } from '../lib/toolCall'
 import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl, useFrameSvgMarkup } from '../lib/frameMedia'
 import { FileChangeBadge, FileChangeCard } from './FileChangeCard'
@@ -37,10 +38,13 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
   // Header summary — prefer the parsed-args summary once available,
   // else regex-scrape the most useful key out of the partial JSON
   // mid-stream so the chip header isn't a blank "tool_name spinner"
-  // while the agent is still emitting its arguments.
+  // while the agent is still emitting its arguments. `call_tool` is a
+  // wrapper, so the header names the tool it runs and summarizes that
+  // tool's arguments, not the wrapper's.
+  const shown = resolveToolCall(call)
   const summary =
-    summarizeArgs(call.name, call.arguments) ||
-    summarizePartialJson(call.name, call.partialJson)
+    summarizeArgs(shown.name, shown.arguments) ||
+    summarizePartialJson(shown.name, shown.partialJson)
 
   const isStreaming = call.status === 'running'
   const hasAnyArgs = call.arguments !== undefined || !!call.partialJson
@@ -61,10 +65,10 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
   // because the args payload (`task_id` + `comment: Heartbeat`) is
   // boring by construction.
   const isHeartbeat =
-    call.name === 'kanban' &&
-    typeof call.arguments === 'object' &&
-    call.arguments !== null &&
-    (call.arguments as Record<string, unknown>).action === 'heartbeat'
+    shown.name === 'kanban' &&
+    typeof shown.arguments === 'object' &&
+    shown.arguments !== null &&
+    (shown.arguments as Record<string, unknown>).action === 'heartbeat'
 
   if (isHeartbeat) {
     return (
@@ -108,10 +112,10 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
       >
         <span className="flex w-[18px] shrink-0 justify-center">{statusIndicator}</span>
         <span className="shrink-0 font-mono text-[11.5px] text-accent">
-          <HighlightText text={call.name} query={searchQuery} />
+          <HighlightText text={shown.name} query={searchQuery} />
         </span>
         {summary && (
-          <span className="min-w-0 truncate font-mono text-[11px] text-fg-1">
+          <span className="min-w-0 truncate font-mono text-[11px] text-fg-1" title={summary}>
             <HighlightText text={summary} query={searchQuery} />
           </span>
         )}
@@ -251,6 +255,10 @@ export function ToolResultImages({
 // card, not a description of the call itself.
 const HANDOFF_SUMMARY_TOOLS = new Set(['kanban', 'tasks'])
 
+// The agent-facing compaction tool. Its `reason` says why the agent is
+// compacting now, which is what the header should show.
+const COMPACTION_TOOL = 'summarize_context'
+
 /** The call's own plain-language account of itself, when the tool takes
  *  one: bash's `summary`, the computer-use agents' `goal`. It beats any
  *  raw argument for the header — "Verify the rebuilt app…" says more than
@@ -258,6 +266,11 @@ const HANDOFF_SUMMARY_TOOLS = new Set(['kanban', 'tasks'])
  *  picks the same line. */
 export function describeCall(name: string, args?: Record<string, unknown>): string {
   if (!args || HANDOFF_SUMMARY_TOOLS.has(name)) return ''
+  // Compaction: the reason the agent gives for it is the header.
+  if (name === COMPACTION_TOOL) {
+    const reason = args.reason
+    if (typeof reason === 'string' && reason.trim()) return reason.trim()
+  }
   for (const key of ['summary', 'goal']) {
     const v = args[key]
     if (typeof v === 'string' && v.trim()) return v.trim()
@@ -305,7 +318,8 @@ export function summarizePartialJson(name: string, partial?: string): string {
   // bash streams `command` before `summary`, so the header shows the
   // command briefly and then settles on the summary once it arrives.
   if (!HANDOFF_SUMMARY_TOOLS.has(name)) {
-    const described = grab('summary') || grab('goal')
+    const described =
+      (name === COMPACTION_TOOL ? grab('reason') : undefined) || grab('summary') || grab('goal')
     if (described) return described
   }
   const path = grab('path')

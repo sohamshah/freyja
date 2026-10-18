@@ -4051,6 +4051,9 @@ def _new_tracing_registry(
                     "type": "tool_input_end",
                     "sessionId": session_id,
                     "id": tool_id,
+                    # `call_tool` re-enters this wrapper for the tool it runs,
+                    # with the same id. The UI needs this name to label the call.
+                    "toolName": tool_name,
                     "arguments": tool_args,
                 }
             )

@@ -174,6 +174,10 @@ export interface FileChangeSet {
 export interface ToolCallRecord {
   id: string
   name: string
+  /** The tool that actually ran when `name` is a wrapper such as
+   *  `call_tool`. Once set, `arguments` are that tool's own arguments,
+   *  not the wrapper's. */
+  invokes?: string
   arguments?: Record<string, unknown>
   partialJson?: string
   status: 'running' | 'success' | 'error'
@@ -1036,7 +1040,16 @@ export type BridgeEvent =
   | ({ type: 'thinking_delta'; thinking: string } & SessionId)
   | ({ type: 'tool_use_start'; id: string; name: string } & SessionId)
   | ({ type: 'tool_input_delta'; id: string; partialJson: string } & SessionId)
-  | ({ type: 'tool_input_end'; id: string; arguments: Record<string, unknown> } & SessionId)
+  // `toolName` is the tool that runs. It differs from the `tool_use_start`
+  // name when `call_tool` wraps the call: the bridge emits this event twice
+  // for one id, first with the wrapper's args, then with the inner tool's
+  // args and name. Older bridges omit it.
+  | ({
+      type: 'tool_input_end'
+      id: string
+      arguments: Record<string, unknown>
+      toolName?: string
+    } & SessionId)
   | ({
       type: 'tool_result'
       id: string
