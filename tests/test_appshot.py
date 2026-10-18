@@ -558,3 +558,29 @@ def test_window_capture_proxy_query_and_error_text():
             )
     finally:
         server.shutdown()
+
+
+# ── the same filler in the screenshot tool ────────────────────────────────
+
+
+async def test_screenshot_ignores_filler_ids_and_names_a_bad_window(monkeypatch):
+    # `window_id=0` from a model that fills every field failed the capture, and
+    # the error said Screen Recording was missing.
+    from bridge.tools import computer_tools as ct
+
+    calls: list[dict] = []
+
+    async def capture(spec, native, **kw):
+        calls.append(kw)
+        return None
+
+    monkeypatch.setattr(ct, "_require_screen_recording", lambda call_id, tool: None)
+    monkeypatch.setattr(ct, "_import_native", lambda: SimpleNamespace())
+    monkeypatch.setattr(ct, "_emit_frame", capture)
+    spec = ct.ComputerToolSpec(session_id="t", emit_event=lambda _e: None, cancel_event=asyncio.Event())
+    tool = ct.ScreenshotTool(spec)
+    await tool.execute("c1", {"window_id": 0, "display_id": 0})
+    assert calls[-1]["window_id"] is None and calls[-1]["display_id"] is None
+    res = await tool.execute("c2", {"window_id": 4242})
+    assert res.is_error and "window 4242 could not be captured" in res.content
+    assert "Screen Recording" not in res.content

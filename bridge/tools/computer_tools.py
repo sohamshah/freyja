@@ -39,6 +39,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from bridge.appshot import positive_int
+
 from bridge.tools.appshot_tool import AppshotTool
 from bridge.tools.base import (
     ImageBlock,
@@ -988,16 +990,30 @@ decide where to act. Screenshots are cheap — take as many as you need.
         if self._spec.cancel_event.is_set():
             return _cancelled_result(call_id, "screenshot")
 
-        display_id = arguments.get("display_id")
-        window_id = arguments.get("window_id")
+        # Some models fill every optional field, with 0 for an id they have
+        # none for. A display or window id is never 0: `window_id=0` failed the
+        # capture, and the error blamed Screen Recording.
+        display_id = positive_int(arguments.get("display_id"))
+        window_id = positive_int(arguments.get("window_id"))
 
         frame = await _emit_frame(
             self._spec,
             native,
-            display_id=int(display_id) if display_id is not None else None,
-            window_id=int(window_id) if window_id is not None else None,
+            display_id=display_id,
+            window_id=window_id,
             reason="screenshot_tool",
         )
+        if frame is None and window_id is not None:
+            # Screen Recording was checked above: a window that cannot be
+            # captured is gone, minimized or not a window id.
+            return ToolResult(
+                call_id=call_id,
+                content=(
+                    f"screenshot: window {window_id} could not be captured (closed, minimized, "
+                    "or not an id from list_windows). Leave window_id out to capture the display."
+                ),
+                is_error=True,
+            )
         if frame is None:
             return ToolResult(
                 call_id=call_id,
@@ -1244,8 +1260,8 @@ action depending on the policy.
                 call_id=call_id, content=f"Error: {exc}", is_error=True
             )
 
-        window_id = arguments.get("window_id")
-        bundle_id = arguments.get("bundle_id")
+        window_id = positive_int(arguments.get("window_id"))
+        bundle_id = str(arguments.get("bundle_id") or "").strip() or None
         if not window_id and not bundle_id:
             return ToolResult(
                 call_id=call_id,
@@ -2141,12 +2157,8 @@ one and costs less.
                 is_error=True,
             )
 
-        display_id = arguments.get("display_id")
-        effective_display = (
-            int(display_id)
-            if display_id is not None
-            else self._spec.default_display_id
-        )
+        display_id = positive_int(arguments.get("display_id"))
+        effective_display = display_id if display_id is not None else self._spec.default_display_id
 
         # Capture at FULL native resolution (max_dim=None means no
         # downscale). Then crop in Python. This is simpler than
