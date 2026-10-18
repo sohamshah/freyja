@@ -271,7 +271,7 @@ jev before and after this round's fixes, 2 runs per task:
 
 What stops jev on `desk` now:
 
-- **Values the planner works out cannot be typed.** "Type 86.00 into the Amount field [16]" gave no text: the number is not quoted, so it is no typing option for Jev, and the text door does not see the sub-goal. Two refund runs stopped there with the right amount in the sub-goal.
+- **Values the planner works out cannot be typed.** "Type 86.00 into the Amount field [16]" gave no text: the number is not quoted, so it is no typing option for Jev, and the text door does not see the sub-goal. Two refund runs stopped there with the right amount in the sub-goal. Fixed 2026-10-18 (see "Values the planner works out" below).
 - **The LLM budget.** Three runs used all 32 calls with 4 or 5 of their 7 or 8 decisions made. A calling agent should give such a queue one goal per record.
 - **Doubt between pages.** Five runs stopped on operation scores of 0.44-0.49 while moving between a queue, a policy and the directory.
 - **Wrong decisions.** One routing run sent the injected ticket where it said; one expense run approved a duplicate receipt without opening its History tab.
@@ -307,12 +307,29 @@ What changed is in `docs/jev-operator.md` ("Reading a booking page"). In short:
 - A read whose last values the page does not show ends `partial`.
 - A fallback address is opened only when the run cannot continue where it is.
 
+## Values the planner works out
+
+The planner reads pages the screen no longer shows and works values out from them, then writes a sub-goal such as "Type 86.00 into the Amount field [16]". On `desk/refunds` it took the amount from the order and the policy ($19.80 is 15% of an order amount), on `mail/otp_signin` it read the code from the email, and on `desk/contract` it read the section numbers. It left out the quotes about half the time. An unquoted value was no typing option for Jev, and the text door saw neither the sub-goal nor the planner's notes, so it returned no text. In a baseline round, 22 runs stopped this way, every refund run among them.
+
+Four versions of a fix were measured on the typing tasks, 3 runs each (correct decisions of 126, with the stops for no text and the text-door calls):
+
+| Version | Decisions | Stops for no text | Door calls |
+|---|---|---|---|
+| origin/main | 54 | 22 | 77 |
+| The door sees the sub-goal and the planner's notes | 76 | 1 | 53 |
+| An unquoted value with a digit or an @ in a typing sub-goal is a typing option | 77 | 8 | 31 |
+| Both (kept) | 77 | 1 | 36 |
+| Both, and the planner is told to quote every value it types | 73 | 1 | 23 |
+
+Per task, origin/main against the kept version: `desk/refunds` 3 to 8 of 24, `desk/refunds_briefed` 5 to 15 of 24, `desk/contract` 12 to 18 of 18, `mail/otp_signin` 1 to 3 of 3. `ops/sticky_form` stayed at 27 of 27, and the access tasks moved within their noise (they stop on doubt between pages, not on typing). The one stop left is right: Jev went to type a refund amount before the planner had read the policy, and the door had no amount to give. The refund tasks still end on the LLM budget, with more of their decisions made.
+
+Over every env, 1 run per task, origin/main and the kept version each passed 54 of 68 tasks with 233 of 281 marks, and stops for no text went from 11 to 0. `desk/routing` fell from 7 to 0 of 8 in that round, but no routing run types anything, and 3 more runs each gave 8 of 24 on origin/main and 9 of 24 with the change.
+
 ## Still open
 
 - **Trusted-only controls.** Some controls ignore script events, like the live Travelers panel. A page run needs a trusted-input fallback for them: the real pointer, scoped to the run's tab and its window position. Until then, `computer_use` handles them.
 - **Embedded frames.** A page run cannot enter a cross-origin frame. It now says so and hands that step to `computer_use`.
 - **Return on a button, keyboard reordering and custom pickers** (`widgets/reorder_keyboard`, `mail/meeting_from_email`, `mail/otp_signin`).
-- **Values the planner works out** are no typing options unless quoted, and the text door does not see the sub-goal (see `desk/refunds`).
 - **Long counts across pages.** `ops/count_reviews` reports a count now, but a wrong one (10 or 11 for 13): reading 140 reviews screen by screen loses some.
 - **Sub-goal shape.** The decision model follows the planner's sub-goal closely, so its wording matters: the action first, one record at a time, a repeated step written as new. Three prompt changes in this round each fixed one task and broke another; only a regression run over every env showed it.
 - **"Reject all" on a cookie wall is gated** as irreversible.

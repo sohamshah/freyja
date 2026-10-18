@@ -159,12 +159,23 @@ class LLMHelper:
         field_value: str | None,
         screen_text: str,
         history: list[dict[str, Any]],
+        subgoal: str | None = None,
+        planner_notes: list[str] | None = None,
     ) -> tuple[str | None, list[str]]:
         """The string for this field, and the other strings the goal gives to type."""
         system = (
             "You supply the exact string to type into one text field for a desktop automation. "
             "Return a JSON object with two keys. text: the string to enter, inferred from the goal "
-            "and the field's meaning using the screen context and recent actions. values: every "
+            "and the field's meaning using the screen context and recent actions. "
+            + (
+                "subgoal is the planner's current instruction to the operator, and planner_notes "
+                "are the planner's notes from earlier in the run: the planner reads pages the "
+                "screen no longer shows and works values out from them, so when the subgoal or a "
+                "note gives the text for this field, return that text exactly. "
+                if subgoal or planner_notes
+                else ""
+            )
+            + "values: every "
             "other string the goal gives to type into a field, each exactly as it goes into its "
             "field, one per field (a first name and a last name are two values); [] if none. "
             "Never invent personal information, credentials, or payment details. "
@@ -177,6 +188,10 @@ class LLMHelper:
             "screen_text": screen_text[:4000],
             "recent_actions": history[-6:],
         }
+        if subgoal:
+            payload["subgoal"] = subgoal
+        if planner_notes:
+            payload["planner_notes"] = list(planner_notes)
         out = await self._call(
             "text",
             system,

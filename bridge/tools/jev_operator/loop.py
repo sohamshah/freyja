@@ -39,6 +39,7 @@ from bridge.tools.jev_operator.observe import (
     literals_from_goal,
     quoted_literals,
     meaningful_change,
+    typed_values,
 )
 from bridge.tools.jev_operator.notes import app_notes, site_notes
 from bridge.tools.jev_operator import dom_surface
@@ -1103,9 +1104,16 @@ class Operator:
                     history=self.history,
                     # The planner's own quoted text ("\\nBread 1", with its line break)
                     # is a typing option too; the goal's literals alone lost the break.
+                    # So is a value it worked out and wrote without quotes ("Type
+                    # 86.00 into Amount [16]"), which is in no goal.
                     literals=list(
                         dict.fromkeys(
-                            [*literals, *self._goal_values, *quoted_literals(self._subgoal or "")]
+                            [
+                                *literals,
+                                *self._goal_values,
+                                *quoted_literals(self._subgoal or ""),
+                                *typed_values(self._subgoal or ""),
+                            ]
                         )
                     ),
                     launch_candidates=launch_cands,
@@ -1740,6 +1748,10 @@ class Operator:
             field_value=d.target.value,
             screen_text=obs.screen_text,
             history=self.history,
+            # The planner works values out from pages the screen no longer shows;
+            # without its sub-goal and notes the door returned no text for them.
+            subgoal=self._subgoal,
+            planner_notes=self._planner_notes,
         )
         self._log_llm(since)
         # Goals give names, codes and addresses without quotes, so each field took

@@ -438,6 +438,22 @@ _PLANNER_TYPE = re.compile(
     r"""(?:(?!\bthen\b)[^.;\[])*\[(\d+)\]""",
     re.I,
 )
+# The same step with the value unquoted (a value with a digit or an @, as
+# observe.typed_values reads it): "Type 86.00 into the Amount field [16]".
+_PLANNER_TYPE_BARE = re.compile(
+    r"""\s*type\s+(?:the\s+(?:text|value)\s+|exactly\s+)?([^\s"'“‘\[\]]*[\d@][^\s"'“‘\[\]]*?)[,;:]?\s+in(?:to)?\b"""
+    r"""(?:(?!\bthen\b)[^.;\[])*\[(\d+)\]""",
+    re.I,
+)
+
+
+def _planner_type_step(subgoal: str) -> tuple[str, str] | None:
+    """The text and field index of a subgoal that starts by typing."""
+    m = _PLANNER_TYPE.match(subgoal)
+    if m is not None:
+        return next(g for g in m.groups()[:4] if g is not None), m.group(5)
+    m = _PLANNER_TYPE_BARE.match(subgoal)
+    return (m.group(1), m.group(2)) if m is not None else None
 
 
 def _planner_type(
@@ -448,13 +464,13 @@ def _planner_type(
     thresholds: Thresholds,
     literals: list[str],
 ) -> bool:
-    m = _PLANNER_TYPE.match(subgoal)
-    if m is None or "type_target" not in answers.answers or "text_source" not in answers.answers:
+    step = _planner_type_step(subgoal)
+    if step is None or "type_target" not in answers.answers or "text_source" not in answers.answers:
         return False
-    text = next(g for g in m.groups()[:4] if g is not None)
+    text, index = step
     tt, ts = answers.choice("type_target"), answers.choice("text_source")
     field = _resolve(tt.choice, obs.type_targets)
-    if field is None or tt.choice != m.group(5) or tt.confidence < thresholds.target:
+    if field is None or tt.choice != index or tt.confidence < thresholds.target:
         return False
     i = ts.choice[3:]
     if not (

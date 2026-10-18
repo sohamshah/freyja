@@ -768,6 +768,27 @@ def quoted_literals(text: str) -> list[str]:
     return out
 
 
+# "Type 86.00 into the Amount field [16]": the planner leaves out the quotes about
+# as often as it writes them, and a value it worked out is in no goal. One word
+# after "type" that holds a digit or an @ is the text; "type the query into"
+# names none.
+_TYPED_BARE = re.compile(
+    r"\b(?:type|enter)\s+(?:the\s+(?:text|value)\s+|exactly\s+)?"
+    r"(?P<v>[^\s\"'“‘\[\]]+)\s+in(?:to)?\b",
+    re.I,
+)
+
+
+def typed_values(text: str) -> list[str]:
+    """Unquoted values a subgoal says to type, such as amounts, codes and emails."""
+    out: list[str] = []
+    for m in _TYPED_BARE.finditer(text or ""):
+        v = m.group("v").rstrip(",;:")
+        if re.search(r"[\d@]", v) and v not in out:
+            out.append(v)
+    return out
+
+
 def literals_from_goal(goal: str) -> list[str]:
     """Strings the goal itself supplies as typing candidates: quoted spans
     first, then bare numbers. Jev chooses among these so simple goals need
