@@ -289,3 +289,10 @@ export function shortUrl(url: string, max = 60): string {
   const s = noQuery.length < bare.length ? `${noQuery}?…` : noQuery
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`
 }
+
+
+/** What a sub-agent's `toolsCalled` counts: a Jev run's are actions on the
+ *  screen (the memo said "25 tool calls" for 25 clicks and scrolls). */
+export function workWord(id: string): string {
+  return id.startsWith('jev_') ? 'actions' : 'tools'
+}

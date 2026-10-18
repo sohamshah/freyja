@@ -6,6 +6,7 @@ import { Spinner } from '../lib/spinner'
 import { SubagentCard, AgentTypeTag } from './SubagentCard'
 import { SwarmMonitor } from './SwarmMonitor'
 import { BusPublishBadge } from './BusActivityFeed'
+import { workWord } from '../lib/jevLog'
 
 /**
  * Swarm grid — renders a row of "monitors" side-by-side when the assistant
@@ -227,7 +228,7 @@ function SubagentTile({ id }: { id: string }) {
         <span>·</span>
         <span className="font-mono">{formatDuration(sub.elapsedMs)}</span>
         <span>·</span>
-        <span className="font-mono">{sub.toolsCalled} tools</span>
+        <span className="font-mono">{sub.toolsCalled} {workWord(sub.id)}</span>
         <BusPublishBadge agentId={id} />
         {canAttach && (
           <span className="ml-auto font-mono text-accent/80">attach →</span>

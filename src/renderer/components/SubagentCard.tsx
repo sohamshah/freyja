@@ -4,7 +4,7 @@ import { useHarness, type SystemEventRecord } from '../state/store'
 import { formatDuration, formatTokens } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl } from '../lib/frameMedia'
-import { parseJevResult } from '../lib/jevLog'
+import { parseJevResult, workWord } from '../lib/jevLog'
 import { JevResultSummary, jevActivity, jevStatus, useJevLastLine } from './JevRun'
 
 /** Snapshot of a kanban card's current state, derived from the running
@@ -578,7 +578,7 @@ function PhaseBlock({
         <span>·</span>
         <span>{formatTokens(sub.tokensIn + sub.tokensOut)}</span>
         <span>·</span>
-        <span>{sub.toolsCalled} tools</span>
+        <span>{sub.toolsCalled} {workWord(sub.id)}</span>
       </div>
     </div>
   )

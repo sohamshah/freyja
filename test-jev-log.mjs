@@ -238,6 +238,14 @@ check('the store keeps the log whole and calls a stuck run stopped', () => {
   assert.equal(h().computerSessions.jev_t_1.status, 'stopped')
 })
 
+check('the footer of runs after 2026-10-17 names actions and decisions', () => {
+  const text = 'Read the rates.\n\n[jev_computer_use] status=done surface=dom actions=4 decisions=9 jev_median_ms=150 llm_calls=4 llm_ms=20000 elapsed=31.2s log=/x.jsonl'
+  const r = parseJevResult(text)
+  assert.equal(r.status, 'done')
+  assert.equal(r.footer.actions, '4')
+  assert.equal(r.footer.decisions, '9')
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

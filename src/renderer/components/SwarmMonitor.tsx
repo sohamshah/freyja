@@ -5,6 +5,7 @@ import { formatDuration, formatTokens } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { AgentTypeTag } from './SubagentCard'
 import { BusActivityFeed, BusPublishBadge } from './BusActivityFeed'
+import { workWord } from '../lib/jevLog'
 
 /**
  * Full-viewport "Mission Control" view for a swarm of subagents.
@@ -386,7 +387,7 @@ function MonitorCell({
         {/* Tool call feed — full URLs, not truncated */}
         <div className="px-3 py-2">
           <div className="mb-1.5 font-mono text-[9px] uppercase tracking-[0.08em] text-fg-3">
-            activity ({sub.toolsCalled} tools)
+            activity ({sub.toolsCalled} {workWord(sub.id)})
           </div>
           <div className="space-y-[3px]">
             {recentCalls.length === 0 ? (
@@ -437,7 +438,7 @@ function MonitorCell({
         <span>·</span>
         <span className="font-mono">{formatDuration(sub.elapsedMs)}</span>
         <span>·</span>
-        <span className="font-mono">{sub.toolsCalled} tools</span>
+        <span className="font-mono">{sub.toolsCalled} {workWord(sub.id)}</span>
         {onClick && (
           <span className="ml-auto font-mono text-[9px] text-accent/60">
             click to spotlight

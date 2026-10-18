@@ -1,5 +1,6 @@
 import { useHarness } from '../state/store'
 import { formatDuration, formatTokens } from '../lib/format'
+import { workWord } from '../lib/jevLog'
 
 export function SubagentDetail({ id }: { id: string }) {
   const sub = useHarness((s) => s.subagents[id])
@@ -43,7 +44,7 @@ export function SubagentDetail({ id }: { id: string }) {
             <Stat label="elapsed" value={formatDuration(sub.elapsedMs)} />
             <Stat label="tokens in" value={formatTokens(sub.tokensIn)} />
             <Stat label="tokens out" value={formatTokens(sub.tokensOut)} />
-            <Stat label="tools" value={String(sub.toolsCalled)} />
+            <Stat label={workWord(sub.id)} value={String(sub.toolsCalled)} />
           </div>
           {sub.result && (
             <div>
