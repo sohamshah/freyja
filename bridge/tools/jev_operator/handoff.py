@@ -38,6 +38,11 @@ DEFAULT_MAX_CALLS = 32
 MAX_WAIT_S = 60
 # The run's first screen, for a goal that compares with "the value when you started".
 START_SCREEN_CHARS = 2000
+# Page text the doors read: a web page's whole text (the decision step reads its
+# first 3000 characters). A room's policy cut at 4000 sent the check back to
+# scroll for text it had been given only the start of.
+REPLAN_TEXT_CHARS = 12_000
+VERIFY_TEXT_CHARS = 24_000
 WAIT_HELP = (
     "Jev's own wait is under a second, for a page that is still loading. Use direct_action "
     f'{{"kind": "wait", "seconds": 1 to {MAX_WAIT_S}}} when the goal waits for something to '
@@ -47,7 +52,7 @@ WAIT_HELP = (
     "only what to do then, never the wait itself: \"after the wait, click Refresh\" made the "
     "operator wait again instead. A step it took before the wait is written as new (\"click "
     "Refresh again, then read the new backlog\"), or the operator takes it as done. "
-    "recent_actions show earlier waits, and t is the run seconds when each ran. A goal with a "
+    "recent_actions show earlier waits, and at_s is the run seconds when each ran. A goal with a "
     "time limit is judged on a reading taken at or after the limit: before done, read once "
     "more (refresh if the page needs it) if the last reading is older. "
 )
@@ -219,7 +224,10 @@ class LLMHelper:
                 "searches for the typed text, while down then return opens the first "
                 "suggestion. A [dialog] at the top of the screen text covers the page, and only "
                 "its controls are listed until it closes. An [embedded frame] cannot be read or "
-                "clicked by the operator. It asked for help. Decide what to do next.\n"
+                "clicked by the operator. screen_text is the page's whole text (in view, then below "
+                "and above the view, each marked), so text needs no scrolling to be read; a scroll "
+                "only brings a control into view, and the operator does that by itself. It asked for "
+                "help. Decide what to do next.\n"
                 'Return JSON: {"status": "continue"|"done"|"give_up", "subgoal": string|null, '
                 '"direct_action": null | {"kind": "open_url", "url": string} | {"kind": "wait", '
                 '"seconds": int}, "note": string}.\n'
@@ -282,7 +290,7 @@ class LLMHelper:
             "why_help_was_requested": reason,
             "recent_actions": history[-10:],
             "elements": elements_table[:12000],
-            "screen_text": screen_text[:4000],
+            "screen_text": screen_text[:REPLAN_TEXT_CHARS],
         }
         if planner_notes:
             payload["planner_notes"] = list(planner_notes)
@@ -329,20 +337,36 @@ class LLMHelper:
         system = (
             "You judge whether a desktop automation achieved its goal, from the final screen and the action log. "
             'Return JSON: {"satisfied": bool, "summary": string, "report": string, '
-            '"subgoal": string|null, "wait_seconds": int|null}. '
+            '"subgoal": string|null, "wait_seconds": int|null, "unresolved": [string]}. '
             "summary is two or three sentences for the user: what was done and what the screen shows now. "
+            "Say what the screen shows now (which panel is open, what is selected) only from "
+            "final_screen_text and final_elements; earlier screens and notes describe the past. "
             "report holds every value the goal asked to read, list, count or check, complete, one per line "
             "(\"Acme Staging (acme-staging-4021)\", \"Pro plan: Upgrade button shown\"); it is an empty "
-            "string when the goal asks for no values. Take values from final_screen_text, earlier_screens_text "
-            "(text of the screens the run read before the final one, each line once, in order) and "
-            "planner_notes (what the planner noted on the way): a list read page by page is no longer on "
-            "the final screen. Never invent or guess a value; name one the run never saw as not found. "
+            "string when the goal asks for no values. On a web page final_screen_text is the whole page "
+            "(in view, then below and above the view), not only the part in view. Take values from it and "
+            "from earlier_screens_text (text of the screens the run read before the final one, under the "
+            "page each was read on): a list read page by page is no longer on the final screen. "
+            "planner_notes are the planner's own notes on the way, not page evidence: use them for a value "
+            "only when a screen showed that value, never to decide which record a value belongs to. "
+            "Put each value under the record the text shows it under (the room, row, plan or card); when "
+            "the text does not show which record a value belongs to, report it as unclear rather than pick "
+            "one. Never invent or guess a value; name one the run never saw as not found. A value the "
+            "pages do not show but you work out (a total from a nightly price) is computed: say so "
+            "(\"3 nights at the $318 shown per night: $954, computed, not a quoted total\"), and treat a "
+            "per-night figure the page labels as a price \"from\" or an average as no exact charge. "
             "A goal that only asks to read or report is satisfied once report has all it asked for, even "
             "if the final screen no longer shows it. "
             "If not satisfied, subgoal is the next concrete instruction on visible controls, "
             "starting with the action; the operator sees only the screen and the subgoal, so a "
             "fact the step depends on that the screen does not show (a starting value, a rule "
-            "from another page) follows the action briefly. "
+            "from another page) follows the action briefly. Never send the run back to scroll for text "
+            "final_screen_text already holds. "
+            "unresolved lists the values the goal asked for that the run has looked for wherever the "
+            "goal lets it look (panels it may open, pages it may visit) without finding them, for "
+            "example a quote the page shows only after a room is selected when the goal forbids "
+            "selecting one. Leave it [] while there is somewhere permitted left to look; when it is not "
+            "empty and nothing is left to look at, subgoal is null. "
             f"When the goal waits for something that has not happened yet (a value to cross a "
             f"line, a job to finish, a time limit to pass), set wait_seconds (1 to {MAX_WAIT_S}) "
             "to let that time pass first; subgoal then names only what to do after it (\"click "
@@ -355,7 +379,7 @@ class LLMHelper:
             "A subgoal must stay inside the goal: never propose changing settings or preferences, "
             "or anything else the goal did not ask for, and never a view switch just to read what "
             "the table lists. "
-            "run_seconds is how long the run has been going, and an action's t is the run seconds "
+            "run_seconds is how long the run has been going, and an action's at_s is the run seconds "
             "when it ran. A goal with a time limit (\"if it has not happened within 2 minutes, "
             "stop and tell me\") is met only by a reading taken at or after the limit: if the "
             "last one is older, it is not satisfied, and the subgoal is to read once more. "
@@ -367,7 +391,7 @@ class LLMHelper:
             "focused_window": window,
             "windows_at_start": windows_at_start or [],
             "windows_now": windows_now or [],
-            "final_screen_text": screen_text[:4000],
+            "final_screen_text": screen_text[:VERIFY_TEXT_CHARS],
             "final_elements": elements_table[:8000],
         }
         if earlier_text:

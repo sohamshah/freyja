@@ -514,3 +514,42 @@ def test_return_in_a_search_box_with_suggestions_searches(lists):
 
     assert enter("q", "Search models") == "search-pick"
     assert enter("from", "From airport") == "pick"
+
+
+ROOMS = ROOT / "tests/fixtures/jev_dom/rooms.html"
+
+
+@pytest.fixture()
+def rooms():
+    with _open(ROOMS) as p:
+        yield p
+
+
+def test_short_controls_are_named_by_their_card(rooms):
+    # Two room cards each had "VIEW DETAILS"; once one read "VIEWING", neither
+    # label repeated, both lost their room, and a run opened the wrong room.
+    s = rooms.snap()
+    assert _by_label(s, "VIEW DETAILS")[0]["context"] == "Deluxe Room 1 King Bed"
+    assert _by_label(s, "VIEWING")[0]["context"] == "Deluxe Pet-Friendly Room 1 King Bed"
+
+
+def test_collapsed_and_faded_text_is_not_page_text(rooms):
+    # Both rooms' detail panels stayed in the page, and the closed one's rate
+    # read as the open room's.
+    s = rooms.snap()
+    assert "OPEN-PET-PANEL" in s["text"] and "SHOWN-SLIDE" in s["text"]
+    assert "HIDDEN-DELUXE-PANEL" not in s["text"] and "FADED-SLIDE" not in s["text"]
+
+
+def test_a_long_page_is_read_whole(rooms):
+    # At 6000 characters a policy below the room cards was cut mid-word.
+    s = rooms.snap()
+    assert "POLICY-END" in s["text"] and s["textCut"] is False
+    assert s["text"].index("[below the visible area]") < s["text"].index("POLICY-END")
+
+
+def test_text_above_the_view_is_returned_apart(rooms):
+    rooms.eval("window.scrollTo(0, 1500)")
+    s = rooms.snap()
+    assert "Rooms and rates" in s["above"] and "Rooms and rates" not in s["text"]
+    rooms.eval("window.scrollTo(0, 0)")

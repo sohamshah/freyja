@@ -47,6 +47,9 @@ class SubAgentRecord:
     context_tokens: int = 0
     iterations: int = 0
     tools_called: int = 0
+    # How the work is counted, when the agent's work is not tool calls and steps
+    # ("40 actions on the page, 50 Jev decisions, 19 LLM calls").
+    work_note: str = ""
     agent_type_name: str = "general"
     artifact_path: str | None = None
     created_files: list[str] = field(default_factory=list)

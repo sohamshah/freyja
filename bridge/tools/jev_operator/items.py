@@ -19,7 +19,7 @@ MAX_ITEM_CHARS = 300
 SAME_FAILURE_LIMIT = 3
 EVIDENCE_SCREEN_CHARS = 200
 ITEM_PLACEHOLDER = "(the item described under ITEM below)"
-STATUSES = ("done", "blocked", "needs_confirmation", "budget_exhausted", "error", "skipped")
+STATUSES = ("done", "partial", "blocked", "needs_confirmation", "budget_exhausted", "error", "skipped")
 
 # make_operator(item_goal, extra_literals, remaining_s) -> an Operator
 MakeOperator = Callable[[str, list[str], float], Any]

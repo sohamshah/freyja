@@ -355,13 +355,17 @@ function Stat({ children }: { children: ReactNode }) {
   return <span className="whitespace-nowrap">{children}</span>
 }
 
-/** The footer as words. Its `steps` counts actions taken; the timeline
- *  numbers Jev's decisions, which include `done` and `unsure`. */
+/** The footer as words. `actions` counts what the run did on the screen
+ *  (`steps` in runs saved before 2026-10-17); `decisions` counts Jev's calls,
+ *  which the timeline numbers and which include `done` and `unsure`. */
 function footerStats(r: JevResult): string[] {
   const f = r.footer
   const llmCalls = Number(f.llm_calls ?? 0)
+  const actions = f.actions ?? f.steps
+  const decisions = f.decisions ?? f.jev_calls
   return [
-    f.steps != null ? `${f.steps} action${f.steps === '1' ? '' : 's'}` : '',
+    actions != null ? `${actions} action${actions === '1' ? '' : 's'}` : '',
+    decisions != null ? `${decisions} Jev decision${decisions === '1' ? '' : 's'}` : '',
     f.jev_median_ms ? `jev ${f.jev_median_ms} ms median` : '',
     llmCalls ? `${llmCalls} LLM call${llmCalls === 1 ? '' : 's'}${f.llm_ms ? ` (${(Number(f.llm_ms) / 1000).toFixed(1)} s)` : ''}` : '',
     f.elapsed ? f.elapsed.replace(/s$/, ' s') : '',

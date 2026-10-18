@@ -143,13 +143,17 @@ keyboard, so do not use your own click/type/scroll tools. Runs take turns: one
 started while another is going waits for it, so start a run that depends on
 another's result only after reading that result. Pass `wait=true` only when
 you must block for the result. A returned `done` is a hint, not proof: check
-it against the returned text before telling the person it worked.
+it against the returned text before telling the person it worked. `partial`
+means the run read everything the goal let it reach and names the values the
+pages do not show (a quote behind a step the goal forbids): running it again
+will not find them.
 
 Write the goal well. Put the person's exact wording and every literal value
 (names, numbers, URLs, text to type) in the goal, quoting text that must be
 typed verbatim (e.g. type "hello world"). Merge consecutive micro-steps into
 one goal ("open Notes, create a note titled "Plan" with the body ...") instead
-of making one call per click. State what must not happen ("do not submit").
+of making one call per click. State what must not happen ("do not submit"). For a read, say which values are
+needed and which are wanted only "if shown".
 Give a multi-page flow one goal when the goal holds every value its pages ask
 for, with `max_steps` of about 12 per page (a six-page booking: 80): the run's
 end-state check then sees the whole flow, and a page goal tends to click on
@@ -589,6 +593,11 @@ the run stops with status=blocked instead of clicking into the other app.
         record.output_tokens = result.llm_tokens[1]
         record.tools_called = result.steps
         record.iterations = result.jev_calls
+        # The generic memo said "25 tool calls, 36 steps" for 25 actions and 36
+        # decisions, the run's own footer "steps=25 jev_calls=36".
+        record.work_note = (
+            f"{result.steps} actions, {result.jev_calls} Jev decisions, {result.llm_calls} LLM calls"
+        )
         self._sub_spec.registry.mark_done(
             record.id,
             text,

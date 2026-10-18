@@ -623,7 +623,9 @@ def test_loop_stuck_goes_through_replan_door(tmp_path, monkeypatch):
     op, events = make_operator(Inert(), ScriptedProvider([("click", "1")] * 8), llm=llm)
     res = asyncio.run(op.run())
     assert res.status == "blocked" and "buttons do nothing" in res.summary
-    assert len(seen) == 1 and seen[0].startswith("You are the planner")
+    # The planner, then one end-state check before the run stops: what a
+    # stopped run read comes back with its reason.
+    assert len(seen) == 2 and seen[0].startswith("You are the planner") and seen[1].startswith("You judge")
     assert sum(1 for h in res.history if h.get("changed") is False) == 3, "stuck rule fires after three unchanged actions"
 
 
@@ -1735,7 +1737,8 @@ def test_same_action_three_times_forces_one_replan_then_blocks(tmp_path, monkeyp
 
 def test_scrolls_that_move_nothing_end_in_a_replan(tmp_path, monkeypatch):
     """Scrolls were exempt from the stuck rule, so a run scrolled 29 times in a
-    row with no visible change and never asked for help."""
+    row with no visible change and never asked for help. The same scroll on the
+    same screen right after one that moved nothing is not tried at all."""
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
     reasons: list[str] = []
 
@@ -1749,8 +1752,9 @@ def test_scrolls_that_move_nothing_end_in_a_replan(tmp_path, monkeypatch):
     op, _ = make_operator(FakeCalculator(), ScriptedProvider([("scroll_down", None)] * 12),
                           llm=LLMHelper(fake_complete, max_calls=4), max_steps=12)
     res = asyncio.run(op.run())
-    assert res.status == "blocked" and len(res.history) == 3, (res.status, len(res.history))
-    assert reasons and ("changed nothing" in reasons[0] or "repeated" in reasons[0])
+    assert res.status == "blocked" and len(res.history) == 2, (res.status, len(res.history))
+    assert res.history[1]["diff"].startswith("not scrolled")
+    assert reasons and "already at its bottom" in reasons[0]
 
 
 def test_values_read_on_earlier_screens_reach_the_check_and_the_result(tmp_path, monkeypatch):

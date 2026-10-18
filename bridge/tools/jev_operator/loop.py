@@ -42,7 +42,14 @@ from bridge.tools.jev_operator.observe import (
 )
 from bridge.tools.jev_operator.notes import app_notes, site_notes
 from bridge.tools.jev_operator import dom_surface
-from bridge.tools.jev_operator.dom_surface import DOMSurface, DOMUnavailable, TabGone
+from bridge.tools.jev_operator.dom_surface import (
+    ABOVE_MARK,
+    PAGE_CUT_MARK,
+    VIEW_MARK,
+    DOMSurface,
+    DOMUnavailable,
+    TabGone,
+)
 from bridge.tools.jev_operator.surface import AXSurface, Surface
 
 SELF_BUNDLE = "co.freyja.desktop"
@@ -114,12 +121,21 @@ _IRREVERSIBLE = re.compile("|".join(IRREVERSIBLE_PATTERNS), re.I)
 GATED_ROLES = {"AXButton", "AXMenuItem", "AXLink", "AXMenuButton", "AXToolbarButton"}
 MAX_VERIFY_ROUNDS = 2
 PROBE_RETRIES = 2
-# Besides the final screen, the end-state check reads every other line the run
-# saw (each once, in order) and the planner's notes: a list read page by page is
-# gone from the final screen. Capped to keep the check one moderate call.
-SEEN_MAX_CHARS = 20_000
+# Besides the final screen, the end-state check reads the other screens the run
+# read, each whole and in order, and the planner's notes: a list read page by
+# page is gone from the final screen. Capped to keep the check one moderate call.
+SEEN_MAX_CHARS = 40_000
+# Screens kept in memory, a little over what one check is sent.
+SCREENS_KEPT_CHARS = 80_000
 PLANNER_NOTES_KEPT = 12
 BELOW_MARK = "[below the visible area]"
+# Lines the surfaces add about the text itself, never page content.
+TEXT_MARKS = {BELOW_MARK, ABOVE_MARK, VIEW_MARK, PAGE_CUT_MARK}
+_MORE_TEXT = re.compile(r"^\[[\d,]+ more characters of page text are not shown here\]$")
+# Page scrolls in a row that brought no text the run had not read force a
+# replan. With the whole page read at once, scrolling over it re-reads it: a run
+# once scrolled up and down a results page for four minutes.
+MAX_IDLE_SCROLLS = 4
 # The same action this many times in a row with no meaningful change forces a
 # replan; the same thing again after that ends the run blocked.
 MAX_REPEATS = 3
@@ -138,6 +154,7 @@ APP_DIRS = [
 
 
 _URL = re.compile(r"https?://[^\s\"'<>()\[\]{}“”‘’]+", re.I)
+_INDEX_REF = re.compile(r"\[(\d{1,4})\]")
 _QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”')
 _OPEN_VERB = re.compile(r"\b(?:open|go to|visit|navigate to|load|browse to)\s*$", re.I)
 
@@ -161,6 +178,38 @@ def urls_from_goal(goal: str) -> list[str]:
         if u not in out:
             out.append(u)
     return out[:5]
+
+
+# The goal gives an address only for when the run cannot go on where it is:
+# "Continue in the results tab ... If the owned tab is unavailable, open https://…".
+_FALLBACK = re.compile(
+    r"\b(?:if|when|in case|should)\b[^.!?;\n]{0,120}?\b(?:unavailable|not available|missing|gone|"
+    r"closed|not open|cannot|can't|isn't|is not|doesn't|does not|fails?|not found|no longer)\b"
+    r"|\b(?:otherwise|or else|failing that|as a fallback|fall back|if needed|if necessary)\b",
+    re.I,
+)
+
+
+def fallback_urls(goal: str) -> set[str]:
+    """Addresses the goal gives only as a fallback, in a clause that starts
+    with a condition ("if it is unavailable, open …", "otherwise open …")."""
+    out: set[str] = set()
+    for m in _URL.finditer(goal):
+        start = max(goal.rfind(c, 0, m.start()) for c in ".!?;\n")
+        if _FALLBACK.search(goal[start + 1 : m.start()]):
+            out.add(m.group(0).rstrip(".,;:!?"))
+    return out
+
+
+def same_site(a: str, b: str) -> bool:
+    """The same site: the last two parts of the host name match (a link
+    shortener and its booking pages, t.bookwell.example and
+    alameda.bookwell.example, are one site)."""
+
+    def site(u: str) -> str:
+        return ".".join((urlparse(u).hostname or "").lower().split(".")[-2:])
+
+    return bool(site(a)) and site(a) == site(b)
 
 
 def same_page(current: str, wanted: str) -> bool:
@@ -290,14 +339,22 @@ class RunResult:
 
     def footer(self) -> str:
         med = int(statistics.median(self.jev_ms)) if self.jev_ms else 0
+        # actions: what the run did on the screen (the address it opened
+        # included); decisions: Jev calls, one per step, some of which choose to
+        # ask for help; llm_calls: planner, end-state and field-text calls.
         return (
-            f"[jev_computer_use] status={self.status} surface={self.surface} steps={self.steps} "
-            f"jev_calls={self.jev_calls} "
+            f"[jev_computer_use] status={self.status} surface={self.surface} actions={self.steps} "
+            f"decisions={self.jev_calls} "
             f"jev_median_ms={med} llm_calls={self.llm_calls} llm_ms={self.llm_ms} "
             f"elapsed={self.elapsed_s:.1f}s log={self.log_path}"
         )
 
     def next_hint(self) -> str:
+        if self.status == "partial":
+            return (
+                "the run read everything the goal let it reach; the summary names what the pages "
+                "do not show. Running again will not find it: ask the person or the site"
+            )
         if self.status == "needs_confirmation":
             return (
                 f"confirm with the person, then re-run with allow_irreversible=true "
@@ -417,10 +474,26 @@ class Operator:
         self._window_checks: set[str] = set()
         self._shot_geometry: tuple[tuple[float, ...], int, int] | None = None
         self.read_ms: list[int] = []
-        # What the end-state check reports from (see SEEN_MAX_CHARS).
-        self._seen: list[str] = []
-        self._seen_lines: set[str] = set()
-        self._seen_chars = 0
+        # What the end-state check reports from (see SEEN_MAX_CHARS): each distinct
+        # screen the run read, as (page, lines). A line kept once for the whole run
+        # lost the record it was under: a pet room's "Room Only Flexible 411" was
+        # the Deluxe room's line too, so the check said the pet room's plans were
+        # never shown.
+        self._screens: list[tuple[str, list[str]]] = []
+        # Every (page, line) the run has read, uncapped (only for telling new text
+        # from text already read), and how many the last read added: a page
+        # scroll that adds none only re-read the page.
+        self._known: set[tuple[str, str]] = set()
+        self._last_new_lines = 0
+        self._idle_scrolls = 0
+        # End-state checks that disagreed, counted again from 1 after progress.
+        self._verify_rounds = 0
+        # (scroll operation, screen fingerprint) of a scroll that moved nothing:
+        # the same scroll on the same screen is not tried again.
+        self._scroll_edge: tuple[str, str] | None = None
+        # The controls a sub-goal names by index, as (role, label) on the screen
+        # the planner read: indices are renumbered when the page changes.
+        self._subgoal_refs: dict[int, tuple[str, str]] = {}
         self._planner_notes: list[str] = []
         self._start_screen = ""  # the first screen with text, for the planner
         self._last_obs: Observation | None = None
@@ -537,10 +610,18 @@ class Operator:
         try:
             RUN_DIR.mkdir(parents=True, exist_ok=True)
             with self.log_path.open("a", encoding="utf-8") as f:
+                # `t` is the time of the log row (epoch seconds) and `elapsed_s`
+                # the run seconds when it was written; an action's own run
+                # seconds are `at_s`. Rows spread an action into themselves, and
+                # its old `t` once overwrote the row's time.
+                start = getattr(self, "_t_start", None)
+                stamp = {"t": time.time()}
+                if start is not None:
+                    stamp["elapsed_s"] = round(time.perf_counter() - start, 3)
                 f.write(
                     json.dumps(
-                        {"run_id": self.run_id, "t": time.time(), "surface": self.surface.name,
-                         **({"item": self.item} if self.item is not None else {}), **row},
+                        {"run_id": self.run_id, "surface": self.surface.name,
+                         **({"item": self.item} if self.item is not None else {}), **row, **stamp},
                         ensure_ascii=False,
                     )
                     + "\n"
@@ -673,7 +754,7 @@ class Operator:
         read_ms = obs.read_ms
         self.read_ms.append(read_ms)
         self._last_obs = obs
-        self._remember_text(obs.screen_text)
+        self._last_new_lines = self._remember_text(obs.full_text, obs.focused_window)
         self.actuator.window_frames = obs.window_frames
         self._seen_windows.update(w for w in obs.windows if w != "(untitled window)")
         if self._start_windows is None:
@@ -819,11 +900,18 @@ class Operator:
             await self.actuator.focus(target.bundle)
         await self._say(f"target: {target.name} ({target.bundle}, pid {target.pid})")
         if urls and not cfg.dry_run:
-            await self._open_goal_url(urls[0])
+            if urls[0] in fallback_urls(cfg.goal) and await self._continues_here(urls[0]):
+                # Opening it anyway started a continuation over from the site's
+                # entry page in a new tab, with the results tab right there.
+                self._log(
+                    {"event": "open_url", "url": urls[0], "skipped": "the goal gives it as a "
+                     "fallback, and the run continues in the tab a run already used"}
+                )
+            else:
+                await self._open_goal_url(urls[0])
 
         before: Observation | None = None
         pending: dict[str, Any] | None = None
-        verify_rounds = 0
         stuck_streak = 0
         step = 0
 
@@ -912,17 +1000,30 @@ class Operator:
                 entry = {**pending, "changed": changed, "diff": diff}
                 self.history.append(entry)
                 kind = pending.get("kind")
-                if kind in ("scroll_down", "scroll_up"):
-                    # A scroll that moved the view is progress even when nothing
+                page_scroll = kind in ("scroll_down", "scroll_up")
+                if page_scroll:
+                    # A scroll that moved the view is not stuck even when nothing
                     # meaningful came into it; one that changed nothing at all is
-                    # not (the page was at its end, or the wheel hit something
-                    # that does not scroll). 29 such scrolls once ran unchecked.
+                    # (the page was at its end, or the wheel hit something that
+                    # does not scroll). 29 such scrolls once ran unchecked.
                     stuck_streak = 0 if changed else stuck_streak + 1
                     self._track_repeat(pending, changed)
+                    if not changed:
+                        # At the top or the bottom: the same scroll on this same
+                        # screen does nothing again (it was tried three times in
+                        # a row, three times in one run).
+                        self._scroll_edge = (str(kind), obs.fingerprint())
+                    self._idle_scrolls = 0 if self._last_new_lines else self._idle_scrolls + 1
                 elif kind != "wait":
                     stuck_streak = 0 if meaningful else stuck_streak + 1
                     self._track_repeat(pending, meaningful)
-                if meaningful:
+                    self._idle_scrolls = 0
+                # A page scroll is progress only when it brought text the run had
+                # not read. Scrolling back over a page already read moves the
+                # screen but learns nothing, and it had reset the counts that end
+                # a stuck run: six end-state checks once followed such scrolls.
+                progress = meaningful and (not page_scroll or self._last_new_lines > 0)
+                if progress:
                     self._replans_since_progress = 0
                     if kind != "wait":
                         self._progress_since_verify = True
@@ -963,13 +1064,26 @@ class Operator:
                     return out
                 continue
 
+            if self._idle_scrolls >= MAX_IDLE_SCROLLS:
+                self._idle_scrolls = 0
+                out = await self._replan(
+                    obs,
+                    target,
+                    reason=f"{MAX_IDLE_SCROLLS} scrolls in a row brought no text the run had not "
+                    "already read (the page's whole text is read at every step, so scrolling "
+                    "does not reveal more of it)",
+                )
+                if out is not None:
+                    return out
+                continue
+
             step += 1
             try:
                 d = await decide(
                     self.provider,
                     obs,
                     goal=cfg.goal,
-                    subgoal=self._subgoal,
+                    subgoal=self._bound_subgoal(obs),
                     history=self.history,
                     # The planner's own quoted text ("\\nBread 1", with its line break)
                     # is a typing option too; the goal's literals alone lost the break.
@@ -1043,57 +1157,10 @@ class Operator:
                 return finish("dry_run", f"Would {describe(d)}.", screen=obs.screen_text)
 
             if d.operation == "done":
-                out = await self._verify(obs)
+                out = await self._check_done(obs, target, by="Jev")
                 if out is not None:
-                    verify_rounds += 1
-                    summary = str(out.get("summary") or "")
-                    if out.get("satisfied") is True:
-                        return finish(
-                            "done",
-                            summary or "Goal reported satisfied.",
-                            screen=obs.screen_text,
-                            report=self._report(out),
-                        )
-                    # A disagreement after real progress (the run filled more of
-                    # a long form since the last check) starts the count again:
-                    # only done-claims with nothing done in between end the run.
-                    if self._progress_since_verify:
-                        verify_rounds = 1
-                    self._progress_since_verify = False
-                    wait_s = out.get("wait_seconds")
-                    if isinstance(wait_s, (int, float)) and wait_s >= 1:
-                        # "Not yet" on a goal that waits: the claim was early, not
-                        # wrong about the screen. Two such checks ended a watch
-                        # run "blocked" a minute into its two.
-                        verify_rounds -= 1
-                        self._set_subgoal(out.get("subgoal"))
-                        await self._say(f"  not yet: {summary}; sub-goal: {self._subgoal}")
-                        waited = await self._planner_wait(
-                            {"seconds": wait_s}, obs, target, by="check"
-                        )
-                        if waited is not None:
-                            return waited
-                        continue
-                    if verify_rounds >= MAX_VERIFY_ROUNDS:
-                        return finish(
-                            "blocked",
-                            f"Jev reported done {verify_rounds} times but the end-state check "
-                            f"disagreed each time: {summary} " + self._template_summary(obs),
-                            screen=obs.screen_text,
-                            report=self._report(out),
-                        )
-                    self._set_subgoal(out.get("subgoal"))
-                    await self._say(f"  verifier disagrees: {summary}; sub-goal: {self._subgoal}")
-                    continue
-                unverified = (
-                    ""
-                    if self.llm is None or not cfg.verify_with_llm
-                    else "Jev reported done; the end state was not checked "
-                    "(LLM check unavailable). "
-                )
-                return finish(
-                    "done", unverified + self._template_summary(obs), screen=obs.screen_text
-                )
+                    return out
+                continue
 
             if d.operation in ("need_help", "blocked"):
                 reason = d.operation + (": " + "; ".join(d.reasons) if d.reasons else "")
@@ -1232,6 +1299,33 @@ class Operator:
                             screen=obs.screen_text,
                         )
                     rec = await self.surface.execute("press", d.key, window=obs.focused_frame)
+                elif d.operation in ("scroll_down", "scroll_up") and self._scroll_edge == (
+                    d.operation,
+                    obs.fingerprint(),
+                ):
+                    edge = "bottom" if d.operation == "scroll_down" else "top"
+                    self.history.append(
+                        {
+                            "step": step,
+                            "kind": d.operation,
+                            "action": action_desc,
+                            "ok": False,
+                            "changed": False,
+                            "diff": f"not scrolled: the last {d.operation} on this same screen moved "
+                            f"nothing (already at the {edge})",
+                        }
+                    )
+                    self._log({"event": "outcome", "step": step, **self.history[-1]})
+                    before, pending = obs, None
+                    out = await self._replan(
+                        obs,
+                        target,
+                        reason=f"Jev chose {d.operation} again, but the page is already at its "
+                        f"{edge}: that scroll just moved nothing on this same screen",
+                    )
+                    if out is not None:
+                        return out
+                    continue
                 elif d.operation in ("scroll_down", "scroll_up"):
                     plan = obs.scroll_plan(
                         f"{self.cfg.goal}\n{self._subgoal or ''}", down=d.operation == "scroll_down"
@@ -1301,7 +1395,7 @@ class Operator:
                 "action": action_desc,
                 # Run seconds when it ran: a watch goal's time limit is judged by
                 # how old the last reading is.
-                "t": round(time.perf_counter() - self._t_start),
+                "at_s": round(time.perf_counter() - self._t_start),
                 **(
                     {"target_key": (d.target.window, d.target.role, d.target.label)}
                     if d.target is not None
@@ -1367,21 +1461,71 @@ class Operator:
                 return e.label
         return None
 
-    def _remember_text(self, text: str) -> None:
-        for line in (text or "").split("\n"):
-            line = line.strip()
-            if not line or line == BELOW_MARK or line in self._seen_lines:
-                continue
-            if self._seen_chars + len(line) > SEEN_MAX_CHARS:
-                return
-            self._seen_lines.add(line)
-            self._seen.append(line)
-            self._seen_chars += len(line) + 1
+    def _remember_text(self, text: str, page: str = "") -> int:
+        """Keep the screen the run just read, unless it shows the same lines as a
+        screen already kept for this page (a scroll only reorders them). Returns
+        how many (page, line) pairs the run had not read before."""
+        lines = [
+            ln
+            for ln in (x.strip() for x in (text or "").split("\n"))
+            if ln and ln not in TEXT_MARKS and not _MORE_TEXT.match(ln)
+        ]
+        added = 0
+        for ln in lines:
+            if (page, ln) not in self._known:
+                self._known.add((page, ln))
+                added += 1
+        if lines:
+            content = set(lines)
+            if not any(p == page and set(ls) == content for p, ls in self._screens):
+                self._screens.append((page, lines))
+                self._trim_screens()
+        return added
+
+    def _trim_screens(self) -> None:
+        """Within SCREENS_KEPT_CHARS: drop first the oldest screens that a later
+        screen of the same page fully contains, then the oldest."""
+        size = lambda ls: sum(len(x) + 1 for x in ls)  # noqa: E731
+        total = sum(size(ls) for _, ls in self._screens)
+        i = 0
+        while total > SCREENS_KEPT_CHARS and i < len(self._screens) - 1:
+            page, ls = self._screens[i]
+            if any(p == page and set(ls) <= set(later) for p, later in self._screens[i + 1 :]):
+                total -= size(ls)
+                del self._screens[i]
+            else:
+                i += 1
+        while total > SCREENS_KEPT_CHARS and len(self._screens) > 1:
+            total -= size(self._screens.pop(0)[1])
 
     def _earlier_text(self, obs: Observation) -> str:
-        """Lines the run saw that the final screen no longer shows."""
-        final = {line.strip() for line in obs.screen_text.split("\n")}
-        return "\n".join(line for line in self._seen if line not in final)
+        """The other screens the run read, each whole under a header naming its
+        page, oldest first, without those the final screen repeats. Over the
+        limit, screens a later one contains go first, then the oldest."""
+        final = set(
+            ln for ln in (x.strip() for x in obs.full_text.split("\n")) if ln and ln not in TEXT_MARKS
+        )
+        here = obs.focused_window
+        shown = [(p, ls) for p, ls in self._screens if not (p == here and set(ls) <= final)]
+        size = lambda ls: sum(len(x) + 1 for x in ls)  # noqa: E731
+        total = sum(size(ls) for _, ls in shown)
+        i = 0
+        while total > SEEN_MAX_CHARS and i < len(shown):
+            p, ls = shown[i]
+            later = [set(x) for q, x in shown[i + 1 :] if q == p] + ([final] if p == here else [])
+            if any(set(ls) <= x for x in later):
+                total -= size(ls)
+                del shown[i]
+            else:
+                i += 1
+        while total > SEEN_MAX_CHARS and shown:
+            total -= size(shown.pop(0)[1])
+        out: list[str] = []
+        for n, (p, ls) in enumerate(shown, 1):
+            where = p or "the screen"
+            out.append(f"[earlier screen {n}, read on {where}" + (" (the final page)]" if p == here else "]"))
+            out.extend(ls)
+        return "\n".join(out)
 
     def _track_repeat(self, pending: dict[str, Any], meaningful: bool) -> None:
         """Count the same action in a row that changed nothing meaningful."""
@@ -1405,20 +1549,35 @@ class Operator:
             return None
         return str(path)
 
-    def _log_finish(self, status: str, summary: str, footer: str = "") -> None:
+    def _log_finish(self, status: str, summary: str, res: RunResult | None = None) -> None:
+        """The run's last log row: everything the caller was sent, so a reader of
+        the log needs no other row to know how the run ended and what it read."""
         if self._finish_logged:
             return
         self._finish_logged = True
-        self._log(
-            {
-                "event": "finish",
-                "status": status,
-                "reason": summary,
-                "summary": summary,
-                "footer": footer,
-                "steps": len(self.history),
-            }
-        )
+        row: dict[str, Any] = {
+            "event": "finish",
+            "version": 2,
+            "status": status,
+            "reason": summary,
+            "summary": summary,
+            "actions": len(self.history),
+            "decisions": len(self.jev_ms),
+        }
+        if res is not None:
+            row.update(
+                {
+                    "code": res.code,
+                    "report": res.report,
+                    "page": res.page,
+                    "pending_action": res.pending_action,
+                    "llm_calls": res.llm_calls,
+                    "llm_ms": res.llm_ms,
+                    "llm_tokens": list(res.llm_tokens),
+                    "footer": res.footer(),
+                }
+            )
+        self._log(row)
 
     def _finish(
         self,
@@ -1456,7 +1615,7 @@ class Operator:
             page=self._page_line(),
             report=report,
         )
-        self._log_finish(status, summary, res.footer())
+        self._log_finish(status, summary, res)
         return res
 
     def _page_line(self) -> str:
@@ -1465,6 +1624,20 @@ class Operator:
             return ""
         title = getattr(self.surface, "title", "")
         return f"{title} — {url}" if title else url
+
+    async def _continues_here(self, url: str) -> bool:
+        """Can the run go on in its pinned tab instead of opening `url`: a tab a
+        run opened or worked in, on the same site."""
+        s = self.surface
+        if s.name != "dom":
+            return False
+        if not (getattr(s, "_injected_js", False) or dom_surface.run_tab(s.bundle, s.tab_id)):
+            return False
+        try:
+            current = await s.current_url()
+        except Exception:  # noqa: BLE001
+            return False
+        return same_site(current, url)
 
     async def _open_goal_url(self, url: str) -> None:
         """The goal names a page: open it in a new tab unless the browser already
@@ -1501,11 +1674,36 @@ class Operator:
 
     # ─── doors ───────────────────────────────────────────────────────
 
-    def _set_subgoal(self, s: Any) -> None:
+    def _set_subgoal(self, s: Any, obs: Observation | None = None) -> None:
         if isinstance(s, str) and s.strip():
             self._subgoal = s.strip()[:400]
             self._subgoal_steps = 0
             self._subgoal_at = len(self.history)
+            self._subgoal_refs = {}
+            if obs is not None:
+                for m in _INDEX_REF.finditer(self._subgoal):
+                    el = obs.by_index(int(m.group(1)))
+                    if el is not None:
+                        self._subgoal_refs[el.index] = (el.role, el.label)
+
+    def _bound_subgoal(self, obs: Observation) -> str | None:
+        """The sub-goal with its [N] indices renumbered for this screen. The
+        planner's indices belong to the screen it read: after a date was picked a
+        RESET CALENDAR link moved the departure day from [30] to [31], and Jev,
+        told [30], doubted the right day. An index whose control is not on this
+        screen once (by role and label) is dropped, and the label stays."""
+        sub = self._subgoal
+        if not sub or not self._subgoal_refs:
+            return sub
+
+        def fix(m: re.Match[str]) -> str:
+            ref = self._subgoal_refs.get(int(m.group(2)))
+            if ref is None:
+                return m.group(0)
+            same = [e for e in obs.elements if (e.role, e.label) == ref]
+            return f"{m.group(1)}[{same[0].index}]" if len(same) == 1 else ""
+
+        return re.sub(r"(\s?)\[(\d{1,4})\]", fix, sub)
 
     def _log_llm(self, since: int) -> None:
         if self.llm is not None:
@@ -1575,7 +1773,7 @@ class Operator:
             reason=reason,
             history=self.history,
             elements_table=obs.door_table(),
-            screen_text=obs.screen_text,
+            screen_text=obs.full_text,
             screenshot=shot[0].data if shot else None,
             screenshot_size=(shot[0].width, shot[0].height) if shot else None,
             media_type=shot[0].mime_type if shot else "image/jpeg",
@@ -1618,7 +1816,7 @@ class Operator:
                     # Not stuck: the goal waits on the world, and a call is left for
                     # the next check. A watch run ended "blocked" here with the
                     # check asking for 15 more seconds.
-                    self._set_subgoal(check.get("subgoal"))
+                    self._set_subgoal(check.get("subgoal"), obs)
                     return await self._planner_wait({"seconds": wait_s}, obs, target, by="check")
             if self.llm is not None and self.llm.budget_left <= 1 and self._replans_since_progress <= 2:
                 # Still making progress: the run is out of calls, not stuck, and the
@@ -1644,28 +1842,23 @@ class Operator:
         status = out.get("status")
         if status == "done":
             # The planner sees the same screen and can be just as wrong; hold its
-            # "done" to the end-state check Jev's own "done" goes through.
-            check = await self._verify(obs)
-            if check is None:
-                return self._finish(
-                    "done",
-                    "The planner reported done; the end state was not checked (LLM check "
-                    "unavailable). " + self._template_summary(obs),
-                    screen=obs.screen_text,
-                )
-            if check.get("satisfied") is True:
-                note = str(check.get("summary") or out.get("note") or "Goal satisfied.")
-                return self._finish(
-                    "done", note, screen=obs.screen_text, report=self._report(check)
-                )
-            self._set_subgoal(check.get("subgoal"))
-            await self._say(
-                f"  planner said done, end-state check disagrees: {check.get('summary')}"
-            )
-            return None
+            # "done" to the end-state check Jev's own "done" goes through, and
+            # count its rejections with Jev's. Counted apart, five rejected
+            # checks in a row came from planner claims with nothing new read.
+            return await self._check_done(obs, target, by="the planner")
         if status == "give_up":
-            return self._finish("blocked", str(out.get("note") or reason), screen=obs.screen_text)
-        self._set_subgoal(out.get("subgoal"))
+            # One end-state check first, when a call is left: what the run read
+            # comes back with the reason, and a read whose last values are not on
+            # the page ends partial instead of blocked.
+            note = str(out.get("note") or reason)
+            check = await self._verify(obs) if self.history else None
+            if check and check.get("satisfied") is True:
+                summary = str(check.get("summary") or "Goal satisfied.")
+                return self._finish("done", summary, screen=obs.screen_text, report=self._report(check))
+            if check is None:
+                return self._finish("blocked", note, screen=obs.screen_text)
+            return self._finish_blocked(obs, note, check)
+        self._set_subgoal(out.get("subgoal"), obs)
         await self._say(f"  sub-goal: {self._subgoal}")
         da = out.get("direct_action")
         if isinstance(da, dict) and da.get("kind") == "wait" and not self.cfg.dry_run:
@@ -1693,6 +1886,77 @@ class Operator:
                     }
                 )
         return None
+
+    async def _check_done(self, obs: Observation, target: Target, *, by: str) -> RunResult | None:
+        """The end-state check behind every "done", Jev's or the planner's.
+        Returns the result that ends the run, or None to go on with the check's
+        sub-goal. Rejections are counted together: only progress between two of
+        them (an action that took effect, or text the run had not read) starts
+        the count again, so claims with nothing new between them end the run."""
+        out = await self._verify(obs)
+        if out is None:
+            unverified = (
+                ""
+                if by == "Jev" and (self.llm is None or not self.cfg.verify_with_llm)
+                else f"{by[0].upper()}{by[1:]} reported done; the end state was not checked "
+                "(LLM check unavailable). "
+            )
+            return self._finish("done", unverified + self._template_summary(obs), screen=obs.screen_text)
+        summary = str(out.get("summary") or "")
+        if out.get("satisfied") is True:
+            return self._finish(
+                "done", summary or "Goal reported satisfied.", screen=obs.screen_text, report=self._report(out)
+            )
+        wait_s = out.get("wait_seconds")
+        if isinstance(wait_s, (int, float)) and wait_s >= 1:
+            # "Not yet" on a goal that waits: the claim was early, not wrong about
+            # the screen, and does not count. Two such checks ended a watch run
+            # "blocked" a minute into its two.
+            self._set_subgoal(out.get("subgoal"), obs)
+            await self._say(f"  not yet: {summary}; sub-goal: {self._subgoal}")
+            return await self._planner_wait({"seconds": wait_s}, obs, target, by="check")
+        self._verify_rounds = 1 if self._progress_since_verify else self._verify_rounds + 1
+        self._progress_since_verify = False
+        unresolved = self._unresolved(out)
+        if unresolved and not str(out.get("subgoal") or "").strip():
+            # The check found every place the goal lets the run look, and the
+            # rest is not on the page: say what was read and what is missing.
+            return self._finish_partial(obs, out, unresolved)
+        if self._verify_rounds >= MAX_VERIFY_ROUNDS:
+            if unresolved:
+                return self._finish_partial(obs, out, unresolved)
+            return self._finish(
+                "blocked",
+                f"{by[0].upper()}{by[1:]} reported done {self._verify_rounds} times but the end-state "
+                f"check disagreed each time, with nothing new read in between: {summary} "
+                + self._template_summary(obs),
+                screen=obs.screen_text,
+                report=self._report(out),
+            )
+        self._set_subgoal(out.get("subgoal"), obs)
+        await self._say(f"  {by} said done, the end-state check disagrees: {summary}; sub-goal: {self._subgoal}")
+        return None
+
+    @staticmethod
+    def _unresolved(check: dict[str, Any] | None) -> list[str]:
+        got = (check or {}).get("unresolved")
+        if not isinstance(got, list):
+            return []
+        return [str(x).strip() for x in got if str(x).strip()][:20]
+
+    def _finish_partial(self, obs: Observation, check: dict[str, Any], unresolved: list[str]) -> RunResult:
+        """A read that got all the page shows within the goal's limits, with the
+        values the page does not show named. Not `done` (the goal asked for them),
+        and not `blocked` (running again finds nothing more)."""
+        summary = str(check.get("summary") or "").strip()
+        missing = "; ".join(unresolved)
+        return self._finish(
+            "partial",
+            f"{summary} Not shown on the pages the run could read: {missing}.".strip(),
+            screen=obs.screen_text,
+            report=self._report(check),
+            code="unresolved",
+        )
 
     async def _planner_wait(
         self, da: dict[str, Any], obs: Observation, target: Target, *, by: str = "planner"
@@ -1746,7 +2010,7 @@ class Operator:
             "ok": True,
             "changed": changed,
             "diff": diff,
-            "t": round(time.perf_counter() - self._t_start),
+            "at_s": round(time.perf_counter() - self._t_start),
         }
         self.history.append(entry)
         self._log({"event": "outcome", **entry, "meaningful": moved})
@@ -1894,7 +2158,7 @@ class Operator:
         out = await self.llm.verify(
             goal=self.cfg.goal,
             history=self.history,
-            screen_text=obs.screen_text,
+            screen_text=obs.full_text,
             elements_table=obs.door_table(),
             window=obs.focused_window,
             windows_at_start=self._start_windows or [],
@@ -1950,6 +2214,9 @@ class Operator:
     ) -> RunResult:
         """A stuck run's result. With an end-state check of this screen (`check`),
         its account of what was done and read replaces the action template."""
+        unresolved = self._unresolved(check)
+        if status == "blocked" and check is not None and unresolved:
+            return self._finish_partial(obs, check, unresolved)
         tried = f" Last sub-goal: {self._subgoal}." if self._subgoal else ""
         said = str((check or {}).get("summary") or "").strip()
         return self._finish(

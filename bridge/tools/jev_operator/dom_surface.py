@@ -30,6 +30,7 @@ from bridge.tools.jev_operator.observe import (
     MAX_LABEL_CHARS,
     MAX_ROWS,
     MAX_TEXT_CHARS,
+    PAGE_TEXT_CHARS,
     Element,
     Observation,
     _clip,
@@ -136,6 +137,9 @@ DOM_KEYS = ("return", "escape", "tab", "down", "up")
 _SECURE = re.compile(r"password|passcode|\bpin\b|secure", re.I)
 _WS = re.compile(r"\s+")
 _VERSION = re.compile(r"var VERSION = (\d+);")
+ABOVE_MARK = "[above the visible area]"
+VIEW_MARK = "[the visible area]"
+PAGE_CUT_MARK = "[the page text goes on; this is as much as one read takes]"
 
 
 class DOMUnavailable(Exception):
@@ -666,8 +670,21 @@ class DOMSurface:
                 self.declined_confirm = msg or "(no text)"
         if shown:
             text = "\n".join(shown) + "\n" + text
+        # The whole page for the planner and the end-state check: what is above
+        # the view comes first, so the text reads in page order.
+        above = str(snap.get("above") or "").strip()
+        page_text = text
+        if above:
+            page_text = f"{ABOVE_MARK}\n{above}\n{VIEW_MARK}\n{text}"
+        if snap.get("textCut"):
+            page_text += f"\n{PAGE_CUT_MARK}"
+        page_text = page_text[:PAGE_TEXT_CHARS]
+        # The decision step reads the start of it. The cut says so: a policy cut
+        # at "Cancella…" read as missing from the page, and the run went looking.
         if len(text) > MAX_TEXT_CHARS:
-            text = text[: MAX_TEXT_CHARS - 1] + "…"
+            more = len(text) - MAX_TEXT_CHARS
+            note = f"\n[{more:,} more characters of page text are not shown here]"
+            text = text[: MAX_TEXT_CHARS - len(note)].rstrip() + note
         obs = Observation(
             app_name=target.name,
             bundle=target.bundle,
@@ -682,6 +699,7 @@ class DOMSurface:
             read_ms=read_ms,
             truncated=truncated,
             raw_tree=None,
+            page_text=page_text,
         )
         self._viewport_h = int((snap.get("viewport") or {}).get("h") or 0)
         return obs

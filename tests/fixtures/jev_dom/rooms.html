@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Rooms and rates</title>
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  .room-card { border: 1px solid #ccc; margin: 8px; padding: 8px; }
+  .panel { overflow: hidden; }
+  .panel.closed { height: 0; }
+  .slide { position: absolute; opacity: 0; }
+  .slide.on { position: static; opacity: 1; }
+  .spacer { height: 1400px; }
+</style>
+</head>
+<body>
+<h1>Rooms and rates</h1>
+<div class="rooms">
+  <div class="room-card">
+    <div class="room-head"><h3>Deluxe Room 1 King Bed</h3><span>From 318</span></div>
+    <div class="room-foot"><a href="#p1" id="d1">VIEW DETAILS</a></div>
+  </div>
+  <div class="room-card">
+    <div class="room-head"><h3>Deluxe Pet-Friendly Room 1 King Bed</h3><span>From 431</span></div>
+    <div class="room-foot"><a href="#p2" id="d2">VIEWING</a></div>
+  </div>
+</div>
+<div class="panel closed" id="p1"><p>HIDDEN-DELUXE-PANEL group rate 318</p></div>
+<div class="panel" id="p2"><p>OPEN-PET-PANEL Room Only Flexible 431</p></div>
+<div class="slides"><div class="slide">FADED-SLIDE</div><div class="slide on">SHOWN-SLIDE</div></div>
+<div class="spacer"></div>
+<p id="policy"></p>
+<script>
+  document.getElementById('policy').textContent =
+    Array.from({ length: 250 }, (_, i) => 'Policy sentence ' + i + ' about deposits and cancellation.').join(' ') +
+    ' POLICY-END';
+</script>
+</body>
+</html>

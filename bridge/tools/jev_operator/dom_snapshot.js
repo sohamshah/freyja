@@ -3,12 +3,20 @@
 // install (one observer only); a newer version replaces an older one.
 (function () {
   'use strict';
-  var VERSION = 8;
+  var VERSION = 9;
   var prior = window.__freyjaJev;
   if (prior && prior.version === VERSION) return 'already-installed';
   if (prior && prior.observer) { try { prior.observer.disconnect(); } catch (e) { /* ignore */ } }
 
-  var MAX_ACTIONS = 250, MAX_LABEL = 200, MAX_VALUE = 500, MAX_CTX = 300, MAX_TEXT = 6000;
+  var MAX_ACTIONS = 250, MAX_LABEL = 200, MAX_VALUE = 500, MAX_CTX = 300;
+  // Page text: what is in view, then what is below it, then what is above it.
+  // The decision step reads a short start of it; the planner and the end-state
+  // check read all of it. At 6000 a room's policy below two room cards was cut
+  // mid-word, and a run scrolled up and down for minutes trying to read it.
+  var MAX_TEXT = 24000, MAX_ABOVE = 8000;
+  // A control with a label this short ("VIEW DETAILS", "Edit") is named by the
+  // card it sits in, as the person reads it.
+  var CARD_LABEL_MAX = 30;
   // A row's text as a context: enough for a name, an email and a status.
   var ROW_CTX = 140;
   // Look-alike contexts are compared pairwise only in groups up to this size.
@@ -665,6 +673,26 @@
     });
   }
 
+  function classOf(n) {
+    return String(n.className && n.className.baseVal !== undefined ? n.className.baseVal : n.className || '');
+  }
+
+  // The card a control sits in: its nearest ancestor that has a sibling of the
+  // same tag and class (one of several room cards, result rows or list items).
+  function cardOf(el) {
+    for (var a = parentOf(el), d = 0; a && a.nodeType === 1 && a !== document.body && d < 8; a = parentOf(a), d++) {
+      var p = parentOf(a);
+      if (!p || p.nodeType !== 1 || !p.children) continue;
+      var cls = classOf(a);
+      if (!cls && !/^(LI|TR|ARTICLE|SECTION)$/.test(a.tagName)) continue;
+      for (var i = 0; i < p.children.length; i++) {
+        var c = p.children[i];
+        if (c !== a && c.tagName === a.tagName && classOf(c) === cls) return a;
+      }
+    }
+    return null;
+  }
+
   // Collect every visible candidate control (no viewport filtering, no cap).
   function collect() {
     var els = [], others = [];
@@ -814,6 +842,19 @@
     // section around the grid: two flights with the same Business price both
     // read "(DEPARTING FLIGHT)" and the run picked the wrong one.
     out.forEach(function (e) { if (e.row) e.context = e.row; });
+    // A control with a short label inside one of several look-alike cards (room
+    // cards, result rows, list items) is named by its card, even when no other
+    // control shares its label. Two room cards each had "VIEW DETAILS"; once one
+    // read "VIEWING", neither label repeated, both lost their room, and a run
+    // opened the wrong room's details. Day numbers keep their month (below).
+    out.forEach(function (e) {
+      if (e.context || !e.label || e.label.length > CARD_LABEL_MAX || /^\d{1,2}$/.test(e.label)) return;
+      var card = cardOf(e.proxy || e.el);
+      if (!card) return;
+      var h = card.querySelector('h1,h2,h3,h4,h5,h6,legend,caption,[role=heading]');
+      var t = h ? textOf(h) : leadText(card, controls);
+      if (t && t.length >= 3 && t !== e.label) e.context = clip(t, MAX_CTX);
+    });
     // Day numbers name their month even when only one month has that day: with
     // the past days disabled, November's "12" read just "12" beside "13
     // (November 2026)", and the run would not click it.
@@ -849,15 +890,17 @@
     return dy + dx;
   }
 
-  // Visible text first; then, while the budget lasts, text below the visible area.
-  // Shadow roots are read where their host is.
+  // Visible text first; then, while the budget lasts, text below the visible
+  // area, then text above it. Shadow roots are read where their host is. Text
+  // that a clipping ancestor hides (a collapsed panel) is not on the page.
   function pageText() {
-    var vis = [], below = [], total = 0, vh = window.innerHeight, vw = window.innerWidth, range = document.createRange();
+    var vis = [], below = [], above = [], total = 0, aboveLen = 0, cut = false;
+    var vh = window.innerHeight, vw = window.innerWidth, range = document.createRange();
+    var clips = new Map();
     function walk(root) {
       var walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, null);
       var n;
       while ((n = walker.nextNode())) {
-        if (total > MAX_TEXT) return;
         if (n.nodeType === 1) {
           if (n.shadowRoot) walk(n.shadowRoot);
           continue;
@@ -873,10 +916,22 @@
         var r = range.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
         if (r.right <= 0 || r.left >= vw) continue;
-        if (r.bottom <= 0) continue;
-        if (r.top >= vh) { below.push(s); continue; }
-        vis.push(s);
+        if (clippedAway(p, r, clips)) continue;
+        if (r.bottom <= 0) {
+          // Above the view: only its last part is kept, the part nearest the view.
+          above.push(s);
+          aboveLen += s.length + 1;
+          if (aboveLen > 2 * MAX_ABOVE) {
+            var drop = above.splice(0, Math.ceil(above.length / 2));
+            aboveLen -= drop.join('\n').length + drop.length;
+            cut = true;
+          }
+          continue;
+        }
+        if (total > MAX_TEXT) { cut = true; return; }
         total += s.length + 1;
+        if (r.top >= vh) below.push(s);
+        else vis.push(s);
       }
     }
     walk(document.body || document.documentElement);
@@ -884,12 +939,46 @@
     if (below.length && text.length < MAX_TEXT - 200) {
       text += '\n[below the visible area]\n' + below.join('\n');
     }
-    return text.slice(0, MAX_TEXT);
+    if (text.length > MAX_TEXT) { text = text.slice(0, MAX_TEXT); cut = true; }
+    var top = above.join('\n');
+    if (top.length > MAX_ABOVE) { top = top.slice(top.length - MAX_ABOVE); cut = true; }
+    return { text: text, above: top, cut: cut };
   }
 
+  // The visible rectangle a text's ancestors leave it: the overlap of every
+  // ancestor that clips its overflow without scrolling (overflow hidden or
+  // clip). A panel collapsed to no height keeps its text in the page, laid out
+  // where the panel would open; a person sees none of it. Scrolling containers
+  // do not count: their content is below or above the view, and is read.
+  function clipRect(el, cache) {
+    if (!el || el.nodeType !== 1 || el === document.body || el === document.documentElement) return null;
+    if (cache.has(el)) return cache.get(el);
+    var outer = clipRect(parentOf(el), cache), rect = outer;
+    var cs = getComputedStyle(el);
+    var clipsX = cs.overflowX === 'hidden' || cs.overflowX === 'clip';
+    var clipsY = cs.overflowY === 'hidden' || cs.overflowY === 'clip';
+    if (clipsX || clipsY) {
+      var r = el.getBoundingClientRect();
+      var own = { left: clipsX ? r.left : -Infinity, right: clipsX ? r.right : Infinity,
+        top: clipsY ? r.top : -Infinity, bottom: clipsY ? r.bottom : Infinity };
+      rect = outer ? { left: Math.max(outer.left, own.left), right: Math.min(outer.right, own.right),
+        top: Math.max(outer.top, own.top), bottom: Math.min(outer.bottom, own.bottom) } : own;
+    }
+    cache.set(el, rect);
+    return rect;
+  }
+
+  function clippedAway(el, r, cache) {
+    var c = clipRect(el, cache);
+    if (!c) return false;
+    return r.right <= c.left || r.left >= c.right || r.bottom <= c.top || r.top >= c.bottom;
+  }
+
+  // A carousel's or a tab set's inactive slides fade to opacity 0 and keep their
+  // text in the page; a person reads only the slide that shows.
   function isVisibleLoose(el) {
     if (hiddenByAncestry(el)) return false;
-    return el.checkVisibility ? el.checkVisibility({ checkVisibilityCSS: true }) : true;
+    return el.checkVisibility ? el.checkVisibility({ checkVisibilityCSS: true, opacityProperty: true }) : true;
   }
 
   // The layer a hit at (x, y) belongs to when it is modal: a dialog by role, or a
@@ -983,14 +1072,15 @@
     });
     var de = document.documentElement;
     var maxY = Math.max(0, Math.max(de.scrollHeight, document.body ? document.body.scrollHeight : 0) - window.innerHeight);
-    var text = pageText();
+    var page = pageText(), text = page.text;
     var dialog = layer ? layerInfo(layer) : null;
     if (dialog) text = '[dialog] ' + dialog.text + '\n' + text;
     return JSON.stringify({
       url: location.href, title: document.title, readyState: document.readyState,
       scroll: { x: Math.round(window.scrollX), y: Math.round(window.scrollY), maxY: Math.round(maxY) },
       viewport: { w: window.innerWidth, h: window.innerHeight },
-      text: text.slice(0, MAX_TEXT), mutations: mutations, actions: actions, unoffered: unoffered,
+      text: text.slice(0, MAX_TEXT), above: page.above, textCut: page.cut,
+      mutations: mutations, actions: actions, unoffered: unoffered,
       dialogs: drain(), hook: mainHook, dialog: dialog, behind: behind, frames: framesOf(),
     });
   }

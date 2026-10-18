@@ -49,7 +49,10 @@ CLIP_RESET_ROLES = {"AXWindow", "AXSheet", "AXPopover"}
 CLIP_ROLES = {"AXScrollArea"}
 
 MAX_ROWS = 200
+# The screen text the decision step reads. A web page's whole text (up to
+# PAGE_TEXT_CHARS) goes to the planner and the end-state check instead.
 MAX_TEXT_CHARS = 3000
+PAGE_TEXT_CHARS = 32_000
 MAX_LABEL_CHARS = 80
 MAX_VALUE_CHARS = 120
 DIFF_VALUE_CHARS = 60
@@ -162,6 +165,15 @@ class Observation:
     raw_tree: dict[str, Any] | None = field(default=None, repr=False)
     window_frames: list[tuple[float, float, float, float]] = field(default_factory=list)
     focused_frame: tuple[float, float, float, float] | None = None
+    # A web page's whole text, in view first, then below and above the view.
+    # Empty where the surface reads no more than screen_text.
+    page_text: str = ""
+
+    @property
+    def full_text(self) -> str:
+        """All the text the surface read: the whole page on a web page, the
+        screen text elsewhere. The decision step reads only screen_text."""
+        return self.page_text or self.screen_text
 
     def scroll_point(self, hint: str) -> tuple[int, int] | None:
         """Where to scroll: inside the scroll view holding rows that are scrolled out of
