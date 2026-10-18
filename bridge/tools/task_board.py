@@ -700,6 +700,20 @@ When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits t
             return {"action": action, "tasks": tasks, "count": len(tasks)}
 
         if action == "create":
+            # Dependencies given with the new task are linked as it is created.
+            # They were dropped without a word: a task made with add_blocked_by
+            # and add_blocks had neither edge. An unknown id stops the create, so
+            # no task is made half-linked.
+            missing = [
+                tid
+                for key in ("add_blocked_by", "add_blocks")
+                for tid in _id_list(arguments, key)
+                if tid not in self._board._tasks  # noqa: SLF001
+            ]
+            if missing:
+                raise ValueError(
+                    "no task with id " + ", ".join(missing) + "; nothing was created"
+                )
             task = await self._board.create(
                 title=str(arguments.get("title") or "").strip(),
                 body=str(arguments.get("body") or "").strip(),
@@ -707,7 +721,13 @@ When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits t
                 priority=int(arguments.get("priority") or 2),
                 actor=actor,
             )
-            return {"action": action, "task": self._task_view(task)}
+            affected = await self._apply_dependency_edits(task.id, arguments, actor)
+            payload = {"action": action, "task": self._task_view(self._board._tasks.get(task.id, task))}  # noqa: SLF001
+            if affected.get("linked"):
+                payload["linked"] = affected["linked"]
+            if affected.get("refused"):
+                payload["refused"] = affected["refused"]
+            return payload
 
         if action == "show":
             task = await self._require_task(arguments)
@@ -754,11 +774,15 @@ When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits t
                 note=note or None,
             )
             affected = await self._apply_dependency_edits(task.id, arguments, actor)
+            if affected.get("linked") or affected.get("unlinked"):
+                updated = self._board._tasks.get(task.id, updated)  # noqa: SLF001
             view = self._task_view(updated) if updated else None
             payload: dict[str, Any] = {"action": action, "task": view}
             if affected:
                 payload["linked"] = affected.get("linked", [])
                 payload["unlinked"] = affected.get("unlinked", [])
+                if affected.get("refused"):
+                    payload["refused"] = affected["refused"]
             return payload
 
         raise ValueError(f"unknown action {action!r}")
@@ -775,12 +799,12 @@ When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits t
         surface them to the model + the renderer."""
         linked: list[str] = []
         unlinked: list[str] = []
+        # Links the board would not make, with its reason: a cycle, an unknown
+        # id. They were dropped silently, so the call read as a success.
+        refused: list[str] = []
 
         def _ids(key: str) -> list[str]:
-            raw = arguments.get(key) or []
-            if not isinstance(raw, list):
-                return []
-            return [str(x).strip() for x in raw if isinstance(x, str) and str(x).strip()]
+            return _id_list(arguments, key)
 
         for blocker_id in _ids("add_blocked_by"):
             _, status = await self._board.link(
@@ -790,6 +814,8 @@ When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits t
             )
             if status == "linked":
                 linked.append(blocker_id)
+            elif status != "already linked":
+                refused.append(f"{blocker_id} → {task_id}: {status}")
 
         for dependent_id in _ids("add_blocks"):
             _, status = await self._board.link(
@@ -799,6 +825,8 @@ When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits t
             )
             if status == "linked":
                 linked.append(dependent_id)
+            elif status != "already linked":
+                refused.append(f"{task_id} → {dependent_id}: {status}")
 
         for blocker_id in _ids("remove_blocked_by"):
             _, status = await self._board.unlink(
@@ -818,7 +846,10 @@ When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits t
             if status == "unlinked":
                 unlinked.append(dependent_id)
 
-        return {"linked": linked, "unlinked": unlinked}
+        out: dict[str, list[str]] = {"linked": linked, "unlinked": unlinked}
+        if refused:
+            out["refused"] = refused
+        return out
 
     def _task_view(self, task: TaskItem | None, *, history: bool = False) -> dict[str, Any] | None:
         """Augment to_dict() with derived `isBlocked` + a short
@@ -880,7 +911,13 @@ When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits t
                 if task.get("artifacts"):
                     lines.append(f"  artifacts: {', '.join(task['artifacts'])}")
                 if task.get("blockedBy"):
-                    lines.append(f"  blocked by: {', '.join(task['blockedBy'])}")
+                    # Only unfinished dependencies block; a finished one stays on
+                    # the record but is no longer in the way.
+                    waiting, finished = self._split_dependencies(task["blockedBy"])
+                    if waiting:
+                        lines.append(f"  blocked by: {', '.join(waiting)}")
+                    if finished:
+                        lines.append(f"  depended on (finished): {', '.join(finished)}")
                 if task.get("blocks"):
                     lines.append(f"  blocks: {', '.join(task['blocks'])}")
                 # `show` is the one action that asks for full history. We
@@ -902,10 +939,24 @@ When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits t
                 lines.append(f"  newly linked: {', '.join(payload['linked'])}")
             if payload.get("unlinked"):
                 lines.append(f"  removed links: {', '.join(payload['unlinked'])}")
+            if payload.get("refused"):
+                lines.append(f"  links not made: {'; '.join(payload['refused'])}")
         else:
             lines.append(f"action: {action}")
 
         return "\n".join(lines)
+
+    def _split_dependencies(self, ids: list[str]) -> tuple[list[str], list[str]]:
+        """(still blocking, finished) among a task's dependencies."""
+        waiting: list[str] = []
+        finished: list[str] = []
+        for tid in ids:
+            other = self._board._tasks.get(tid)  # noqa: SLF001
+            if other is not None and other.status in TERMINAL_TASK_STATUSES:
+                finished.append(tid)
+            else:
+                waiting.append(tid)
+        return waiting, finished
 
     async def _emit(self, action: str, payload: dict[str, Any]) -> None:
         if self._emit_event is None:
@@ -924,6 +975,13 @@ When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits t
         result = self._emit_event(event)
         if asyncio.iscoroutine(result):
             await result
+
+
+def _id_list(arguments: dict[str, Any], key: str) -> list[str]:
+    raw = arguments.get(key) or []
+    if not isinstance(raw, list):
+        return []
+    return [str(x).strip() for x in raw if isinstance(x, str) and str(x).strip()]
 
 
 def _format_task_line(t: dict[str, Any]) -> str:

@@ -494,7 +494,12 @@ function TaskDrawerBody({
       ) : null}
       {dependsOn.length > 0 || blocks.length > 0 ? (
         <DrawerSection label="dependencies">
-          <DependencyList label="waits on" ids={dependsOn} tasksById={tasksById} onOpenTask={onOpenTask} />
+          <DependencyList
+            label={dependsOn.every((id) => bucketFor(tasksById.get(id)?.status ?? '') === 'done') ? 'depended on' : 'waits on'}
+            ids={dependsOn}
+            tasksById={tasksById}
+            onOpenTask={onOpenTask}
+          />
           <DependencyList label="blocks" ids={blocks} tasksById={tasksById} onOpenTask={onOpenTask} />
         </DrawerSection>
       ) : null}
