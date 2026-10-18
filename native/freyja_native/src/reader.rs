@@ -85,6 +85,10 @@ const SPARSE_LINES: usize = 6;
 const PAGE_SHARE: f64 = 0.6;
 /// Lines of the window's own controls kept after the page text.
 const CHROME_LINES_KEPT: usize = 25;
+/// Characters a Chromium app's own controls (a sidebar, a toolbar) may use. They
+/// have this budget of their own, so a long sidebar cannot use up the page's:
+/// Arc listed 488 sidebar lines before the page.
+const CHROME_CHARS: usize = 6_000;
 const SELECTED_TEXT_CAP: usize = 4_000;
 /// How long a read waits for a Chromium or Electron app to build its web tree.
 const WEB_WAIT_MS: u64 = 3_000;
@@ -178,7 +182,9 @@ pub fn read_window_text(pid: i32, opts: ReadOptions) -> Result<String, AxError> 
     let names = CFArray::from_CFTypes(&names);
     let deadline = Instant::now() + Duration::from_millis(opts.budget_ms);
 
-    let mut pass = read_once(&app, &opts, &names, my_gen, deadline);
+    let chromium = is_chromium_app(pid);
+    let chrome_cap = chromium.then_some(CHROME_CHARS.min(opts.max_chars));
+    let mut pass = read_once(&app, &opts, &names, my_gen, deadline, chrome_cap);
     // Chromium and Electron apps build their web tree only when something asks
     // for it. A first pass that found almost no web text is the sign. A browser
     // shows plenty of its own controls even when the page is missing, so the
@@ -189,7 +195,7 @@ pub fn read_window_text(pid: i32, opts: ReadOptions) -> Result<String, AxError> 
     // app in accessibility mode (which slows it down) after the read.
     if opts.enable_web && !pass.cancelled && !pass.no_window && pass.web_lines < SPARSE_LINES {
         let switch = enable_web_tree(&app);
-        if switch.is_some() || is_chromium_app(pid) {
+        if switch.is_some() || chromium {
             result.web_enabled = switch.is_some();
             // The tree takes from a few hundred milliseconds to a couple of
             // seconds to appear, so read again until it does. The first
@@ -198,7 +204,7 @@ pub fn read_window_text(pid: i32, opts: ReadOptions) -> Result<String, AxError> 
             let mut wait = 250;
             loop {
                 std::thread::sleep(Duration::from_millis(wait));
-                let next = read_once(&app, &opts, &names, my_gen, web_deadline);
+                let next = read_once(&app, &opts, &names, my_gen, web_deadline, chrome_cap);
                 let done = next.web_lines >= SPARSE_LINES || next.cancelled;
                 if (next.web_lines, next.lines.len()) >= (pass.web_lines, pass.lines.len()) {
                     pass = next;
@@ -268,6 +274,7 @@ fn read_once(
     names: &CFArray<CFString>,
     my_gen: u64,
     deadline: Instant,
+    chrome_cap: Option<usize>,
 ) -> Pass {
     let mut pass = Pass {
         lines: Vec::new(),
@@ -307,6 +314,10 @@ fn read_once(
         web_depth: 0,
         page_area: 0.0,
         omitted: 0,
+        omitted_in_page: 0,
+        chrome_cap,
+        chrome_chars: 0,
+        chrome_dropped: false,
         rows: Vec::new(),
         chars: 0,
         max_chars: opts.max_chars,
@@ -321,10 +332,13 @@ fn read_once(
     pass.web_lines = walk.in_page.iter().filter(|p| **p).count();
     let window_area = frame_of(&window).map(|f| f.2 * f.3).unwrap_or(0.0);
     let page_share = if window_area > 0.0 { walk.page_area / window_area } else { 0.0 };
-    pass.lines = arrange(walk.out, &walk.in_page, page_share);
-    pass.omitted = walk.omitted;
+    let (lines, page_first) = arrange(walk.out, &walk.in_page, page_share);
+    pass.lines = lines;
+    // With the page first, only what the page lost makes the read partial: the
+    // window's own controls are cut to a short list anyway.
+    pass.omitted = if page_first { walk.omitted_in_page } else { walk.omitted };
     pass.nodes = walk.nodes;
-    pass.truncated = walk.truncated;
+    pass.truncated = walk.truncated || (!page_first && walk.chrome_dropped);
     pass.cancelled = walk.cancelled;
     pass.page_url = walk.page_url;
     pass
@@ -334,17 +348,18 @@ fn read_once(
 /// the page, and the page is what the reader asked about. When a web area fills
 /// most of the window (`page_share`), the lines inside it come first, then a
 /// short list of the window's own controls. Any other window keeps its order,
-/// because a mail list beside a message body is content too.
-fn arrange(lines: Vec<String>, in_page: &[bool], page_share: f64) -> Vec<String> {
+/// because a mail list beside a message body is content too. The flag says
+/// whether the page was put first.
+fn arrange(lines: Vec<String>, in_page: &[bool], page_share: f64) -> (Vec<String>, bool) {
     let page = in_page.iter().filter(|p| **p).count();
     if page == 0 || page == lines.len() || page_share < PAGE_SHARE {
-        return lines;
+        return (lines, false);
     }
-    let (mut page_lines, chrome): (Vec<_>, Vec<_>) = lines
+    let (page_lines, chrome): (Vec<_>, Vec<_>) = lines
         .into_iter()
         .zip(in_page.iter().copied())
         .partition(|(_, p)| *p);
-    let mut out: Vec<String> = page_lines.drain(..).map(|(l, _)| l).collect();
+    let mut out: Vec<String> = page_lines.into_iter().map(|(l, _)| l).collect();
     out.push(String::new());
     out.push("Window controls outside the page:".into());
     let total = chrome.len();
@@ -355,7 +370,7 @@ fn arrange(lines: Vec<String>, in_page: &[bool], page_share: f64) -> Vec<String>
             total - CHROME_LINES_KEPT
         ));
     }
-    out
+    (out, true)
 }
 
 // ─── Finding the window and the focus ───────────────────────────────────
@@ -535,8 +550,14 @@ struct Walk<'a> {
     /// The largest area of a web area seen, in points squared.
     page_area: f64,
     /// Items skipped because their parent held more offscreen items than the
-    /// read allows.
+    /// read allows, everywhere and inside web areas.
     omitted: usize,
+    omitted_in_page: usize,
+    /// The budget of a Chromium app's own controls (see CHROME_CHARS), None for
+    /// other apps, whose every line counts against `max_chars`.
+    chrome_cap: Option<usize>,
+    chrome_chars: usize,
+    chrome_dropped: bool,
     /// Open table rows. Text found inside a row joins its collector, and the
     /// row is written as one line when it closes.
     rows: Vec<Vec<String>>,
@@ -589,6 +610,16 @@ impl Walk<'_> {
             return;
         }
         let used = line.chars().count() + 1;
+        if let (0, Some(cap)) = (self.web_depth, self.chrome_cap) {
+            if self.chrome_chars + used > cap {
+                self.chrome_dropped = true;
+            } else {
+                self.chrome_chars += used;
+                self.out.push(line);
+                self.in_page.push(false);
+            }
+            return;
+        }
         if self.chars + used > self.max_chars {
             let room = self.max_chars.saturating_sub(self.chars);
             if room > 40 {
@@ -808,6 +839,9 @@ impl Walk<'_> {
             }
             if omitted > 0 {
                 self.omitted += omitted;
+                if self.web_depth > 0 {
+                    self.omitted_in_page += omitted;
+                }
                 if !self.stop {
                     self.emit(format!("[{omitted} more items outside the view were not read]"));
                 }
@@ -990,7 +1024,8 @@ mod tests {
     fn page_comes_first_when_it_fills_the_window() {
         let all = lines(&["[Hide sidebar]", "[Tab one]", "Room rates", "Cancellation policy"]);
         let page = [false, false, true, true];
-        let out = arrange(all, &page, 0.75);
+        let (out, page_first) = arrange(all, &page, 0.75);
+        assert!(page_first);
         assert_eq!(out[0], "Room rates");
         assert_eq!(out[1], "Cancellation policy");
         assert_eq!(out[2], "");
@@ -1004,7 +1039,7 @@ mod tests {
         let mut page = vec![false; 60];
         all.push("Room rates".into());
         page.push(true);
-        let out = arrange(all, &page, 0.9);
+        let (out, _) = arrange(all, &page, 0.9);
         assert_eq!(out[0], "Room rates");
         let kept = out.iter().filter(|l| l.starts_with("[Tab ")).count();
         assert_eq!(kept, CHROME_LINES_KEPT);
@@ -1016,13 +1051,13 @@ mod tests {
         // A mail list beside a message body: both are content.
         let all = lines(&["Inbox row one", "Inbox row two", "Message body"]);
         let page = [false, false, true];
-        assert_eq!(arrange(all.clone(), &page, 0.4), all);
+        assert_eq!(arrange(all.clone(), &page, 0.4), (all, false));
     }
 
     #[test]
     fn windows_without_web_text_or_with_only_web_text_keep_their_order() {
         let all = lines(&["a", "b"]);
-        assert_eq!(arrange(all.clone(), &[false, false], 0.9), all);
-        assert_eq!(arrange(all.clone(), &[true, true], 0.9), all);
+        assert_eq!(arrange(all.clone(), &[false, false], 0.9), (all.clone(), false));
+        assert_eq!(arrange(all.clone(), &[true, true], 0.9), (all, false));
     }
 }

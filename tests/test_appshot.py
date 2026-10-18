@@ -119,6 +119,12 @@ def test_block_from_meta_skips_an_empty_text():
     assert appshot.block_from_meta({"app": "Safari"}) is None
 
 
+@pytest.fixture(autouse=True)
+def _unlocked(monkeypatch):
+    # The lock check reads the machine's state; the tests decide it.
+    monkeypatch.setattr(appshot, "screen_locked", lambda: False)
+
+
 # ── choosing the window ───────────────────────────────────────────────────
 
 
@@ -392,6 +398,15 @@ async def test_tool_says_why_a_read_is_partial(monkeypatch):
     head = result.content[0].text
     assert "Text: partial, 318 items outside the view were not read" in head
     assert 'text-status="partial"' in head
+
+
+async def test_a_locked_screen_is_named_as_the_reason(monkeypatch):
+    blank = {"text": "", "status": "unavailable", "reason": "the window exposes no text"}
+    native = FakeNative([SAFARI], front=SAFARI, text=blank)
+    monkeypatch.setattr(appshot, "screen_locked", lambda: True)
+    shot = await appshot.capture(native=native)
+    assert shot.text_status == "unavailable" and "screen is locked" in shot.text_reason
+    assert shot.image is None and shot.image_status == "unavailable"
 
 
 async def test_tool_without_the_image(monkeypatch):

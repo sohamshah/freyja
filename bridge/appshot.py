@@ -24,6 +24,8 @@ import asyncio
 import base64
 import logging
 import os
+import re
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -445,7 +447,24 @@ async def _capture(
     else:
         shot.image_status, shot.image_reason = "unavailable", "not requested"
     await asyncio.gather(*parts)
+    if shot.text_status == "unavailable" and want_text and await asyncio.to_thread(screen_locked):
+        # macOS hides window content from accessibility while the screen is
+        # locked, and the read then looks like a canvas app with no text.
+        shot.text_reason = "the screen is locked, so macOS shows no window content"
+        if want_image:
+            shot.image_status, shot.image_reason, shot.image = "unavailable", shot.text_reason, None
     return _finish(shot, started)
+
+
+def screen_locked() -> bool:
+    """True while the login window covers the screen."""
+    try:
+        out = subprocess.run(
+            ["ioreg", "-n", "Root", "-d1", "-a"], capture_output=True, text=True, timeout=5
+        ).stdout
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(re.search(r"CGSSessionScreenIsLocked</key>\s*<true/>", out))
 
 
 def _stop_reads(native: Any, epoch: int) -> None:
