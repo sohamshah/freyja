@@ -170,6 +170,32 @@ def test_scrolls_over_text_already_read_end_in_a_replan():
     assert len(page.calls) == MAX_IDLE_SCROLLS and res.status == "blocked"
 
 
+def test_scrolls_that_bring_new_rows_are_not_idle():
+    # A virtual list brings new rows with every scroll; the re-reads that wait
+    # for the scroll to settle found nothing new, and the run was stopped as if
+    # it scrolled over text it had read (widgets/virtual_list).
+    page = Page(text="row 0")
+    n = {"i": 0}
+
+    def scrolled(args):
+        n["i"] += 1
+        page.text = "\n".join(f"row {n['i'] * 10 + k}" for k in range(10))
+
+    page.on_act = scrolled
+    reasons: list[str] = []
+
+    async def complete(messages, system_prompt, max_tokens):
+        payload = json.loads(messages[0].content)
+        if "why_help_was_requested" in payload:
+            reasons.append(payload["why_help_was_requested"])
+        return json.dumps({"status": "give_up", "note": "stop"})
+
+    op = operator(page, ScriptedProvider([("scroll_down", None)] * 7), llm=LLMHelper(complete), max_steps=7)
+    asyncio.run(op.run())
+    assert len(page.calls) == 7
+    assert not any("brought no text" in r for r in reasons)
+
+
 # ── J6: an address given only as a fallback ──────────────────────────────
 
 GOAL_R2 = (

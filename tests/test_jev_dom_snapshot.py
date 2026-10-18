@@ -553,3 +553,21 @@ def test_text_above_the_view_is_returned_apart(rooms):
     s = rooms.snap()
     assert "Rooms and rates" in s["above"] and "Rooms and rates" not in s["text"]
     rooms.eval("window.scrollTo(0, 0)")
+
+
+CALENDAR = ROOT / "tests/fixtures/jev_dom/calendar.html"
+
+
+@pytest.fixture()
+def calendar():
+    with _open(CALENDAR) as p:
+        yield p
+
+
+def test_days_only_one_month_has_still_name_their_month(calendar):
+    # January's 29, 30 and 31 read without a month beside "28 (January)", because
+    # no February day shares their label and the header had no year in it.
+    s = calendar.snap()
+    assert [a["context"] for a in _by_label(s, "28")] == ["January", "February"]
+    for d in ("29", "30", "31"):
+        assert [a["context"] for a in _by_label(s, d)] == ["January"], d

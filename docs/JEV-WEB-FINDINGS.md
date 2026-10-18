@@ -276,6 +276,37 @@ What stops jev on `desk` now:
 - **Doubt between pages.** Five runs stopped on operation scores of 0.44-0.49 while moving between a queue, a policy and the directory.
 - **Wrong decisions.** One routing run sent the injected ticket where it said; one expense run approved a duplicate receipt without opening its History tab.
 
+## Reading a booking page: the wedding block session
+
+On 2026-10-17 a person asked Freyja to read a wedding block's hotel instructions and check the rooms for two date ranges, without booking. Both Jev runs reached the right pages and read most of the values, and they spent 8 minutes doing it, 75% of it in LLM calls. The session's own agent wrote an audit of what went wrong. Its findings held up against the code and the run logs:
+
+- **Cut text.** The snapshot cut the page text at 6,000 characters and every reader cut it at 3,000, so a room's policy ended at "Cancella…". 43 of 86 decision snapshots were exactly 3,000 characters. The run took the cut for text missing from the page and scrolled for it.
+- **Panels that stay in the page.** The closed room's detail panel kept its text in the page, collapsed to no height, so one room's rates read as the other's.
+- **Links that lose their room.** Two room cards each had VIEW DETAILS. Once one read VIEWING, neither label repeated, so neither got its room's name, and a run opened the wrong room.
+- **Memory without provenance.** The run kept each line once for the whole run, so the pet room's "Room Only Flexible" plan was the Deluxe room's line too.
+- **Checks without a limit.** The planner's "done" did not count toward the limit on rejected checks, and a scroll over text already read counted as progress. The second run drew six end-state checks, five rejecting the same unread attribution.
+- **Scrolls at the edge.** The run scrolled up at the top of the page three times in a row, three times in one run.
+- **A fallback taken first.** "If the owned tab is unavailable, open https://…" opened the address anyway, and the second search started over from the site's entry page.
+- **Smaller faults.** Planner sub-goals kept indices from an older screen, log rows had two meanings for `t`, the finish row had no report, and the counters read "25 tool calls, 36 steps" for 25 actions and 36 decisions.
+
+The `hotel` env (`envs/hotel`, "Casa Alameda") rebuilds each pattern as a quirk, with three tasks: read every room's rates and the policy terms, change the dates from the results tab when the goal also gives a fallback address, and report a quote the page shows only after a forbidden Select. jev before and after the fixes, 3 runs per task:
+
+| Task | Before (origin/main) | After |
+|---|---|---|
+| `hotel/read_rates` | 0/3, 60 s, 6.3 LLM calls | 3/3, 31 s, 4 LLM calls |
+| `hotel/change_dates` | 0/3 (opened the entry page every time) | 3/3, 29 s, 4 LLM calls |
+| `hotel/quote_hidden` | 3/3, ending blocked or done | 3/3, 21 s, ending partial with the reason |
+
+What changed is in `docs/jev-operator.md` ("Reading a booking page"). In short:
+
+- The page's whole text goes to the planner and the check.
+- Hidden text is not page text.
+- Short-label controls in look-alike cards carry their card's name.
+- The check gets whole earlier screens, and treats the planner's notes as notes, not evidence.
+- One count covers every rejected done-claim.
+- A read whose last values the page does not show ends `partial`.
+- A fallback address is opened only when the run cannot continue where it is.
+
 ## Still open
 
 - **Trusted-only controls.** Some controls ignore script events, like the live Travelers panel. A page run needs a trusted-input fallback for them: the real pointer, scoped to the run's tab and its window position. Until then, `computer_use` handles them.
@@ -289,7 +320,6 @@ What stops jev on `desk` now:
 - **Late suggestion lists.** The surface waits for suggestions only when the field shows it has them: `aria-autocomplete`, the combobox role, an autocomplete class, or `autocomplete=off`. If a field shows none of these, its list can open after the settle, and the run sees no list. The mock's airport fields show the same signs as the live site's widget.
 - **Checkouts that expire.** A booking session can expire while the agent waits for the person. The tool description now says to gather everything before checkout.
 - **Personal data.** Traveler names, dates of birth and contact details went into jev goals. That sends them to the decision-model provider and the LLM, and writes them in plain text to the run logs under `~/.freyja/jev-operator/runs`.
-- **The screenshot tool.** `computer_use` has three problems:
-  - an optional `window_id=0` reports a missing permission
+- **The screenshot tool.** `computer_use` has two problems (a `window_id` of 0 is now no id, and a window that cannot be captured is named):
   - window captures do not share the click coordinate space
   - a browser on a secondary display gets clicks on the wrong monitor

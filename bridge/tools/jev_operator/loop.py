@@ -254,7 +254,12 @@ class SurfaceFailed(RuntimeError):
 
 
 def is_irreversible(el: Element) -> bool:
-    return el.role in GATED_ROLES and bool(_IRREVERSIBLE.search(el.label))
+    # A page control is judged by its own name. Its context (the card or row it
+    # sits in) names the record, not the action: "Save PO" in a card headed "New
+    # purchase order" read as a purchase. A control with no name of its own is
+    # judged by what is around it, as before.
+    name = getattr(el, "raw_label", "") or el.label
+    return el.role in GATED_ROLES and bool(_IRREVERSIBLE.search(name))
 
 
 def installed_apps() -> list[str]:
@@ -481,8 +486,11 @@ class Operator:
         # never shown.
         self._screens: list[tuple[str, list[str]]] = []
         # Every (page, line) the run has read, uncapped (only for telling new text
-        # from text already read), and how many the last read added: a page
-        # scroll that adds none only re-read the page.
+        # from text already read), and how many the reads since the last action
+        # added: a page scroll that adds none only re-read the page. Summed over
+        # every read after the action: the re-reads that wait for a scroll to
+        # settle found nothing new, and a list whose every scroll brought rows
+        # was taken for one that scrolled over text it had read.
         self._known: set[tuple[str, str]] = set()
         self._last_new_lines = 0
         self._idle_scrolls = 0
@@ -754,7 +762,7 @@ class Operator:
         read_ms = obs.read_ms
         self.read_ms.append(read_ms)
         self._last_obs = obs
-        self._last_new_lines = self._remember_text(obs.full_text, obs.focused_window)
+        self._last_new_lines += self._remember_text(obs.full_text, obs.focused_window)
         self.actuator.window_frames = obs.window_frames
         self._seen_windows.update(w for w in obs.windows if w != "(untitled window)")
         if self._start_windows is None:
@@ -1018,17 +1026,25 @@ class Operator:
                     stuck_streak = 0 if meaningful else stuck_streak + 1
                     self._track_repeat(pending, meaningful)
                     self._idle_scrolls = 0
-                # A page scroll is progress only when it brought text the run had
-                # not read. Scrolling back over a page already read moves the
-                # screen but learns nothing, and it had reset the counts that end
-                # a stuck run: six end-state checks once followed such scrolls.
-                progress = meaningful and (not page_scroll or self._last_new_lines > 0)
-                if progress:
+                if meaningful:
                     self._replans_since_progress = 0
-                    if kind != "wait":
-                        self._progress_since_verify = True
+                # Between two end-state checks, a page scroll counts as progress
+                # only when it brought text the run had not read. Scrolling back
+                # over a page already read moves the screen but learns nothing,
+                # and it had started the count of rejected checks again: six
+                # checks once followed such scrolls. The stuck rule keeps
+                # counting any scroll that moved the screen: with it, a run that
+                # scrolled a policy it had already read, then went back to its
+                # list, ended stuck after three replans (desk/expenses).
+                if meaningful and kind != "wait" and (not page_scroll or self._last_new_lines > 0):
+                    self._progress_since_verify = True
                 await self._say(f"  → {'changed' if changed else 'no change'}: {diff}")
-                self._log({"event": "outcome", "step": step, **entry, "meaningful": meaningful})
+                # new_lines: text the run had not read before, so a reader of the log
+                # can tell steps that learned something from steps that re-read.
+                self._log(
+                    {"event": "outcome", "step": step, **entry, "meaningful": meaningful,
+                     "new_lines": self._last_new_lines}
+                )
                 pending = None
                 if self._subgoal:
                     self._subgoal_steps += 1
@@ -1186,6 +1202,7 @@ class Operator:
                     continue
                 await asyncio.sleep(0.6)
                 before, pending = obs, {"step": step, "kind": "wait", "action": "wait"}
+                self._last_new_lines = 0
                 continue
             self._consecutive_waits = 0
 
@@ -1389,6 +1406,7 @@ class Operator:
                     screen=obs.screen_text,
                 )
             before = obs
+            self._last_new_lines = 0  # what the reads after this action add is its own
             pending = {
                 "step": step,
                 "kind": kind,

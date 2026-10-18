@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Select Dates</title>
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  .month { display: inline-block; vertical-align: top; margin: 8px; }
+  .head { display: flex; gap: 6px; font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(7, 32px); gap: 2px; }
+  .grid a { display: block; text-align: center; }
+</style>
+</head>
+<body>
+<div id="cal"></div>
+<script>
+  // Two month grids whose header puts the month and the year in separate
+  // elements, as the booking site did. February 2027 has 28 days, so 29 to 31
+  // are on the January grid only and no other day link shares their label.
+  function month(name, days) {
+    var m = document.createElement('div');
+    m.className = 'month';
+    m.innerHTML = '<div class="head"><span>' + name + '</span><span>2027</span></div><div class="grid"></div>';
+    var g = m.querySelector('.grid');
+    for (var d = 1; d <= days; d++) {
+      var a = document.createElement('a');
+      a.href = '#';
+      a.textContent = String(d);
+      g.appendChild(a);
+    }
+    return m;
+  }
+  document.getElementById('cal').appendChild(month('January', 31));
+  document.getElementById('cal').appendChild(month('February', 28));
+</script>
+</body>
+</html>

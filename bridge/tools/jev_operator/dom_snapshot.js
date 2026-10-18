@@ -101,6 +101,7 @@
     '[role=spinbutton]';
   var INFERRED_MAX_TEXT = 120;
   var MONTH_YEAR = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(19|20)\d\d\b/i;
+  var MONTH_ONLY = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?$/i;
   var ARIA_ROLES = {
     button: 1, link: 1, checkbox: 1, radio: 1, tab: 1, menuitem: 1, menuitemcheckbox: 1,
     menuitemradio: 1, switch: 1, combobox: 1, textbox: 1, searchbox: 1, option: 1, treeitem: 1,
@@ -862,10 +863,16 @@
     if (days.length >= 7) {
       days.forEach(function (e) {
         if (e.context) return;
+        var month = '';
         for (var a = e.el.parentElement, d = 0; a && a !== document.body && d < 8; a = a.parentElement, d++) {
           var lead = leadText(a, controls);
           if (MONTH_YEAR.test(lead)) { e.context = clip(lead, MAX_CTX); break; }
+          // A header with the month and the year in separate blocks reads only
+          // "January". February 2027 has no 29 to 31, so January's read with no
+          // month beside "28 (January)".
+          if (!month && MONTH_ONLY.test(lead)) month = lead;
         }
+        if (!e.context && month) e.context = month;
       });
     }
     out.forEach(function (e) {

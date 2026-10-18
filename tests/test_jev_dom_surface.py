@@ -136,6 +136,14 @@ def test_irreversible_gate_sees_dom_targets():
     assert [is_irreversible(e) for e in obs.elements] == [True, True, False]
 
 
+def test_the_gate_reads_a_control_by_its_own_name_not_its_card():
+    # A card heading made "Save PO" read "Save PO (New purchase order)", and the
+    # run stopped to ask before saving a draft.
+    obs = run(surface(FakePage([action(1, label="Save PO", context="New purchase order"),
+                                action(2, label="", context="Pay now")])).observe(TARGET))
+    assert [is_irreversible(e) for e in obs.elements] == [False, True]
+
+
 def dom_operator(page, goal="go", **kw):
     op, events = make_operator(FakeCalculator(), kw.pop("provider"), goal=goal, **kw)
     op.surface = surface(page)
