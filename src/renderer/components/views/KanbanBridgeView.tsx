@@ -496,7 +496,7 @@ function AutopilotToggle({
       }
       className={`group inline-flex items-center gap-2 rounded-md border px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.14em] transition ${
         enabled
-          ? 'border-accent/[0.40] bg-accent/[0.12] text-accent shadow-[0_0_0_1px_rgba(168,212,252,0.10)]'
+          ? 'border-accent/[0.40] bg-accent/[0.12] text-accent shadow-[0_0_0_1px_rgb(var(--accent-rgb)/0.10)]'
           : 'border-white/[0.10] bg-bg-1 text-fg-3 hover:border-white/[0.20] hover:text-fg-1'
       }`}
     >
@@ -582,7 +582,7 @@ function TickCountdownChip({
       title={`Autopilot is on. Last dispatcher tick fired ${Math.max(0, Math.round((now - tickInfo.lastTickAt) / 1000))}s ago; next in ${remainingSec}s (cadence ${tickInfo.intervalSeconds}s).`}
       className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] tracking-[0.10em] transition ${
         firing
-          ? 'border-accent/[0.55] bg-accent/[0.12] text-accent shadow-[0_0_0_1px_rgba(168,212,252,0.25)]'
+          ? 'border-accent/[0.55] bg-accent/[0.12] text-accent shadow-[0_0_0_1px_rgb(var(--accent-rgb)/0.25)]'
           : 'border-accent/[0.25] bg-accent/[0.05] text-accent/85'
       }`}
     >
@@ -727,7 +727,7 @@ function BoardColumnSection({
 }) {
   const dot =
     tone === 'accent'
-      ? 'bg-accent shadow-[0_0_5px_rgba(168,212,252,0.6)]'
+      ? 'bg-accent shadow-[0_0_5px_rgb(var(--accent-rgb)/0.6)]'
       : tone === 'warn'
         ? 'bg-warn'
         : tone === 'ok'
@@ -1011,7 +1011,7 @@ function TicketCard({
     : isDone
       ? 'border-white/[0.05] bg-white/[0.015]'
       : isStale
-        ? 'border-warn/[0.45] bg-warn/[0.045] shadow-[0_0_0_1px_rgba(184,160,120,0.18),0_0_18px_-6px_rgba(184,160,120,0.35)]'
+        ? 'border-warn/[0.45] bg-warn/[0.045] shadow-[0_0_0_1px_rgb(var(--warn-rgb)/0.18),0_0_18px_-6px_rgb(var(--warn-rgb)/0.35)]'
         : 'border-white/[0.07] bg-white/[0.022] hover:border-white/[0.14] hover:bg-white/[0.04]'
 
   return (
@@ -1304,7 +1304,7 @@ function ProgressBar({
           style={{
             width: `${pct}%`,
             background:
-              'linear-gradient(90deg, transparent 0%, rgba(168,212,252,0.45) 50%, transparent 100%)',
+              'linear-gradient(90deg, transparent 0%, rgb(var(--accent-rgb) / 0.45) 50%, transparent 100%)',
             backgroundSize: '200% 100%',
           }}
         />
@@ -1597,16 +1597,16 @@ function ConfidenceTrace({ verdicts }: { verdicts: JudgeHistoryEntry[] }) {
           <linearGradient id="conf-area" x1="0" y1="0" x2="0" y2="1">
             <stop
               offset="0%"
-              stopColor="rgba(168,212,252,0.20)"
+              stopColor="rgb(var(--accent-rgb) / 0.20)"
             />
-            <stop offset="100%" stopColor="rgba(168,212,252,0.0)" />
+            <stop offset="100%" stopColor="rgb(var(--accent-rgb) / 0.0)" />
           </linearGradient>
         </defs>
         <path d={area} fill="url(#conf-area)" />
         <path
           d={path}
           fill="none"
-          stroke="rgba(168,212,252,0.55)"
+          stroke="rgb(var(--accent-rgb) / 0.55)"
           strokeWidth="0.8"
           strokeLinecap="round"
           strokeLinejoin="round"
@@ -1618,8 +1618,8 @@ function ConfidenceTrace({ verdicts }: { verdicts: JudgeHistoryEntry[] }) {
             cx={xs[i]}
             cy={ys[i]}
             r="1.4"
-            fill={v.done ? 'rgb(168,176,168)' : 'rgb(184,160,120)'}
-            stroke="rgba(10,10,10,0.9)"
+            fill={v.done ? 'rgb(var(--ok-rgb))' : 'rgb(var(--warn-rgb))'}
+            stroke="rgb(var(--bg-0) / 0.9)"
             strokeWidth="0.4"
             vectorEffect="non-scaling-stroke"
           >
@@ -2603,7 +2603,7 @@ function AgentBadge({
   const dotClass = stale
     ? 'bg-danger'
     : running
-      ? 'bg-accent shadow-[0_0_5px_rgba(168,212,252,0.7)] animate-pulse-soft'
+      ? 'bg-accent shadow-[0_0_5px_rgb(var(--accent-rgb)/0.7)] animate-pulse-soft'
       : 'bg-fg-3'
   const tooltipBase = `${agent.agentType || 'agent'} · ${agent.status}`
   const tooltip = card

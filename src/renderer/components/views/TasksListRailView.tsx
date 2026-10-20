@@ -401,7 +401,7 @@ function AgentsRail({ agents, onOpen }: { agents: AgentView[]; onOpen: (id: stri
               <span
                 className={`h-1.5 w-1.5 -translate-y-px rounded-full ${
                   a.status === 'running'
-                    ? 'animate-pulse-soft bg-accent shadow-[0_0_6px_rgba(168,212,252,0.6)]'
+                    ? 'animate-pulse-soft bg-accent shadow-[0_0_6px_rgb(var(--accent-rgb)/0.6)]'
                     : a.status === 'done'
                     ? 'bg-ok'
                     : a.status === 'failed'

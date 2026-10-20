@@ -150,7 +150,7 @@ function Radio({ checked, children }: { checked?: boolean; children: React.React
         }`}
       >
         {checked ? (
-          <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_6px_rgba(168,212,252,0.6)]" />
+          <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_6px_rgb(var(--accent-rgb)/0.6)]" />
         ) : null}
       </span>
       <span className={`italic font-sans font-light text-[14px] ${checked ? 'text-fg-0' : 'text-fg-3'}`}>

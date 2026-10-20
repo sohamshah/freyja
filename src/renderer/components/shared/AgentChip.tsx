@@ -11,7 +11,7 @@ interface AgentChipProps {
 }
 
 const STATUS_DOT: Record<AgentChipStatus, string> = {
-  active: 'bg-accent shadow-[0_0_6px_rgba(168,212,252,0.65)] animate-pulse-soft',
+  active: 'bg-accent shadow-[0_0_6px_rgb(var(--accent-rgb)/0.65)] animate-pulse-soft',
   idle: 'bg-fg-3',
   stale: 'bg-danger',
   done: 'bg-ok',

@@ -731,13 +731,13 @@ function SessionBraid({ anatomy, tip }: { anatomy: Anatomy; tip: TipBind }) {
               {/* time ruler — ticks on active stretches only */}
               <line
                 x1={layout.X0} y1={H - 14} x2={layout.X1} y2={H - 14}
-                stroke="rgba(168,212,252,.14)" strokeWidth={1}
+                stroke="rgb(var(--accent-rgb) / 0.14)" strokeWidth={1}
               />
               {layout.ticks.map((t, i) => (
                 <line
                   key={i}
                   x1={t.x} y1={H - 14} x2={t.x} y2={H - 14 - (t.major ? 7 : 4)}
-                  stroke={`rgba(168,212,252,${t.major ? 0.28 : 0.14})`}
+                  stroke={`rgb(var(--accent-rgb) / ${t.major ? 0.28 : 0.14})`}
                   strokeWidth={1}
                 />
               ))}
@@ -790,12 +790,10 @@ function SessionBraid({ anatomy, tip }: { anatomy: Anatomy; tip: TipBind }) {
         {layout?.idles.map((idle, i) => (
           <div
             key={i}
-            className="pointer-events-none absolute -translate-x-1/2 whitespace-nowrap rounded-sm border px-2.5 py-1 text-center transition-opacity"
+            className="receipt-idle pointer-events-none absolute -translate-x-1/2 whitespace-nowrap rounded-sm border px-2.5 py-1 text-center transition-opacity"
             style={{
               left: (idle.xa + idle.xb) / 2,
               top: idle.plateY,
-              background: 'rgba(5,5,6,.84)',
-              borderColor: 'rgba(184,160,120,.22)',
               opacity: hovered ? 0.3 : 1,
             }}
           >
@@ -803,7 +801,7 @@ function SessionBraid({ anatomy, tip }: { anatomy: Anatomy; tip: TipBind }) {
               {idle.label}
             </div>
             {idle.sub && (
-              <div className="mt-px font-mono text-[9px] text-fg-3">{idle.sub}</div>
+              <div className="receipt-idle-sub mt-px font-mono text-[9px] text-fg-3">{idle.sub}</div>
             )}
           </div>
         ))}
@@ -958,8 +956,10 @@ function RankedBars({
   onRow?: (id: string) => void
 }) {
   const max = Math.max(...rows.map((r) => r.v), 1)
+  // One grid for the whole table: the note column sizes to its longest entry
+  // (an agent type can be long) and the rows stay aligned through subgrid.
   return (
-    <div>
+    <div className="grid grid-cols-[120px_minmax(0,1fr)_60px_max-content] gap-x-3">
       {rows.map((r) => (
         <div
           key={r.id}
@@ -971,7 +971,7 @@ function RankedBars({
             </span>,
           )}
           onClick={onRow ? () => onRow(r.id) : undefined}
-          className={`grid grid-cols-[120px_1fr_60px_100px] items-center gap-3 border-t border-white/[0.03] py-1.5 text-[11px] first:border-t-0 ${
+          className={`col-span-4 grid grid-cols-subgrid items-center border-t border-white/[0.03] py-1.5 text-[11px] first:border-t-0 ${
             onRow ? 'cursor-pointer rounded-sm hover:bg-white/[0.03]' : ''
           }`}
         >

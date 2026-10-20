@@ -319,7 +319,7 @@ function StatusBadge({ status }: { status: string }) {
     ? 'bg-ok'
     : isPaused
     ? 'bg-warn'
-    : 'animate-pulse-soft bg-accent shadow-[0_0_6px_rgba(168,212,252,0.6)]'
+    : 'animate-pulse-soft bg-accent shadow-[0_0_6px_rgb(var(--accent-rgb)/0.6)]'
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-[10px] border px-2 py-0.5 font-mono text-[10.5px] uppercase tracking-[0.14em] ${color}`}
@@ -404,8 +404,8 @@ function TrajectoryStrip({
           >
             <defs>
               <linearGradient id="confArea" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="rgba(168,212,252,0.22)" />
-                <stop offset="100%" stopColor="rgba(168,212,252,0.01)" />
+                <stop offset="0%" stopColor="rgb(var(--accent-rgb) / 0.22)" />
+                <stop offset="100%" stopColor="rgb(var(--accent-rgb) / 0.01)" />
               </linearGradient>
             </defs>
 
@@ -429,7 +429,7 @@ function TrajectoryStrip({
             <polyline
               points={linePoints}
               fill="none"
-              stroke="rgba(168,212,252,0.85)"
+              stroke="rgb(var(--accent-rgb) / 0.85)"
               strokeWidth="1.3"
               strokeLinejoin="round"
               strokeLinecap="round"
@@ -452,7 +452,7 @@ function TrajectoryStrip({
                       cy={xy[i].y.toFixed(2)}
                       r={5}
                       fill="none"
-                      stroke={done ? 'rgba(136,214,127,0.45)' : 'rgba(168,212,252,0.45)'}
+                      stroke={done ? 'rgba(136,214,127,0.45)' : 'rgb(var(--accent-rgb) / 0.45)'}
                       strokeWidth="1"
                       className="animate-pulse-soft"
                     />
@@ -461,7 +461,7 @@ function TrajectoryStrip({
                     cx={xy[i].x.toFixed(2)}
                     cy={xy[i].y.toFixed(2)}
                     r={isLatest ? 2.8 : 2.2}
-                    fill={done ? 'rgb(136,214,127)' : 'rgb(168,212,252)'}
+                    fill={done ? 'rgb(136,214,127)' : 'rgb(var(--accent-rgb))'}
                   />
                   <title>{`turn ${i + 1} · conf ${c.toFixed(2)} · ${done ? 'done' : 'continue'}`}</title>
                 </g>

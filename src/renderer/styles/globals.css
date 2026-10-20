@@ -2198,3 +2198,18 @@ body.splash-active [data-splash-target='hero-icon'] {
   background: rgb(var(--accent-rgb) / 0.5);
   box-shadow: 0 0 8px rgb(var(--accent-rgb) / 0.35);
 }
+
+/* Receipt (activity tab): the compressed-idle plates on the braid. Dark keeps
+   its near-black plate; on paper the plate is a paper tag with a sand edge. */
+.receipt-idle {
+  background: rgba(5, 5, 6, 0.84);
+  border-color: rgba(184, 160, 120, 0.22);
+}
+:root[data-theme='light'] .receipt-idle {
+  background: color-mix(in srgb, rgb(var(--warn-rgb)) 5%, rgb(var(--paper)));
+  border-color: rgb(var(--warn-rgb) / 0.3);
+  box-shadow:
+    0 1px 1.5px rgb(var(--shadow) / 0.05),
+    0 6px 16px -8px rgb(var(--shadow) / 0.2);
+}
+:root[data-theme='light'] .receipt-idle-sub { color: rgb(var(--fg-2)); }

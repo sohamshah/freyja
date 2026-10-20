@@ -503,7 +503,7 @@ function PaneChatbox({
   return (
     <div
       className={`hairline-t flex shrink-0 items-start gap-2 px-3 py-2 transition-shadow ${
-        focused ? 'shadow-[inset_0_1px_0_rgba(168,212,252,0.18)]' : ''
+        focused ? 'shadow-[inset_0_1px_0_rgb(var(--accent-rgb)/0.18)]' : ''
       }`}
       onMouseDown={(event) => {
         event.stopPropagation()

@@ -290,7 +290,7 @@ export function SlackSetupWizard({ open, onClose }: Props) {
           slack setup
         </span>
         <span className="inline-flex items-center gap-1.5 rounded border border-white/[0.08] bg-white/[0.025] px-2 py-0.5 font-mono text-[10.5px] text-fg-2">
-          <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_5px_rgba(168,212,252,0.55)]" />
+          <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_5px_rgb(var(--accent-rgb)/0.55)]" />
           step {stepIndex} of {stepTotal}
         </span>
         <span className="ml-auto" />

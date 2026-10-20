@@ -194,7 +194,7 @@ function ChromelessLoader({ label }: { label: string }) {
             className="absolute inset-y-0 left-0 w-1/3 rounded-full animate-shimmer"
             style={{
               backgroundImage:
-                'linear-gradient(90deg, transparent 0%, rgba(168,212,252,0.55) 50%, transparent 100%)',
+                'linear-gradient(90deg, transparent 0%, rgb(var(--accent-rgb) / 0.55) 50%, transparent 100%)',
               backgroundSize: '200% 100%',
             }}
           />

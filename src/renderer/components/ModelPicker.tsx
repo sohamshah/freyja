@@ -393,7 +393,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
                   }}
                   className={`group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
                     isActive
-                      ? 'border-accent/25 bg-accent/12 text-fg-0 shadow-[inset_0_0_0_1px_rgba(168,212,252,0.08)]'
+                      ? 'border-accent/25 bg-accent/12 text-fg-0 shadow-[inset_0_0_0_1px_rgb(var(--accent-rgb)/0.08)]'
                       : unavailable
                         ? 'border-transparent text-fg-3 hover:bg-white/[0.02]'
                         : 'border-transparent text-fg-1 hover:border-white/10 hover:bg-white/[0.04]'
@@ -467,7 +467,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
               }}
               className={`group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
                 isActive
-                  ? 'border-accent/25 bg-accent/12 text-fg-0 shadow-[inset_0_0_0_1px_rgba(168,212,252,0.08)]'
+                  ? 'border-accent/25 bg-accent/12 text-fg-0 shadow-[inset_0_0_0_1px_rgb(var(--accent-rgb)/0.08)]'
                   : unavailable
                     ? 'border-transparent text-fg-3 hover:bg-white/[0.02]'
                     : 'border-transparent text-fg-1 hover:border-white/10 hover:bg-white/[0.04]'
@@ -557,7 +557,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
                           }}
                           className={`rounded-md border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.04em] transition-colors ${
                             selected
-                              ? 'border-accent/50 bg-accent/20 text-accent shadow-[0_0_14px_rgba(168,212,252,0.08)]'
+                              ? 'border-accent/50 bg-accent/20 text-accent shadow-[0_0_14px_rgb(var(--accent-rgb)/0.08)]'
                               : suggested
                                 ? 'border-white/14 bg-white/[0.045] text-fg-1'
                                 : 'border-white/10 bg-white/[0.025] text-fg-2 hover:border-accent/30 hover:bg-accent/10 hover:text-accent'

@@ -76,7 +76,7 @@ export function BriefMemo({
           {to}
         </span>
         <span className="inline-flex items-center gap-1.5 rounded border border-white/[0.08] bg-white/[0.025] px-2 py-0.5 font-mono text-[10.5px] text-fg-2">
-          <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_5px_rgba(168,212,252,0.55)]" />
+          <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_5px_rgb(var(--accent-rgb)/0.55)]" />
           {toRole}
         </span>
         <span className="hidden min-w-0 truncate font-mono text-[11.5px] text-fg-3 lg:inline">
@@ -167,7 +167,7 @@ export function BriefPreview({
     <>
       <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-4">
         <span className="inline-flex items-center gap-2 font-mono text-[12px] italic text-accent">
-          <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_6px_rgba(168,212,252,0.6)]" />
+          <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_6px_rgb(var(--accent-rgb)/0.6)]" />
           live preview
         </span>
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3">updates as you edit</span>
