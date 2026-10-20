@@ -14,7 +14,7 @@ interface AppearanceOption {
 const APPEARANCE_OPTIONS: AppearanceOption[] = [
   { theme: 'system', label: 'System', hint: 'follows macOS' },
   { theme: 'dark', label: 'Dark', hint: 'frosted charcoal' },
-  { theme: 'light', label: 'Light', hint: 'frosted white' },
+  { theme: 'light', label: 'Light', hint: 'warm paper' },
 ]
 
 interface PermissionOption {
@@ -118,7 +118,7 @@ export function SettingsModal() {
         <div className="flex-1 overflow-y-auto px-5 py-5">
           <Section
             title="appearance"
-            description="Dark is the original frosted-charcoal shell; light is the same glass in white. System follows the macOS appearance, including its sunset schedule. ⌘⇧L flips between dark and light from anywhere."
+            description="Dark is the original frosted-charcoal shell; light is the same glass on warm paper. System follows the macOS appearance, including its sunset schedule. ⌘⇧L flips between dark and light from anywhere."
           >
             <AppearancePicker
               value={settings.appearance?.theme ?? 'system'}
@@ -629,7 +629,7 @@ function ThemeSwatch({ theme, split }: { theme: 'dark' | 'light'; split?: boolea
       className="relative flex h-[62px] w-full overflow-hidden rounded-md ring-1 ring-white/10"
     >
       {halves.map((half) => (
-        <div key={half} className="relative flex-1" style={{ background: half === 'dark' ? '#17191e' : '#e9ecf1' }}>
+        <div key={half} className="relative flex-1" style={{ background: half === 'dark' ? '#17191e' : '#ece7df' }}>
           <SwatchShell theme={half} />
         </div>
       ))}
@@ -642,10 +642,10 @@ function ThemeSwatch({ theme, split }: { theme: 'dark' | 'light'; split?: boolea
 
 function SwatchShell({ theme }: { theme: 'dark' | 'light' }) {
   const dark = theme === 'dark'
-  const panel = dark ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.78)'
-  const line = dark ? 'rgba(255,255,255,0.28)' : 'rgba(20,23,28,0.32)'
-  const faint = dark ? 'rgba(255,255,255,0.14)' : 'rgba(20,23,28,0.14)'
-  const accent = dark ? '#a8d4fc' : '#2b6ec2'
+  const panel = dark ? 'rgba(255,255,255,0.08)' : 'rgba(250,248,243,0.9)'
+  const line = dark ? 'rgba(255,255,255,0.28)' : 'rgba(34,30,24,0.36)'
+  const faint = dark ? 'rgba(255,255,255,0.14)' : 'rgba(34,30,24,0.14)'
+  const accent = dark ? '#a8d4fc' : '#2864b4'
   const bar = (w: string, c: string) => (
     <div className="h-[2px] rounded-full" style={{ width: w, background: c }} />
   )

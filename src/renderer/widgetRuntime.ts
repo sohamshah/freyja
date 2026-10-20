@@ -168,34 +168,35 @@ const RUNTIME_CSS = String.raw`
   --border-radius-xl: 16px;
 }
 html[data-theme="light"] {
-  --bg-0: #ffffff;
-  --bg-1: #f7f8fa;
-  --bg-2: #f0f2f5;
-  --bg-3: #e8ebf0;
-  --bg-4: #dee2e8;
-  --fg-0: #1a1d22;
-  --fg-1: #4a505a;
-  --fg-2: #767d89;
-  --fg-3: #a0a6b0;
-  --fg-4: #c6cbd2;
-  --accent: #2b6ec2;
-  --accent-hi: #1c56a0;
-  --accent-lo: #6096d8;
-  --ok: #467a56;
-  --warn: #966a22;
-  --danger: #b24444;
-  --color-background-info: rgba(43, 110, 194, 0.08);
-  --color-background-danger: rgba(178, 68, 68, 0.08);
-  --color-background-success: rgba(70, 122, 86, 0.10);
-  --color-background-warning: rgba(150, 106, 34, 0.10);
-  --color-text-inverse: #ffffff;
-  --color-border-primary: rgba(20, 23, 28, 0.18);
-  --color-border-secondary: rgba(20, 23, 28, 0.12);
-  --color-border-tertiary: rgba(20, 23, 28, 0.07);
-  --color-border-info: rgba(43, 110, 194, 0.35);
-  --color-border-danger: rgba(178, 68, 68, 0.35);
-  --color-border-success: rgba(70, 122, 86, 0.35);
-  --color-border-warning: rgba(150, 106, 34, 0.35);
+  /* Warm paper, matching the shell's light tokens. */
+  --bg-0: #f8f5ef;
+  --bg-1: #f3efe8;
+  --bg-2: #ece7df;
+  --bg-3: #e4ded5;
+  --bg-4: #dad3c9;
+  --fg-0: #24201b;
+  --fg-1: #4c463e;
+  --fg-2: #605950;
+  --fg-3: #766f65;
+  --fg-4: #a69f95;
+  --accent: #2864b4;
+  --accent-hi: #1a4e96;
+  --accent-lo: #5e8ecc;
+  --ok: #427654;
+  --warn: #92661e;
+  --danger: #ac423e;
+  --color-background-info: rgba(40, 100, 180, 0.08);
+  --color-background-danger: rgba(172, 66, 62, 0.08);
+  --color-background-success: rgba(66, 118, 84, 0.10);
+  --color-background-warning: rgba(146, 102, 30, 0.10);
+  --color-text-inverse: #f8f5ef;
+  --color-border-primary: rgba(34, 30, 24, 0.18);
+  --color-border-secondary: rgba(34, 30, 24, 0.12);
+  --color-border-tertiary: rgba(34, 30, 24, 0.07);
+  --color-border-info: rgba(40, 100, 180, 0.35);
+  --color-border-danger: rgba(172, 66, 62, 0.35);
+  --color-border-success: rgba(66, 118, 84, 0.35);
+  --color-border-warning: rgba(146, 102, 30, 0.35);
 }
 
 * { box-sizing: border-box; }

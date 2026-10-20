@@ -1,6 +1,6 @@
 # Appearance: dark and light shells
 
-Freyja has two shells. Dark is the original frosted-charcoal glass. Light is the same glass in white. `System` follows the macOS appearance, including its sunset schedule. This document describes how the switch works and where the colour system lives.
+Freyja has two shells. Dark is the original frosted-charcoal glass. Light is the same glass on warm paper: an off-white ground, warm ink, and definition from soft shadows instead of lines. `System` follows the macOS appearance, including its sunset schedule. This document describes how the switch works and where the colour system lives.
 
 ## What the operator sees
 
@@ -43,18 +43,19 @@ Everything resolves through CSS variables declared in `src/renderer/styles/globa
 
 The tokens are semantic, not literal:
 
-| Token | Meaning | Dark | Light |
+| Token | Meaning | Dark | Light (paper) |
 | --- | --- | --- | --- |
-| `--ink` | text, hairlines, washes | white | near-black |
-| `--paper` | the surface colour | near-black | white |
-| `--well`, `--well-k` | a recessed backing (code blocks, inputs, image wells) | black at the written alpha | cool grey, alpha scaled by 0.22 |
-| `--shadow`, `--shadow-k` | drop and inset shadows | black | cool dark, alpha scaled by 0.38 |
-| `--scrim` | the veil behind modals | black | dark grey |
-| `--fg-0..4` | foreground scale, strongest first | light greys | dark greys |
-| `--bg-0..4` | surface scale, base first | charcoal | white to pale grey |
-| `--accent`, `-hi`, `-lo` | the one saturated hue | pale sky `#a8d4fc` | steel blue `#2b6ec2` |
-| `--ok`, `--warn`, `--danger` | the muted status trio | greyed pastels | deepened to read on white |
+| `--ink` | text, hairlines, washes | white | warm near-black `#221e18` |
+| `--paper` | the surface colour | near-black | warm off-white `#f8f5ef` |
+| `--well`, `--well-k` | a recessed backing (code blocks, inputs, image wells) | black at the written alpha | warm brown, alpha scaled by 0.2 |
+| `--shadow`, `--shadow-k` | drop and inset shadows | black | warm dark, alpha scaled by 0.5 |
+| `--scrim` | the veil behind modals | black | warm dark grey |
+| `--fg-0..4` | foreground scale, strongest first | light greys | warm greys, a step darker than the dark scale implies, because a label on paper carries its own contrast |
+| `--bg-0..4` | surface scale, base first | charcoal | paper to pale sand |
+| `--accent`, `-hi`, `-lo` | the one saturated hue | pale sky `#a8d4fc` | steel blue `#2864b4` |
+| `--ok`, `--warn`, `--danger` | the muted status trio | greyed pastels | deepened to read on paper |
 | `--chart-*`, `--tool-*`, `--file-*` | category hues for charts, tool bars, file types | pastel | deepened |
+| `--card-shadow`, `--edge-shadow` | the two shadow recipes raised surfaces on paper are built from | unused | a whisper of edge, a contact shadow, a soft ambient fall-off |
 
 Tailwind's `white` and `black` are remapped on purpose. The codebase writes `bg-white/5`, `border-white/10` and `text-white` to mean "ink on the surface", and `bg-black/30` to mean "a darker backing". Those are semantic uses, so `white` resolves to `--ink` and `black` to `--well`. A 30% black well that reads right on charcoal is a slab on white, which is why the well's alpha is scaled down in the light shell. `pure-white` and `pure-black` exist for the rare colour that must not flip.
 
@@ -62,19 +63,20 @@ The modal veil is a class, `scrim` (with `scrim-soft` and `scrim-strong`), becau
 
 ### Surfaces
 
-The glass rules are tuned for the frosted-dark vibrancy material: low-alpha charcoal fills and white hairlines. On the light material the same recipe is a muddy grey, so every surface is restated at the end of `globals.css` under `:root[data-theme='light']` with a white fill at a noticeably higher alpha. Dense lists on a light desktop need the opacity; the dark shell can afford 0.2 where the light shell uses 0.55 to 0.8.
+The glass rules are tuned for the frosted-dark vibrancy material: low-alpha charcoal fills and white hairlines. On the light material the same recipe is a muddy grey, so every surface is restated at the end of `globals.css` under `:root[data-theme='light']` on paper: a warm off-white fill at a noticeably higher alpha, a white top glint, and definition from layered soft shadows rather than lines. Dense lists on a light desktop need the opacity; the dark shell can afford 0.2 where the light shell uses 0.5 to 0.9. The window tint itself is strong (about 0.55) so the desktop becomes a soft wash and a thinking aside has a steady ground.
 
 | Surface | Dark fill | Light fill |
 | --- | --- | --- |
-| `.glass` (structural panels) | charcoal 0.18–0.22 | white 0.42–0.60 |
-| `.glass-panel` (sidebar, activity) | charcoal 0.32–0.36 | white 0.56–0.72 |
-| `.glass-strong` (dialogs) | charcoal 0.54 | white 0.80 |
-| `.menu-opaque`, `.modal-opaque` | charcoal 0.90–0.94 | white 0.96–0.97 |
-| `.glass-raised` (inline cards) | charcoal 0.30 | white 0.60 |
-| `.cradle` (composer) | charcoal 0.46 | white 0.76 |
-| `.app-header` | charcoal 0.36–0.52 | white 0.52–0.68 |
+| `.app-tint` (the window) | near clear | paper 0.5–0.62 |
+| `.glass` (structural panels) | charcoal 0.18–0.22 | paper 0.5–0.66 + card shadow |
+| `.glass-panel` (sidebar, activity) | charcoal 0.32–0.36 | paper 0.6–0.76 |
+| `.glass-strong` (dialogs) | charcoal 0.54 | paper 0.9 + deep shadow |
+| `.menu-opaque`, `.modal-opaque` | charcoal 0.90–0.94 | paper 0.97–0.98 |
+| `.glass-raised` (inline cards) | charcoal 0.30 | paper 0.62 + card shadow |
+| `.cradle` (composer) | charcoal 0.46 | paper 0.82 |
+| `.app-header` | charcoal 0.36–0.52 | paper 0.56–0.72 |
 
-Edges flip with the surface: a white top glint and an ink hairline on light, a white hairline on dark.
+Lines become edges: `.ring-hairline` is a half-pixel edge plus a contact shadow, and the same class on a card radius (`rounded-xl` and up) takes the full card shadow, so chips stay flat and cards lift. The common 1px utility hairlines (`border-white/[0.06]` and friends) are a notch softer. Full-window takeovers (the dashboard, artifacts, scheduler) get a faint paper grain and vignette through pseudo-elements, and the tasks tab's buckets become sheets (`.task-section`) beside a deeper margin (`.task-rail`); both classes are no-ops in the dark shell.
 
 ## Adding colour to a component
 
@@ -87,5 +89,7 @@ Edges flip with the surface: a white top glint and an ink hairline on light, a w
 ## Checking it
 
 `test-theme.mjs` at the repo root exercises the resolution, the toggle, the document attribute and the browser-mode persistence under jsdom. Run it from the repo root with `npx tsx test-theme.mjs` (or `node --experimental-strip-types test-theme.mjs`) after `npm i --no-save jsdom`.
+
+For a visual check in the running app with real vibrancy, open its inspector with `kill -USR1 <main pid>` (the inspect fuse is on), then insert a candidate stylesheet with `webContents.insertCSS` through `scripts/perf/mainrpc.mjs`, open views through `window.__harnessStore.getState()`, and capture the window with `screencapture -l<id>` using the id from `BrowserWindow.getMediaSourceId()`. The paper design was tuned that way.
 
 For a visual check without the app, build the renderer unminified (`npx vite build --outDir <dir> --minify false`), serve it with `scripts/perf/mock-harness.js` and Playwright, open `/?backdrop=1`, and capture with the browser context's `colorScheme` set to `dark` and `light`. The `?backdrop=1` flag paints a simulated desktop under each glass: a night sky for dark, a hazy daylight for light.

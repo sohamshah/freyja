@@ -208,36 +208,51 @@
 }
 
 /* ─── Light shell ────────────────────────────────────────────────────
-   Ink goes near-black, paper goes white, the accent deepens from pale
-   sky to steel blue so it still carries text, and the muted status trio
-   is pulled down to the same contrast. Surfaces are overridden at the
-   end of this file. */
+   Paper, not white. The ground is a warm off-white, the ink a warm
+   near-black, and the secondary scale sits a step darker than the dark
+   shell's would suggest: on a light ground a label has to carry its own
+   contrast, where on charcoal the glow did half the work. The accent
+   deepens from pale sky to steel blue so it still carries text; the
+   muted status trio is pulled down to the same contrast. Surfaces are
+   restated at the end of this file. */
 :root[data-theme='light'] {
   color-scheme: light;
-  --ink: 20 23 28;
-  --paper: 255 255 255;
-  --well: 24 28 36;
-  --well-k: 0.22;
-  --shadow: 15 20 30;
-  --shadow-k: 0.38;
-  --scrim: 20 24 32;
-  --bg-0: 255 255 255;
-  --bg-1: 247 248 250;
-  --bg-2: 240 242 245;
-  --bg-3: 232 235 240;
-  --bg-4: 222 226 232;
-  --fg-0: 26 29 34;
-  --fg-1: 74 80 90;
-  --fg-2: 118 125 137;
-  --fg-3: 160 166 176;
-  --fg-4: 198 203 210;
-  --accent-rgb: 43 110 194;
-  --accent-hi-rgb: 28 86 160;
-  --accent-lo-rgb: 96 150 216;
-  --ok-rgb: 70 122 86;
-  --warn-rgb: 150 106 34;
-  --danger-rgb: 178 68 68;
-  --chart-1: #2b6ec2;
+  --ink: 34 30 24;
+  --paper: 248 245 239;
+  --well: 72 60 42;
+  --well-k: 0.2;
+  --shadow: 62 50 32;
+  --shadow-k: 0.5;
+  --scrim: 48 40 30;
+  --bg-0: 248 245 239;
+  --bg-1: 243 239 232;
+  --bg-2: 236 231 223;
+  --bg-3: 228 222 213;
+  --bg-4: 218 211 201;
+  --fg-0: 36 32 27;
+  --fg-1: 76 70 62;
+  --fg-2: 96 89 80;
+  --fg-3: 118 111 101;
+  --fg-4: 166 159 149;
+  --accent-rgb: 40 100 180;
+  --accent-hi-rgb: 26 78 150;
+  --accent-lo-rgb: 94 142 204;
+  --ok-rgb: 66 118 84;
+  --warn-rgb: 146 102 30;
+  --danger-rgb: 172 66 62;
+  /* Paper grain for the full-window takeovers, and the two shadow
+     recipes every raised surface on paper is built from: a whisper of
+     edge, a contact shadow, and a soft ambient fall-off. */
+  --paper-grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='560' height='560'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='1' stitchTiles='stitch' seed='3'/><feColorMatrix values='1.5 0 0 0 -0.45 0 1.5 0 0 -0.45 0 0 1.5 0 -0.45 0 0 0 1 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  --card-shadow:
+    0 0 0 0.5px rgb(var(--ink) / 0.07),
+    0 1px 1px rgb(var(--shadow) / 0.05),
+    0 2px 6px -2px rgb(var(--shadow) / 0.07),
+    0 14px 32px -20px rgb(var(--shadow) / 0.24);
+  --edge-shadow:
+    0 0 0 0.5px rgb(var(--ink) / 0.08),
+    0 1px 1.5px rgb(var(--shadow) / 0.05);
+  --chart-1: #2864b4;
   --chart-2: #3f9a4a;
   --chart-3: #c47f14;
   --chart-4: #6a5bd6;
@@ -249,7 +264,7 @@
   --chart-bad: #d04545;
   --chart-mute: #8a9494;
   --chart-mute-2: #6b8080;
-  --tool-read: #2b6ec2;
+  --tool-read: #2864b4;
   --tool-write: #2f8f3a;
   --tool-web: #b8761a;
   --tool-shell: #7b4fb0;
@@ -257,7 +272,7 @@
   --tool-bus: #a37a1a;
   --tool-media: #1f8fa8;
   --tool-error: #d03a3a;
-  --file-doc: #2b6ec2;
+  --file-doc: #2864b4;
   --file-markup: #2f8a6a;
   --file-data: #b8860b;
   --file-code: #3a9a3a;
@@ -269,7 +284,7 @@
   --amber: #c98a10;
   --teal: #1f9a86;
   --wordmark-1: #1e8fb8;
-  --wordmark-2: #2b6ec2;
+  --wordmark-2: #2864b4;
   --wordmark-3: #5a55c8;
   --wordmark-4: #8a4fc8;
   --syn-key: #2f6e8f;
@@ -1928,138 +1943,209 @@ body.splash-active [data-splash-target='hero-icon'] {
    The dark glass rules above are tuned for a frosted-dark vibrancy
    material: low-alpha charcoal fills that let the desktop through and
    white hairlines for edges. On the light material the same recipe is
-   a muddy grey, so every surface is restated here with a WHITE fill at
-   a noticeably higher alpha (the dark shell can afford 0.2; dense
-   lists on a light desktop need 0.55–0.8 to stay legible), white top
-   glints, and ink-coloured hairlines. Shadows are pale and cool.
-   Everything else — text, washes, accents, wells — flows from the
-   tokens and needs no restating. */
+   a muddy grey, so every surface is restated here on PAPER: a warm
+   off-white fill at a noticeably higher alpha (dense lists on a light
+   desktop need 0.5–0.9 where the dark shell can afford 0.2), a white
+   top glint, and definition from layered soft shadows instead of lines.
+   Text, washes, accents and wells flow from the tokens and need no
+   restating. */
 :root[data-theme='light'] .app-tint {
+  /* The window tint is the paper itself: strong enough that the desktop
+     becomes a soft wash and a thinking aside has a steady ground. */
   background:
-    linear-gradient(135deg, rgb(255 255 255 / 0.16), rgb(255 255 255 / 0.06) 34%, rgb(20 23 28 / 0.02)),
-    rgb(255 255 255 / 0.08);
+    linear-gradient(135deg, rgb(250 247 241 / 0.62), rgb(246 242 234 / 0.5) 40%, rgb(240 235 226 / 0.56)),
+    rgb(248 245 239 / 0.5);
   box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.75),
-    inset 0 0 96px rgb(var(--accent-rgb) / 0.03);
+    inset 0 1px 0 rgb(255 253 248 / 0.8),
+    inset 0 0 120px rgb(var(--accent-rgb) / 0.03);
 }
 :root[data-theme='light'] .app-header {
-  background: linear-gradient(180deg, rgb(255 255 255 / 0.68), rgb(255 255 255 / 0.52));
+  background: linear-gradient(180deg, rgb(250 247 241 / 0.72), rgb(248 245 239 / 0.56));
+  box-shadow: inset 0 -1px 0 rgb(var(--ink) / 0.05);
 }
 :root[data-theme='light'] .glass {
   background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.6), rgb(255 255 255 / 0.48)),
-    rgb(255 255 255 / 0.42);
+    linear-gradient(180deg, rgb(250 248 243 / 0.66), rgb(247 244 237 / 0.56)),
+    rgb(248 245 239 / 0.5);
   box-shadow:
-    inset 0 0.5px 0 0 rgb(255 255 255 / 0.95),
-    inset 0 0 0 1px rgb(20 23 28 / 0.07),
-    0 8px 40px -8px rgb(15 20 30 / 0.12);
+    inset 0 0.5px 0 0 rgb(255 253 248 / 0.9),
+    0 0 0 0.5px rgb(var(--ink) / 0.07),
+    0 1px 2px rgb(var(--shadow) / 0.05),
+    0 18px 44px -26px rgb(var(--shadow) / 0.3);
 }
 :root[data-theme='light'] .glass-panel {
   background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.72), rgb(255 255 255 / 0.62)),
-    rgb(255 255 255 / 0.56);
+    linear-gradient(180deg, rgb(250 248 243 / 0.76), rgb(247 244 237 / 0.66)),
+    rgb(248 245 239 / 0.6);
 }
 :root[data-theme='light'] .glass-strong {
-  background: rgb(255 255 255 / 0.8);
+  background: rgb(249 246 240 / 0.9);
   box-shadow:
-    inset 0 0.5px 0 0 rgb(255 255 255 / 1),
-    inset 0 0 0 1px rgb(20 23 28 / 0.08),
-    0 20px 60px -12px rgb(15 20 30 / 0.22);
+    inset 0 0.5px 0 0 rgb(255 253 248 / 1),
+    0 0 0 0.5px rgb(var(--ink) / 0.09),
+    0 2px 4px rgb(var(--shadow) / 0.05),
+    0 30px 80px -24px rgb(var(--shadow) / 0.42);
 }
-:root[data-theme='light'] .menu-opaque {
-  background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.97), rgb(248 249 251 / 0.96)),
-    rgb(255 255 255 / 0.96);
-  box-shadow:
-    inset 0 0.5px 0 0 rgb(255 255 255 / 1),
-    inset 0 0 0 1px rgb(20 23 28 / 0.09),
-    0 24px 70px -16px rgb(15 20 30 / 0.3);
-}
+:root[data-theme='light'] .menu-opaque,
 :root[data-theme='light'] .modal-opaque {
   background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.97), rgb(247 248 250 / 0.96)),
-    rgb(255 255 255 / 0.96);
+    linear-gradient(180deg, rgb(250 248 243 / 0.98), rgb(246 243 236 / 0.97)),
+    rgb(248 245 239 / 0.97);
   box-shadow:
-    inset 0 0.5px 0 0 rgb(255 255 255 / 1),
-    inset 0 0 0 1px rgb(20 23 28 / 0.09),
-    0 28px 80px -18px rgb(15 20 30 / 0.34);
+    inset 0 0.5px 0 0 rgb(255 253 248 / 1),
+    0 0 0 0.5px rgb(var(--ink) / 0.1),
+    0 2px 4px rgb(var(--shadow) / 0.06),
+    0 32px 90px -24px rgb(var(--shadow) / 0.45);
 }
 :root[data-theme='light'] .glass-raised {
-  background: rgb(255 255 255 / 0.6);
-  box-shadow:
-    inset 0 0.5px 0 0 rgb(255 255 255 / 0.95),
-    inset 0 0 0 1px rgb(20 23 28 / 0.07),
-    0 4px 20px -4px rgb(15 20 30 / 0.1);
+  background: rgb(250 248 243 / 0.62);
+  box-shadow: inset 0 0.5px 0 0 rgb(255 253 248 / 0.9), var(--card-shadow);
 }
 :root[data-theme='light'] .glass-raised.card-hover-accent:hover {
   box-shadow:
-    inset 0 0.5px 0 0 rgb(255 255 255 / 0.95),
-    inset 0 0 0 1px rgb(var(--accent-rgb) / 0.45),
-    inset 0 0 24px -10px rgb(var(--accent-rgb) / 0.14),
-    0 4px 20px -4px rgb(15 20 30 / 0.1);
+    inset 0 0.5px 0 0 rgb(255 253 248 / 0.9),
+    0 0 0 1px rgb(var(--accent-rgb) / 0.35),
+    0 2px 6px -2px rgb(var(--shadow) / 0.07),
+    0 14px 32px -20px rgb(var(--shadow) / 0.24);
 }
 :root[data-theme='light'] .glass-chip {
-  background: rgb(255 255 255 / 0.55);
-  box-shadow:
-    inset 0 0.5px 0 0 rgb(255 255 255 / 0.9),
-    inset 0 0 0 1px rgb(20 23 28 / 0.08);
+  background: rgb(250 248 243 / 0.6);
+  box-shadow: inset 0 0.5px 0 0 rgb(255 253 248 / 0.9), var(--edge-shadow);
 }
 :root[data-theme='light'] .session-pane-active {
   box-shadow:
-    inset 0 0.5px 0 0 rgb(255 255 255 / 0.95),
-    inset 0 0 0 1px rgb(var(--accent-rgb) / 0.3),
-    0 0 0 1px rgb(var(--accent-rgb) / 0.12),
-    0 16px 42px -26px rgb(var(--accent-rgb) / 0.3);
+    inset 0 0.5px 0 0 rgb(255 253 248 / 0.95),
+    0 0 0 1px rgb(var(--accent-rgb) / 0.32),
+    0 1px 2px rgb(var(--shadow) / 0.05),
+    0 18px 44px -26px rgb(var(--accent-rgb) / 0.3);
 }
 :root[data-theme='light'] .cradle {
-  background: rgb(255 255 255 / 0.76);
+  background: rgb(250 248 243 / 0.82);
   box-shadow:
-    inset 0 0.5px 0 0 rgb(255 255 255 / 1),
-    inset 0 0 0 1px rgb(20 23 28 / 0.09),
-    0 8px 32px -6px rgb(15 20 30 / 0.16);
+    inset 0 0.5px 0 0 rgb(255 253 248 / 1),
+    0 0 0 0.5px rgb(var(--ink) / 0.09),
+    0 1px 2px rgb(var(--shadow) / 0.05),
+    0 16px 40px -18px rgb(var(--shadow) / 0.3);
 }
 :root[data-theme='light'] .cradle-focused {
   box-shadow:
-    inset 0 0.5px 0 0 rgb(255 255 255 / 1),
-    inset 0 0 0 1px rgb(var(--accent-rgb) / 0.45),
-    0 0 0 1px rgb(var(--accent-rgb) / 0.18),
-    0 12px 40px -8px rgb(15 20 30 / 0.18),
+    inset 0 0.5px 0 0 rgb(255 253 248 / 1),
+    0 0 0 1px rgb(var(--accent-rgb) / 0.4),
+    0 1px 2px rgb(var(--shadow) / 0.05),
+    0 16px 40px -18px rgb(var(--shadow) / 0.3),
     0 8px 24px rgb(var(--accent-rgb) / 0.08);
 }
 :root[data-theme='light'] .sticky-section-header[data-stuck='true'] .sticky-section-chip {
-  background: rgb(255 255 255 / 0.8);
-  box-shadow:
-    inset 0 0.5px 0 0 rgb(255 255 255 / 1),
-    inset 0 0 0 1px rgb(20 23 28 / 0.08),
-    0 6px 18px -10px rgb(15 20 30 / 0.25);
+  background: rgb(250 248 243 / 0.86);
+  box-shadow: inset 0 0.5px 0 0 rgb(255 253 248 / 1), var(--card-shadow);
 }
+
+/* Lines become edges. Small radii keep a soft edge; card radii get the
+   full shadow recipe, so a chip stays flat and a card lifts. */
+:root[data-theme='light'] .ring-hairline {
+  box-shadow: var(--edge-shadow);
+}
+:root[data-theme='light'] .ring-hairline-strong {
+  box-shadow: var(--edge-shadow), 0 8px 24px -16px rgb(var(--shadow) / 0.25);
+}
+:root[data-theme='light'] .rounded-xl.ring-hairline,
+:root[data-theme='light'] .rounded-2xl.ring-hairline,
+:root[data-theme='light'] .rounded-\[14px\].ring-hairline,
+:root[data-theme='light'] .rounded-\[18px\].ring-hairline {
+  box-shadow: var(--card-shadow);
+}
+:root[data-theme='light'] .hairline-b { box-shadow: inset 0 -1px 0 0 rgb(var(--ink) / 0.06); }
+:root[data-theme='light'] .hairline-t { box-shadow: inset 0 1px 0 0 rgb(var(--ink) / 0.06); }
+:root[data-theme='light'] .hairline-r { box-shadow: inset -1px 0 0 0 rgb(var(--ink) / 0.06); }
+:root[data-theme='light'] .hairline-l { box-shadow: inset 1px 0 0 0 rgb(var(--ink) / 0.06); }
+/* The common 1px utility hairlines, a notch softer on paper. */
+:root[data-theme='light'] .border-white\/\[0\.06\] { border-color: rgb(var(--ink) / 0.045); }
+:root[data-theme='light'] .border-white\/\[0\.08\] { border-color: rgb(var(--ink) / 0.06); }
+:root[data-theme='light'] .border-white\/\[0\.10\],
+:root[data-theme='light'] .border-white\/10 { border-color: rgb(var(--ink) / 0.075); }
+:root[data-theme='light'] .ring-white\/\[0\.06\] { --tw-ring-color: rgb(var(--ink) / 0.05); }
+:root[data-theme='light'] .ring-white\/\[0\.08\] { --tw-ring-color: rgb(var(--ink) / 0.065); }
+:root[data-theme='light'] .ring-white\/10 { --tw-ring-color: rgb(var(--ink) / 0.075); }
+
+/* Full-window takeovers (dashboard, artifacts, scheduler, swarm): paper
+   with a whisper of grain and a shade of vignette, so they stop reading
+   as a blank page. Pseudo-elements only: the children keep their own
+   stacking, so menus and drawers inside still rise above siblings. The
+   dashboard goes fully opaque; the blurred takeovers keep their blur. */
+:root[data-theme='light'] .fixed.inset-0.bg-bg-0 {
+  background-color: rgb(248 245 239);
+}
+:root[data-theme='light'] .fixed.inset-0.bg-bg-0\/95,
+:root[data-theme='light'] .fixed.inset-0.bg-bg-0\/\[0\.96\] {
+  background-color: rgb(248 245 239 / 0.985);
+}
+:root[data-theme='light'] .fixed.inset-0.bg-bg-0::before,
+:root[data-theme='light'] .fixed.inset-0.bg-bg-0\/95::before,
+:root[data-theme='light'] .fixed.inset-0.bg-bg-0\/\[0\.96\]::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(ellipse 120% 100% at 50% 30%, transparent 55%, rgb(62 50 32 / 0.05) 100%);
+}
+:root[data-theme='light'] .fixed.inset-0.bg-bg-0::after,
+:root[data-theme='light'] .fixed.inset-0.bg-bg-0\/95::after,
+:root[data-theme='light'] .fixed.inset-0.bg-bg-0\/\[0\.96\]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image: var(--paper-grain);
+  background-size: 560px 560px;
+  opacity: 0.055;
+  mix-blend-mode: multiply;
+}
+
+/* Tasks tab: each bucket is a sheet of paper and the agents rail a
+   deeper margin, so the page reads as a desk instead of a blank page.
+   The classes are no-ops in the dark shell (TasksListRailView.tsx). */
+:root[data-theme='light'] .task-section {
+  background: rgb(250 248 243 / 0.58);
+  border-radius: 14px;
+  padding: 14px 16px 12px;
+  box-shadow: inset 0 0.5px 0 0 rgb(255 253 248 / 0.9), var(--card-shadow);
+}
+:root[data-theme='light'] .task-section > div:first-child { margin-bottom: 10px; }
+:root[data-theme='light'] .task-rail {
+  border-color: transparent;
+  background: rgb(var(--well) / 0.05);
+  box-shadow: inset 1px 0 0 rgb(var(--ink) / 0.04), inset 10px 0 24px -18px rgb(var(--shadow) / 0.14);
+}
+
 /* Title-bar controls: the pressed state is still a recess, just a
    shallow one, and the glints go back to white. */
 :root[data-theme='light'] .title-control-button:hover {
-  background: rgb(20 23 28 / 0.05);
-  box-shadow: inset 0 0 0 1px rgb(20 23 28 / 0.05);
+  background: rgb(var(--ink) / 0.05);
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.05);
 }
 :root[data-theme='light'] .title-control-button:active {
-  background: rgb(20 23 28 / 0.1);
+  background: rgb(var(--ink) / 0.1);
   box-shadow:
-    inset 0 2px 4px rgb(15 20 30 / 0.16),
-    inset 0 -0.5px 0 rgb(255 255 255 / 0.6);
+    inset 0 2px 4px rgb(var(--shadow) / 0.16),
+    inset 0 -0.5px 0 rgb(255 253 248 / 0.6);
 }
 :root[data-theme='light'] .title-control-active,
 :root[data-theme='light'] .title-control-button.title-control-active:hover {
-  background: linear-gradient(180deg, rgb(20 23 28 / 0.1), rgb(20 23 28 / 0.06));
+  background: linear-gradient(180deg, rgb(var(--ink) / 0.1), rgb(var(--ink) / 0.06));
   box-shadow:
-    inset 0 2px 3px rgb(15 20 30 / 0.16),
-    inset 0 1px 0 rgb(15 20 30 / 0.1),
-    inset 0 -0.5px 0 rgb(255 255 255 / 0.7),
-    0 0.5px 0 rgb(255 255 255 / 0.6);
+    inset 0 2px 3px rgb(var(--shadow) / 0.16),
+    inset 0 1px 0 rgb(var(--shadow) / 0.1),
+    inset 0 -0.5px 0 rgb(255 253 248 / 0.7),
+    0 0.5px 0 rgb(255 253 248 / 0.6);
 }
 :root[data-theme='light'] .title-strategy {
-  background: linear-gradient(180deg, rgb(255 255 255 / 0.7), rgb(255 255 255 / 0.4));
+  background: linear-gradient(180deg, rgb(250 248 243 / 0.7), rgb(250 248 243 / 0.4));
   box-shadow:
-    inset 0 0 0 1px rgb(20 23 28 / 0.08),
-    inset 0 1px 0 rgb(255 255 255 / 1),
-    0 4px 18px -14px rgb(15 20 30 / 0.3);
+    inset 0 0 0 1px rgb(var(--ink) / 0.08),
+    inset 0 1px 0 rgb(255 253 248 / 1),
+    0 4px 18px -14px rgb(var(--shadow) / 0.3);
 }
 :root[data-theme='light'] .title-strategy-option-active,
 :root[data-theme='light'] .title-strategy-option-active:hover:not(:disabled) {
@@ -2067,29 +2153,47 @@ body.splash-active [data-splash-target='hero-icon'] {
   background: linear-gradient(180deg, rgb(var(--accent-rgb) / 0.16), rgb(var(--accent-rgb) / 0.1));
   box-shadow:
     inset 0 0 0 1px rgb(var(--accent-rgb) / 0.3),
-    inset 0 1px 0 rgb(255 255 255 / 0.6),
+    inset 0 1px 0 rgb(255 253 248 / 0.6),
     0 0 14px rgb(var(--accent-rgb) / 0.08);
 }
 :root[data-theme='light'] .title-progress {
-  background: rgb(20 23 28 / 0.08);
-  box-shadow: inset 0 1px 1px rgb(15 20 30 / 0.12);
+  background: rgb(var(--ink) / 0.08);
+  box-shadow: inset 0 1px 1px rgb(var(--shadow) / 0.12);
 }
 :root[data-theme='light'] .kbd {
-  background: rgb(255 255 255 / 0.7);
+  background: rgb(252 250 246 / 0.9);
   box-shadow:
-    inset 0 0 0 1px rgb(20 23 28 / 0.12),
-    0 1px 0 rgb(15 20 30 / 0.12);
+    0 0 0 0.5px rgb(var(--ink) / 0.12),
+    0 1px 0 rgb(var(--shadow) / 0.1);
 }
-/* The code well keeps a faint ink ring so it still reads as a block
-   against a near-white card. */
+
+/* Prose on paper: code wells sit a shade below the sheet; table headers
+   and column labels take a notch more ink than "dim". */
 :root[data-theme='light'] .md pre,
 :root[data-theme='light'] .md table,
 :root[data-theme='light'] .md .katex-display {
+  background: rgb(var(--well) / 0.045);
   box-shadow:
-    inset 0 0 0 1px rgb(20 23 28 / 0.06),
-    0 1px 2px rgb(15 20 30 / 0.04);
+    0 0 0 0.5px rgb(var(--ink) / 0.06),
+    inset 0 1px 1px rgb(var(--shadow) / 0.03);
 }
-/* Live thinking shimmer: the bright stop is the deep accent on light. */
+:root[data-theme='light'] .md table th {
+  color: rgb(var(--fg-0));
+  background: rgb(var(--accent-rgb) / 0.07);
+}
+:root[data-theme='light'] th.text-fg-3,
+:root[data-theme='light'] thead .text-fg-3 {
+  color: rgb(var(--fg-2));
+}
+
+/* Thinking: readable, still an aside. */
+:root[data-theme='light'] .thought-head { color: rgb(var(--fg-2)); }
+:root[data-theme='light'] .thought-head:hover,
+:root[data-theme='light'] .thought-verb,
+:root[data-theme='light'] .thought[data-live='true'] .thought-topic,
+:root[data-theme='light'] .thought-head:hover .thought-topic { color: rgb(var(--fg-1)); }
+:root[data-theme='light'] .thought-body.md { color: rgb(var(--fg-1)); }
+:root[data-theme='light'] .thought-body.md strong { color: rgb(var(--fg-0)); }
 :root[data-theme='light'] .thought[data-live='true'] .thought-mark {
   background: rgb(var(--accent-rgb) / 0.5);
   box-shadow: 0 0 8px rgb(var(--accent-rgb) / 0.35);

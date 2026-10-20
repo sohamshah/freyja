@@ -110,7 +110,7 @@ export function TasksListRailView({
               if (list.length === 0) return null
               const hidden = b === 'done' && !showAllDone ? Math.max(0, list.length - DONE_VISIBLE) : 0
               return (
-                <section key={b} className="flex flex-col gap-0.5">
+                <section key={b} className="task-section flex flex-col gap-0.5">
                   <div className="mb-2 flex items-baseline gap-3">
                     <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-2">
                       {BUCKET_LABEL[b]}
@@ -146,7 +146,7 @@ export function TasksListRailView({
           </div>
         </main>
 
-        <aside className="flex min-w-0 flex-col gap-8 overflow-y-auto border-l border-white/[0.06] bg-black/[0.10] px-5 py-7">
+        <aside className="task-rail flex min-w-0 flex-col gap-8 overflow-y-auto border-l border-white/[0.06] bg-black/[0.10] px-5 py-7">
           <AgentsRail agents={agents} onOpen={(id) => onAttach(id, 'split')} />
           <ActivityRail tasks={tasks} onOpenTask={setOpenTaskId} />
         </aside>

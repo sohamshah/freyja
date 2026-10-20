@@ -858,7 +858,7 @@ function FauxBackdrop() {
       className="absolute inset-0"
       style={{
         background: light
-          ? 'radial-gradient(1200px 800px at 20% 20%, #dfe8f3 0%, #c9d6e6 35%, #b4c3d8 70%, #a3b3cb 100%), linear-gradient(180deg, #e4ebf4 0%, #b9c7da 100%)'
+          ? 'radial-gradient(1200px 800px at 20% 20%, #e8e2d6 0%, #d3cbbd 35%, #b9c3d2 70%, #a3b0c4 100%), linear-gradient(180deg, #ebe6dc 0%, #b9c4d6 100%)'
           : 'radial-gradient(1200px 800px at 20% 20%, #1e2a3a 0%, #0f1626 35%, #05070e 70%, #02030a 100%), linear-gradient(180deg, #151d2e 0%, #080a14 100%)',
       }}
     >

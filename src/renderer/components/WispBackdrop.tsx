@@ -295,7 +295,7 @@ export function WispBackdrop() {
       if (lightRef.current) {
         gl.blendEquation(gl.FUNC_REVERSE_SUBTRACT)
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE)
-        gl.clearColor(247 / 255, 248 / 255, 250 / 255, 1)
+        gl.clearColor(248 / 255, 245 / 255, 239 / 255, 1)
       } else {
         gl.blendEquation(gl.FUNC_ADD)
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE)
