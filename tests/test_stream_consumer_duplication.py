@@ -27,37 +27,7 @@ from bridge.gateway.run import _attach_turn_consumer, _detach_turn_consumer
 from bridge.gateway.stream_consumer import SlackStreamConsumer
 
 
-class _FakeAdapter:
-    """Minimal adapter double: records sends, no-ops the stream API."""
-
-    max_message_chars = 39_000
-
-    def __init__(self) -> None:
-        self.sent: list[str] = []
-        self.streams_stopped: list[str] = []
-
-    def format_content(self, content: str) -> str:
-        return content
-
-    async def send(self, chat_id: str, content: str, **kwargs: Any) -> SendResult:
-        self.sent.append(content)
-        return SendResult(ok=True, message_id="1.0")
-
-    async def start_stream(self, *a: Any, **kw: Any) -> SendResult:
-        return SendResult(ok=True, message_id="stream-ts")
-
-    async def append_stream(self, *a: Any, **kw: Any) -> SendResult:
-        return SendResult(ok=True)
-
-    async def stop_stream(self, chat_id: str, ts: str, **kw: Any) -> SendResult:
-        self.streams_stopped.append(ts)
-        return SendResult(ok=True)
-
-    async def send_typing(self, *a: Any, **kw: Any) -> None:
-        return None
-
-    async def stop_typing(self, *a: Any, **kw: Any) -> None:
-        return None
+from tests.slack_fakes import StreamingFakeAdapter as _FakeAdapter
 
 
 def _source() -> MessageSource:
@@ -101,7 +71,7 @@ async def test_body_gets_paragraph_break_between_phases() -> None:
             {"type": "turn_complete"},
         ],
     )
-    assert adapter.sent == ["Looking at the repo now.\n\nFound the bug."]
+    assert adapter.body == "Looking at the repo now.\n\nFound the bug."
 
 
 @pytest.mark.asyncio
@@ -116,7 +86,7 @@ async def test_contiguous_deltas_not_split() -> None:
             {"type": "turn_complete"},
         ],
     )
-    assert adapter.sent == ["One block, still one block."]
+    assert adapter.body == "One block, still one block."
 
 
 @pytest.mark.asyncio
@@ -132,7 +102,7 @@ async def test_no_double_break_when_block_already_ends_with_newline() -> None:
             {"type": "turn_complete"},
         ],
     )
-    assert adapter.sent == ["Para one.\n\nPara two."]
+    assert adapter.body == "Para one.\n\nPara two."
 
 
 class _FakeSession:
@@ -208,4 +178,4 @@ async def test_abort_seals_open_stream() -> None:
     assert consumer.finalized
     assert adapter.streams_stopped == ["stream-ts"]
     # Body from the dead turn is never delivered.
-    assert adapter.sent == []
+    assert adapter.body == ""

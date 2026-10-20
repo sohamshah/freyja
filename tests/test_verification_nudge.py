@@ -100,33 +100,7 @@ async def test_a_short_run_ends_without_one():
 # ── Slack consumer ────────────────────────────────────────────────────
 
 
-class _FakeAdapter:
-    max_message_chars = 39_000
-
-    def __init__(self) -> None:
-        self.sent: list[str] = []
-
-    def format_content(self, content: str) -> str:
-        return content
-
-    async def send(self, chat_id: str, content: str, **kwargs: Any) -> SendResult:
-        self.sent.append(content)
-        return SendResult(ok=True, message_id="1.0")
-
-    async def start_stream(self, *a: Any, **kw: Any) -> SendResult:
-        return SendResult(ok=True, message_id="stream-ts")
-
-    async def append_stream(self, *a: Any, **kw: Any) -> SendResult:
-        return SendResult(ok=True)
-
-    async def stop_stream(self, *a: Any, **kw: Any) -> SendResult:
-        return SendResult(ok=True)
-
-    async def send_typing(self, *a: Any, **kw: Any) -> None:
-        return None
-
-    async def stop_typing(self, *a: Any, **kw: Any) -> None:
-        return None
+from tests.slack_fakes import StreamingFakeAdapter as _FakeAdapter
 
 
 @pytest.mark.asyncio
@@ -154,4 +128,4 @@ async def test_slack_reply_after_the_self_check_is_a_new_paragraph():
             consumer.on_event(ev)  # filtered out before it reaches the handler
             continue
         await consumer._handle_event_async(ev)
-    assert adapter.sent == ["Done. Still the same paragraph.\n\nVerified."]
+    assert adapter.body == "Done. Still the same paragraph.\n\nVerified."

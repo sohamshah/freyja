@@ -57,12 +57,16 @@ def _consumer(adapter: _CardAdapter) -> SlackStreamConsumer:
         platform="slack", workspace_id="T1", chat_id="C123", chat_type="channel",
         user_id="U1", message_id="100.1", thread_id="100.1",
     )
-    return SlackStreamConsumer(
+    consumer = SlackStreamConsumer(
         adapter,  # type: ignore[arg-type]
         source,
         session_key="freyja:slack:T1:channel:C123:100.1",
         verbosity="all",
     )
+    # Plan headers only exist in plan mode; the default timeline mode
+    # keeps the phase bookkeeping without sending them.
+    consumer.display_mode = "plan"
+    return consumer
 
 
 async def _feed(consumer: SlackStreamConsumer, events: list[dict[str, Any]]) -> None:

@@ -133,33 +133,7 @@ async def test_refusal_fallback_text_reset_becomes_stream_reset():
 # ── Slack consumer ────────────────────────────────────────────────────
 
 
-class _FakeAdapter:
-    max_message_chars = 39_000
-
-    def __init__(self) -> None:
-        self.sent: list[str] = []
-
-    def format_content(self, content: str) -> str:
-        return content
-
-    async def send(self, chat_id: str, content: str, **kwargs: Any) -> SendResult:
-        self.sent.append(content)
-        return SendResult(ok=True, message_id="1.0")
-
-    async def start_stream(self, *a: Any, **kw: Any) -> SendResult:
-        return SendResult(ok=True, message_id="stream-ts")
-
-    async def append_stream(self, *a: Any, **kw: Any) -> SendResult:
-        return SendResult(ok=True)
-
-    async def stop_stream(self, *a: Any, **kw: Any) -> SendResult:
-        return SendResult(ok=True)
-
-    async def send_typing(self, *a: Any, **kw: Any) -> None:
-        return None
-
-    async def stop_typing(self, *a: Any, **kw: Any) -> None:
-        return None
+from tests.slack_fakes import StreamingFakeAdapter as _FakeAdapter
 
 
 def _consumer(adapter: _FakeAdapter) -> SlackStreamConsumer:
@@ -192,7 +166,7 @@ async def test_slack_body_drops_the_failed_call_and_keeps_paragraphs():
         {"type": "turn_complete"},
     ]:
         await consumer._handle_event_async(ev)
-    assert adapter.sent == ["First.\n\nSecond."]
+    assert adapter.body == "First.\n\nSecond."
 
 
 # ── GPT reasoning summaries ───────────────────────────────────────────
