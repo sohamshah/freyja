@@ -465,6 +465,77 @@ async def test_after_turn_drain_stops_after_operator_stop_and_on_stuck_inbox():
     assert ran == [fb.MEMO_WAKE_PROMPT]  # one attempt, then it gives up
 
 
+def _agent_talk(text, *, role="agent"):
+    return InboxMessage(
+        id=new_message_id(), from_session="sub_x", from_label="worker",
+        from_role=role, content=text,
+    )
+
+
+def _draining_session(ran):
+    sess = _session(pending_config=None)
+
+    async def run_turn(content, attachments=None, **_):
+        ran.append(content)
+        sess.inbox.drain()
+
+    sess.run_turn = run_turn
+    return sess
+
+
+async def test_agent_message_wakes_a_session_after_the_operator_stops_it(monkeypatch):
+    """2026-10-06: two sub-agents' reports reached a turn the operator then
+    stopped, and sat unread for 2.5 h until the operator typed again."""
+    monkeypatch.setattr(fb, "TALK_WAKE_AFTER_STOP_S", 0.01)
+    ran: list = []
+    sess = _draining_session(ran)
+    sess.inbox.push(_agent_talk("tests pass, files ready"))
+    await asyncio.wait_for(fb._drain_after_turn(sess, cancelled=True), timeout=2)
+    assert ran == [fb.TALK_WAKE_PROMPT]
+    assert not sess.inbox.unread
+
+
+async def test_after_a_stop_memos_and_operator_talk_still_wait(monkeypatch):
+    monkeypatch.setattr(fb, "TALK_WAKE_AFTER_STOP_S", 0.01)
+    ran: list = []
+    sess = _draining_session(ran)
+    reg = SubAgentRegistry()
+    rec = _record(reg, "sub_a")
+    reg.mark_done("sub_a", "r", SubAgentState.DONE)
+    sess.inbox.push(build_subagent_memo(rec))
+    sess.inbox.push(_agent_talk("also do X", role="operator"))
+    await asyncio.wait_for(fb._drain_after_turn(sess, cancelled=True), timeout=2)
+    assert ran == []
+    assert len(sess.inbox.unread) == 2
+
+
+async def test_operator_message_during_the_wait_runs_first(monkeypatch):
+    monkeypatch.setattr(fb, "TALK_WAKE_AFTER_STOP_S", 0.05)
+    ran: list = []
+    sess = _draining_session(ran)
+    sess.inbox.push(_agent_talk("report"))
+    drain = asyncio.create_task(fb._drain_after_turn(sess, cancelled=True))
+    await asyncio.sleep(0.01)
+    sess.inbox.push(_followup("actually, stop the build"))
+    await asyncio.wait_for(drain, timeout=2)
+    # The operator's words are the turn; the agent's report rides along.
+    assert ran == ["actually, stop the build"]
+    assert not sess.inbox.unread
+
+
+async def test_a_second_stop_during_the_wait_keeps_it_quiet(monkeypatch):
+    monkeypatch.setattr(fb, "TALK_WAKE_AFTER_STOP_S", 5)
+    ran: list = []
+    sess = _draining_session(ran)
+    sess.inbox.push(_agent_talk("report"))
+    drain = asyncio.create_task(fb._drain_after_turn(sess, cancelled=True))
+    await asyncio.sleep(0.01)
+    drain.cancel()
+    await asyncio.wait_for(asyncio.gather(drain, return_exceptions=True), timeout=2)
+    assert ran == []
+    assert len(sess.inbox.unread) == 1
+
+
 class _CancellableTask:
     def __init__(self):
         self.cancelled = False

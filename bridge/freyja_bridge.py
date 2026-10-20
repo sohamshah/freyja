@@ -13525,6 +13525,22 @@ def _uncancel_current_task() -> None:
         task.uncancel()
 
 
+# How long a stopped session waits before it wakes for agent messages that
+# reached it during the stopped turn.
+TALK_WAKE_AFTER_STOP_S = 2.0
+
+
+def _has_unread_agent_talk(sess: Any) -> bool:
+    """An agent's talk() message is waiting. Memos and the operator's own
+    input don't count: those stay put after a stop."""
+    from bridge.inbox import KIND_TALK
+
+    inbox = getattr(sess, "inbox", None)
+    return inbox is not None and any(
+        m.kind == KIND_TALK and m.from_role != "operator" for m in inbox.unread
+    )
+
+
 async def _drain_after_turn(sess: "_BridgeSession", *, cancelled: bool = False) -> None:
     """Everything that has to happen once a turn is over, in order: apply
     a parked config change, then run what arrived while the turn ran.
@@ -13544,11 +13560,29 @@ async def _drain_after_turn(sess: "_BridgeSession", *, cancelled: bool = False) 
     while True:
         if not sess.queued_messages:
             if cancelled:
-                # The operator stopped this session. Don't answer the stop
-                # by immediately starting another turn for inbox items —
-                # they stay queued for the next turn (and new memos still
-                # wake an idle session on their own).
-                break
+                if not _has_unread_agent_talk(sess):
+                    # The operator stopped this session. Memos wait for
+                    # the next turn (new ones still wake an idle session
+                    # on their own).
+                    break
+                # Agents may wake each other, and a stop doesn't take that
+                # away. A message that reached this session during the turn
+                # the operator stopped used to wait for their next message:
+                # 2026-10-06 two sub-agents' reports sat 2.5 h after a stop.
+                # Wait a moment first, so the stop visibly lands and a message
+                # the operator types right away runs first. The wake turn
+                # carries the stop note, so the agent doesn't resume the
+                # stopped work unless a message asks for it.
+                log(
+                    "info",
+                    f"agent message(s) waiting on stopped session={sess.id}; "
+                    f"waking in {TALK_WAKE_AFTER_STOP_S:g}s",
+                )
+                try:
+                    await asyncio.sleep(TALK_WAKE_AFTER_STOP_S)
+                except asyncio.CancelledError:
+                    log("info", f"wake after stop cancelled (session={sess.id})")
+                    return
             nxt = _next_inbox_turn(sess)
             if nxt is None:
                 break

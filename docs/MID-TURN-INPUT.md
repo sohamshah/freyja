@@ -22,6 +22,8 @@ When the agent is idle, Enter, Tab, and Ctrl+Enter all just send.
 
 After a stop, the partial reply stays in the transcript, and the next turn begins with a short note telling the model that the operator stopped it on purpose, what was cut, and what is still running in the background.
 
+A stop does not silence other agents. If another agent's `talk` message reached the session during the turn you stopped, the session wakes for it 2 seconds after the stop (`TALK_WAKE_AFTER_STOP_S`). That wake turn also carries the stop note, so the agent answers the message without picking the stopped work back up. A message you type in those 2 seconds runs first, and the agent's message rides along. Memos and your own input still wait for your next message. Before this, an agent's message stayed unread after a stop until you typed again: on 2026-10-06 two sub-agents' reports sat for 2.5 hours.
+
 ## How it works
 
 ### One queue: the session inbox
@@ -113,5 +115,5 @@ A follow-up from the same sender in the same thread as the running turn slides i
 - `tests/test_background_subagents.py`: memos, the `subagents` tool, drain and wake behavior, the queued kind, confirmed withdraw, eviction, forged-tag defanging, cancel scopes and turn-matched stops, quiescence and its cap, the Slack slide-in rule, the screen lease, and the scheduler abort hook.
 - `tests/test_background_commands.py`: real subprocesses moving to the background, their memos, and process-group stops.
 - `tests/test_talk_subagent_routing.py`: sub-agent panes (view, type, stop), talk routing to the running child, re-wake without replays, stranded messages, and addressing by message id or a reused label.
-- `scripts/e2e_steering.py`: the live check. It runs the real bridge against a real model (it costs tokens) and covers each behavior above: queued follow-ups, cut-ins, backgrounded commands, Tab-queued turns, stops, sub-agent memos, and typing into a sub-agent's pane (`subagent_pane`). Run it with `uv run python scripts/e2e_steering.py [scenario …]` after changing any of this.
+- `scripts/e2e_steering.py`: the live check. It runs the real bridge against a real model (it costs tokens) and covers each behavior above: queued follow-ups, cut-ins, backgrounded commands, Tab-queued turns, stops, an agent's message waking a stopped session (`stop_talk`), sub-agent memos, and typing into a sub-agent's pane (`subagent_pane`). Run it with `uv run python scripts/e2e_steering.py [scenario …]` after changing any of this.
 - `test-followup-placement.mjs` (`npx tsx`): renderer placement of follow-ups and memos.

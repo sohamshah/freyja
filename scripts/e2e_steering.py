@@ -28,6 +28,8 @@ Scenarios:
     after_turn    Tab mid-turn: the message waits and runs as its own turn.
     stop_note     A stop aimed at a finished turn is refused; a real stop
                   keeps the partial reply and the next turn is told.
+    stop_talk     An agent's message that reached a turn the operator
+                  stopped wakes the session a moment after the stop.
     subagent      sub_agent returns at once, the parent keeps chatting, and
                   the child's memo wakes the parent.
     subagent_pane Opening and typing into a running child's pane reaches
@@ -336,6 +338,45 @@ async def stop_note(b: Bridge):
     return partial_kept and told and knows, f"stale stop refused; partial reply kept={partial_kept}; next turn told={told}; answer mentions it={knows}"
 
 
+async def stop_talk(b: Bridge):
+    """An agent's message that reaches a turn the operator then stops wakes
+    the session a moment after the stop, instead of waiting for the
+    operator's next message (2026-10-06: two reports sat 2.5 h)."""
+    sid, other = "e2e-stop-talk", "e2e-talker"
+    i0 = len(b.events)
+    await b.send(b.say(sid, "Write a 1500-word essay about lighthouses. No tools."))
+    _, _, started = await b.wait_for(_is(sid, "turn_start"), 60, "turn start", i0)
+    await b.wait_for(_is(sid, "text_delta"), 60, "text", i0)
+    await b.send(b.say(other, (
+        f"Use the talk tool exactly once, with to='{sid}' and content: "
+        "'A note for you: the code word is LANTERN. Say the code word in your reply.' "
+        "Then end your turn with one short sentence."
+    )))
+    await b.wait_for(
+        lambda e: _is(sid, "inbox_event", action="enqueued")(e)
+        and (e.get("message") or {}).get("fromSession") == other,
+        90, "talk message queued", i0,
+    )
+    await b.send({"type": "force_cancel", "sessionId": sid, "scope": "turn", "turnId": started["turnId"]})
+    si, t_stop, _ = await b.wait_for(_is(sid, "turn_complete"), 30, "stopped", i0)
+    wi, t_wake, _ = await b.wait_for(_is(sid, "turn_start"), 30, "wake turn", si)
+    we, _, _ = await b.wait_for(_is(sid, "turn_complete"), 120, "wake turn end", wi)
+    # It may answer in its reply or back to the sender with talk.
+    answered_sender = any(
+        _is(other, "inbox_event", action="enqueued")(e)
+        and (e.get("message") or {}).get("fromSession") == sid
+        and "lantern" in (e.get("message") or {}).get("content", "").lower()
+        for _, e in b.events[wi:we]
+    )
+    read_it = answered_sender or "lantern" in b.text(sid, wi, we).lower()
+    delay = t_wake - t_stop
+    ok = read_it and 1.5 <= delay <= 10
+    return ok, (
+        f"woke {delay:.1f}s after the stop; the wake turn used the code word={read_it} "
+        f"(answered the sender by talk={answered_sender})"
+    )
+
+
 async def subagent(b: Bridge):
     sid, m = "e2e-subagent", _marker()
     i0 = len(b.events)
@@ -442,6 +483,7 @@ SCENARIOS = {
     "bg_force": bg_force,
     "after_turn": after_turn,
     "stop_note": stop_note,
+    "stop_talk": stop_talk,
     "subagent": subagent,
     "subagent_pane": subagent_pane,
 }
