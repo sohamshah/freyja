@@ -36,9 +36,10 @@ _LIST_MAX_ITEMS = 1000  # ~5 pages; a spoken verb never needs more
 _READ_DEFAULT_COUNT = 8
 _READ_MAX_COUNT = 20
 _TEXT_TRUNCATE = 300
-# conversations.history is ~1 req/min for non-Marketplace apps (Slack's
-# May-2025 policy, enforced for existing installs since 2026-03-03) —
-# cache the last fetch per channel so repeat asks don't burn the quota.
+# Slack's 1 req/min clamp on conversations.history applies to apps
+# distributed outside the Marketplace; internal apps like this one keep
+# the normal tier (docs.slack.dev, rate limit FAQ). The cache stays as a
+# courtesy so repeat asks within a minute cost nothing.
 _HISTORY_TTL_SEC = 45.0
 
 _MISSING_TOKEN_SUMMARY = (
