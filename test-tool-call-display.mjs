@@ -215,8 +215,9 @@ check('lanes: every call_tool lane names its tool, and bash shows its summary', 
 })
 check('lanes: the category color follows the inner tool', () => {
   const html = renderToStaticMarkup(createElement(ParallelToolGroup, { ids: ['p1'] }))
-  // jsdom writes the inline hex color back as rgb().
-  assert.ok(html.includes('rgb(176, 128, 208)'), `bash is the shell color: ${html.slice(0, 400)}`)
+  // Category hues are theme tokens (styles/globals.css): the lane carries
+  // the shell token, which the light and dark shells resolve differently.
+  assert.ok(html.includes('var(--tool-shell)'), `bash is the shell color: ${html.slice(0, 400)}`)
 })
 
 if (failures) {

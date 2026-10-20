@@ -71,7 +71,7 @@ export function ComputerPermissionWizard() {
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]">
       <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
+        className="absolute inset-0 scrim-soft backdrop-blur-[2px]"
         onClick={() => setOpen(false)}
       />
       <div className="relative w-[640px] overflow-hidden rounded-2xl glass-strong shadow-2xl ring-hairline-strong">

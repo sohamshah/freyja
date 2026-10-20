@@ -70,7 +70,7 @@ export function SwarmMonitor({
   }, [spotlightId, ids])
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#0c0c10]/95 backdrop-blur-md">
+    <div className="fixed inset-0 z-50 flex flex-col bg-bg-0/95 backdrop-blur-md">
       {/* Header bar — the zoom-counter-scaled --titlebar-inset var (set at the
           App root) clears the macOS traffic light buttons at any zoom level
           (hiddenInset title bar with trafficLightPosition y:16). */}
@@ -337,7 +337,7 @@ function MonitorCell({
         expanded ? 'h-full' : 'min-h-[260px] max-h-[45vh]'
       } ${
         isRunning ? 'ring-1 ring-accent/20' : 'ring-hairline'
-      } bg-[#111118] transition-all ${
+      } bg-bg-1 transition-all ${
         onClick ? 'cursor-pointer hover:ring-accent/40' : ''
       }`}
     >

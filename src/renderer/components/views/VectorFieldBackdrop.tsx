@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useEffectiveTheme } from '../../lib/theme'
 
 /** Dense flowing-dash backdrop — a tight grid of short white tick
  *  marks whose orientation traces a slowly-evolving procedural curl
@@ -20,10 +21,11 @@ export function VectorFieldBackdrop({
   /** Base stroke alpha (0..1) for dashes at rest. Local peaks add a
    *  bit on top via the procedural field. */
   alpha = 0.18,
-  /** Tint of the dashes. Default white for the high-contrast iron-
+  /** Tint of the dashes as `r, g, b`. Defaults to the shell's ink
+   *  (white on dark, near-black on light) for the high-contrast iron-
    *  filings look; callers can pass an accent rgb if they need to
    *  match a surrounding palette. */
-  color = '255, 255, 255',
+  color: colorProp,
 }: {
   active?: boolean
   spacing?: number
@@ -35,6 +37,8 @@ export function VectorFieldBackdrop({
   const startTimeRef = useRef<number>(0)
   const reducedMotionRef = useRef<boolean>(false)
   const dimsRef = useRef<{ w: number; h: number; dpr: number }>({ w: 1, h: 1, dpr: 1 })
+  const theme = useEffectiveTheme()
+  const color = colorProp ?? (theme === 'light' ? '20, 23, 28' : '255, 255, 255')
 
   useEffect(() => {
     const canvas = canvasRef.current

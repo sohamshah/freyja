@@ -19,6 +19,7 @@
  */
 
 import { useEffect, useRef } from 'react'
+import { useEffectiveTheme } from '../lib/theme'
 
 // Grid dimensions — 400×240 = 96k points, exactly as the mockup.
 const GRID_X = 400
@@ -126,6 +127,7 @@ const VERTEX_SHADER = `
 
 const FRAGMENT_SHADER = `
   precision highp float;
+  uniform float uLight;
   varying float vAlpha;
   varying float vElevation;
 
@@ -141,6 +143,13 @@ const FRAGMENT_SHADER = `
     vec3 coolTop = vec3(0.42, 0.50, 0.62);
     float factor = clamp((vElevation + 12.0) / 24.0, 0.0, 1.0);
     vec3 finalColor = mix(hotBase, coolTop, factor);
+    // Light shell: the field is drawn subtractively (ink on paper), so
+    // the particle colour becomes the amount of shade — steel blue
+    // where the dark shell is brightest.
+    vec3 inkBase = vec3(0.36, 0.48, 0.66);
+    vec3 inkTop = vec3(0.70, 0.76, 0.84);
+    vec3 inkColor = mix(inkBase, inkTop, factor);
+    finalColor = mix(finalColor, inkColor, uLight);
 
     gl_FragColor = vec4(finalColor, alpha);
   }
@@ -205,6 +214,9 @@ function compile(gl: WebGLRenderingContext, type: number, src: string): WebGLSha
 
 export function WispBackdrop() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const light = useEffectiveTheme() === 'light'
+  const lightRef = useRef(light)
+  lightRef.current = light
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -273,12 +285,24 @@ export function WispBackdrop() {
     const uProj = gl.getUniformLocation(prog, 'projectionMatrix')
     const uTime = gl.getUniformLocation(prog, 'uTime')
     const uIntro = gl.getUniformLocation(prog, 'uIntroMultiplier')
+    const uLight = gl.getUniformLocation(prog, 'uLight')
 
-    // ── GL state: additive blend, no depth (additive is order-free). ──
+    // ── GL state: no depth (both blends are order-free). Dark adds light
+    // onto near-black; light subtracts ink from near-white. ──
     gl.disable(gl.DEPTH_TEST)
     gl.enable(gl.BLEND)
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE)
-    gl.clearColor(6 / 255, 7 / 255, 11 / 255, 1)
+    const applyBlend = () => {
+      if (lightRef.current) {
+        gl.blendEquation(gl.FUNC_REVERSE_SUBTRACT)
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE)
+        gl.clearColor(247 / 255, 248 / 255, 250 / 255, 1)
+      } else {
+        gl.blendEquation(gl.FUNC_ADD)
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE)
+        gl.clearColor(6 / 255, 7 / 255, 11 / 255, 1)
+      }
+    }
+    applyBlend()
 
     // ── Resize ──
     let aspect = 1
@@ -306,6 +330,8 @@ export function WispBackdrop() {
       const tt = Math.min(1, (performance.now() - start) / 7000)
       gl.uniform1f(uIntro, tt * tt * (3 - 2 * tt))
       gl.uniform1f(uTime, t)
+      gl.uniform1f(uLight, lightRef.current ? 1 : 0)
+      applyBlend()
 
       // Slow camera sway around the origin.
       const ex = Math.sin(t * 0.035) * 2.5

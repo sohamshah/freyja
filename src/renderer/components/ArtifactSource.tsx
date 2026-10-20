@@ -475,7 +475,7 @@ const CommentComposer = forwardRef<
   ref,
 ) {
   return (
-    <div className="shrink-0 border-t border-white/[0.08] bg-[#0a0a0e]/80 px-4 py-2.5">
+    <div className="shrink-0 border-t border-white/[0.08] bg-bg-0/80 px-4 py-2.5">
       <div className="mb-1.5 flex items-baseline gap-2 font-mono text-[9px] uppercase tracking-[0.08em] text-fg-3">
         <span>comment on {rangeLabel}</span>
         <span className="normal-case tracking-normal text-fg-3">

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useEffectiveTheme } from '../../lib/theme'
 
 /** Animated WebGL fabric behind the DONE section.
  *
@@ -29,6 +30,11 @@ export function ShinyFabricBackdrop({
   const startTimeRef = useRef<number>(0)
   const isVisibleRef = useRef<boolean>(true)
   const reducedMotionRef = useRef<boolean>(false)
+  // 0 = dark shell (lit specks on charcoal), 1 = light shell (shaded
+  // specks on white). Read each frame through a ref so a theme flip
+  // never rebuilds the GL program.
+  const lightRef = useRef<number>(0)
+  lightRef.current = useEffectiveTheme() === 'light' ? 1 : 0
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -48,6 +54,7 @@ export function ShinyFabricBackdrop({
       uniform vec2 u_res;
       uniform float u_time;
       uniform float u_intensity;
+      uniform float u_light;
 
       // 4x4 Bayer ordered dither. Looking up via a precomputed array
       // keeps the threshold deterministic at every pixel — the
@@ -105,7 +112,11 @@ export function ShinyFabricBackdrop({
         // organic instead of flat one-color.
         vec3 base = vec3(0.05, 0.07, 0.10);
         vec3 hi = mix(vec3(0.40, 0.55, 0.75), vec3(0.55, 0.70, 0.65), wave);
-        vec3 col = base + hi * brightness;
+        // Light shell: the same weave as shade on paper — a pale cool
+        // base that the dither darkens toward steel blue.
+        vec3 baseL = vec3(0.90, 0.92, 0.95);
+        vec3 hiL = mix(vec3(0.34, 0.46, 0.62), vec3(0.30, 0.50, 0.44), wave) * 0.9;
+        vec3 col = mix(base + hi * brightness, baseL - hiL * brightness, u_light);
 
         // Slight vignette so the edges of the canvas don't crisp
         // against the surrounding column.
@@ -155,6 +166,7 @@ export function ShinyFabricBackdrop({
     const uRes = gl.getUniformLocation(prog, 'u_res')
     const uTime = gl.getUniformLocation(prog, 'u_time')
     const uIntensity = gl.getUniformLocation(prog, 'u_intensity')
+    const uLight = gl.getUniformLocation(prog, 'u_light')
 
     gl.enable(gl.BLEND)
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
@@ -192,6 +204,7 @@ export function ShinyFabricBackdrop({
       gl!.uniform2f(uRes, canvas.width, canvas.height)
       gl!.uniform1f(uTime, reducedMotionRef.current ? 0 : t)
       gl!.uniform1f(uIntensity, intensity)
+      gl!.uniform1f(uLight, lightRef.current)
       gl!.drawArrays(gl!.TRIANGLES, 0, 3)
     }
 

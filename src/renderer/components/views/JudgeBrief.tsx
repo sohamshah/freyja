@@ -502,7 +502,7 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
                       type="checkbox"
                       checked={active}
                       onChange={() => toggleTool(tool.id)}
-                      className="h-3.5 w-3.5 accent-[#a8d4fc]"
+                      className="h-3.5 w-3.5 accent-accent"
                     />
                     <span className="font-mono text-[12px] text-fg-0">{tool.label}</span>
                     <span className="font-mono text-[11px] italic text-fg-3">— {tool.hint}</span>

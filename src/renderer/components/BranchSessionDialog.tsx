@@ -63,7 +63,7 @@ export function BranchSessionDialog({
   return createPortal(
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-6">
       <div
-        className="absolute inset-0 bg-black/55 backdrop-blur-[3px]"
+        className="absolute inset-0 scrim backdrop-blur-[3px]"
         onClick={onCancel}
       />
       <div className="relative w-[min(440px,94vw)] rounded-2xl modal-opaque p-5 ring-hairline-strong shadow-2xl">

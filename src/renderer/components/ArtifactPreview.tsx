@@ -273,7 +273,7 @@ function VideoRenderer({
           className="max-h-full max-w-full"
         />
       </div>
-      <div className="shrink-0 bg-[#0a0a0e] px-4 py-1.5 font-mono text-[9.5px] text-fg-3">
+      <div className="shrink-0 bg-bg-0 px-4 py-1.5 font-mono text-[9.5px] text-fg-3">
         {mimeType} · {formatBytes(size)}
       </div>
     </div>
@@ -378,7 +378,7 @@ function JsonRenderer({ content }: { content: string }) {
   }, [content])
 
   return (
-    <div className="h-full overflow-y-auto bg-[#0a0a0e] p-6">
+    <div className="h-full overflow-y-auto bg-bg-0 p-6">
       {error && (
         <div className="mb-3 rounded-md bg-warn/[0.08] p-2 font-mono text-[10px] text-warn ring-1 ring-warn/30">
           Parse error: {error}
@@ -414,16 +414,16 @@ function highlightJson(src: string): JSX.Element[] {
       let k = j + 1
       while (k < src.length && /\s/.test(src[k])) k++
       const isKey = src[k] === ':'
-      push(str, isKey ? 'text-[#4a7c9b]' : 'text-[#5b7a5b]')
+      push(str, isKey ? 'text-[var(--syn-key)]' : 'text-[var(--syn-str)]')
       i = j + 1
     } else if (/[-\d]/.test(ch) && (i === 0 || !/[a-zA-Z_]/.test(src[i - 1]))) {
       let j = i
       while (j < src.length && /[\d.eE+\-]/.test(src[j])) j++
-      push(src.slice(i, j), 'text-[#b08040]')
+      push(src.slice(i, j), 'text-[var(--syn-num)]')
       i = j
     } else if (src.slice(i, i + 4) === 'true' || src.slice(i, i + 5) === 'false') {
       const len = src.slice(i, i + 4) === 'true' ? 4 : 5
-      push(src.slice(i, i + len), 'text-[#b08040]')
+      push(src.slice(i, i + len), 'text-[var(--syn-num)]')
       i += len
     } else if (src.slice(i, i + 4) === 'null') {
       push('null', 'text-fg-3')
@@ -456,7 +456,7 @@ function CsvRenderer({ content, separator }: { content: string; separator: strin
                 {header.map((cell, i) => (
                   <th
                     key={i}
-                    className="sticky top-0 z-10 whitespace-nowrap border-b border-white/[0.08] bg-[#17171b] px-3 py-2 text-left font-mono text-[10px] font-bold uppercase tracking-[0.04em] text-fg-2"
+                    className="sticky top-0 z-10 whitespace-nowrap border-b border-white/[0.08] bg-bg-2 px-3 py-2 text-left font-mono text-[10px] font-bold uppercase tracking-[0.04em] text-fg-2"
                   >
                     {cell}
                   </th>
@@ -611,10 +611,10 @@ function ImageRenderer({
 function CodeRenderer({ content, language }: { content: string; language: string }) {
   const lines = content.split('\n')
   return (
-    <div className="h-full overflow-auto bg-[#0a0a0e]">
+    <div className="h-full overflow-auto bg-bg-0">
       <div className="flex min-h-full">
         {/* Line numbers */}
-        <div className="sticky left-0 select-none bg-[#0a0a0e] px-3 py-4 text-right font-mono text-[10.5px] leading-[1.6] text-fg-3">
+        <div className="sticky left-0 select-none bg-bg-0 px-3 py-4 text-right font-mono text-[10.5px] leading-[1.6] text-fg-3">
           {lines.map((_, i) => (
             <div key={i}>{i + 1}</div>
           ))}
@@ -713,7 +713,7 @@ function highlightCode(src: string, language: string): JSX.Element[] {
         if (src[j] === '\\') j++
         j++
       }
-      push(src.slice(i, j + 1), 'text-[#5b7a5b]')
+      push(src.slice(i, j + 1), 'text-[var(--syn-str)]')
       i = j + 1
       continue
     }
@@ -721,7 +721,7 @@ function highlightCode(src: string, language: string): JSX.Element[] {
     if (/\d/.test(ch) && (i === 0 || !/[a-zA-Z_]/.test(src[i - 1]))) {
       let j = i
       while (j < src.length && /[\d.xXbBoOeE_a-fA-F]/.test(src[j])) j++
-      push(src.slice(i, j), 'text-[#b08040]')
+      push(src.slice(i, j), 'text-[var(--syn-num)]')
       i = j
       continue
     }
@@ -731,7 +731,7 @@ function highlightCode(src: string, language: string): JSX.Element[] {
       while (j < src.length && /[a-zA-Z0-9_$]/.test(src[j])) j++
       const word = src.slice(i, j)
       if (keywords.has(word)) {
-        push(word, 'text-[#7a6b8a] font-bold')
+        push(word, 'text-[var(--syn-kw)] font-bold')
       } else {
         push(word, 'text-fg-1')
       }

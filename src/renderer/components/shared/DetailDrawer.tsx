@@ -55,7 +55,7 @@ export function DetailDrawer({
   return (
     <aside
       style={{ width }}
-      className="relative flex h-full flex-col overflow-hidden border-l border-white/[0.06] bg-bg-0/[0.96] shadow-[-12px_0_32px_-12px_rgba(0,0,0,0.55)] backdrop-blur-[24px] animate-fade-in"
+      className="relative flex h-full flex-col overflow-hidden border-l border-white/[0.06] bg-bg-0/[0.96] shadow-[-12px_0_32px_-12px_rgb(var(--shadow)/0.55)] backdrop-blur-[24px] animate-fade-in"
     >
       {/* Decorative backdrop layer — sits behind every header/body/
         * footer pixel via absolute positioning. Explicit z-0 keeps it

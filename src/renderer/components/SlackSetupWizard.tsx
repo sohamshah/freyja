@@ -283,7 +283,7 @@ export function SlackSetupWizard({ open, onClose }: Props) {
   const stepTotal = STEP_ORDER.length - 1  // 'welcome' and 'done' are bookends; 7 steps user-facing
 
   return (
-    <div className="fixed inset-0 z-[70] flex flex-col bg-black/70 backdrop-blur-[8px]">
+    <div className="fixed inset-0 z-[70] flex flex-col scrim-strong backdrop-blur-[8px]">
       {/* Header — pl-[88px] clears macOS traffic lights */}
       <div className="flex items-center gap-4 border-b border-white/[0.06] bg-bg-0/95 py-3 pl-[88px] pr-4 backdrop-blur-[10px]">
         <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-3">

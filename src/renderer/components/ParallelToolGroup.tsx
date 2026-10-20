@@ -229,7 +229,7 @@ function ToolLane({
               className="h-full rounded-full transition-all duration-300"
               style={{
                 width: `${durationPct}%`,
-                backgroundColor: isError ? 'var(--danger, #e05050)' : toolCategory.color,
+                backgroundColor: isError ? 'var(--tool-error)' : toolCategory.color,
                 opacity: 0.7,
               }}
             />
@@ -325,36 +325,36 @@ function ToolLane({
 
 const TOOL_CATEGORIES: Record<string, { color: string; label: string }> = {
   // Read
-  read_file:       { color: '#6ba3d6', label: 'read' },
-  read:            { color: '#6ba3d6', label: 'read' },
-  glob:            { color: '#6ba3d6', label: 'read' },
-  grep:            { color: '#6ba3d6', label: 'read' },
-  list_directory:  { color: '#6ba3d6', label: 'read' },
+  read_file:       { color: 'var(--tool-read)', label: 'read' },
+  read:            { color: 'var(--tool-read)', label: 'read' },
+  glob:            { color: 'var(--tool-read)', label: 'read' },
+  grep:            { color: 'var(--tool-read)', label: 'read' },
+  list_directory:  { color: 'var(--tool-read)', label: 'read' },
   // Write
-  write_file:      { color: '#5bbb5b', label: 'write' },
-  write:           { color: '#5bbb5b', label: 'write' },
-  edit_file:       { color: '#5bbb5b', label: 'write' },
-  edit:            { color: '#5bbb5b', label: 'write' },
-  edit_json:       { color: '#5bbb5b', label: 'write' },
+  write_file:      { color: 'var(--tool-write)', label: 'write' },
+  write:           { color: 'var(--tool-write)', label: 'write' },
+  edit_file:       { color: 'var(--tool-write)', label: 'write' },
+  edit:            { color: 'var(--tool-write)', label: 'write' },
+  edit_json:       { color: 'var(--tool-write)', label: 'write' },
   // Web
-  web_search:      { color: '#e0a040', label: 'web' },
-  web_fetch:       { color: '#e0a040', label: 'web' },
-  web_research:    { color: '#e0a040', label: 'web' },
+  web_search:      { color: 'var(--tool-web)', label: 'web' },
+  web_fetch:       { color: 'var(--tool-web)', label: 'web' },
+  web_research:    { color: 'var(--tool-web)', label: 'web' },
   // Shell
-  bash:            { color: '#b080d0', label: 'shell' },
+  bash:            { color: 'var(--tool-shell)', label: 'shell' },
   // Agents
-  sub_agent:       { color: '#60c0c0', label: 'agent' },
-  subagents:       { color: '#60c0c0', label: 'agent' },
+  sub_agent:       { color: 'var(--tool-agent)', label: 'agent' },
+  subagents:       { color: 'var(--tool-agent)', label: 'agent' },
   // Bus
-  publish_finding: { color: '#d0a040', label: 'bus' },
-  read_findings:   { color: '#d0a040', label: 'bus' },
+  publish_finding: { color: 'var(--tool-bus)', label: 'bus' },
+  read_findings:   { color: 'var(--tool-bus)', label: 'bus' },
   // Media
-  generate_image:  { color: '#b6f2ff', label: 'media' },
-  generate_svg:    { color: '#b6f2ff', label: 'media' },
+  generate_image:  { color: 'var(--tool-media)', label: 'media' },
+  generate_svg:    { color: 'var(--tool-media)', label: 'media' },
 }
 
 function getToolCategory(name: string) {
-  return TOOL_CATEGORIES[name] ?? { color: '#888', label: 'other' }
+  return TOOL_CATEGORIES[name] ?? { color: 'rgb(var(--fg-2))', label: 'other' }
 }
 
 function summarizeArgs(name: string, args?: Record<string, unknown>): string {

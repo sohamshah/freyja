@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useHarness } from '../state/store'
+import { getEffectiveTheme, oppositeTheme } from '../lib/theme'
 import { useSchedulerStore } from '../state/scheduler-store'
 import { SLASH_COMMANDS } from '../lib/slash'
 import { scrollToReveal, stepSelection } from '../lib/listNavigation'
@@ -137,6 +138,26 @@ export function CommandPalette() {
         action: () => {
           close(false)
           void useHarness.getState().captureAppshot('palette')
+        },
+      },
+      {
+        id: 'appearance:toggle',
+        title: `Appearance: switch to ${oppositeTheme(getEffectiveTheme())} mode`,
+        subtitle: 'Flip between the dark and light shells (⌘⇧L)',
+        group: 'Command',
+        action: () => {
+          close(false)
+          void useHarness.getState().setAppearanceTheme(oppositeTheme(getEffectiveTheme()))
+        },
+      },
+      {
+        id: 'appearance:system',
+        title: 'Appearance: follow system',
+        subtitle: 'Let macOS decide, including its sunset schedule',
+        group: 'Command',
+        action: () => {
+          close(false)
+          void useHarness.getState().setAppearanceTheme('system')
         },
       },
     )
@@ -328,8 +349,8 @@ export function CommandPalette() {
       <div className="relative w-[620px] overflow-hidden rounded-2xl glass-strong shadow-2xl ring-hairline-strong">
         <div className="flex items-center gap-3 px-4 py-3 hairline-b">
           <svg width="14" height="14" viewBox="0 0 14 14">
-            <circle cx="6" cy="6" r="4" stroke="#a8d4fc" strokeWidth="1.2" fill="none" />
-            <line x1="9" y1="9" x2="12" y2="12" stroke="#a8d4fc" strokeWidth="1.2" strokeLinecap="round" />
+            <circle cx="6" cy="6" r="4" stroke="var(--accent)" strokeWidth="1.2" fill="none" />
+            <line x1="9" y1="9" x2="12" y2="12" stroke="var(--accent)" strokeWidth="1.2" strokeLinecap="round" />
           </svg>
           <input
             ref={inputRef}

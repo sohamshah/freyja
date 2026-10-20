@@ -1872,9 +1872,9 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     return (
       <div className="flex items-center gap-2 rounded-md bg-white/[0.025] px-2.5 py-1.5 text-[11px] text-fg-2 ring-hairline">
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
-          <circle cx="5" cy="5" r="4" fill="none" stroke="#ffcc66" strokeWidth="1" />
-          <path d="M5 3 V5.5" stroke="#ffcc66" strokeWidth="1" strokeLinecap="round" />
-          <circle cx="5" cy="7" r="0.5" fill="#ffcc66" />
+          <circle cx="5" cy="5" r="4" fill="none" stroke="var(--amber)" strokeWidth="1" />
+          <path d="M5 3 V5.5" stroke="var(--amber)" strokeWidth="1" strokeLinecap="round" />
+          <circle cx="5" cy="7" r="0.5" fill="var(--amber)" />
         </svg>
         <span className="font-mono text-[10.5px] uppercase text-warn/80">{part.systemSubtype}</span>
         <span className="text-fg-1">{part.text}</span>
@@ -2003,13 +2003,13 @@ function InlineCompaction({
       >
         {variant === 'working_memory' ? (
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
-            <circle cx="5" cy="5" r="4" fill="none" stroke="#5eead4" strokeWidth="1" />
-            <circle cx="5" cy="5" r="1.2" fill="#5eead4" />
+            <circle cx="5" cy="5" r="4" fill="none" stroke="var(--teal)" strokeWidth="1" />
+            <circle cx="5" cy="5" r="1.2" fill="var(--teal)" />
           </svg>
         ) : (
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
-            <circle cx="5" cy="5" r="4" fill="none" stroke="#ffcc66" strokeWidth="1" />
-            <path d="M3.2 5 L4.4 6.2 L6.8 3.6" stroke="#ffcc66" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+            <circle cx="5" cy="5" r="4" fill="none" stroke="var(--amber)" strokeWidth="1" />
+            <path d="M3.2 5 L4.4 6.2 L6.8 3.6" stroke="var(--amber)" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" fill="none" />
           </svg>
         )}
         <span

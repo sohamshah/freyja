@@ -158,7 +158,7 @@ export function AddTaskForm({
       <div
         ref={cardRef}
         onClick={(e) => e.stopPropagation()}
-        className="relative w-full max-w-[560px] max-h-[88vh] overflow-hidden rounded-[14px] border border-accent/[0.22] bg-bg-1 shadow-[0_30px_60px_-20px_rgba(0,0,0,0.6)]"
+        className="relative w-full max-w-[560px] max-h-[88vh] overflow-hidden rounded-[14px] border border-accent/[0.22] bg-bg-1 shadow-[0_30px_60px_-20px_rgb(var(--shadow)/0.6)]"
       >
         {/* Vector-field backdrop confined to the card itself. Sits
           * behind everything inside the card via `pointer-events:none`
@@ -402,7 +402,7 @@ function DependencyField({
               maxHeight: POP_MAX_H,
               zIndex: 80,
             }}
-            className="flex flex-col overflow-hidden rounded-md border border-white/[0.10] bg-bg-0 shadow-[0_22px_44px_-16px_rgba(0,0,0,0.75)] animate-fade-in"
+            className="flex flex-col overflow-hidden rounded-md border border-white/[0.10] bg-bg-0 shadow-[0_22px_44px_-16px_rgb(var(--shadow)/0.75)] animate-fade-in"
           >
             <input
               type="text"

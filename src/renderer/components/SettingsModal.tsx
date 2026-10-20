@@ -2,7 +2,20 @@ import { useEffect, useState } from 'react'
 import { useHarness } from '../state/store'
 import { useVoiceStore } from '../state/voice-store'
 import { McpServersPanel } from './mcp/McpServersPanel'
-import type { PermissionTier, VoiceConfig } from '@shared/events'
+import { useEffectiveTheme } from '../lib/theme'
+import type { AppearanceTheme, PermissionTier, VoiceConfig } from '@shared/events'
+
+interface AppearanceOption {
+  theme: AppearanceTheme
+  label: string
+  hint: string
+}
+
+const APPEARANCE_OPTIONS: AppearanceOption[] = [
+  { theme: 'system', label: 'System', hint: 'follows macOS' },
+  { theme: 'dark', label: 'Dark', hint: 'frosted charcoal' },
+  { theme: 'light', label: 'Light', hint: 'frosted white' },
+]
 
 interface PermissionOption {
   tier: PermissionTier
@@ -66,6 +79,8 @@ export function SettingsModal() {
   const toggle = useHarness((s) => s.toggleSettings)
   const settings = useHarness((s) => s.settings)
   const setPermissionTier = useHarness((s) => s.setPermissionTier)
+  const setAppearanceTheme = useHarness((s) => s.setAppearanceTheme)
+  const effectiveTheme = useEffectiveTheme()
   const setComputerEnabled = useHarness((s) => s.setComputerEnabled)
   const voiceHotkey = useVoiceStore((s) => s.hotkeyLabel)
   const openWizard = useHarness((s) => s.openComputerWizard)
@@ -88,7 +103,7 @@ export function SettingsModal() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]">
-      <div className="absolute inset-0 bg-black/62 backdrop-blur-[2px]" onClick={() => toggle(false)} />
+      <div className="absolute inset-0 scrim backdrop-blur-[2px]" onClick={() => toggle(false)} />
       <div className="relative w-[640px] max-h-[82vh] flex flex-col overflow-hidden rounded-2xl modal-opaque shadow-2xl ring-hairline-strong">
         <div className="flex items-center gap-3 px-5 py-4 hairline-b">
           <span className="label text-fg-0">settings</span>
@@ -101,6 +116,17 @@ export function SettingsModal() {
           </button>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-5">
+          <Section
+            title="appearance"
+            description="Dark is the original frosted-charcoal shell; light is the same glass in white. System follows the macOS appearance, including its sunset schedule. ⌘⇧L flips between dark and light from anywhere."
+          >
+            <AppearancePicker
+              value={settings.appearance?.theme ?? 'system'}
+              effective={effectiveTheme}
+              onChange={(theme) => void setAppearanceTheme(theme)}
+            />
+          </Section>
+
           <Section title="permissions + tool approvals" description="Controls when the agent can run permission-gated tools (bash, write_file, ...) without asking first.">
             <div className="space-y-1.5">
               {PERMISSION_OPTIONS.map((opt) => {
@@ -539,6 +565,115 @@ function VoiceSettings() {
           Spotify play-by-name needs SPOTIFY_CLIENT_ID/SECRET in .env
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * Three swatches — each a miniature of the shell in that theme (title
+ * strip, two panels, a conversation column) so the choice is visible
+ * before it is made. `system` shows whichever one macOS is currently
+ * asking for and says so.
+ */
+function AppearancePicker({
+  value,
+  effective,
+  onChange,
+}: {
+  value: AppearanceTheme
+  effective: 'dark' | 'light'
+  onChange: (theme: AppearanceTheme) => void
+}) {
+  return (
+    <div role="radiogroup" aria-label="Appearance" className="grid grid-cols-3 gap-2.5">
+      {APPEARANCE_OPTIONS.map((opt) => {
+        const isActive = opt.theme === value
+        const preview: 'dark' | 'light' = opt.theme === 'system' ? effective : opt.theme
+        return (
+          <button
+            key={opt.theme}
+            type="button"
+            role="radio"
+            aria-checked={isActive}
+            onClick={() => onChange(opt.theme)}
+            className={`group flex flex-col gap-2 rounded-lg p-2 text-left transition-colors ${
+              isActive
+                ? 'bg-accent/15 ring-1 ring-accent/40'
+                : 'ring-hairline hover:bg-white/[0.035]'
+            }`}
+          >
+            <ThemeSwatch theme={preview} split={opt.theme === 'system'} />
+            <div className="flex items-baseline justify-between gap-2 px-0.5">
+              <span className={`font-mono text-[11.5px] ${isActive ? 'text-fg-0' : 'text-fg-1'}`}>
+                {opt.label}
+              </span>
+              <span className="font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-3">
+                {opt.theme === 'system' ? `now ${effective}` : opt.hint}
+              </span>
+            </div>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/** A 3:2 miniature of the window in one theme. `split` shows both halves
+ *  (dark left, light right) for the system option. Colours are literal on
+ *  purpose: a swatch must show the other theme, not the current one. */
+function ThemeSwatch({ theme, split }: { theme: 'dark' | 'light'; split?: boolean }) {
+  const halves: Array<'dark' | 'light'> = split ? ['dark', 'light'] : [theme]
+  return (
+    <div
+      aria-hidden
+      className="relative flex h-[62px] w-full overflow-hidden rounded-md ring-1 ring-white/10"
+    >
+      {halves.map((half) => (
+        <div key={half} className="relative flex-1" style={{ background: half === 'dark' ? '#17191e' : '#e9ecf1' }}>
+          <SwatchShell theme={half} />
+        </div>
+      ))}
+      {split && (
+        <div className="pointer-events-none absolute inset-y-0 left-1/2 w-px bg-pure-white/30" />
+      )}
+    </div>
+  )
+}
+
+function SwatchShell({ theme }: { theme: 'dark' | 'light' }) {
+  const dark = theme === 'dark'
+  const panel = dark ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.78)'
+  const line = dark ? 'rgba(255,255,255,0.28)' : 'rgba(20,23,28,0.32)'
+  const faint = dark ? 'rgba(255,255,255,0.14)' : 'rgba(20,23,28,0.14)'
+  const accent = dark ? '#a8d4fc' : '#2b6ec2'
+  const bar = (w: string, c: string) => (
+    <div className="h-[2px] rounded-full" style={{ width: w, background: c }} />
+  )
+  return (
+    <div className="absolute inset-0 flex flex-col gap-[3px] p-[5px]">
+      <div className="flex items-center gap-1">
+        <div className="h-[5px] w-[5px] rounded-full" style={{ background: accent }} />
+        {bar('18%', line)}
+        {bar('10%', faint)}
+        {bar('10%', faint)}
+      </div>
+      <div className="flex min-h-0 flex-1 gap-[3px]">
+        <div className="flex w-[24%] flex-col gap-[3px] rounded-[3px] p-[3px]" style={{ background: panel }}>
+          {bar('70%', line)}
+          {bar('50%', faint)}
+          {bar('60%', faint)}
+        </div>
+        <div className="flex flex-1 flex-col justify-end gap-[3px] px-[2px]">
+          {bar('55%', faint)}
+          {bar('80%', faint)}
+          <div className="mt-[2px] h-[6px] rounded-[2px]" style={{ background: panel, boxShadow: `inset 0 0 0 0.5px ${faint}` }} />
+        </div>
+        <div className="flex w-[24%] flex-col gap-[3px] rounded-[3px] p-[3px]" style={{ background: panel }}>
+          {bar('60%', line)}
+          {bar('40%', accent)}
+          {bar('55%', faint)}
+        </div>
+      </div>
     </div>
   )
 }

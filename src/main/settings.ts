@@ -24,12 +24,20 @@ export interface ComputerControlSettings {
   showScreenshotsInline: boolean
 }
 
+/** Mirrors `AppearanceTheme` in shared/events.ts. */
+export type AppearanceTheme = 'system' | 'dark' | 'light'
+
+export interface AppearanceSettings {
+  theme: AppearanceTheme
+}
+
 export interface DesktopSettings {
   version: 1
   permissions: {
     autoApprove: PermissionTier
   }
   computer: ComputerControlSettings
+  appearance: AppearanceSettings
 }
 
 const SETTINGS_DIR = path.join(os.homedir(), '.freyja')
@@ -57,6 +65,18 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
     maxStepsDefault: 60,
     showScreenshotsInline: true,
   },
+  appearance: {
+    theme: 'system',
+  },
+}
+
+const APPEARANCE_THEMES: ReadonlySet<string> = new Set(['system', 'dark', 'light'])
+
+/** A hand-edited settings.json may carry anything; fall back to `system`. */
+export function normalizeAppearanceTheme(value: unknown): AppearanceTheme {
+  return typeof value === 'string' && APPEARANCE_THEMES.has(value)
+    ? (value as AppearanceTheme)
+    : 'system'
 }
 
 function ensureDir(): void {

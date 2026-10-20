@@ -123,7 +123,7 @@ export function LogStreamModal({ onClose }: { onClose: () => void }) {
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
       <div
-        className="absolute inset-0 bg-black/55 backdrop-blur-[3px]"
+        className="absolute inset-0 scrim backdrop-blur-[3px]"
         onClick={onClose}
       />
       <div className="relative flex h-[82vh] w-[min(1080px,94vw)] flex-col overflow-hidden rounded-2xl glass-strong shadow-2xl ring-hairline-strong">

@@ -29,45 +29,45 @@ type ViewMode = 'cards' | 'list' | 'details' | 'changes'
 type SortKey = 'newest' | 'oldest' | 'title' | 'creator'
 
 const TYPE_COLORS: Record<string, string> = {
-  md: '#a8d4fc', markdown: '#a8d4fc',
-  html: '#7ab8a3', htm: '#7ab8a3',
-  json: '#ffcc66', yaml: '#ffcc66', yml: '#ffcc66', toml: '#ffcc66',
-  py: '#5bbb5b', rs: '#d99b6b', go: '#5bbabe',
-  ts: '#a8d4fc', tsx: '#a8d4fc', js: '#ffd966', jsx: '#ffd966',
-  css: '#5bbb5b', scss: '#5bbb5b',
-  sh: '#7ab8a3', bash: '#7ab8a3', zsh: '#7ab8a3',
-  csv: '#ffcc66', tsv: '#ffcc66',
-  svg: '#a8d4fc', xml: '#a8d4fc',
-  txt: '#999', log: '#999',
-  png: '#d99bbe', jpg: '#d99bbe', jpeg: '#d99bbe', gif: '#d99bbe', webp: '#d99bbe',
-  tex: '#7a9cd9', latex: '#7a9cd9',
+  md: 'var(--accent)', markdown: 'var(--accent)',
+  html: 'var(--file-markup)', htm: 'var(--file-markup)',
+  json: 'var(--file-data)', yaml: 'var(--file-data)', yml: 'var(--file-data)', toml: 'var(--file-data)',
+  py: 'var(--file-code)', rs: 'var(--file-systems)', go: 'var(--file-go)',
+  ts: 'var(--accent)', tsx: 'var(--accent)', js: 'var(--file-script)', jsx: 'var(--file-script)',
+  css: 'var(--file-code)', scss: 'var(--file-code)',
+  sh: 'var(--file-markup)', bash: 'var(--file-markup)', zsh: 'var(--file-markup)',
+  csv: 'var(--file-data)', tsv: 'var(--file-data)',
+  svg: 'var(--accent)', xml: 'var(--accent)',
+  txt: 'rgb(var(--fg-2))', log: 'rgb(var(--fg-2))',
+  png: 'var(--file-image)', jpg: 'var(--file-image)', jpeg: 'var(--file-image)', gif: 'var(--file-image)', webp: 'var(--file-image)',
+  tex: 'var(--file-tex)', latex: 'var(--file-tex)',
 }
 
 // Monochrome agent palette — parent gets accent, others use neutral grey.
 const AGENT_TYPE_COLORS: Record<string, string> = {
-  parent: '#a8d4fc',
-  general: '#a8a8a8',
-  explore: '#a8a8a8',
-  'explore-fast': '#a8a8a8',
-  code: '#a8a8a8',
-  verify: '#a8a8a8',
-  plan: '#a8a8a8',
-  review: '#a8a8a8',
-  test: '#a8a8a8',
-  'browser-qa': '#a8a8a8',
-  performance: '#a8a8a8',
-  docs: '#a8a8a8',
-  'memory-curator': '#a8a8a8',
-  computer: '#a8a8a8',
+  parent: 'var(--accent)',
+  general: 'rgb(var(--fg-1))',
+  explore: 'rgb(var(--fg-1))',
+  'explore-fast': 'rgb(var(--fg-1))',
+  code: 'rgb(var(--fg-1))',
+  verify: 'rgb(var(--fg-1))',
+  plan: 'rgb(var(--fg-1))',
+  review: 'rgb(var(--fg-1))',
+  test: 'rgb(var(--fg-1))',
+  'browser-qa': 'rgb(var(--fg-1))',
+  performance: 'rgb(var(--fg-1))',
+  docs: 'rgb(var(--fg-1))',
+  'memory-curator': 'rgb(var(--fg-1))',
+  computer: 'rgb(var(--fg-1))',
 }
 
 function fileTypeColor(ext: string): string {
-  return TYPE_COLORS[ext] ?? '#888'
+  return TYPE_COLORS[ext] ?? 'rgb(var(--fg-2))'
 }
 
 function agentTypeColor(t: string | undefined): string {
-  if (!t) return '#888'
-  return AGENT_TYPE_COLORS[t] ?? '#888'
+  if (!t) return 'rgb(var(--fg-2))'
+  return AGENT_TYPE_COLORS[t] ?? 'rgb(var(--fg-2))'
 }
 
 export function ArtifactLibrary({
@@ -264,7 +264,7 @@ export function ArtifactLibrary({
   // Portaled: the side panels contain their layout (see Sidebar /
   // ActivityPanel), which would otherwise trap a fixed overlay inside them.
   return createPortal(
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#0c0c10]/95 backdrop-blur-md">
+    <div className="fixed inset-0 z-50 flex flex-col bg-bg-0/95 backdrop-blur-md">
       {/* ── Header ─────────────────────────────────────── */}
       <Header
         total={artifacts.length}
@@ -389,7 +389,7 @@ function Header({
   const title = view === 'changes' ? 'session changes' : 'session library'
   return (
     <div
-      className="drag flex items-center gap-3 border-b border-white/[0.06] bg-[#0a0a0e]/60 pr-3"
+      className="drag flex items-center gap-3 border-b border-white/[0.06] bg-bg-0/60 pr-3"
       style={{
         paddingLeft: 'var(--titlebar-inset, 82px)',
         minHeight: 'var(--titlebar-height, 46px)',
@@ -500,7 +500,7 @@ function SortMenu({ sort, onSort }: { sort: SortKey; onSort: (s: SortKey) => voi
         <svg width="8" height="6" viewBox="0 0 8 6" fill="currentColor"><path d="M4 6L0 0H8L4 6Z" /></svg>
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-1 w-[160px] overflow-hidden rounded-md bg-[#15151b] py-1 shadow-xl ring-1 ring-white/10">
+        <div className="absolute right-0 top-full z-30 mt-1 w-[160px] overflow-hidden rounded-md bg-bg-2 py-1 shadow-xl ring-1 ring-white/10">
           {options.map((o) => (
             <button
               key={o.key}
@@ -568,7 +568,7 @@ function FilterRail({
   hasActiveFilters: boolean
 }) {
   return (
-    <aside className="flex w-[224px] shrink-0 flex-col overflow-y-auto border-r border-white/[0.06] bg-[#08080c]/60 px-3 py-3">
+    <aside className="flex w-[224px] shrink-0 flex-col overflow-y-auto border-r border-white/[0.06] bg-bg-0/60 px-3 py-3">
       {/* Active filters / clear */}
       <div className="mb-3 flex items-center justify-between">
         <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-3">
@@ -597,7 +597,7 @@ function FilterRail({
         label="created by"
         items={creatorBuckets.map(({ id, label, count }) => ({
           id, label, count,
-          color: id === 'parent' ? '#a8d4fc' : '#7ab8a3',
+          color: id === 'parent' ? 'var(--accent)' : 'var(--file-markup)',
         }))}
         selected={selectedCreators}
         onToggle={onToggleCreator}
@@ -636,7 +636,7 @@ function FilterGroup({
             >
               <span
                 className="block h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ backgroundColor: active ? item.color : `${item.color}55` }}
+                style={{ backgroundColor: active ? item.color : `color-mix(in srgb, ${item.color} 33%, transparent)` }}
               />
               <span className="min-w-0 flex-1 truncate font-prose text-[11px]">
                 {item.label}
@@ -705,7 +705,7 @@ function Card({
   return (
     <button
       onClick={onClick}
-      className="group relative flex flex-col overflow-hidden rounded-xl bg-[#11111a] text-left ring-1 ring-white/[0.06] transition-all hover:bg-[#13131c] hover:ring-accent/30"
+      className="group relative flex flex-col overflow-hidden rounded-xl bg-bg-1 text-left ring-1 ring-white/[0.06] transition-all hover:bg-bg-2 hover:ring-accent/30"
       style={{ minHeight: 200 }}
     >
       {/* Top accent stripe */}
@@ -764,7 +764,7 @@ function Card({
           {isSubagent ? (
             <CreatorBadge label={artifact.creatorLabel} color={aColor} />
           ) : (
-            <CreatorBadge label="Main agent" color="#a8d4fc" />
+            <CreatorBadge label="Main agent" color="var(--accent)" />
           )}
           {artifact.operation === 'edit' && (
             <span className="font-mono text-[8.5px] uppercase tracking-[0.04em] text-warn/80">
@@ -783,8 +783,8 @@ function CreatorBadge({ label, color }: { label: string; color: string }) {
       className="inline-flex items-center gap-1 truncate rounded-full px-2 py-[2px] font-mono text-[9px] font-bold uppercase tracking-[0.04em]"
       style={{
         color,
-        backgroundColor: `${color}18`,
-        boxShadow: `inset 0 0 0 1px ${color}30`,
+        backgroundColor: `color-mix(in srgb, ${color} 9%, transparent)`,
+        boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 19%, transparent)`,
       }}
       title={label}
     >
@@ -823,7 +823,7 @@ function ListView({
 }) {
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="sticky top-0 z-10 grid items-center gap-3 border-b border-white/[0.06] bg-[#0a0a0e]/95 px-4 py-2 font-mono text-[9px] uppercase tracking-[0.1em] text-fg-3"
+      <div className="sticky top-0 z-10 grid items-center gap-3 border-b border-white/[0.06] bg-bg-0/95 px-4 py-2 font-mono text-[9px] uppercase tracking-[0.1em] text-fg-3"
         style={{ gridTemplateColumns: '24px 1fr 200px 80px 80px' }}
       >
         <span></span>
@@ -856,7 +856,7 @@ function ListView({
             <span className="min-w-0">
               <CreatorBadge
                 label={a.creator === 'parent' ? 'Main agent' : a.creatorLabel}
-                color={a.creator === 'parent' ? '#a8d4fc' : aColor}
+                color={a.creator === 'parent' ? 'var(--accent)' : aColor}
               />
             </span>
             <span className="font-mono text-[10px] text-fg-3">
@@ -933,7 +933,7 @@ function DetailsView({
               </div>
               <CreatorBadge
                 label={a.creator === 'parent' ? 'Main agent' : a.creatorLabel}
-                color={a.creator === 'parent' ? '#a8d4fc' : aColor}
+                color={a.creator === 'parent' ? 'var(--accent)' : aColor}
               />
             </button>
           )
@@ -1034,7 +1034,7 @@ function SessionChangesView({
 
   return (
     <div className="flex flex-1 min-w-0">
-      <div className="flex w-[340px] shrink-0 flex-col border-r border-white/[0.06] bg-[#08080c]/40">
+      <div className="flex w-[340px] shrink-0 flex-col border-r border-white/[0.06] bg-bg-0/40">
         <div className="border-b border-white/[0.06] px-4 py-3">
           <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-3">
             change sets

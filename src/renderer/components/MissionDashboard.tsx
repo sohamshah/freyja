@@ -349,19 +349,19 @@ const AGENT_PROFILES: ProfileDefinition[] = [
 // Monochrome profile palette: agents are identified by name, not color.
 // Steel-blue accent is reserved for the active/focused state.
 const PROFILE_HEX: Record<string, string> = {
-  general: '#a8a8a8',
-  explore: '#a8a8a8',
-  'explore-fast': '#a8a8a8',
-  code: '#a8a8a8',
-  verify: '#a8a8a8',
-  plan: '#a8a8a8',
-  review: '#a8a8a8',
-  test: '#a8a8a8',
-  'browser-qa': '#a8a8a8',
-  performance: '#a8a8a8',
-  docs: '#a8a8a8',
-  'memory-curator': '#a8a8a8',
-  computer: '#a8a8a8',
+  general: 'rgb(var(--fg-1))',
+  explore: 'rgb(var(--fg-1))',
+  'explore-fast': 'rgb(var(--fg-1))',
+  code: 'rgb(var(--fg-1))',
+  verify: 'rgb(var(--fg-1))',
+  plan: 'rgb(var(--fg-1))',
+  review: 'rgb(var(--fg-1))',
+  test: 'rgb(var(--fg-1))',
+  'browser-qa': 'rgb(var(--fg-1))',
+  performance: 'rgb(var(--fg-1))',
+  docs: 'rgb(var(--fg-1))',
+  'memory-curator': 'rgb(var(--fg-1))',
+  computer: 'rgb(var(--fg-1))',
 }
 
 export function MissionDashboard() {
@@ -1193,8 +1193,8 @@ function AgentLane({
           <div
             className="absolute inset-2 rounded-md"
             style={{
-              border: `1px solid ${color}66`,
-              boxShadow: agent.status === 'running' ? `0 0 24px ${color}33` : undefined,
+              border: `1px solid color-mix(in srgb, ${color} 40%, transparent)`,
+              boxShadow: agent.status === 'running' ? `0 0 24px color-mix(in srgb, ${color} 20%, transparent)` : undefined,
             }}
           />
           <span
@@ -1269,8 +1269,8 @@ function AgentLane({
 // Two accent colors only. Everything else is monochrome:
 //   ACCENT_BUS  — message bus + sharing connections
 //   ACCENT_FILE — artifacts / diffs
-const ACCENT_BUS = '#7fb8e8'
-const ACCENT_FILE = '#e8a854'
+const ACCENT_BUS = 'var(--chart-6)'
+const ACCENT_FILE = 'var(--tool-web)'
 
 // Detect a shared prefix across agent titles so lane labels can elide it.
 // Many swarms ship 20+ agents with names like "Dir Structure - X" —
@@ -2250,7 +2250,7 @@ function ProfileCard({ profile }: { profile: ProfileDefinition }) {
       <div className="mb-3 flex items-start gap-3">
         <div
           className="mt-1 h-7 w-7 shrink-0 rounded-lg bg-black/25 ring-hairline"
-          style={{ boxShadow: `inset 0 0 0 1px ${color}55` }}
+          style={{ boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 33%, transparent)` }}
         >
           <div
             className="mx-auto mt-[11px] h-1.5 w-1.5 rounded-full"
@@ -2545,18 +2545,18 @@ function detailString(event: TelemetryEventView | undefined, key: string): strin
 }
 
 function topicHex(topic: BusMessageRecord['topic']): string {
-  if (topic === 'errors') return '#b48282'
-  if (topic === 'findings') return '#a8d4fc'
-  if (topic === 'progress') return '#a8b0a8'
-  return '#8a9491'
+  if (topic === 'errors') return 'var(--danger)'
+  if (topic === 'findings') return 'var(--accent)'
+  if (topic === 'progress') return 'var(--ok)'
+  return 'rgb(var(--fg-2))'
 }
 
 function statusHex(status: AgentView['status']): string {
-  if (status === 'failed' || status === 'cancelled') return '#b48282'
-  if (status === 'stopped') return '#b8a078'
-  if (status === 'done') return '#a8b0a8'
-  if (status === 'running') return '#a8d4fc'
-  return '#8a9491'
+  if (status === 'failed' || status === 'cancelled') return 'var(--danger)'
+  if (status === 'stopped') return 'var(--warn)'
+  if (status === 'done') return 'var(--ok)'
+  if (status === 'running') return 'var(--accent)'
+  return 'rgb(var(--fg-2))'
 }
 
 function topicBadgeClass(topic: BusMessageRecord['topic']): string {
@@ -3117,7 +3117,7 @@ function KanbanTokenBurnBar({ card }: { card: KanbanCardView }) {
     pct >= 100 ? 'bg-danger/65' : pct >= 80 ? 'bg-warn/70' : 'bg-accent/55'
   return (
     <div className="relative z-10 mt-1 flex items-center gap-1.5">
-      <div className="flex-1 h-1 overflow-hidden rounded-full bg-black/40 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]">
+      <div className="flex-1 h-1 overflow-hidden rounded-full bg-black/40 shadow-[inset_0_0_0_1px_rgb(var(--ink)/0.04)]">
         <div className={`h-full ${tone}`} style={{ width: `${pct}%` }} />
       </div>
       <span className="font-mono text-[8.5px] uppercase tracking-[0.06em] text-fg-3">

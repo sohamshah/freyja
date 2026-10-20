@@ -388,9 +388,9 @@ export function SubagentCard({ id }: { id: string }) {
                     <div
                       className="h-5 w-5 rounded-full border-2"
                       style={{
-                        borderColor: '#f5b640',
+                        borderColor: 'var(--amber)',
                         boxShadow:
-                          '0 0 0 2px rgba(245,182,64,0.18), 0 0 14px rgba(245,182,64,0.6)',
+                          '0 0 0 2px color-mix(in srgb, var(--amber) 18%, transparent), 0 0 14px color-mix(in srgb, var(--amber) 60%, transparent)',
                       }}
                     />
                   </div>

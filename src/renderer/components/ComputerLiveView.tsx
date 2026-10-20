@@ -187,9 +187,9 @@ function HighlightRing() {
       <div
         className="h-7 w-7 rounded-full border-2"
         style={{
-          borderColor: '#f5b640',
+          borderColor: 'var(--amber)',
           boxShadow:
-            '0 0 0 2px rgba(245,182,64,0.18), 0 0 18px rgba(245,182,64,0.65)',
+            '0 0 0 2px color-mix(in srgb, var(--amber) 18%, transparent), 0 0 18px color-mix(in srgb, var(--amber) 65%, transparent)',
           animation: 'comp-ring 200ms ease-out',
         }}
       />
@@ -199,7 +199,7 @@ function HighlightRing() {
       >
         <div
           className="h-1 w-1 rounded-full"
-          style={{ backgroundColor: '#f5b640' }}
+          style={{ backgroundColor: 'var(--amber)' }}
         />
       </div>
       <style>{`

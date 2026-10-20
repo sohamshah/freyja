@@ -33,6 +33,7 @@ import { IdleSleep } from './components/IdleSleep'
 import { QuickSwitcher } from './components/QuickSwitcher'
 import { VoiceHUD } from './components/voice/VoiceHUD'
 import { startInRendererDemo } from './lib/inRendererDemo'
+import { getEffectiveTheme, oppositeTheme, useEffectiveTheme } from './lib/theme'
 import { extractConversationSummary } from './lib/conversationSummary'
 import {
   batchStoreUpdates,
@@ -631,6 +632,13 @@ export function App() {
         useHarness.getState().toggleMorningRoom()
         return
       }
+      // ⌘⇧L — flip the shell between dark and light. Pins the opposite
+      // of what is on screen; Settings → appearance restores `system`.
+      if (mod && e.shiftKey && (e.key === 'l' || e.key === 'L')) {
+        e.preventDefault()
+        void useHarness.getState().setAppearanceTheme(oppositeTheme(getEffectiveTheme()))
+        return
+      }
       if (mod && e.key === 'b') {
         // ⌘B: child session → back to parent. At the top-level session
         // this is a no-op (we used to fire a demo "burst" message here,
@@ -837,22 +845,29 @@ export function App() {
   )
 }
 
-/** Simulated desktop visible only in screenshot mode. */
+/** Simulated desktop visible only in screenshot mode — a night-sky
+ *  wallpaper under the dark shell, a hazy daylight one under the light
+ *  shell, so headless captures show each glass over the ground it is
+ *  tuned for. */
 function FauxBackdrop() {
+  const theme = useEffectiveTheme()
+  const light = theme === 'light'
   return (
     <div
       aria-hidden
       className="absolute inset-0"
       style={{
-        background:
-          'radial-gradient(1200px 800px at 20% 20%, #1e2a3a 0%, #0f1626 35%, #05070e 70%, #02030a 100%), linear-gradient(180deg, #151d2e 0%, #080a14 100%)',
+        background: light
+          ? 'radial-gradient(1200px 800px at 20% 20%, #dfe8f3 0%, #c9d6e6 35%, #b4c3d8 70%, #a3b3cb 100%), linear-gradient(180deg, #e4ebf4 0%, #b9c7da 100%)'
+          : 'radial-gradient(1200px 800px at 20% 20%, #1e2a3a 0%, #0f1626 35%, #05070e 70%, #02030a 100%), linear-gradient(180deg, #151d2e 0%, #080a14 100%)',
       }}
     >
       <div
         className="absolute inset-0"
         style={{
-          backgroundImage:
-            'radial-gradient(circle at 70% 30%, rgba(168,212,252,0.18), transparent 45%), radial-gradient(circle at 30% 80%, rgba(255,180,120,0.12), transparent 40%)',
+          backgroundImage: light
+            ? 'radial-gradient(circle at 70% 30%, rgba(255,255,255,0.55), transparent 45%), radial-gradient(circle at 30% 80%, rgba(255,214,170,0.35), transparent 40%), radial-gradient(circle at 85% 85%, rgba(120,160,220,0.25), transparent 35%)'
+            : 'radial-gradient(circle at 70% 30%, rgba(168,212,252,0.18), transparent 45%), radial-gradient(circle at 30% 80%, rgba(255,180,120,0.12), transparent 40%)',
         }}
       />
     </div>

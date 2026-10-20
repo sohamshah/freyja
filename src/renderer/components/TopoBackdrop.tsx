@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffectiveTheme } from '../lib/theme'
 
 /**
  * Ambient topographic backdrop — port of `topo-mock-v2.html`.
@@ -66,6 +67,11 @@ const CFG = {
   lineOpacity: 0.09,
   lineStroke: 0.75,
   tintOpacity: 0.008,
+  // Light shell: the lines darken (multiply) instead of lightening
+  // (screen), so they need more opacity and a lower lightness to show
+  // through the white glass at the same quiet level.
+  lineOpacityLight: 0.13,
+  tintOpacityLight: 0.012,
 
   minRawPoints: 6,
   smoothAbove: 10,
@@ -77,6 +83,8 @@ const CFG = {
   satHigh: 35,
   lightDeep: 55,
   lightHigh: 68,
+  lightDeepLight: 38,
+  lightHighLight: 50,
 } as const
 
 // Memoized: both side panels re-render on streamed frames, and this
@@ -84,6 +92,9 @@ const CFG = {
 export const TopoBackdrop = memo(function TopoBackdrop({ seed, className }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState<{ w: number; h: number } | null>(null)
+  const light = useEffectiveTheme() === 'light'
+  const lineOpacity = light ? CFG.lineOpacityLight : CFG.lineOpacity
+  const tintOpacity = light ? CFG.tintOpacityLight : CFG.tintOpacity
 
   useEffect(() => {
     const host = hostRef.current
@@ -123,7 +134,7 @@ export const TopoBackdrop = memo(function TopoBackdrop({ seed, className }: Prop
           fill="none"
           strokeLinejoin="round"
           strokeLinecap="round"
-          style={{ mixBlendMode: 'screen' }}
+          style={{ mixBlendMode: light ? 'multiply' : 'screen' }}
         >
           {/* Layer 1: hypsometric tint fills under closed contours. */}
           <g>
@@ -132,7 +143,7 @@ export const TopoBackdrop = memo(function TopoBackdrop({ seed, className }: Prop
                 <path
                   key={`t${i}`}
                   d={c.d + 'Z'}
-                  fill={elevColor(c.elevation, CFG.tintOpacity)}
+                  fill={elevColor(c.elevation, tintOpacity, light)}
                 />
               ) : null,
             )}
@@ -143,7 +154,7 @@ export const TopoBackdrop = memo(function TopoBackdrop({ seed, className }: Prop
               <path
                 key={`l${i}`}
                 d={c.d}
-                stroke={elevColor(c.elevation, CFG.lineOpacity)}
+                stroke={elevColor(c.elevation, lineOpacity, light)}
                 strokeWidth={CFG.lineStroke}
               />
             ))}
@@ -156,10 +167,12 @@ export const TopoBackdrop = memo(function TopoBackdrop({ seed, className }: Prop
 
 // ─── colour ramp ───────────────────────────────────────────────────
 
-function elevColor(t: number, opacity: number): string {
+function elevColor(t: number, opacity: number, light = false): string {
   const h = CFG.hueDeep + (CFG.hueHigh - CFG.hueDeep) * t
   const s = CFG.satDeep + (CFG.satHigh - CFG.satDeep) * t
-  const l = CFG.lightDeep + (CFG.lightHigh - CFG.lightDeep) * t
+  const lo = light ? CFG.lightDeepLight : CFG.lightDeep
+  const hi = light ? CFG.lightHighLight : CFG.lightHigh
+  const l = lo + (hi - lo) * t
   return `hsla(${h | 0}, ${s | 0}%, ${l | 0}%, ${opacity})`
 }
 

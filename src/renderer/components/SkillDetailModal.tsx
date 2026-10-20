@@ -100,7 +100,7 @@ export function SkillDetailModal({
   // ActivityPanel), which would otherwise trap a fixed overlay inside them.
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center scrim backdrop-blur-sm"
       onClick={onClose}
     >
       <div

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { VoiceEngineState } from '../../voice/engine'
+import { cssTokenRgb, useEffectiveTheme } from '../../lib/theme'
 
 /**
  * VoiceSigil — the Galdr presence mark (docs/freyja-voice-galdr.html §03).
@@ -29,10 +30,17 @@ import type { VoiceEngineState } from '../../voice/engine'
  * original DPR-aware canvas contour rendering so nothing ever throws.
  */
 
-// Palette — pinned design tokens (tailwind.config.cjs).
-const ACCENT_RGB = [0.658, 0.831, 0.988] // #a8d4fc
-const ACCENT_HI_RGB = [0.769, 0.878, 0.988] // #c4e0fc
-const DANGER_RGB = [0.706, 0.51, 0.51] // #b48282
+// Palette — read from the theme tokens (styles/globals.css) when the
+// sigil mounts, and again when the shell flips between dark and light.
+// The fallbacks are the dark values: #a8d4fc / #c4e0fc / #b48282.
+function glPalette() {
+  const unit = (rgb: [number, number, number]) => rgb.map((c) => c / 255)
+  return {
+    accent: unit(cssTokenRgb('--accent-rgb', [168, 212, 252])),
+    accentHi: unit(cssTokenRgb('--accent-hi-rgb', [196, 224, 252])),
+    danger: unit(cssTokenRgb('--danger-rgb', [180, 130, 130])),
+  }
+}
 
 // ── the per-state uniform targets ──────────────────────────────────────────
 // Each field is lerped toward its target every frame. Fields:
@@ -230,6 +238,9 @@ export function VoiceSigil({
   const levelRef = useRef(0)
   levelRef.current = Math.max(0, Math.min(1, level))
 
+  // The GL program bakes the accent into uniforms, so a theme flip
+  // re-runs the mount effect and re-reads the tokens.
+  const theme = useEffectiveTheme()
   useEffect(() => {
     stateRef.current = state
   }, [state])
@@ -299,9 +310,10 @@ export function VoiceSigil({
     gl.useProgram(prog)
     gl.uniform1f(uni.dpr, dpr)
     gl.uniform1f(uni.pt, size <= 30 ? 1.7 : 2.2)
-    gl.uniform3fv(uni.accent, ACCENT_RGB)
-    gl.uniform3fv(uni.accentHi, ACCENT_HI_RGB)
-    gl.uniform3fv(uni.danger3, DANGER_RGB)
+    const palette = glPalette()
+    gl.uniform3fv(uni.accent, palette.accent)
+    gl.uniform3fv(uni.accentHi, palette.accentHi)
+    gl.uniform3fv(uni.danger3, palette.danger)
     gl.enable(gl.BLEND)
     gl.blendFunc(gl.ONE, gl.ONE) // additive glow on the transparent canvas
     gl.viewport(0, 0, canvas.width, canvas.height)
@@ -399,7 +411,7 @@ export function VoiceSigil({
       document.removeEventListener('visibilitychange', onVis)
       cleanupGl()
     }
-  }, [size])
+  }, [size, theme])
 
   return (
     <canvas
@@ -417,11 +429,17 @@ export function VoiceSigil({
 // ── Canvas2D fallback ───────────────────────────────────────────────────────
 // The original contour-ring sigil, kept intact for environments without
 // WebGL2 (jsdom under test, software-GL headless). Same state vocabulary.
-const DIM_RGB = '110,110,110'
-const ACC = '168,212,252'
-const ACC_HI = '196,224,252'
-const WARM = '184,160,120'
-const DANG = '180,130,130'
+/** Canvas-fallback palette as `r,g,b` strings, from the same tokens. */
+function canvasPalette() {
+  const str = (name: string, fb: [number, number, number]) => cssTokenRgb(name, fb).join(',')
+  return {
+    DIM_RGB: str('--fg-2', [110, 110, 110]),
+    ACC: str('--accent-rgb', [168, 212, 252]),
+    ACC_HI: str('--accent-hi-rgb', [196, 224, 252]),
+    WARM: str('--warn-rgb', [184, 160, 120]),
+    DANG: str('--danger-rgb', [180, 130, 130]),
+  }
+}
 
 function mountCanvasFallback(
   canvas: HTMLCanvasElement,
@@ -434,6 +452,7 @@ function mountCanvasFallback(
   const ctx = canvas.getContext('2d')
   if (!ctx) return
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  const { DIM_RGB, ACC, ACC_HI, WARM, DANG } = canvasPalette()
   const RINGS = 5
   const STEPS = 44
   const cx = size / 2

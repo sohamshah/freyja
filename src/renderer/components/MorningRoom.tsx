@@ -709,7 +709,7 @@ const STYLES = `
      panic — a hidden permission prompt must never be buried under the
      landing view. */
   position: fixed; inset: 0; z-index: 45;
-  background: #06070b; color: #e8e8e8;
+  background: rgb(var(--bg-0)); color: rgb(var(--fg-0));
   font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   font-size: 12px; line-height: 1.55;
   overflow-y: auto;
@@ -717,12 +717,12 @@ const STYLES = `
 }
 .mroom-overlay::before {
   content: ""; position: fixed; inset: 0; pointer-events: none;
-  background: radial-gradient(ellipse 110% 130% at 50% 50%, transparent 35%, rgba(6,7,11,0.40) 100%);
+  background: radial-gradient(ellipse 110% 130% at 50% 50%, transparent 35%, rgb(var(--bg-0) / 0.40) 100%);
 }
 .mroom-wisp {
   /* The WebGL particle field. z-index:-1 keeps it inside the overlay's
      own stacking context (the overlay is z-45), painting above the solid
-     #06070b backdrop but below the in-flow briefing content and the
+     rgb(var(--bg-0)) backdrop but below the in-flow briefing content and the
      grain/vignette — so the text never sits on raw canvas.
      width/height:100% are REQUIRED: <canvas> is a replaced element, so
      inset:0 alone leaves it at its intrinsic 300x150 in the corner. */
@@ -743,11 +743,11 @@ const STYLES = `
      traffic lights at any zoom — same as the other header bars. */
   min-height: var(--titlebar-height, 46px);
   padding: 0 16px 0 calc(var(--titlebar-inset, 82px) + 6px);
-  background: linear-gradient(180deg, rgba(6,7,11,0.96), rgba(6,7,11,0.82));
+  background: linear-gradient(180deg, rgb(var(--bg-0) / 0.96), rgb(var(--bg-0) / 0.82));
   backdrop-filter: blur(16px) saturate(140%);
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid rgb(var(--ink) / 0.06);
   font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
-  color: #6e6e6e;
+  color: rgb(var(--fg-2));
   /* The strip is a drag handle so the window still moves; controls
      below opt out via .no-drag equivalents. */
   -webkit-app-region: drag;
@@ -757,51 +757,51 @@ const STYLES = `
 .mroom-brand { display: flex; align-items: center; gap: 10px; }
 .mroom-mark {
   width: 11px; height: 11px; border-radius: 2px;
-  background: linear-gradient(135deg, #c4e0fc, #7aafea);
-  box-shadow: 0 0 10px rgba(168,212,252,0.55);
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent-lo));
+  box-shadow: 0 0 10px rgb(var(--accent-rgb) / 0.55);
 }
-.mroom-brand-room { color: #e8e8e8; letter-spacing: 0.18em; }
-.mroom-brand-stale { color: #b8a078; letter-spacing: 0.1em; }
+.mroom-brand-room { color: rgb(var(--fg-0)); letter-spacing: 0.18em; }
+.mroom-brand-stale { color: var(--warn); letter-spacing: 0.1em; }
 .mroom-chrome-right { display: flex; align-items: center; gap: 12px; }
-.mroom-waiting { color: #a8d4fc; letter-spacing: 0.1em; }
+.mroom-waiting { color: var(--accent); letter-spacing: 0.1em; }
 .mroom-date-select {
-  background: rgba(255,255,255,0.04); color: #a8a8a8;
-  border: 1px solid rgba(255,255,255,0.08); border-radius: 4px;
+  background: rgb(var(--ink) / 0.04); color: rgb(var(--fg-1));
+  border: 1px solid rgb(var(--ink) / 0.08); border-radius: 4px;
   font-family: inherit; font-size: 9px; letter-spacing: 0.06em;
   padding: 3px 6px; cursor: pointer; text-transform: none;
 }
 .mroom-rebrief, .mroom-close {
-  background: none; border: 1px solid rgba(255,255,255,0.08);
-  color: #6e6e6e; font-family: inherit; font-size: 9px;
+  background: none; border: 1px solid rgb(var(--ink) / 0.08);
+  color: rgb(var(--fg-2)); font-family: inherit; font-size: 9px;
   letter-spacing: 0.14em; padding: 4px 8px; border-radius: 4px;
   cursor: pointer; text-transform: uppercase;
 }
 .mroom-rebrief:hover, .mroom-close:hover {
-  color: #e8e8e8; border-color: rgba(255,255,255,0.18);
+  color: rgb(var(--fg-0)); border-color: rgb(var(--ink) / 0.18);
 }
 /* App-open recovery prompt — a thin ask-first bar shown above a stale
    edition when today's hasn't been generated. No silent spend. */
 .mroom-recovery {
   display: flex; align-items: center; gap: 16px;
   margin: 0 0 26px; padding: 9px 14px;
-  border: 1px solid rgba(168,212,252,0.18); border-radius: 6px;
-  background: rgba(168,212,252,0.04);
+  border: 1px solid rgb(var(--accent-rgb) / 0.18); border-radius: 6px;
+  background: rgb(var(--accent-rgb) / 0.04);
   font-size: 11px; letter-spacing: 0.02em;
 }
-.mroom-recovery-msg { color: #b0b0b0; flex: 1; }
+.mroom-recovery-msg { color: rgb(var(--fg-1)); flex: 1; }
 .mroom-recovery-go {
   background: none; border: none; cursor: pointer; padding: 0;
-  color: #a8d4fc; font-family: inherit; font-size: 11px; letter-spacing: 0.04em;
+  color: var(--accent); font-family: inherit; font-size: 11px; letter-spacing: 0.04em;
 }
-.mroom-recovery-go:hover { color: #c4e0fc; }
+.mroom-recovery-go:hover { color: var(--accent-hi); }
 .mroom-recovery-skip {
   background: none; border: none; cursor: pointer; padding: 0;
-  color: #6e6e6e; font-family: inherit; font-size: 11px;
+  color: rgb(var(--fg-2)); font-family: inherit; font-size: 11px;
 }
 .mroom-recovery-skip:hover { color: #999; }
-.mroom-rebrief { color: #a8d4fc; }
-.mroom-rebrief:hover { color: #c4e0fc; border-color: rgba(168,212,252,0.4); }
-.mroom-rebrief:disabled { color: #4a4a4a; cursor: default; }
+.mroom-rebrief { color: var(--accent); }
+.mroom-rebrief:hover { color: var(--accent-hi); border-color: rgb(var(--accent-rgb) / 0.4); }
+.mroom-rebrief:disabled { color: rgb(var(--fg-3)); cursor: default; }
 .mroom-brief {
   position: relative; z-index: 5;
   max-width: 760px; margin: 0 auto;
@@ -811,19 +811,19 @@ const STYLES = `
 .mroom-kicker {
   display: flex; align-items: center; gap: 10px;
   font-size: 10px; letter-spacing: 0.30em; text-transform: uppercase;
-  color: #4a4a4a; margin-bottom: 14px;
+  color: rgb(var(--fg-3)); margin-bottom: 14px;
 }
-.mroom-kicker-em { color: #a8d4fc; }
+.mroom-kicker-em { color: var(--accent); }
 .mroom-pulse {
-  width: 6px; height: 6px; border-radius: 999px; background: #a8d4fc;
-  box-shadow: 0 0 8px #a8d4fc;
+  width: 6px; height: 6px; border-radius: 999px; background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
   animation: mroom-pulse 2.4s ease-in-out infinite;
 }
 @keyframes mroom-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 @media (prefers-reduced-motion: reduce) { .mroom-pulse { animation: none; } }
 .mroom-hero h1 {
   font-weight: 400; font-size: 30px; line-height: 1.3;
-  margin: 0; color: #e8e8e8; text-wrap: balance;
+  margin: 0; color: rgb(var(--fg-0)); text-wrap: balance;
   min-height: 1.3em;
 }
 .mroom-section { margin-bottom: 36px; }
@@ -831,67 +831,67 @@ const STYLES = `
   display: flex; align-items: baseline; gap: 8px;
   margin-bottom: 4px;
   font-size: 9.5px; letter-spacing: 0.22em; text-transform: uppercase;
-  color: #4a4a4a;
+  color: rgb(var(--fg-3));
 }
-.mroom-bar { color: #a8d4fc; }
-.mroom-lbl { color: #a8a8a8; }
-.mroom-count { margin-left: auto; color: #4a4a4a; letter-spacing: 0.1em; }
+.mroom-bar { color: var(--accent); }
+.mroom-lbl { color: rgb(var(--fg-1)); }
+.mroom-count { margin-left: auto; color: rgb(var(--fg-3)); letter-spacing: 0.1em; }
 .mroom-proj-line {
   display: grid;
   grid-template-columns: 18px minmax(150px, auto) 80px 1fr auto;
   gap: 14px; padding: 13px 0; align-items: baseline;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid rgb(var(--ink) / 0.06);
   font-size: 12px;
 }
 .mroom-proj-line:last-child { border-bottom: none; }
-.mroom-glyph { font-size: 13px; color: #4a4a4a; text-align: center; }
-.mroom-proj-line.attention .mroom-glyph { color: #a8d4fc; }
-.mroom-proj-name { color: #e8e8e8; font-weight: 500; }
+.mroom-glyph { font-size: 13px; color: rgb(var(--fg-3)); text-align: center; }
+.mroom-proj-line.attention .mroom-glyph { color: var(--accent); }
+.mroom-proj-name { color: rgb(var(--fg-0)); font-weight: 500; }
 .mroom-proj-stat {
-  color: #4a4a4a; font-size: 9.5px; letter-spacing: 0.22em;
+  color: rgb(var(--fg-3)); font-size: 9.5px; letter-spacing: 0.22em;
   text-transform: uppercase;
 }
-.mroom-proj-line.attention .mroom-proj-stat { color: #a8d4fc; }
+.mroom-proj-line.attention .mroom-proj-stat { color: var(--accent); }
 .mroom-proj-ago {
   display: block; margin-top: 5px;
-  color: #4a4a4a; letter-spacing: 0.12em;
+  color: rgb(var(--fg-3)); letter-spacing: 0.12em;
 }
 .mroom-proj-body { max-width: 60ch; }
-.mroom-proj-summary { color: #a8a8a8; line-height: 1.5; }
+.mroom-proj-summary { color: rgb(var(--fg-1)); line-height: 1.5; }
 .mroom-proj-facts {
   display: grid; grid-template-columns: 56px 1fr;
   column-gap: 12px; row-gap: 6px;
   margin: 10px 0 0;
 }
 .mroom-fact-lbl {
-  color: #4a4a4a; font-size: 9px; letter-spacing: 0.22em;
+  color: rgb(var(--fg-3)); font-size: 9px; letter-spacing: 0.22em;
   text-transform: uppercase; padding-top: 2px;
 }
 .mroom-fact {
-  margin: 0; color: #6e6e6e; font-size: 11.5px; line-height: 1.5;
+  margin: 0; color: rgb(var(--fg-2)); font-size: 11.5px; line-height: 1.5;
   display: flex; flex-direction: column; gap: 6px;
 }
-.mroom-fact-next { color: #c4e0fc; }
+.mroom-fact-next { color: var(--accent-hi); }
 .mroom-open, .mroom-run {
   background: none; border: none; padding: 0;
   font-family: inherit; font-size: 10px; letter-spacing: 0.10em;
-  text-transform: uppercase; color: #4a4a4a; cursor: pointer;
+  text-transform: uppercase; color: rgb(var(--fg-3)); cursor: pointer;
   transition: color 120ms ease;
 }
-.mroom-open::before { content: '→ '; color: #2a2a2a; }
-.mroom-open:hover, .mroom-open:hover::before { color: #a8d4fc; }
-.mroom-run { color: #a8d4fc; }
+.mroom-open::before { content: '→ '; color: rgb(var(--fg-4)); }
+.mroom-open:hover, .mroom-open:hover::before { color: var(--accent); }
+.mroom-run { color: var(--accent); }
 .mroom-run::before { content: '▸ '; }
-.mroom-run:hover { color: #c4e0fc; }
-.mroom-run:disabled { color: #4a4a4a; cursor: default; }
+.mroom-run:hover { color: var(--accent-hi); }
+.mroom-run:disabled { color: rgb(var(--fg-3)); cursor: default; }
 .mroom-decision {
   display: grid; grid-template-columns: 38px 1fr; gap: 18px;
   padding: 24px 0 22px;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid rgb(var(--ink) / 0.06);
 }
 .mroom-decision:last-child { border-bottom: none; }
 .mroom-decision-idx {
-  font-size: 9.5px; letter-spacing: 0.22em; color: #4a4a4a;
+  font-size: 9.5px; letter-spacing: 0.22em; color: rgb(var(--fg-3));
   text-align: right; padding-top: 2px;
 }
 .mroom-decision-head {
@@ -899,83 +899,89 @@ const STYLES = `
   margin-bottom: 12px;
 }
 .mroom-verb {
-  color: #a8d4fc; font-size: 11.5px; font-weight: 600;
+  color: var(--accent); font-size: 11.5px; font-weight: 600;
   letter-spacing: 0.22em; text-transform: uppercase;
 }
-.mroom-div { color: #2a2a2a; }
+.mroom-div { color: rgb(var(--fg-4)); }
 .mroom-proj {
-  color: #a8a8a8; font-size: 10.5px; letter-spacing: 0.16em;
+  color: rgb(var(--fg-1)); font-size: 10.5px; letter-spacing: 0.16em;
   text-transform: uppercase;
 }
-.mroom-ref { color: #6e6e6e; font-size: 11px; }
+.mroom-ref { color: rgb(var(--fg-2)); font-size: 11px; }
 .mroom-meta {
-  margin-left: auto; color: #4a4a4a; font-size: 9.5px;
+  margin-left: auto; color: rgb(var(--fg-3)); font-size: 9.5px;
   letter-spacing: 0.18em; text-transform: uppercase;
 }
 .mroom-decision-body {
-  color: #e8e8e8; font-size: 12.5px; line-height: 1.7;
+  color: rgb(var(--fg-0)); font-size: 12.5px; line-height: 1.7;
   max-width: 64ch; margin-bottom: 18px;
 }
 .mroom-acts { display: flex; flex-direction: column; gap: 7px; }
 .mroom-act {
   background: none; border: none; padding: 0;
-  font-family: inherit; font-size: 12px; color: #6e6e6e;
+  font-family: inherit; font-size: 12px; color: rgb(var(--fg-2));
   cursor: pointer; text-align: left;
   display: inline-flex; align-items: baseline; gap: 10px;
   transition: color 120ms ease;
 }
-.mroom-act::before { content: '▸'; color: #4a4a4a; font-size: 11px; }
-.mroom-act:hover { color: #e8e8e8; }
-.mroom-act-primary { color: #a8d4fc; }
-.mroom-act-primary::before { color: #a8d4fc; }
-.mroom-act-primary:hover { color: #c4e0fc; }
-.mroom-act:disabled { color: #4a4a4a; cursor: default; }
+.mroom-act::before { content: '▸'; color: rgb(var(--fg-3)); font-size: 11px; }
+.mroom-act:hover { color: rgb(var(--fg-0)); }
+.mroom-act-primary { color: var(--accent); }
+.mroom-act-primary::before { color: var(--accent); }
+.mroom-act-primary:hover { color: var(--accent-hi); }
+.mroom-act:disabled { color: rgb(var(--fg-3)); cursor: default; }
 .mroom-today-line {
   display: grid;
   grid-template-columns: 22px 52px minmax(140px, auto) 1fr auto auto;
   gap: 14px; padding: 12px 0; align-items: baseline;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid rgb(var(--ink) / 0.06);
   font-size: 12px;
 }
 .mroom-today-line:last-child { border-bottom: none; }
-.mroom-today-num { color: #a8d4fc; font-weight: 600; font-size: 13px; }
-.mroom-today-when { color: #a8a8a8; font-size: 11px; }
+.mroom-today-num { color: var(--accent); font-weight: 600; font-size: 13px; }
+.mroom-today-when { color: rgb(var(--fg-1)); font-size: 11px; }
 .mroom-today-proj {
-  color: #6e6e6e; font-size: 10px; letter-spacing: 0.14em;
+  color: rgb(var(--fg-2)); font-size: 10px; letter-spacing: 0.14em;
   text-transform: uppercase; padding-left: 10px;
-  border-left: 1px solid #2a2a2a;
+  border-left: 1px solid rgb(var(--fg-4));
 }
-.mroom-today-what { color: #e8e8e8; line-height: 1.45; }
-.mroom-today-dur { color: #4a4a4a; font-size: 10.5px; }
+.mroom-today-what { color: rgb(var(--fg-0)); line-height: 1.45; }
+.mroom-today-dur { color: rgb(var(--fg-3)); font-size: 10.5px; }
 .mroom-colophon {
   margin-top: 32px; padding-top: 14px;
-  border-top: 1px dashed rgba(255,255,255,0.06);
+  border-top: 1px dashed rgb(var(--ink) / 0.06);
   display: flex; justify-content: space-between; align-items: baseline;
   font-size: 9.5px; letter-spacing: 0.18em; text-transform: uppercase;
-  color: #4a4a4a;
+  color: rgb(var(--fg-3));
 }
 .mroom-commit {
   position: fixed; bottom: 0; left: 0; right: 0; z-index: 40;
   display: flex; justify-content: space-between; align-items: center;
   padding: 14px 24px;
-  background: linear-gradient(0deg, rgba(6,7,11,0.97), rgba(6,7,11,0.86));
+  background: linear-gradient(0deg, rgb(var(--bg-0) / 0.97), rgb(var(--bg-0) / 0.86));
   backdrop-filter: blur(16px);
-  border-top: 1px solid rgba(255,255,255,0.06);
+  border-top: 1px solid rgb(var(--ink) / 0.06);
 }
-.mroom-commit-left { color: #6e6e6e; font-size: 11px; }
-.mroom-commit-left em { color: #a8d4fc; font-style: normal; font-weight: 600; }
+.mroom-commit-left { color: rgb(var(--fg-2)); font-size: 11px; }
+.mroom-commit-left em { color: var(--accent); font-style: normal; font-weight: 600; }
 .mroom-commit-primary {
   font-family: inherit; font-size: 11px; letter-spacing: 0.08em;
   padding: 8px 18px; border-radius: 5px; border: none; cursor: pointer;
-  background: linear-gradient(135deg, #c4e0fc, #7aafea); color: #06070b;
+  background: linear-gradient(135deg, var(--accent-hi), var(--accent-lo)); color: rgb(var(--bg-0));
   font-weight: 600;
 }
 .mroom-commit-primary:hover { filter: brightness(1.08); }
 .mroom-commit-primary:disabled { opacity: 0.5; cursor: default; }
 .mroom-empty {
-  padding: 80px 0; text-align: center; color: #6e6e6e;
+  padding: 80px 0; text-align: center; color: rgb(var(--fg-2));
   display: flex; flex-direction: column; align-items: center; gap: 12px;
 }
-.mroom-empty-glyph { font-size: 28px; color: #2a2a2a; }
-.mroom-empty-sub { max-width: 46ch; color: #4a4a4a; font-size: 11px; }
+.mroom-empty-glyph { font-size: 28px; color: rgb(var(--fg-4)); }
+.mroom-empty-sub { max-width: 46ch; color: rgb(var(--fg-3)); font-size: 11px; }
+/* Light shell: the paper grain darkens instead of lightening, and the
+   vignette is a touch of shade rather than a pool of black. */
+:root[data-theme='light'] .mroom-grain { mix-blend-mode: multiply; opacity: 0.07; }
+:root[data-theme='light'] .mroom-overlay::before {
+  background: radial-gradient(ellipse 110% 130% at 50% 50%, transparent 35%, rgb(20 23 28 / 0.06) 100%);
+}
 `

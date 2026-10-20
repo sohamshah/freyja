@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { buildWidgetHtml } from '../widgetRuntime'
 import { useHarness } from '../state/store'
+import { getEffectiveTheme, useEffectiveTheme } from '../lib/theme'
 
 /** Mount a generative-UI widget in a sandboxed iframe — chromeless by
  *  default so the widget content floats directly in the message
@@ -50,8 +51,22 @@ export function Widget({
   // renders unrelated to the widget content.
   const srcdoc = useMemo(() => {
     if (isStreaming) return null
-    return buildWidgetHtml({ title, code, kind, loadingMessages })
+    // The theme at build time is deliberately not a dependency: a flip
+    // later is sent as `ui/theme` (below) so the widget keeps its state.
+    return buildWidgetHtml({ title, code, kind, loadingMessages, theme: getEffectiveTheme() })
   }, [isStreaming, title, code, kind, loadingMessages])
+
+  // Re-skin a mounted widget when the shell flips between dark and light.
+  const theme = useEffectiveTheme()
+  useEffect(() => {
+    const win = iframeRef.current?.contentWindow
+    if (!win || !ready) return
+    try {
+      win.postMessage({ type: 'ui/theme', theme }, '*')
+    } catch {
+      /* iframe torn down mid-flip */
+    }
+  }, [theme, ready])
 
   // Cycle loading messages while we wait for `ui/ready`. Defaults to
   // a generic shimmer when the agent didn't pass any.

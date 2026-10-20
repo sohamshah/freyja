@@ -14,16 +14,16 @@ import { StickyHeader } from './StickyHeader'
  */
 
 const CATEGORY_COLORS: Record<string, string> = {
-  read_file: '#6ba3d6', read: '#6ba3d6', glob: '#6ba3d6', grep: '#6ba3d6', list_directory: '#6ba3d6',
-  write_file: '#5bbb5b', write: '#5bbb5b', edit_file: '#5bbb5b', edit: '#5bbb5b', edit_json: '#5bbb5b',
-  web_search: '#e0a040', web_fetch: '#e0a040', web_research: '#e0a040',
-  bash: '#b080d0', shell: '#b080d0',
-  sub_agent: '#60c0c0', subagents: '#60c0c0',
-  publish_finding: '#d0a040', read_findings: '#d0a040',
+  read_file: 'var(--tool-read)', read: 'var(--tool-read)', glob: 'var(--tool-read)', grep: 'var(--tool-read)', list_directory: 'var(--tool-read)',
+  write_file: 'var(--tool-write)', write: 'var(--tool-write)', edit_file: 'var(--tool-write)', edit: 'var(--tool-write)', edit_json: 'var(--tool-write)',
+  web_search: 'var(--tool-web)', web_fetch: 'var(--tool-web)', web_research: 'var(--tool-web)',
+  bash: 'var(--tool-shell)', shell: 'var(--tool-shell)',
+  sub_agent: 'var(--tool-agent)', subagents: 'var(--tool-agent)',
+  publish_finding: 'var(--tool-bus)', read_findings: 'var(--tool-bus)',
 }
 
 function getColor(name: string): string {
-  return CATEGORY_COLORS[name] ?? '#888'
+  return CATEGORY_COLORS[name] ?? 'rgb(var(--fg-2))'
 }
 
 /** What the chart draws for one call. `toolCalls` is replaced on every
@@ -305,12 +305,12 @@ const TimelineChart = memo(function TimelineChart({ records }: { records: Timeli
                 className="h-full w-full"
                 style={{
                   background:
-                    'repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(255,255,255,0.06) 3px, rgba(255,255,255,0.06) 4px)',
+                    'repeating-linear-gradient(45deg, transparent, transparent 3px, rgb(var(--ink) / 0.06) 3px, rgb(var(--ink) / 0.06) 4px)',
                 }}
               />
               {/* Small gap label */}
               <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 text-center">
-                <span className="rounded bg-[#1a1a1e]/80 px-1 py-[1px] font-mono text-[7.5px] font-bold text-fg-3 ring-1 ring-white/[0.08]">
+                <span className="rounded bg-bg-2/80 px-1 py-[1px] font-mono text-[7.5px] font-bold text-fg-3 ring-1 ring-white/[0.08]">
                   ~{shortDuration(seg.gapBefore)}
                 </span>
               </div>
@@ -360,9 +360,9 @@ const TimelineChart = memo(function TimelineChart({ records }: { records: Timeli
                   isRunning ? 'animate-pulse' : ''
                 }`}
                 style={{
-                  backgroundColor: isError ? '#e05050' : color,
+                  backgroundColor: isError ? 'var(--tool-error)' : color,
                   opacity: isRunning ? 0.6 : 0.85,
-                  boxShadow: 'inset 0 0.5px 0 0 rgba(255,255,255,0.18)',
+                  boxShadow: 'inset 0 0.5px 0 0 rgb(var(--ink) / 0.18)',
                 }}
               />
             </div>
@@ -374,7 +374,7 @@ const TimelineChart = memo(function TimelineChart({ records }: { records: Timeli
              sibling bars and the activity panel drag handle (z-10). */}
         {hover && (
           <div
-            className="pointer-events-none absolute z-30 whitespace-nowrap rounded-md bg-[#0e0e10]/95 px-2 py-1 text-[9.5px] text-fg-0 shadow-[0_8px_20px_-8px_rgba(0,0,0,0.7)] ring-1 ring-white/[0.08] backdrop-blur-md"
+            className="pointer-events-none absolute z-30 whitespace-nowrap rounded-md bg-bg-0/95 px-2 py-1 text-[9.5px] text-fg-0 shadow-[0_8px_20px_-8px_rgb(var(--shadow)/0.7)] ring-1 ring-white/[0.08] backdrop-blur-md"
             style={{
               left: `${hover.left}%`,
               top: `${hover.top - 6}px`,
@@ -448,7 +448,7 @@ function uniqueCategories(records: TimelineRecord[]) {
     const cat = Object.entries(CATEGORY_COLORS).find(([, c]) => c === color)?.[0] ?? r.name
     // Use the category color as key to deduplicate
     if (!seen.has(color)) {
-      const label = color === '#6ba3d6' ? 'read' : color === '#5bbb5b' ? 'write' : color === '#e0a040' ? 'web' : color === '#b080d0' ? 'shell' : color === '#60c0c0' ? 'agent' : color === '#d0a040' ? 'bus' : r.name
+      const label = color === 'var(--tool-read)' ? 'read' : color === 'var(--tool-write)' ? 'write' : color === 'var(--tool-web)' ? 'web' : color === 'var(--tool-shell)' ? 'shell' : color === 'var(--tool-agent)' ? 'agent' : color === 'var(--tool-bus)' ? 'bus' : r.name
       seen.set(color, label)
     }
   }

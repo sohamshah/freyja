@@ -104,7 +104,7 @@ export function PermissionPrompt() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[14vh]">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" />
+      <div className="absolute inset-0 scrim-soft backdrop-blur-[2px]" />
       <div className="relative w-[560px] overflow-hidden rounded-2xl glass-strong shadow-2xl ring-hairline-strong">
         <div className="flex items-center gap-3 px-5 py-4 hairline-b">
           <span className={`font-mono text-[15px] ${tone.color}`}>{tone.icon}</span>

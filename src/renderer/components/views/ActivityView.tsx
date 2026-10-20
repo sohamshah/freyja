@@ -1254,7 +1254,7 @@ function CommGraph({
                   stroke={
                     isCross
                       ? 'rgba(245, 165, 110, 0.18)'
-                      : 'rgba(255,255,255,0.05)'
+                      : 'rgb(var(--ink) / 0.05)'
                   }
                   strokeWidth={1}
                   strokeDasharray={isCross ? '1,5' : '2,3'}
@@ -1279,7 +1279,7 @@ function CommGraph({
                       y1={2}
                       x2={x}
                       y2={totalHeight - 14}
-                      stroke="rgba(255,255,255,0.10)"
+                      stroke="rgb(var(--ink) / 0.10)"
                       strokeWidth={1}
                       strokeDasharray="1,4"
                     />
@@ -1288,7 +1288,7 @@ function CommGraph({
                       y={totalHeight - 3}
                       textAnchor="middle"
                       fontSize={8}
-                      fill="rgba(255,255,255,0.30)"
+                      fill="rgb(var(--ink) / 0.30)"
                       fontFamily="ui-monospace, monospace"
                       pointerEvents="none"
                     >
@@ -1461,10 +1461,10 @@ function CommGraph({
                   fill={isSpawn ? 'none' : fill}
                   stroke={
                     isSelected
-                      ? 'rgba(255,255,255,0.95)'
+                      ? 'rgb(var(--ink) / 0.95)'
                       : isSpawn
                       ? fill
-                      : 'rgba(0,0,0,0.35)'
+                      : 'rgb(var(--bg-0) / 0.35)'
                   }
                   strokeWidth={isSelected ? 1.8 : isSpawn ? 1.4 : 1}
                 >

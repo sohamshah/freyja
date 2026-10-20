@@ -1,5 +1,6 @@
 import { create, type StateCreator } from 'zustand'
 import type {
+  AppearanceTheme,
   AppshotMeta,
   AppshotSummary,
   BridgeCommand,
@@ -23,6 +24,7 @@ import type {
   ToolCallRecord,
   ToolCatalogEntry,
 } from '@shared/events'
+import { applyBrowserPreference } from '../lib/theme'
 import {
   getPersistableFrame,
   normalizeFrame,
@@ -770,6 +772,8 @@ export interface HarnessActions {
   toggleSettings(open?: boolean): void
   hydrateSettings(): Promise<void>
   setPermissionTier(tier: PermissionTier): Promise<void>
+  /** Appearance: `system` follows macOS, `dark` / `light` pin the shell. */
+  setAppearanceTheme(theme: AppearanceTheme): Promise<void>
   escalateSessionPolicy(tier: PermissionTier, sessionId?: string): Promise<void>
   switchToParent(): Promise<void>
   // ─── Session management ──────────────────────────────────────
@@ -1456,6 +1460,7 @@ function emptyState(): HarnessState {
         maxStepsDefault: 60,
         showScreenshotsInline: true,
       },
+      appearance: { theme: 'system' },
     },
     toast: null,
     computerSessions: {},
@@ -5678,6 +5683,31 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     if (res?.ok && res.settings) {
       set({ settings: res.settings as DesktopSettings })
     }
+  },
+
+  async setAppearanceTheme(theme) {
+    const prev = useHarness.getState().settings
+    if (prev.appearance?.theme === theme) return
+    set({
+      settings: { ...prev, appearance: { ...prev.appearance, theme } },
+    })
+    const api = (window as any).harness
+    if (api?.settingsUpdate) {
+      // The main process answers by flipping nativeTheme.themeSource;
+      // the renderer repaints through its prefers-color-scheme listener
+      // (lib/theme.ts), so nothing here touches the DOM.
+      const res = await api.settingsUpdate({ appearance: { theme } })
+      if (!res?.ok) {
+        set({ settings: prev })
+        useHarness.getState().showToast('Failed to save appearance', 'warn')
+      } else if (res.settings) {
+        set({ settings: res.settings as DesktopSettings })
+      }
+      return
+    }
+    // Plain browser (demo / design review): no main process, so the
+    // preference is kept locally and applied directly.
+    applyBrowserPreference(theme)
   },
 
   async setPermissionTier(tier) {

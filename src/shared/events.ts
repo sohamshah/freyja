@@ -2369,12 +2369,23 @@ export interface ComputerControlSettings {
   showScreenshotsInline: boolean
 }
 
+/** Window appearance. `system` follows macOS (System Settings → Appearance);
+ *  `dark` and `light` pin the app regardless of the OS. The main process
+ *  mirrors this into `nativeTheme.themeSource` so the vibrancy material
+ *  and `prefers-color-scheme` in the renderer agree. */
+export type AppearanceTheme = 'system' | 'dark' | 'light'
+
+export interface AppearanceSettings {
+  theme: AppearanceTheme
+}
+
 export interface DesktopSettings {
   version: 1
   permissions: {
     autoApprove: PermissionTier
   }
   computer: ComputerControlSettings
+  appearance: AppearanceSettings
 }
 
 /** Default blocklist for computer control -- shipped on day one.

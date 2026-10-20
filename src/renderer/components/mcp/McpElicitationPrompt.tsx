@@ -369,7 +369,7 @@ export function McpElicitationPrompt() {
   if (!current) return null
   return (
     <div className="fixed inset-0 z-[49] flex items-start justify-center pt-[14vh]">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" />
+      <div className="absolute inset-0 scrim-soft backdrop-blur-[2px]" />
       <McpElicitationCard
         request={current}
         queueLength={queue.length}

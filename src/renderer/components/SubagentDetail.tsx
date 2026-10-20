@@ -9,7 +9,7 @@ export function SubagentDetail({ id }: { id: string }) {
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" onClick={() => close(null)} />
+      <div className="absolute inset-0 scrim-soft backdrop-blur-[2px]" onClick={() => close(null)} />
       <div className="relative w-[640px] max-w-[90vw] overflow-hidden rounded-2xl glass-strong shadow-2xl ring-hairline-strong">
         <div className="flex items-center gap-3 px-5 py-4 hairline-b">
           <div className="flex items-center gap-2">

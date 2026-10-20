@@ -48,23 +48,23 @@ const ROW_HEIGHT = 56
 const PAGE_SIZE = 200
 
 const TYPE_COLORS: Record<string, string> = {
-  md: '#a8d4fc', markdown: '#a8d4fc',
-  html: '#7ab8a3', htm: '#7ab8a3',
-  json: '#ffcc66', yaml: '#ffcc66', yml: '#ffcc66', toml: '#ffcc66',
-  py: '#5bbb5b', rs: '#d99b6b', go: '#5bbabe',
-  ts: '#a8d4fc', tsx: '#a8d4fc', js: '#ffd966', jsx: '#ffd966',
-  css: '#5bbb5b', scss: '#5bbb5b',
-  sh: '#7ab8a3', bash: '#7ab8a3', zsh: '#7ab8a3',
-  csv: '#ffcc66', tsv: '#ffcc66',
-  svg: '#a8d4fc', xml: '#a8d4fc',
-  txt: '#999', log: '#999',
-  png: '#d99bbe', jpg: '#d99bbe', jpeg: '#d99bbe', gif: '#d99bbe', webp: '#d99bbe',
-  tex: '#7a9cd9', latex: '#7a9cd9',
-  swift: '#d99b6b', glsl: '#7a9cd9',
+  md: 'var(--accent)', markdown: 'var(--accent)',
+  html: 'var(--file-markup)', htm: 'var(--file-markup)',
+  json: 'var(--file-data)', yaml: 'var(--file-data)', yml: 'var(--file-data)', toml: 'var(--file-data)',
+  py: 'var(--file-code)', rs: 'var(--file-systems)', go: 'var(--file-go)',
+  ts: 'var(--accent)', tsx: 'var(--accent)', js: 'var(--file-script)', jsx: 'var(--file-script)',
+  css: 'var(--file-code)', scss: 'var(--file-code)',
+  sh: 'var(--file-markup)', bash: 'var(--file-markup)', zsh: 'var(--file-markup)',
+  csv: 'var(--file-data)', tsv: 'var(--file-data)',
+  svg: 'var(--accent)', xml: 'var(--accent)',
+  txt: 'rgb(var(--fg-2))', log: 'rgb(var(--fg-2))',
+  png: 'var(--file-image)', jpg: 'var(--file-image)', jpeg: 'var(--file-image)', gif: 'var(--file-image)', webp: 'var(--file-image)',
+  tex: 'var(--file-tex)', latex: 'var(--file-tex)',
+  swift: 'var(--file-systems)', glsl: 'var(--file-tex)',
 }
 
 function typeColor(ext: string): string {
-  return TYPE_COLORS[ext] ?? '#888'
+  return TYPE_COLORS[ext] ?? 'rgb(var(--fg-2))'
 }
 
 function formatBytes(n: number): string {
@@ -429,9 +429,9 @@ export function ArtifactsBrowser() {
   return (
     // z-[55]: above the session library (z-50), which can be open underneath
     // when the operator jumps here from the activity panel.
-    <div className="fixed inset-0 z-[55] flex flex-col bg-[#0c0c10]/95 backdrop-blur-md">
+    <div className="fixed inset-0 z-[55] flex flex-col bg-bg-0/95 backdrop-blur-md">
       <header
-        className="drag flex shrink-0 items-center gap-3 border-b border-white/[0.06] bg-[#0a0a0e]/60 pr-3"
+        className="drag flex shrink-0 items-center gap-3 border-b border-white/[0.06] bg-bg-0/60 pr-3"
         style={{
           paddingLeft: 'var(--titlebar-inset, 82px)',
           minHeight: 'var(--titlebar-height, 46px)',
@@ -653,7 +653,7 @@ function FilterRail({
   }, [facets.sessions, sessionFilter])
 
   return (
-    <aside className="flex w-[224px] shrink-0 flex-col overflow-y-auto border-r border-white/[0.06] bg-[#08080c]/60 px-3 py-3">
+    <aside className="flex w-[224px] shrink-0 flex-col overflow-y-auto border-r border-white/[0.06] bg-bg-0/60 px-3 py-3">
       <div className="mb-2 flex items-baseline justify-between">
         <div className="label">filters</div>
         {hasFilters && (
@@ -806,7 +806,7 @@ const ResultRow = memo(function ResultRow({
     >
       <span
         className="block h-6 w-[3px] shrink-0 rounded-full"
-        style={{ background: row.exists ? typeColor(row.fileType) : '#3a3a3a' }}
+        style={{ background: row.exists ? typeColor(row.fileType) : 'rgb(var(--fg-4))' }}
       />
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-1.5">

@@ -333,8 +333,8 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
       </div>
       <div className="mx-1 mb-1 flex items-center gap-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
         <svg width="14" height="14" viewBox="0 0 14 14">
-          <circle cx="6" cy="6" r="4" stroke="#a8d4fc" strokeWidth="1.2" fill="none" />
-          <line x1="9" y1="9" x2="12" y2="12" stroke="#a8d4fc" strokeWidth="1.2" strokeLinecap="round" />
+          <circle cx="6" cy="6" r="4" stroke="var(--accent)" strokeWidth="1.2" fill="none" />
+          <line x1="9" y1="9" x2="12" y2="12" stroke="var(--accent)" strokeWidth="1.2" strokeLinecap="round" />
         </svg>
         <input
           ref={inputRef}

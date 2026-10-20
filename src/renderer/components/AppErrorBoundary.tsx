@@ -25,7 +25,7 @@ export class AppErrorBoundary extends React.Component<React.PropsWithChildren, E
 
     const { error, componentStack } = this.state
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-[#171b20] p-8 text-fg-0">
+      <div className="flex h-screen w-screen items-center justify-center bg-bg-1 p-8 text-fg-0">
         <div className="glass-panel max-h-[88vh] w-[860px] max-w-[calc(100vw-3rem)] overflow-hidden rounded-[18px] p-6 ring-hairline">
           <div className="label mb-3 text-danger">renderer recovered</div>
           <h1 className="mb-3 font-mono text-[22px] text-fg-0">Freyja hit a UI error</h1>

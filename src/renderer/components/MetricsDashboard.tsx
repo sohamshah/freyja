@@ -130,7 +130,7 @@ export function MetricsDashboard() {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
       <div
-        className="absolute inset-0 bg-black/70 backdrop-blur-[6px]"
+        className="absolute inset-0 scrim-strong backdrop-blur-[6px]"
         onClick={() => toggle(false)}
       />
       <div
@@ -376,7 +376,7 @@ export function MetricsDashboard() {
               </div>
               <RankedBars
                 rows={objectToSortedEntries(aggregate.triggerCounts)}
-                accent="#7fb8e8"
+                accent="var(--chart-6)"
               />
             </section>
 
@@ -635,12 +635,12 @@ const BAND_LABEL: Record<BandKey, string> = {
   fallback: 'fallback',
 }
 const BAND_COLOR: Record<BandKey, string> = {
-  clean: '#5a6b6b',
-  pruning: '#7a9595',
-  awareness: '#7fb8e8',
-  soft: '#a8d4fc',
-  strong: '#f5b45d',
-  fallback: '#f07878',
+  clean: 'var(--chart-mute)',
+  pruning: 'var(--chart-mute-2)',
+  awareness: 'var(--chart-6)',
+  soft: 'var(--chart-1)',
+  strong: 'var(--chart-3)',
+  fallback: 'var(--chart-bad)',
 }
 const BAND_RANK: Record<BandKey, number> = {
   clean: 0,
@@ -1134,7 +1134,7 @@ function RankedBars({
             <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-white/[0.04]">
               <div
                 className="absolute left-0 top-0 h-full rounded-full"
-                style={{ width: `${pct}%`, background: `${accent}a8` }}
+                style={{ width: `${pct}%`, background: `color-mix(in srgb, ${accent} 66%, transparent)` }}
               />
             </div>
             <span className="w-[34px] text-right text-fg-3">{n}</span>
@@ -1166,7 +1166,7 @@ function AgentDecisionsPanel({
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3">
           scope mix
         </span>
-        <RankedBars rows={scopeEntries} accent="#a8d4fc" />
+        <RankedBars rows={scopeEntries} accent="var(--chart-1)" />
         <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[10px]">
           <div className="flex flex-col">
             <span className="text-fg-3">tokens freed</span>
@@ -1312,8 +1312,8 @@ function SpendChart({ series }: { series: Array<{ t: number; cum: number }> }) {
       <svg viewBox={`0 0 ${W} ${H}`} className="block h-32 w-full" preserveAspectRatio="none">
         <defs>
           <linearGradient id="spend-fill" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="#a8d4fc" stopOpacity="0.35" />
-            <stop offset="100%" stopColor="#a8d4fc" stopOpacity="0" />
+            <stop offset="0%" stopColor="var(--chart-1)" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="var(--chart-1)" stopOpacity="0" />
           </linearGradient>
         </defs>
         {[0.25, 0.5, 0.75].map((g) => (
@@ -1323,12 +1323,12 @@ function SpendChart({ series }: { series: Array<{ t: number; cum: number }> }) {
             x2={W - 5}
             y1={H - g * (H - 20) - 10}
             y2={H - g * (H - 20) - 10}
-            stroke="rgba(255,255,255,0.05)"
+            stroke="rgb(var(--ink) / 0.05)"
             strokeWidth={1}
           />
         ))}
         <path d={fillPath} fill="url(#spend-fill)" />
-        <path d={path} fill="none" stroke="#a8d4fc" strokeWidth={1.5} />
+        <path d={path} fill="none" stroke="var(--chart-1)" strokeWidth={1.5} />
       </svg>
       <div className="flex items-center justify-between font-mono text-[10px] text-fg-3">
         <span>{new Date(tMin * 1000).toLocaleDateString()}</span>
@@ -1375,7 +1375,7 @@ function SavingsTrend({ points }: { points: Array<{ ts: number; pct: number }> }
           x={W - 4}
           y={H - 0.1 * (H - 20) - 14}
           textAnchor="end"
-          fill="#f5b45d"
+          fill="var(--chart-3)"
           fontSize="9"
           fontFamily="Departure Mono, monospace"
         >
@@ -1390,7 +1390,7 @@ function SavingsTrend({ points }: { points: Array<{ ts: number; pct: number }> }
               cx={x}
               cy={y}
               r={2.5}
-              fill={p.pct < 10 ? '#f07878' : '#7fb8e8'}
+              fill={p.pct < 10 ? 'var(--chart-bad)' : 'var(--chart-6)'}
               fillOpacity="0.85"
             />
           )
@@ -1606,7 +1606,7 @@ function SessionTable({
                         className="inline-flex items-center gap-1.5 rounded px-1.5 py-[1px] text-[9.5px] uppercase tracking-[0.06em]"
                         style={{
                           color: BAND_COLOR[r.highestBand],
-                          background: `${BAND_COLOR[r.highestBand]}1f`,
+                          background: `color-mix(in srgb, ${BAND_COLOR[r.highestBand]} 12%, transparent)`,
                         }}
                       >
                         <span
@@ -1717,7 +1717,7 @@ function Sparkline({
         )
       })}
       {/* Spend line */}
-      <path d={path} fill="none" stroke="#a8d4fc" strokeWidth={1.2} />
+      <path d={path} fill="none" stroke="var(--chart-1)" strokeWidth={1.2} />
     </svg>
   )
 }
@@ -1843,10 +1843,10 @@ function SessionDetailDrawer({
                   const x = ((c.ts - tMin) / tSpan) * (W - 2) + 1
                   const color =
                     c.subtype === 'compaction_complete'
-                      ? '#a8d4fc'
+                      ? 'var(--chart-1)'
                       : c.subtype === 'thrash_skip'
-                        ? '#f07878'
-                        : '#f5b45d'
+                        ? 'var(--chart-bad)'
+                        : 'var(--chart-3)'
                   return (
                     <g key={`c-${i}`}>
                       <line x1={x} y1={2} x2={x} y2={H - 2} stroke={color} strokeWidth={1.5} strokeOpacity={0.85} />
@@ -1930,10 +1930,10 @@ function SessionDetailDrawer({
                           style={{
                             color:
                               cachePct >= 70
-                                ? '#88d67f'
+                                ? 'var(--chart-2)'
                                 : cachePct >= 30
-                                  ? '#a8d4fc'
-                                  : 'rgb(120 130 140)',
+                                  ? 'var(--chart-1)'
+                                  : 'rgb(var(--fg-2))',
                           }}
                         >
                           {cachePct > 0 ? `${cachePct.toFixed(0)}%` : '—'}
@@ -1965,10 +1965,10 @@ function SessionDetailDrawer({
                     : 0
                 const color =
                   c.subtype === 'compaction_complete'
-                    ? '#a8d4fc'
+                    ? 'var(--chart-1)'
                     : c.subtype === 'thrash_skip'
-                      ? '#f07878'
-                      : '#f5b45d'
+                      ? 'var(--chart-bad)'
+                      : 'var(--chart-3)'
                 const isExpanded = expandedCompactionTs === c.ts
                 const hasDetails =
                   Boolean(c.summary_text) || Boolean(c.scope) || Boolean(c.reason)
@@ -2132,7 +2132,7 @@ function DetailChip({
 // Deterministic color per model name. Hash → pick from a small monochrome
 // palette so the timeline + per-call table colors are stable.
 function modelColor(model: string): string {
-  const palette = ['#a8d4fc', '#88d67f', '#f5b45d', '#b8a7ff', '#f0a6ca', '#7fb8e8', '#d99bbe']
+  const palette = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)', 'var(--chart-6)', 'var(--chart-7)']
   let h = 0
   for (let i = 0; i < model.length; i++) h = (h * 31 + model.charCodeAt(i)) | 0
   return palette[Math.abs(h) % palette.length]
@@ -2397,10 +2397,10 @@ function aggregateProfiles(rows: CompactionTelemetryRow[]): ProfilesAggregate {
 }
 
 function profileColor(agentType: string): string {
-  if (agentType === 'root') return '#5a6b6b'
+  if (agentType === 'root') return 'var(--chart-mute)'
   const palette = [
-    '#a8d4fc', '#88d67f', '#f5b45d', '#b8a7ff', '#f0a6ca',
-    '#7fb8e8', '#d99bbe', '#fcd96b', '#9eecd2',
+    'var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)',
+    'var(--chart-6)', 'var(--chart-7)', 'var(--chart-8)', 'var(--chart-9)',
   ]
   let h = 0
   for (let i = 0; i < agentType.length; i++) h = (h * 31 + agentType.charCodeAt(i)) | 0
@@ -2624,12 +2624,12 @@ function ProfileTable({
                   style={{
                     color:
                       okRate == null
-                        ? 'rgb(120 130 140)'
+                        ? 'rgb(var(--fg-2))'
                         : okRate >= 80
-                          ? '#88d67f'
+                          ? 'var(--chart-2)'
                           : okRate >= 50
-                            ? '#a8d4fc'
-                            : '#f07878',
+                            ? 'var(--chart-1)'
+                            : 'var(--chart-bad)',
                   }}
                 >
                   {okRate == null ? '—' : `${okRate.toFixed(0)}%`}
@@ -2703,10 +2703,10 @@ function ProfileDetailDrawer({
   const finished =
     profile.outcomes.success + profile.outcomes.error + profile.outcomes.cancelled
   const outcomeSegments: Array<{ label: string; count: number; color: string }> = [
-    { label: 'success', count: profile.outcomes.success, color: '#88d67f' },
-    { label: 'error', count: profile.outcomes.error, color: '#f07878' },
-    { label: 'cancelled', count: profile.outcomes.cancelled, color: '#f5b45d' },
-    { label: 'running', count: profile.outcomes.running, color: '#7fb8e8' },
+    { label: 'success', count: profile.outcomes.success, color: 'var(--chart-2)' },
+    { label: 'error', count: profile.outcomes.error, color: 'var(--chart-bad)' },
+    { label: 'cancelled', count: profile.outcomes.cancelled, color: 'var(--chart-3)' },
+    { label: 'running', count: profile.outcomes.running, color: 'var(--chart-6)' },
   ]
   const outcomeTotal = outcomeSegments.reduce((a, b) => a + b.count, 0)
 
@@ -2835,7 +2835,7 @@ function ProfileDetailDrawer({
                   width: `${Math.min(100, (profile.iterationsUsed / profile.iterationsBudget) * 100)}%`,
                   background:
                     profile.iterationsUsed / profile.iterationsBudget > 0.9
-                      ? '#f5b45d'
+                      ? 'var(--chart-3)'
                       : profileColor(profile.agentType),
                 }}
               />
@@ -2940,12 +2940,12 @@ function ProfileDetailDrawer({
                   {profile.sessions.slice(0, 50).map((s) => {
                     const color =
                       s.outcome === 'success'
-                        ? '#88d67f'
+                        ? 'var(--chart-2)'
                         : s.outcome === 'error'
-                          ? '#f07878'
+                          ? 'var(--chart-bad)'
                           : s.outcome === 'cancelled'
-                            ? '#f5b45d'
-                            : '#7fb8e8'
+                            ? 'var(--chart-3)'
+                            : 'var(--chart-6)'
                     return (
                       <tr
                         key={s.sessionId}
@@ -2959,7 +2959,7 @@ function ProfileDetailDrawer({
                           <td className="px-2 py-1">
                             <span
                               className="inline-flex items-center gap-1 rounded px-1.5 py-[1px] text-[9px] uppercase"
-                              style={{ color, background: `${color}1f` }}
+                              style={{ color, background: `color-mix(in srgb, ${color} 12%, transparent)` }}
                             >
                               <span
                                 className="h-1.5 w-1.5 rounded-full"

@@ -47,6 +47,7 @@ import {
 } from './persistence.js'
 import {
   loadSettings,
+  normalizeAppearanceTheme,
   saveSettings,
   type DesktopSettings,
 } from './settings.js'
@@ -307,8 +308,20 @@ const WINDOW_VIBRANCY =
   (process.env.FREYJA_VIBRANCY as Electron.BrowserWindowConstructorOptions['vibrancy'] | undefined) ??
   'fullscreen-ui'
 
+/** Point Electron's native theme at the user's appearance setting. The
+ *  vibrancy material behind the DOM and `prefers-color-scheme` in the
+ *  renderer both follow `themeSource`, so this one assignment is what
+ *  flips the window between the dark and light shells. */
+function applyAppearance(settings: Pick<DesktopSettings, 'appearance'>): void {
+  nativeTheme.themeSource = normalizeAppearanceTheme(settings.appearance?.theme)
+}
+
 function createWindow() {
-  nativeTheme.themeSource = 'dark'
+  try {
+    applyAppearance(loadSettings())
+  } catch {
+    nativeTheme.themeSource = 'system'
+  }
 
   mainWindow = new BrowserWindow({
     width: 1320,
@@ -1144,6 +1157,11 @@ function setupIpc() {
   ipcMain.handle(IPC.settingsUpdate, async (_event, patch: Partial<DesktopSettings>) => {
     try {
       const next = saveSettings(patch)
+      // Appearance lands on the window right away; the renderer sees the
+      // change through `prefers-color-scheme` and re-skins itself.
+      if (patch.appearance?.theme !== undefined) {
+        applyAppearance(next)
+      }
       // Push the new permission policy down to the bridge so in-flight
       // sessions see it immediately without needing a restart.
       if (bridge && next.permissions?.autoApprove) {

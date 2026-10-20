@@ -59,7 +59,7 @@ export function BriefMemo({
 
   if (!open) return null
   return (
-    <div className="fixed inset-0 z-[70] flex flex-col bg-black/65 backdrop-blur-[8px]">
+    <div className="fixed inset-0 z-[70] flex flex-col scrim backdrop-blur-[8px]">
       {/* Strip header — scope + status, balanced by the close button.
           The zoom-counter-scaled --titlebar-inset var (set at the App root)
           clears the OS-level traffic-light buttons at any zoom (rendered on

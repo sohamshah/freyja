@@ -16,8 +16,39 @@ import { StickyHeader } from './StickyHeader'
 import { Fold, FoldCaret } from './Fold'
 import { BranchSessionDialog } from './BranchSessionDialog'
 import { TopoBackdrop } from './TopoBackdrop'
+import { oppositeTheme, useEffectiveTheme } from '../lib/theme'
 
 type Section = 'sessions' | 'skills' | 'subagents' | 'memory' | 'runs'
+
+/** Sun / moon switch in the sidebar footer. Flips to the explicit
+ *  opposite of what is on screen (so from `system` it pins a theme);
+ *  Settings → appearance is where `system` comes back. */
+function ThemeToggle() {
+  const effective = useEffectiveTheme()
+  const next = oppositeTheme(effective)
+  return (
+    <button
+      type="button"
+      onClick={() => void useHarness.getState().setAppearanceTheme(next)}
+      className="flex h-[18px] w-[22px] items-center justify-center rounded text-fg-2 hover:bg-white/[0.06] hover:text-fg-0"
+      title={`Switch to ${next} mode (⌘⇧L)`}
+      aria-label={`Switch to ${next} mode`}
+    >
+      {effective === 'dark' ? (
+        // sun
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" aria-hidden>
+          <circle cx="6" cy="6" r="2.3" />
+          <path d="M6 .9v1.4M6 9.7v1.4M.9 6h1.4M9.7 6h1.4M2.4 2.4l1 1M8.6 8.6l1 1M2.4 9.6l1-1M8.6 3.4l1-1" />
+        </svg>
+      ) : (
+        // moon
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" aria-hidden>
+          <path d="M9.8 7.6A4.2 4.2 0 0 1 4.4 2.2a4.2 4.2 0 1 0 5.4 5.4z" />
+        </svg>
+      )}
+    </button>
+  )
+}
 
 /** Id prefix of scheduled-run sessions (bridge/scheduler/runtime.py). */
 const SCHEDULER_SESSION_PREFIX = 'scheduler:'
@@ -656,9 +687,7 @@ export function Sidebar() {
                   <span
                     className="absolute inset-y-1 left-0 w-[2px] rounded-full"
                     style={{
-                      background: isComputer
-                        ? 'var(--color-warn, #f5b640)'
-                        : 'var(--color-accent, #6e8eff)',
+                      background: isComputer ? 'var(--amber)' : 'var(--accent)',
                       animation: 'swarm-pulse 2s ease-in-out infinite',
                     }}
                   />
@@ -839,9 +868,10 @@ export function Sidebar() {
           <span className="font-mono text-[11px]">⚙</span>
           <span>settings</span>
         </button>
-        <span>
+        <span className="flex items-center gap-1.5">
+          <ThemeToggle />
           <kbd className="kbd">⌘</kbd>
-          <kbd className="kbd ml-1">,</kbd>
+          <kbd className="kbd">,</kbd>
         </span>
       </div>
       {inspectItem && (
@@ -1316,7 +1346,7 @@ function InspectorPopup({
   if (typeof document === 'undefined') return null
   const content = (
     <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/65 backdrop-blur-md"
+      className="fixed inset-0 z-[1000] flex items-center justify-center scrim backdrop-blur-md"
       role="dialog"
       aria-modal="true"
     >

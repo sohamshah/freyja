@@ -586,8 +586,8 @@ function Timeline({
                   isCross
                     ? 'rgba(245, 165, 110, 0.18)'
                     : lane.ended
-                    ? 'rgba(255,255,255,0.05)'
-                    : 'rgba(168,212,252,0.10)'
+                    ? 'rgb(var(--ink) / 0.05)'
+                    : 'rgb(var(--accent-rgb) / 0.10)'
                 }
                 strokeWidth={1}
                 strokeDasharray={isCross ? '1,5' : lane.ended ? '2,3' : undefined}
@@ -600,7 +600,7 @@ function Timeline({
                   cx={LANE_LABEL_WIDTH + innerWidth + TIMELINE_PAD_X}
                   cy={y}
                   r={3}
-                  fill="rgba(168,212,252,0.85)"
+                  fill="rgb(var(--accent-rgb) / 0.85)"
                   className="animate-pulse-soft"
                 />
               )}
@@ -620,7 +620,7 @@ function Timeline({
                   y1={6}
                   x2={x}
                   y2={totalHeight - 6}
-                  stroke="rgba(255,255,255,0.10)"
+                  stroke="rgb(var(--ink) / 0.10)"
                   strokeWidth={1}
                   strokeDasharray="1,4"
                 />
@@ -629,7 +629,7 @@ function Timeline({
                   y={12}
                   textAnchor="middle"
                   fontSize={8.5}
-                  fill="rgba(255,255,255,0.40)"
+                  fill="rgb(var(--ink) / 0.40)"
                   fontFamily="ui-monospace, monospace"
                   className="uppercase tracking-wider"
                 >
@@ -664,7 +664,7 @@ function Timeline({
                 key={arc.key}
                 d={d}
                 fill="none"
-                stroke="rgba(168,212,252,0.55)"
+                stroke="rgb(var(--accent-rgb) / 0.55)"
                 strokeWidth={selectedFindingIndex === arc.sourceIndex ? 1.4 : 0.75}
                 opacity={dim ? 0.12 : 0.65}
                 strokeLinecap="round"
@@ -701,10 +701,10 @@ function Timeline({
                 fill={isCross ? 'none' : undefined}
                 stroke={
                   selected
-                    ? 'rgba(168,212,252,0.95)'
+                    ? 'rgb(var(--accent-rgb) / 0.95)'
                     : isCross
                     ? 'rgba(245, 165, 110, 0.85)'
-                    : 'rgba(0,0,0,0.4)'
+                    : 'rgb(var(--bg-0) / 0.4)'
                 }
                 strokeWidth={selected ? 1.5 : isCross ? 1.3 : 1}
                 strokeDasharray={isCross && !selected ? '2,1.5' : undefined}
@@ -725,7 +725,7 @@ function Timeline({
                 y={cy - CHIP_R - 4}
                 textAnchor="middle"
                 fontSize={8}
-                fill="rgba(255,255,255,0.45)"
+                fill="rgb(var(--ink) / 0.45)"
                 fontFamily="ui-monospace, monospace"
                 pointerEvents="none"
               >
@@ -739,7 +739,7 @@ function Timeline({
                   y={cy + CHIP_R + 10}
                   textAnchor="middle"
                   fontSize={8}
-                  fill="rgba(255,255,255,0.32)"
+                  fill="rgb(var(--ink) / 0.32)"
                   fontFamily="ui-monospace, monospace"
                   pointerEvents="none"
                 >
@@ -769,7 +769,7 @@ function Timeline({
               cy={cy}
               r={READ_R}
               fill="none"
-              stroke={isCross ? 'rgba(245, 165, 110, 0.70)' : 'rgba(168,212,252,0.65)'}
+              stroke={isCross ? 'rgba(245, 165, 110, 0.70)' : 'rgb(var(--accent-rgb) / 0.65)'}
               strokeWidth={1.1}
               strokeDasharray={isCross ? '1.5,1.5' : undefined}
               opacity={dim ? 0.30 : 0.85}

@@ -94,7 +94,7 @@ export function TitleBar() {
           className="text-fg-0"
           style={{
             background:
-              'linear-gradient(180deg, #7ae6ff 0%, #a8d4fc 40%, #b4b0ff 80%, #c89aff 100%)',
+              'linear-gradient(180deg, var(--wordmark-1) 0%, var(--wordmark-2) 40%, var(--wordmark-3) 80%, var(--wordmark-4) 100%)',
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
             backgroundClip: 'text',

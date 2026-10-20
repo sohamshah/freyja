@@ -12,6 +12,7 @@
  * Wire protocol (postMessage between parent ↔ iframe) borrows from
  * MCP Apps SEP-1865:
  *   parent → iframe: { type: 'ui/initialize', hostContext: {…} }
+ *   parent → iframe: { type: 'ui/theme', theme: 'dark' | 'light' }   when the shell flips
  *   iframe → parent: { type: 'ui/ready' }                  on load
  *   iframe → parent: { type: 'ui/resize', height: number } on content reflow
  *   iframe → parent: { type: 'ui/message', text: string }  from sendPrompt / elicit submit
@@ -32,6 +33,9 @@ export interface WidgetBuildOptions {
   /** Optional 1-4 loading strings shown by the parent while the
    *  iframe streams. Pass-through only; not consumed inside iframe. */
   loadingMessages?: string[]
+  /** Shell theme at build time. The parent posts `ui/theme` when it
+   *  flips later, so a mounted widget re-skins without a reload. */
+  theme?: 'dark' | 'light'
 }
 
 /** Build the full iframe srcdoc for a widget. The result is meant to
@@ -50,17 +54,18 @@ export function buildWidgetHtml(opts: WidgetBuildOptions): string {
         `<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" onload="window.__freyjaRenderMath&&window.__freyjaRenderMath()"></script>`,
       ].join('\n')
     : ''
+  const theme = opts.theme === 'light' ? 'light' : 'dark'
   return [
     '<!doctype html>',
-    // color-scheme declared on <html> tells Chromium this document is
-    // dark, so `background: transparent` actually resolves to
-    // transparent instead of falling back to the user-agent light-mode
-    // page background (the cause of the giant white rectangle inside
-    // the iframe). Matches the rest of Freyja's dark-only chrome.
-    '<html lang="en" style="color-scheme: dark; background: transparent;">',
+    // color-scheme declared on <html> tells Chromium which user-agent
+    // defaults apply, so `background: transparent` actually resolves to
+    // transparent instead of falling back to the page background of the
+    // other scheme (the cause of a giant white rectangle inside the
+    // iframe under the dark shell). data-theme picks the token set.
+    `<html lang="en" data-theme="${theme}" style="color-scheme: ${theme}; background: transparent;">`,
     '<head>',
     '<meta charset="utf-8" />',
-    '<meta name="color-scheme" content="dark" />',
+    `<meta name="color-scheme" content="${theme}" />`,
     `<title>${safeTitle}</title>`,
     '<meta name="viewport" content="width=device-width, initial-scale=1" />',
     `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.44.0/dist/tabler-icons.min.css">`,
@@ -103,8 +108,8 @@ const ARROW_MARKER_DEF = `<marker id="arr" viewBox="0 0 10 10" refX="8" refY="5"
 
 const RUNTIME_CSS = String.raw`
 :root {
-  /* Freyja palette tokens. These are the canonical dark surface; we
-     don't ship a light variant yet — Freyja itself is dark-only. */
+  /* Freyja palette tokens — the dark surface. The light set below
+     applies when the parent shell is light (html[data-theme="light"]). */
   --bg-0: #0a0a0a;
   --bg-1: #121212;
   --bg-2: #181818;
@@ -162,6 +167,36 @@ const RUNTIME_CSS = String.raw`
   --border-radius-lg: 12px;
   --border-radius-xl: 16px;
 }
+html[data-theme="light"] {
+  --bg-0: #ffffff;
+  --bg-1: #f7f8fa;
+  --bg-2: #f0f2f5;
+  --bg-3: #e8ebf0;
+  --bg-4: #dee2e8;
+  --fg-0: #1a1d22;
+  --fg-1: #4a505a;
+  --fg-2: #767d89;
+  --fg-3: #a0a6b0;
+  --fg-4: #c6cbd2;
+  --accent: #2b6ec2;
+  --accent-hi: #1c56a0;
+  --accent-lo: #6096d8;
+  --ok: #467a56;
+  --warn: #966a22;
+  --danger: #b24444;
+  --color-background-info: rgba(43, 110, 194, 0.08);
+  --color-background-danger: rgba(178, 68, 68, 0.08);
+  --color-background-success: rgba(70, 122, 86, 0.10);
+  --color-background-warning: rgba(150, 106, 34, 0.10);
+  --color-text-inverse: #ffffff;
+  --color-border-primary: rgba(20, 23, 28, 0.18);
+  --color-border-secondary: rgba(20, 23, 28, 0.12);
+  --color-border-tertiary: rgba(20, 23, 28, 0.07);
+  --color-border-info: rgba(43, 110, 194, 0.35);
+  --color-border-danger: rgba(178, 68, 68, 0.35);
+  --color-border-success: rgba(70, 122, 86, 0.35);
+  --color-border-warning: rgba(150, 106, 34, 0.35);
+}
 
 * { box-sizing: border-box; }
 html, body {
@@ -176,9 +211,12 @@ html, body {
   overflow: visible;
   /* color-scheme also declared here as a belt-and-suspenders defense
      in case the agent's fragment overrides the <html style="..."> we
-     set in the wrapper. Without dark scheme, transparent surfaces
-     render against a white user-agent default. */
+     set in the wrapper. Without the right scheme, transparent surfaces
+     render against the other scheme's user-agent default. */
   color-scheme: dark;
+}
+html[data-theme="light"], html[data-theme="light"] body {
+  color-scheme: light;
 }
 
 #freyja-widget-root {
@@ -561,8 +599,22 @@ a:hover { color: var(--accent-hi); }
 `
 
 // Color ramps — 9 hues × 7 stops. Each stop applies fill or stroke
-// to whichever SVG element carries the class.
+// to whichever SVG element carries the class. The dark ramps run from
+// a near-black tint (50) to a pastel (900); on the light shell the
+// same classes map to the ramp read the other way round, so a `-50`
+// wash stays a wash and a `-900` highlight stays the strongest ink.
 function buildColorRamps(): string {
+  const lightRamps: Record<string, string[]> = {
+    purple: ['#f1ecfa', '#e2d8f5', '#c5b2ec', '#9a7ad8', '#6f4abc', '#4e2f90', '#331c63'],
+    teal: ['#e6f5f4', '#c8ebe8', '#93d7d1', '#4cc1b8', '#27908f', '#1a6667', '#0f4445'],
+    coral: ['#fbeeea', '#f6d8cf', '#efb3a2', '#e07f66', '#c2503a', '#8f3526', '#5e2920'],
+    pink: ['#f9ecf2', '#f3d3e0', '#e8a8c4', '#d97aa3', '#b4507e', '#853859', '#5f2942'],
+    gray: ['#f3f4f6', '#e6e8eb', '#cfd3d8', '#aab0b8', '#7c838d', '#555b64', '#2f343b'],
+    blue: ['#eaf2fb', '#d2e3f6', '#a8c8ec', '#6a9fdc', '#2d6a9d', '#1f4f7a', '#163a5a'],
+    green: ['#e8f4ee', '#cde8d9', '#9dd2b6', '#5fb48c', '#3a8e6e', '#28654d', '#1a4634'],
+    amber: ['#faf3e4', '#f3e3bf', '#e9c886', '#d4a84a', '#a07a26', '#75581b', '#4f3c12'],
+    red: ['#fbecea', '#f6d1cd', '#eea39e', '#df6f67', '#c2423d', '#912d29', '#64201d'],
+  }
   const ramps: Record<string, string[]> = {
     purple: ['#1a1325', '#23173a', '#2e1d4f', '#4a2e7d', '#6f4abc', '#a07ee8', '#c2adf0'],
     teal: ['#0e1a1a', '#10262a', '#0f3a3e', '#185b62', '#27908f', '#4cc1b8', '#82d8d0'],
@@ -584,6 +636,15 @@ function buildColorRamps(): string {
       lines.push(`.c-${name}-${stop} { fill: ${hex}; stroke: ${hex}; color: ${hex}; }`)
     })
   }
+  const L = 'html[data-theme="light"]'
+  for (const [name, palette] of Object.entries(lightRamps)) {
+    const mid = palette[3]
+    lines.push(`${L} .c-${name} { fill: ${mid}; stroke: ${mid}; color: ${mid}; }`)
+    palette.forEach((hex, i) => {
+      const stop = stops[i]
+      lines.push(`${L} .c-${name}-${stop} { fill: ${hex}; stroke: ${hex}; color: ${hex}; }`)
+    })
+  }
   return lines.join('\n')
 }
 
@@ -599,6 +660,18 @@ const RUNTIME_JS = String.raw`
     try { parent.postMessage(Object.assign({ type: type }, payload || {}), '*'); }
     catch(e){}
   }
+
+  // The shell tells us when it flips between dark and light; swap the
+  // token set and the user-agent colour scheme in place.
+  window.addEventListener('message', function(ev){
+    var d = ev && ev.data;
+    if (!d || d.type !== 'ui/theme') return;
+    var t = d.theme === 'light' ? 'light' : 'dark';
+    var root = document.documentElement;
+    root.setAttribute('data-theme', t);
+    root.style.colorScheme = t;
+    if (document.body) document.body.style.colorScheme = t;
+  });
 
   // Globals exposed to agent code.
   window.sendPrompt = function(text){

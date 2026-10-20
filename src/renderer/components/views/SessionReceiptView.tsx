@@ -27,10 +27,12 @@ import { ledgerTotals, type LedgerTurn } from '@shared/turnLedger'
 // The ice ramp was validated (dataviz validate_palette.js, ordinal, dark
 // surface) for the receipt mocks; sand is the house warn token. Chart
 // marks use hex directly; chrome uses the tailwind fg/bg tokens.
-const ICE_0 = '#a8d4fc'
-const ICE_2 = '#5b8fcf'
-const ICE_4 = '#2a4d78'
-const SAND = '#b8a078'
+// Resolved through the theme tokens (styles/globals.css) so the light
+// shell deepens the ice to steel blue and the sand to ochre.
+const ICE_0 = 'var(--accent)'
+const ICE_2 = 'var(--accent-lo)'
+const ICE_4 = 'rgb(var(--accent-rgb) / 0.28)'
+const SAND = 'var(--warn)'
 
 const MIN = 60_000
 
@@ -717,12 +719,12 @@ function SessionBraid({ anatomy, tip }: { anatomy: Anatomy; tip: TipBind }) {
                 <rect
                   key={i}
                   x={sq.x - 3} y={sq.y - 3} width={6} height={6}
-                  fill={ICE_2} stroke="#0a0a0a" strokeWidth={1.4}
+                  fill={ICE_2} stroke="rgb(var(--bg-0))" strokeWidth={1.4}
                 />
               ))}
               {layout.diamonds.map((d, i) => (
                 <g key={i} transform={`translate(${d.x},${d.y}) rotate(45)`}>
-                  <rect x={-4} y={-4} width={8} height={8} fill={ICE_0} stroke="#0a0a0a" strokeWidth={1.4} />
+                  <rect x={-4} y={-4} width={8} height={8} fill={ICE_0} stroke="rgb(var(--bg-0))" strokeWidth={1.4} />
                 </g>
               ))}
 
@@ -769,8 +771,8 @@ function SessionBraid({ anatomy, tip }: { anatomy: Anatomy; tip: TipBind }) {
               right: l.right,
               top: l.y,
               textAlign: l.right != null ? 'right' : undefined,
-              background: 'rgba(5,5,6,.85)',
-              color: l.dim ? '#4a4a4a' : '#6e6e6e',
+              background: 'rgb(var(--bg-0) / 0.85)',
+              color: l.dim ? 'rgb(var(--fg-3))' : 'rgb(var(--fg-2))',
               opacity: hovered && l.threadId !== hovered ? 0.25 : 1,
             }}
           >
@@ -867,7 +869,7 @@ function useCursorTip() {
       style={{
         left: Math.min(tip.x + 14, window.innerWidth - 300),
         top: Math.min(tip.y + 16, window.innerHeight - 60),
-        background: '#101014',
+        background: 'rgb(var(--bg-1))',
       }}
     >
       {tip.node}
@@ -978,14 +980,14 @@ function RankedBars({
             className="relative h-2.5 border-b border-white/[0.03]"
             style={{
               background:
-                'repeating-linear-gradient(90deg, rgba(255,255,255,.026) 0 1px, transparent 1px 7px)',
+                'repeating-linear-gradient(90deg, rgb(var(--ink) / 0.026) 0 1px, transparent 1px 7px)',
             }}
           >
             <div
               className="absolute left-0 top-0 h-full min-w-[2px] rounded-r-sm"
               style={{
                 width: `${Math.max((r.v / max) * 100, 0.7)}%`,
-                background: '#3f6da8',
+                background: 'rgb(var(--accent-lo-rgb) / 0.75)',
                 boxShadow: `inset 0 0 0 1px ${ICE_2}`,
               }}
             />
@@ -993,7 +995,7 @@ function RankedBars({
           <div className="text-right font-mono tabular-nums text-fg-0">{r.vLabel}</div>
           <div
             className="whitespace-nowrap font-mono text-[9.5px]"
-            style={{ color: r.bad ? SAND : '#4a4a4a' }}
+            style={{ color: r.bad ? SAND : 'rgb(var(--fg-3))' }}
           >
             {r.note}
           </div>
