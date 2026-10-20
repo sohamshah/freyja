@@ -43,7 +43,7 @@ from bridge.tools.jev_operator.observe import (
     typed_values,
 )
 from bridge.tools.jev_operator.notes import app_notes, site_notes
-from bridge.tools.jev_operator import dom_surface
+from bridge.tools.jev_operator import dom_surface, vision
 from bridge.tools.jev_operator.dom_surface import (
     ABOVE_MARK,
     PAGE_CUT_MARK,
@@ -121,6 +121,16 @@ _IRREVERSIBLE = re.compile("|".join(IRREVERSIBLE_PATTERNS), re.I)
 # and rows, cells, tabs, and checkboxes select or toggle, so matching their labels
 # only produces false stops (TextEdit's "Format" menu, a file named "Remove me.txt").
 GATED_ROLES = {"AXButton", "AXMenuItem", "AXLink", "AXMenuButton", "AXToolbarButton"}
+# Share of the window that must differ after an action taken from a
+# screenshot for it to count as a change. Measured on the web envs: a toggle
+# flipping 0.12%, a field taking focus 0.34%, a name typed 0.08%, a checkbox
+# ticked 0.02%, a caret 0.003%, an unchanged page 0 (evals/jev_box/RESULTS.md).
+PIXEL_CHANGE_MIN = 0.00008
+# A replan may return this many actions in order; past the first, each click is
+# found by Jev on a fresh capture, so each step is a step the planner did not
+# see. Measured on blind runs, see evals/jev_box/RESULTS.md.
+MAX_DIRECT_ACTIONS = 4
+MAX_PLAN_WAIT_S = 5.0
 MAX_VERIFY_ROUNDS = 2
 PROBE_RETRIES = 2
 # Besides the final screen, the end-state check reads the other screens the run
@@ -522,6 +532,10 @@ class Operator:
         self._start_screen = ""  # the first screen with text, for the planner
         self._last_obs: Observation | None = None
         self._last_frame: tuple[bytes, str] | None = None
+        self._target: Target | None = None
+        # Window captures after the last actions taken from a screenshot, for
+        # telling a change from a toggle that undid itself.
+        self._pixel_frames: list[bytes] = []
         self._finish_logged = False
         self._notes = ""
         self._app_notes = ""
@@ -886,6 +900,7 @@ class Operator:
         )
 
         target = await self._resolve_target(cfg.app)
+        self._target = target
         if target is None:
             if self._screen_locked():
                 return finish(
@@ -1941,14 +1956,18 @@ class Operator:
             return self._finish_blocked(obs, note, check)
         self._set_subgoal(out.get("subgoal"), obs)
         await self._say(f"  sub-goal: {self._subgoal}")
-        da = out.get("direct_action")
+        plan = out.get("direct_actions")
+        if not isinstance(plan, list):
+            plan = [out.get("direct_action")]
+        plan = [d for d in plan if isinstance(d, dict)][:MAX_DIRECT_ACTIONS]
+        da = plan[0] if plan else None
         if isinstance(da, dict) and da.get("kind") == "wait" and not self.cfg.dry_run:
             return await self._planner_wait(da, obs, target)
         # Pointer and key actions need the screenshot they were read from; an
         # address to open does not.
         if isinstance(da, dict) and not self.cfg.dry_run and (shot is not None or da.get("kind") == "open_url"):
             try:
-                await self._direct(da, obs)
+                await self._direct_plan(plan, obs, target, shot)
             except Cancelled:
                 return self._finish(
                     "cancelled", "Cancelled by emergency stop.", screen=obs.screen_text
@@ -1967,6 +1986,39 @@ class Operator:
                     }
                 )
         return None
+
+    async def _direct_plan(
+        self, plan: list[dict[str, Any]], obs: Observation, target: Target, shot: Any
+    ) -> None:
+        """The planner's actions in order. The first may use pixels of the
+        screenshot it read; the rest are for screens that come after it, so a
+        click there names its control and Jev finds it on a fresh capture. The
+        plan stops at the first action that fails, is skipped, or changes
+        nothing: the screen it expected did not come."""
+        frame = shot[0].data if shot is not None else None
+        for i, da in enumerate(plan):
+            if i and da.get("kind") == "wait":
+                # A pause inside a plan is short; a long watch is its own replan.
+                try:
+                    secs = min(float(da.get("seconds") or 0), MAX_PLAN_WAIT_S)
+                except (TypeError, ValueError):
+                    secs = 0.0
+                end = time.perf_counter() + secs
+                while time.perf_counter() < end:
+                    if self.spec.cancel_event.is_set():
+                        raise Cancelled()
+                    await asyncio.sleep(0.25)
+                continue
+            taken = len(self.history)
+            await self._direct(da, obs, first=(i == 0))
+            if frame is None or len(self.history) == taken or not self.history[-1].get("ok"):
+                return
+            outcome = await self._pixel_outcome(target, frame)
+            if outcome is None:
+                return
+            changed, frame = outcome
+            if not changed:
+                return
 
     async def _check_done(self, obs: Observation, target: Target, *, by: str) -> RunResult | None:
         """The end-state check behind every "done", Jev's or the planner's.
@@ -2108,7 +2160,9 @@ class Operator:
         hosts.discard("")
         return {h[4:] if h.startswith("www.") else h for h in hosts}
 
-    async def _direct(self, da: dict[str, Any], obs: Observation) -> None:
+    async def _direct(self, da: dict[str, Any], obs: Observation, *, first: bool = True) -> None:
+        """One planner action. `first` means the screenshot the planner read is
+        still the screen, so its own pixel coordinates are good."""
         kind = da.get("kind")
         if kind == "open_url":
             url = str(da.get("url") or "").strip()
@@ -2139,40 +2193,56 @@ class Operator:
                 }
             )
             return
-        if (
-            kind == "click"
-            and isinstance(da.get("x"), (int, float))
-            and isinstance(da.get("y"), (int, float))
-            and self._shot_geometry is not None
-        ):
+        if kind == "click" and self._shot_geometry is not None:
             (wx, wy, ww, wh), fw, fh = self._shot_geometry
-            x = wx + float(da["x"]) * ww / fw
-            y = wy + float(da["y"]) * wh / fh
+            described = str(da.get("target") or "").strip()
+            has_pixels = isinstance(da.get("x"), (int, float)) and isinstance(da.get("y"), (int, float))
+            point: tuple[float, float] | None = None
+            label = ""
+            if has_pixels and first:
+                # The planner's own coordinates on the screenshot it read:
+                # frontier planners put them inside the control about 99% of
+                # the time, which Jev's box does not match (RESULTS.md).
+                point = (wx + float(da["x"]) * ww / fw, wy + float(da["y"]) * wh / fh)
+                label = f"planner click at ({int(point[0])}, {int(point[1])})" + (
+                    f" on {described!r}" if described else ""
+                )
+            elif described:
+                point = await self._locate(described, (wx, wy, ww, wh))
+                label = f"planner click on {described!r}"
+            if point is None:
+                return
+            x, y = point
             hit = obs.element_at(x, y)
-            if hit is not None and is_irreversible(hit) and not self.cfg.allow_irreversible:
+            # With no element under the point (the app exposes none), the
+            # planner's own words for the control are what can be judged.
+            risky = (hit is not None and is_irreversible(hit)) or (
+                hit is None and described and bool(_IRREVERSIBLE.search(described))
+            )
+            if risky and not self.cfg.allow_irreversible:
                 self.history.append(
                     {
                         "step": len(self.history) + 1,
                         "kind": "click",
-                        "action": f"planner click at ({int(x)}, {int(y)}) refused",
+                        "action": f"{label} refused",
                         "ok": False,
                         "changed": False,
-                        "diff": f"refused: {hit.label!r} looks irreversible",
+                        "diff": f"refused: {hit.label if hit else described!r} looks irreversible",
                     }
                 )
                 return
-            rec = await self.surface.execute("click_point", 
+            rec = await self.surface.execute(
+                "click_point",
                 int(x),
                 int(y),
-                description=f"planner click{' on ' + hit.label if hit else ''}",
+                description=label + (f" [{hit.label}]" if hit else ""),
                 window=(wx, wy, ww, wh),
             )
             self.history.append(
                 {
                     "step": len(self.history) + 1,
                     "kind": "click",
-                    "action": f"planner click at ({int(x)}, {int(y)})"
-                    + (f" [{hit.label}]" if hit else ""),
+                    "action": f"{label} at ({int(x)}, {int(y)})" + (f" [{hit.label}]" if hit else ""),
                     "ok": rec.ok,
                     "changed": None,
                     "diff": "executed from screenshot",
@@ -2231,10 +2301,107 @@ class Operator:
                 }
             )
 
+    async def _locate(
+        self, description: str, bounds: tuple[float, float, float, float]
+    ) -> tuple[float, float] | None:
+        """Screen point of the control the planner described, from a fresh
+        capture of the target window, or None when Jev does not see it."""
+        image = await vision.capture(self.actuator)
+        if image is None and self._last_frame is not None:
+            image = self._last_frame[0]
+        if image is None:
+            self._skip_click(description, "no capture of the window")
+            return None
+        try:
+            loc = await vision.locate(self.provider, image, description)
+        except DecisionError as exc:
+            self._skip_click(description, f"the decision service failed: {exc}")
+            return None
+        self._log(
+            {
+                "event": "locate",
+                "target": description,
+                "visible": round(loc.visible, 3),
+                "confidence": round(loc.confidence, 3),
+                "box": [round(v, 4) for v in (loc.box.left, loc.box.top, loc.box.right, loc.box.bottom)],
+                "stages": loc.stages,
+                "input_tokens": loc.input_tokens,
+                "latency_ms": loc.latency_ms,
+            }
+        )
+        if not loc.seen:
+            await self._say(f"  → Jev: does not see {description!r} (p={loc.visible:.2f})")
+            self._skip_click(description, f"Jev does not see it in the window (p={loc.visible:.2f})")
+            return None
+        if not loc.found:
+            await self._say(f"  → Jev: unsure where {description!r} is (box confidence {loc.confidence:.2f})")
+            self._skip_click(description, f"Jev is unsure where it is (box confidence {loc.confidence:.2f}); left to the planner")
+            return None
+        wx, wy, ww, wh = bounds
+        x, y = wx + loc.x * ww, wy + loc.y * wh
+        await self._say(
+            f"  → Jev: {description!r} at ({int(x)}, {int(y)}), p={loc.visible:.2f}, box confidence {loc.confidence:.2f}"
+        )
+        return x, y
+
+    def _skip_click(self, description: str, why: str) -> None:
+        self.history.append(
+            {
+                "step": len(self.history) + 1,
+                "kind": "click",
+                "action": f"planner click on {description!r} skipped",
+                "ok": False,
+                "changed": False,
+                "diff": why,
+            }
+        )
+
+    async def _pixel_outcome(self, target: Target, before: bytes) -> tuple[bool, bytes] | None:
+        """After an action taken from a screenshot, a changed window is the
+        only sign of progress an app with no accessibility tree gives. A
+        window that looks as it did two actions ago is a toggle undoing
+        itself, not progress. Returns whether the window changed and the new
+        capture, or None when there is no capture to compare."""
+        await self.actuator.settle()
+        shot = await self._window_shot(target)
+        if shot is None:
+            return None
+        after = shot[0].data
+        try:
+            change = vision.frame_change(before, after)
+            undone = (
+                change >= PIXEL_CHANGE_MIN
+                and len(self._pixel_frames) >= 2
+                and vision.frame_change(self._pixel_frames[-2], after) < PIXEL_CHANGE_MIN
+            )
+        except Exception:  # a capture that is not an image (a stub in tests)
+            return None
+        changed = change >= PIXEL_CHANGE_MIN
+        self._pixel_frames.append(after)
+        del self._pixel_frames[:-3]
+        share = f"{change:.0%}" if change >= 0.01 else f"{change:.2%}"
+        if self.history:
+            self.history[-1]["changed"] = changed
+            if changed:
+                self.history[-1]["diff"] += f"; {share} of the window changed" + (
+                    " (back to an earlier screen)" if undone else ""
+                )
+        self._log({"event": "pixel_outcome", "change": round(change, 5), "changed": changed, "undone": undone})
+        await self._say(f"  → {'changed' if changed else 'no change'}: {share} of the window")
+        if changed and not undone:
+            self._replans_since_progress = 0
+            self._progress_since_verify = True
+        return changed and not undone, after
+
     async def _verify(self, obs: Observation) -> dict[str, Any] | None:
         if self.llm is None or not self.cfg.verify_with_llm or self.llm.budget_left <= 0:
             return None
-        await self._say("  → LLM: verifying end state")
+        # An app that exposes no text leaves the check nothing to judge from
+        # but the window itself.
+        shot = None
+        if not obs.elements and not obs.full_text.strip() and not self.cfg.dry_run:
+            shot = await self._window_shot(self._target) if self._target else None
+        await self._say("  → LLM: verifying end state" + (" with screenshot" if shot else ""))
         since = len(self.llm.stats.log)
         out = await self.llm.verify(
             goal=self.cfg.goal,
@@ -2248,6 +2415,8 @@ class Operator:
             earlier_text=self._earlier_text(obs),
             planner_notes=self._planner_notes,
             run_seconds=round(time.perf_counter() - self._t_start),
+            screenshot=shot[0].data if shot else None,
+            media_type=shot[0].mime_type if shot else "image/jpeg",
         )
         self._log_llm(since)
         self._log({"event": "verify", "out": out})

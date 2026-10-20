@@ -269,3 +269,61 @@ def test_a_server_error_answer_is_retried_once(monkeypatch):
     with pytest.raises(prov.DecisionError, match="HTTP 400"):
         asyncio.run(p.decide({}, qs))
     assert len(calls) == 1
+
+
+def test_images_travel_as_assets_with_the_opt_in_header(monkeypatch):
+    """An image is listed once under `assets` and stands in the state by its
+    reference; Box questions carry no criteria; the answer is four edges. The
+    service refuses images without its opt-in header, so the header goes with
+    every request that has an asset and with no other."""
+    import asyncio
+    import base64
+
+    import httpx
+
+    from bridge.decisions import provider as prov
+    from bridge.decisions.types import BOX_MODEL, Box, BoxAnswer, ImageAsset, Noul
+
+    sent = []
+
+    async def post(self, url, **kw):
+        sent.append(kw)
+        req = httpx.Request("POST", url)
+        body = {
+            "model": BOX_MODEL,
+            "answers": {
+                "seen": {"type": "noul", "noul": 0.93},
+                "where": {"type": "box", "box": {"top": 0.25, "bottom": 0.35, "left": 0.4, "right": 0.6}, "confidence": 0.81},
+            },
+            "usage": {"input_tokens": 4321, "output_tokens": 30},
+        }
+        return httpx.Response(200, json=body, request=req)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    p = prov.TypeSafeProvider(api_key="k")
+    shot = ImageAsset(b"\x89PNG...", format="png")
+    out = asyncio.run(
+        p.decide(
+            {"screen": shot.ref},
+            {"seen": Noul("Is the Save button visible in `screen`?"), "where": Box("the Save button in `screen`")},
+            model=BOX_MODEL,
+            assets=[shot],
+        )
+    )
+    kw = sent[0]
+    assert kw["headers"][prov.IMAGES_HEADER] == "true"
+    assert kw["json"]["model"] == BOX_MODEL
+    assert kw["json"]["state"] == {"screen": shot.ref}
+    assert kw["json"]["assets"] == {shot.ref: {"type": "image", "format": "png", "data_base64": base64.b64encode(b"\x89PNG...").decode()}}
+    assert kw["json"]["questions"]["where"] == {"type": "box", "instructions": "the Save button in `screen`"}
+    box = out.box("where")
+    assert isinstance(box, BoxAnswer) and box.center == (0.5, 0.3) and box.confidence == 0.81
+    assert box.pixels(1000, 500) == (400, 125, 600, 175) and abs(box.area - 0.02) < 1e-9
+    assert out.compact()["where"] == {"box": [0.4, 0.25, 0.6, 0.35], "confidence": 0.81}
+    assert out.input_tokens == 4321
+
+    sent.clear()
+    asyncio.run(p.decide({"a": 1}, {"seen": Noul("is it?")}))
+    assert prov.IMAGES_HEADER not in sent[0]["headers"] and "assets" not in sent[0]["json"]
+    assert ImageAsset(b"x", format="jpeg").payload()["format"] == "jpg"
+    assert ImageAsset(b"x").ref != ImageAsset(b"x").ref, "a fresh reference per image, so it cannot occur in the text"

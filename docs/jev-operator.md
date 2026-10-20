@@ -85,11 +85,34 @@ Repeated steps. The doors write a step taken before as new ("click Refresh again
 Literals. Numbers in the goal keep thousands commas but not the sentence's punctuation ("5550100," went into a phone field), and dates and phone numbers are one literal ("06/23/1992", "303-555-0147"), never their parts.
 
 `direct_action` exists for screens the AX tree does not describe (custom-drawn views,
-Electron apps without AX): the LLM may return one click at pixel coordinates in the window
-capture, which code maps through the window's on-screen bounds, or one key press, and
-code executes it once before returning to Jev. This is the existing vision loop, limited
-to a single step. Only a window capture is sent: a display capture may not show the
-target at all when it sits on another monitor.
+Electron apps without AX): the LLM may return one click, one key press or text to type,
+and code executes it before returning to Jev. Only a window capture is sent: a display
+capture may not show the target at all when it sits on another monitor.
+
+A click carries the planner's own pixel coordinates in the capture, which code maps
+through the window's on-screen bounds, and `target`, the control in words ("the blue Save
+button"). On the screenshot it read, the planner's coordinates are used: Claude Opus 5.5
+and GPT-6.1 Sol put them inside the control 99 to 100% of the time on the web
+environments, better than any grounding model (`evals/jev_box/RESULTS.md`). The words are
+for the steps after it. `direct_actions` is a list of up to four actions in order; only
+the first click may carry coordinates, because the screen changes after it. Each later
+click is found by Jev on a fresh capture of the window, with a Box question (an image
+feature of Jev 1.14: the answer is the four edges of a box around what the instructions
+describe, as fractions of the image) and a Noul for whether the target is on screen at
+all (`bridge/tools/jev_operator/vision.py`). A small first box is asked again on a crop
+around it at the capture's own resolution. The click is left to the planner when Jev does
+not see the target (P(visible) < 0.5) or its box confidence is under 0.5: on ScreenSpot-v2
+the boxes above that line are inside the target 92% of the time and the ones below it are
+the look-alike rows where grounding fails. After every action taken from a screenshot,
+code compares a new capture with the last one: a window that changed (more than 0.008% of
+it, which a ticked checkbox clears and a caret does not) is progress and the plan goes
+on; one that did not stops the plan, and so does a target Jev cannot place. A changed
+window counts toward the stuck rules exactly as a changed element table does, so a run on
+an app with no accessibility tree can go on past two replans. When such a run ends, the
+end-state check gets a capture of the final window, since it has no text to judge from.
+Measured on the web environments driven blind (no elements, no text): 3 of 6 tasks before,
+every run ending `blocked` after about 3 planner calls; 5 of 6 after, ending `done`
+(`evals/jev_box/RESULTS.md`).
 
 The doors use `$FREYJA_JEV_OPERATOR_LLM`, default `claude-opus-5-5`. They ask for thinking off, but Opus 5.5 cannot turn thinking off, and the level falls back to the model's default (medium).
 Replayed door calls took 4-8 s on Opus 5.5 against about 2 s on Haiku 4.5; Opus planned
@@ -249,7 +272,7 @@ To try a change to the native reader before a rebuild, build a wheel with `matur
 
 ## What this does not do
 
-It does not read pixels except through the replan door, which gets a screenshot on a second replan, or when it would otherwise give up. On web pages it does not see into embedded frames (it reports them), closed shadow roots, or canvas content, and it cannot hover or drag. Its clicks are script events: a control that answers only a person's input (a real airline's Travelers panel closed only on a trusted click) cannot be operated; that needs a trusted-input fallback, or `computer_use`. It does not plan multi-app workflows on its own; the parent agent should pass one app-scoped goal at a time, or the LLM replan door will be entered often. It does not run while any other computer-use session is active, since both would drive the same keyboard and mouse.
+It does not read pixels except through the replan door, which gets a screenshot on a second replan or when the table is empty, and through Jev's Box questions that place the planner's described targets on later captures. On web pages it does not see into embedded frames (it reports them), closed shadow roots, or canvas content, and it cannot hover or drag. Its clicks are script events: a control that answers only a person's input (a real airline's Travelers panel closed only on a trusted click) cannot be operated; that needs a trusted-input fallback, or `computer_use`. It does not plan multi-app workflows on its own; the parent agent should pass one app-scoped goal at a time, or the LLM replan door will be entered often. It does not run while any other computer-use session is active, since both would drive the same keyboard and mouse.
 
 ## Files
 
@@ -257,6 +280,7 @@ It does not read pixels except through the replan door, which gets a screenshot 
 - `bridge/tools/jev_operator/decide.py` — question battery, Jev call, answer validation
 - `bridge/tools/jev_operator/act.py` — actuator over `freyja_native` with UI events
 - `bridge/tools/jev_operator/handoff.py` — the three LLM doors
+- `bridge/tools/jev_operator/vision.py` — a described control found in a window capture (Jev Box), and the frame-change measure
 - `bridge/tools/jev_operator/loop.py` — `Operator.run()`
 - `bridge/tools/jev_operator/surface.py` — the surface protocol and `AXSurface`
 - `bridge/tools/jev_operator/dom_surface.py`, `dom_snapshot.js` — the page surface for Arc and Chrome
@@ -267,6 +291,8 @@ It does not read pixels except through the replan door, which gets a screenshot 
 - `bridge/tools/jev_computer_use_tool.py` — tool wrapper registered next to `computer_use`
 - `src/renderer/lib/jevLog.ts`, `src/renderer/components/JevRun.tsx`, `test-jev-log.mjs` — how a run shows in the app
 - `tests/test_jev_operator.py` — table serialization, diff, gating, literal extraction, loop with fake providers
+- `tests/test_jev_vision.py` — grounding, the second look on a crop, plans of described actions, the confidence gate
+- `evals/jev_box/` — grounding and blind-operation experiments behind the numbers above
 - `tests/test_jev_planner_values.py` — values the planner works out reach the field it names
 - `tests/test_jev_toggle_panel.py` — a second click on the control whose list the last click opened is refused
 - `tests/test_jev_late_tab.py` — a tab a click opens after the click returned is followed

@@ -15,7 +15,7 @@ from typing import Any, Protocol
 
 import httpx
 
-from bridge.decisions.types import Answers, Question, parse_answers, question_payload
+from bridge.decisions.types import Answers, ImageAsset, Question, parse_answers, question_payload
 
 DEFAULT_BASE_URL = "https://api.typesafe.ai"
 DEFAULT_MODEL = "jev-latest"
@@ -30,6 +30,9 @@ TRANSPORT_RETRY_S = 1.0
 # 499, which it returns as "internal_server_error". Two eval runs in an hour ended
 # "error" on one such answer. Other answers, such as 400 or 401, are not retried.
 RETRY_STATUSES = {408, 429, 499, 500, 502, 503, 504}
+# Images and Box questions are an opt-in the service calls its "danger zone":
+# every request that carries an image must say so in this header.
+IMAGES_HEADER = "TypeSafe-Danger-Zone-Images"
 
 
 class DecisionError(RuntimeError):
@@ -40,11 +43,21 @@ class DecisionProvider(Protocol):
     name: str
 
     async def decide(
-        self, state: Any, questions: dict[str, Question], *, model: str | None = None
+        self,
+        state: Any,
+        questions: dict[str, Question],
+        *,
+        model: str | None = None,
+        assets: list[ImageAsset] | None = None,
     ) -> Answers: ...
 
     def decide_sync(
-        self, state: Any, questions: dict[str, Question], *, model: str | None = None
+        self,
+        state: Any,
+        questions: dict[str, Question],
+        *,
+        model: str | None = None,
+        assets: list[ImageAsset] | None = None,
     ) -> Answers: ...
 
 
@@ -69,7 +82,11 @@ class TypeSafeProvider:
         return bool(self.api_key) or self.base_url != DEFAULT_BASE_URL
 
     def _request(
-        self, state: Any, questions: dict[str, Question], model: str | None
+        self,
+        state: Any,
+        questions: dict[str, Question],
+        model: str | None,
+        assets: list[ImageAsset] | None = None,
     ) -> tuple[str, dict[str, str], dict[str, Any]]:
         if not questions:
             raise DecisionError("no questions")
@@ -81,12 +98,20 @@ class TypeSafeProvider:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        if assets:
+            body["assets"] = {a.ref: a.payload() for a in assets}
+            headers[IMAGES_HEADER] = "true"
         return f"{self.base_url}/v1/systemone", headers, body
 
     async def decide(
-        self, state: Any, questions: dict[str, Question], *, model: str | None = None
+        self,
+        state: Any,
+        questions: dict[str, Question],
+        *,
+        model: str | None = None,
+        assets: list[ImageAsset] | None = None,
     ) -> Answers:
-        url, headers, body = self._request(state, questions, model)
+        url, headers, body = self._request(state, questions, model, assets)
         for retry in (True, False):
             t0 = time.perf_counter()
             try:
@@ -105,9 +130,14 @@ class TypeSafeProvider:
         return self._finish(resp, t0)
 
     def decide_sync(
-        self, state: Any, questions: dict[str, Question], *, model: str | None = None
+        self,
+        state: Any,
+        questions: dict[str, Question],
+        *,
+        model: str | None = None,
+        assets: list[ImageAsset] | None = None,
     ) -> Answers:
-        url, headers, body = self._request(state, questions, model)
+        url, headers, body = self._request(state, questions, model, assets)
         for retry in (True, False):
             t0 = time.perf_counter()
             try:

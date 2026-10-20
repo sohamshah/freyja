@@ -259,8 +259,10 @@ class LLMHelper:
                 "or press keys on controls listed in an accessibility table; it asked for help. Decide what to do next. "
                 "Controls marked scrolled out of view are valid targets: acting on one scrolls toward it first.\n"
                 'Return JSON: {"status": "continue"|"done"|"give_up", "subgoal": string|null, '
-                '"direct_action": null | {"kind": "click", "x": int, "y": int} | {"kind": "key", "combo": "cmd+n"} | {"kind": "type", "text": string} '
+                '"direct_action": null | {"kind": "click", "x": int, "y": int, "target": string} | {"kind": "click", "target": string} '
+                '| {"kind": "key", "combo": "cmd+n"} | {"kind": "type", "text": string} '
                 '| {"kind": "wait", "seconds": int}, '
+                '"direct_actions": null | [direct_action, ...], '
                 '"note": string}.\n'
                 "subgoal is one concrete instruction the operator can execute against listed controls in the next one to three actions, "
                 'phrased as actions on visible controls ("click the File menu, then click New"). '
@@ -271,8 +273,14 @@ class LLMHelper:
                 + ", ".join(KEY_OPTIONS)
                 + ". "
                 "Use direct_action click, key or type only when the table does not expose the needed control and a screenshot is provided; "
-                "the screenshot shows only the app's window, and coordinates are pixels in that image "
-                "(its size is screenshot_size). Prefer subgoal over direct_action. "
+                "the screenshot shows only the app's window. For a click, give x and y, pixels in the screenshot (its size is "
+                "screenshot_size), and target, the control as it looks there (\"the blue Save button\", \"the gear icon at the top "
+                "right\"). When the table is empty and the screenshot makes the next few steps plain, return direct_actions "
+                "instead: up to four actions in order. Only the first click may carry x and y, which are right for this "
+                "screenshot alone; every later click names its target and the operator finds it on a fresh screenshot before "
+                "clicking, so name what singles the control out (\"the Export… item in the open File menu\"), not where it is. "
+                "The operator stops the list at the first target it cannot see or action that changes nothing, and asks again. "
+                "Prefer subgoal over direct_action. "
                 + WAIT_HELP
             )
         system = (
@@ -348,6 +356,8 @@ class LLMHelper:
         earlier_text: str = "",
         planner_notes: list[str] | None = None,
         run_seconds: int | None = None,
+        screenshot: bytes | None = None,
+        media_type: str = "image/jpeg",
     ) -> dict[str, Any] | None:
         system = (
             "You judge whether a desktop automation achieved its goal, from the final screen and the action log. "
@@ -355,7 +365,8 @@ class LLMHelper:
             '"subgoal": string|null, "wait_seconds": int|null, "unresolved": [string]}. '
             "summary is two or three sentences for the user: what was done and what the screen shows now. "
             "Say what the screen shows now (which panel is open, what is selected) only from "
-            "final_screen_text and final_elements; earlier screens and notes describe the past. "
+            "final_screen_text and final_elements, or from the screenshot of the final screen when one is "
+            "attached because the app exposes no text; earlier screens and notes describe the past. "
             "report holds every value the goal asked to read, list, count or check, complete, one per line "
             "(\"Acme Staging (acme-staging-4021)\", \"Pro plan: Upgrade button shown\"); it is an empty "
             "string when the goal asks for no values. On a web page final_screen_text is the whole page "
@@ -421,12 +432,14 @@ class LLMHelper:
             payload["run_seconds"] = run_seconds
         if app_notes:
             payload[NOTES_LABEL] = app_notes
-        out = await self._call(
-            "verify",
-            system,
-            Message(role="user", content=json.dumps(payload, ensure_ascii=False)),
-            max_tokens=VERIFY_MAX_TOKENS,
-        )
+        if screenshot:
+            user = Message.user_with_images(
+                json.dumps(payload, ensure_ascii=False),
+                [ImageBlock(source_type="base64", data=base64.b64encode(screenshot).decode("ascii"), media_type=media_type)],
+            )
+        else:
+            user = Message(role="user", content=json.dumps(payload, ensure_ascii=False))
+        out = await self._call("verify", system, user, max_tokens=VERIFY_MAX_TOKENS)
         if not out or not isinstance(out.get("satisfied"), bool):
             return None
         return out

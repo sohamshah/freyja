@@ -8,6 +8,8 @@ options the caller defined.
 
 from __future__ import annotations
 
+import base64
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Union
 
@@ -42,7 +44,36 @@ class Score:
     levels: tuple[str, ...]
 
 
-Question = Union[Noul, Choice, Score]
+@dataclass(frozen=True)
+class Box:
+    """Where something is in an image. The answer is one bounding box as
+    fractions of the image's width and height, and it is always a box: ask a
+    Noul alongside when the target may be absent. Needs an image asset in the
+    request and Jev 1.14 or later."""
+
+    instructions: str
+
+
+Question = Union[Noul, Choice, Score, Box]
+
+# Newest model that answers Box questions; `jev-latest` lags it until the
+# alias moves.
+BOX_MODEL = "jev-1.14.0"
+
+
+@dataclass(frozen=True)
+class ImageAsset:
+    """One PNG or JPEG for the request's `assets` map. Its `ref` is the string
+    that stands for the image wherever it appears in the state, instructions
+    or criteria; a UUID so it cannot occur in the text by accident."""
+
+    data: bytes
+    format: str = "png"
+    ref: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    def payload(self) -> dict[str, Any]:
+        fmt = "jpg" if self.format in ("jpg", "jpeg") else "png"
+        return {"type": "image", "format": fmt, "data_base64": base64.b64encode(self.data).decode("ascii")}
 
 
 def question_payload(q: Question) -> dict[str, Any]:
@@ -59,6 +90,8 @@ def question_payload(q: Question) -> dict[str, Any]:
         if not 2 <= len(q.levels) <= 10:
             raise ValueError(f"Score needs 2..10 levels, got {len(q.levels)}")
         return {"type": "score", "instructions": q.instructions, "criteria": list(q.levels)}
+    if isinstance(q, Box):
+        return {"type": "box", "instructions": q.instructions}
     raise TypeError(f"unsupported question type: {type(q).__name__}")
 
 
@@ -89,7 +122,34 @@ class ScoreAnswer:
     confidence: float
 
 
-Answer = Union[NoulAnswer, ChoiceAnswer, ScoreAnswer]
+@dataclass(frozen=True)
+class BoxAnswer:
+    """Edges as fractions of the image, measured from its top-left corner."""
+
+    left: float
+    top: float
+    right: float
+    bottom: float
+    confidence: float
+
+    @property
+    def center(self) -> tuple[float, float]:
+        return ((self.left + self.right) / 2, (self.top + self.bottom) / 2)
+
+    @property
+    def area(self) -> float:
+        return max(0.0, self.right - self.left) * max(0.0, self.bottom - self.top)
+
+    def pixels(self, width: int, height: int) -> tuple[int, int, int, int]:
+        return (
+            round(self.left * width),
+            round(self.top * height),
+            round(self.right * width),
+            round(self.bottom * height),
+        )
+
+
+Answer = Union[NoulAnswer, ChoiceAnswer, ScoreAnswer, BoxAnswer]
 
 
 @dataclass
@@ -123,6 +183,12 @@ class Answers:
             raise TypeError(f"{key} is not a Score answer")
         return a
 
+    def box(self, key: str) -> BoxAnswer:
+        a = self.answers[key]
+        if not isinstance(a, BoxAnswer):
+            raise TypeError(f"{key} is not a Box answer")
+        return a
+
     def compact(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
         for k, a in self.answers.items():
@@ -130,6 +196,11 @@ class Answers:
                 out[k] = round(a.p, 4)
             elif isinstance(a, ChoiceAnswer):
                 out[k] = {"choice": a.choice, "confidence": round(a.confidence, 4)}
+            elif isinstance(a, BoxAnswer):
+                out[k] = {
+                    "box": [round(a.left, 3), round(a.top, 3), round(a.right, 3), round(a.bottom, 3)],
+                    "confidence": round(a.confidence, 4),
+                }
             else:
                 out[k] = {"score": round(a.score, 4), "confidence": round(a.confidence, 4)}
         return out
@@ -162,6 +233,15 @@ def parse_answers(
                 probabilities=probs,
                 legend=[str(x) for x in body.get("legend") or []],
                 confidence=float(body.get("confidence", _peakedness(probs))),
+            )
+        elif kind == "box":
+            edges = body.get("box") or {}
+            parsed[key] = BoxAnswer(
+                left=float(edges["left"]),
+                top=float(edges["top"]),
+                right=float(edges["right"]),
+                bottom=float(edges["bottom"]),
+                confidence=float(body.get("confidence", 0.0)),
             )
         else:
             raise ValueError(f"unknown answer type {kind!r} for {key!r}")

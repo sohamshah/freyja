@@ -15,12 +15,21 @@ docs in the Jev field report for the rules each spec must follow.
 
 from bridge.decisions.client import Decision, DecisionClient, DecisionUnavailable
 from bridge.decisions.log import DecisionLog
-from bridge.decisions.provider import DecisionError, DecisionProvider, TypeSafeProvider, providers_from_env
+from bridge.decisions.provider import (
+    DecisionError,
+    DecisionProvider,
+    TypeSafeProvider,
+    providers_from_env,
+)
 from bridge.decisions.spec import DecisionSpec, Gate, Verdict, evaluate_gate, load_spec, load_specs
 from bridge.decisions.types import (
+    BOX_MODEL,
     Answers,
+    Box,
+    BoxAnswer,
     Choice,
     ChoiceAnswer,
+    ImageAsset,
     Noul,
     NoulAnswer,
     Question,
@@ -29,7 +38,10 @@ from bridge.decisions.types import (
 )
 
 __all__ = [
+    "BOX_MODEL",
     "Answers",
+    "Box",
+    "BoxAnswer",
     "Choice",
     "ChoiceAnswer",
     "Decision",
@@ -40,6 +52,7 @@ __all__ = [
     "DecisionSpec",
     "DecisionUnavailable",
     "Gate",
+    "ImageAsset",
     "Noul",
     "NoulAnswer",
     "Question",
