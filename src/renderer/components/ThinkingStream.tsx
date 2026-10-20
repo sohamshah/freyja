@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { renderMarkdown } from '../lib/markdown'
 import { highlightHtml } from '../lib/searchHighlight'
 import { useCharacterReveal } from '../lib/characterReveal'
@@ -15,17 +15,19 @@ const LIVE_TAIL_CHARS = 1400
 const STEP_TITLE = /^[ \t]*\*\*([^*\n]{2,120})\*\*[ \t]*$/gm
 
 /**
- * A thinking part, drawn as an aside rather than a card: italic serif set
- * off by a hairline rule, so the thought reads as a different voice from
- * the answer.
+ * A thinking part, drawn as an aside rather than a card: grey text set off
+ * by a hairline rule, with the model's step titles as small labels.
  *
  * While the model writes it (`live`), it is open. A six-line window shows
  * the newest lines as they arrive, the oldest fading out at the top, and
  * the header names the step the model is on. When the next part starts (a
  * tool call, the answer, more thinking), it folds to one line. A click
  * opens or folds it; that choice holds until the block goes live again.
+ *
+ * Memoized on its props: every part of the streaming message re-renders on
+ * each delta, and a finished thought has nothing new to draw.
  */
-export function ThinkingStream({
+export const ThinkingStream = memo(function ThinkingStream({
   text,
   live,
   startedAt,
@@ -60,9 +62,7 @@ export function ThinkingStream({
   }
   const open = choice ?? (live || searchHit)
 
-  // Thinking often streams faster than the answer's typewriter pace; keep
-  // the reveal close behind so the block never folds on half a thought.
-  const shown = useCharacterReveal(text, live && open, 0.6)
+  const shown = useCharacterReveal(text, live && open)
   const steps = useMemo(() => stepTitles(live ? shown : text), [live, shown, text])
   const elapsed = useElapsed(live, startedAt, endedAt)
 
@@ -104,17 +104,21 @@ export function ThinkingStream({
         </svg>
       </button>
       <Fold open={open} stagger={false}>
-        {live ? (
-          <LiveWindow text={shown} />
-        ) : (
-          <div
-            className="thought-body md selectable"
-            // eslint-disable-next-line react/no-danger
-            dangerouslySetInnerHTML={{ __html: searchHtml ?? renderMarkdown(withStepTitles(text)) }}
-          />
-        )}
+        {live ? <LiveWindow text={shown} /> : <FullThought text={text} searchHtml={searchHtml} />}
       </Fold>
     </div>
+  )
+})
+
+/** The whole thought, rendered only while the fold is open. */
+function FullThought({ text, searchHtml }: { text: string; searchHtml: string | null }) {
+  const html = useMemo(() => searchHtml ?? renderMarkdown(withStepTitles(text)), [text, searchHtml])
+  return (
+    <div
+      className="thought-body md selectable"
+      // eslint-disable-next-line react/no-danger
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
   )
 }
 
@@ -127,13 +131,16 @@ function LiveWindow({ text }: { text: string }) {
   const windowRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const [overflowing, setOverflowing] = useState(false)
-  useLayoutEffect(() => {
+  // Measured when the text's box changes size, after layout, so a new line
+  // never costs a forced layout of its own.
+  useEffect(() => {
     const win = windowRef.current
     const body = bodyRef.current
-    if (!win || !body) return
-    const next = body.offsetHeight > win.clientHeight + 1
-    if (next !== overflowing) setOverflowing(next)
-  }, [html, overflowing])
+    if (!win || !body || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => setOverflowing(body.offsetHeight > win.clientHeight + 1))
+    ro.observe(body)
+    return () => ro.disconnect()
+  }, [])
   return (
     <div ref={windowRef} className="thought-window" data-overflowing={overflowing ? 'true' : 'false'}>
       <div

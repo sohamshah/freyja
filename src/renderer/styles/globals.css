@@ -1534,19 +1534,19 @@ body.splash-active [data-splash-target='hero-icon'] {
 }
 
 /* ── Thinking ─────────────────────────────────────────────────────────
-   An aside, not a card (ThinkingStream.tsx). The thought reads in the
-   editorial serif, italic and light, set off by a hairline rule, so it
-   is a different voice from the answer's mono. Live: a six-line window
+   An aside, not a card (ThinkingStream.tsx). The thought is the same
+   mono as the answer, a size down and in grey, set off by a hairline
+   rule instead of a box. Live: a six-line window
    of the newest text, the oldest lines fading out at the top, under a
    shimmering "thinking" and the step the model is on. Done: one quiet
    line that opens on click. */
 .thought {
-  --thought-size: 13.5px;
+  --thought-size: 12px;
   --thought-lines: 6;
   min-width: 0;
 }
 .thought--compact {
-  --thought-size: 12.5px;
+  --thought-size: 11.5px;
   --thought-lines: 5;
 }
 
@@ -1590,9 +1590,10 @@ body.splash-active [data-splash-target='hero-icon'] {
   box-shadow: 0 0 8px rgba(168, 212, 252, 0.5);
   animation: thought-lamp 1.6s ease-in-out infinite;
 }
+/* Opacity only, so the pulse runs on the compositor with no repaint. */
 @keyframes thought-lamp {
-  0%, 100% { opacity: 0.55; box-shadow: 0 0 4px rgba(168, 212, 252, 0.25); }
-  50% { opacity: 1; box-shadow: 0 0 10px rgba(168, 212, 252, 0.6); }
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
 }
 
 .thought-verb {
@@ -1627,10 +1628,6 @@ body.splash-active [data-splash-target='hero-icon'] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-weight: 300;
-  font-size: 12.5px;
   letter-spacing: 0;
   color: #6e6e6e;
 }
@@ -1662,13 +1659,9 @@ body.splash-active [data-splash-target='hero-icon'] {
   padding: 1px 0 1px 15px;
   border-left: 1px solid transparent;
   border-image: linear-gradient(to bottom, rgba(168, 212, 252, 0.32), rgba(255, 255, 255, 0.05)) 1;
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-weight: 300;
   font-size: var(--thought-size);
-  line-height: 1.62;
-  color: #a8a8a8;
-  font-feature-settings: normal;
+  line-height: 1.7;
+  color: #8c8c8c;
 }
 .thought-body.md p {
   margin: 0 0 0.75em 0;
@@ -1677,23 +1670,23 @@ body.splash-active [data-splash-target='hero-icon'] {
   margin-bottom: 0;
 }
 .thought-body.md strong {
-  color: #e8e8e8;
+  color: #c8c8c8;
   font-weight: 500;
 }
 .thought-body.md em {
   background: none;
   padding: 0;
-  color: #c9c9c9;
+  color: #a8a8a8;
 }
-.thought-body.md code,
-.thought-body.md pre {
-  font-style: normal;
+/* Code stays legible but drops the accent: the thought is background. */
+.thought-body.md code {
+  color: #a8a8a8;
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 /* Step titles ("**Checking the reducer**" on a line of its own). */
 .thought-body.md h4 {
   margin: 1.1em 0 0.35em 0;
-  font-family: var(--font-mono);
-  font-style: normal;
   font-weight: 500;
   font-size: 9.5px;
   line-height: 1.4;
@@ -1711,7 +1704,7 @@ body.splash-active [data-splash-target='hero-icon'] {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  max-height: calc(var(--thought-size) * 1.62 * var(--thought-lines) + 10px);
+  max-height: calc(var(--thought-size) * 1.7 * var(--thought-lines) + 10px);
   overflow: hidden;
 }
 .thought-window > .thought-body {

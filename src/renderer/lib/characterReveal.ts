@@ -1,24 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+/** The slowest the reveal ever runs, for a stream that trickles. */
 const REVEAL_CHARS_PER_SECOND = 72
-const MAX_REVEAL_CHARS_PER_FRAME = 6
+/** The reveal never trails the stream by much more than this. */
+const KEEP_UP_SECONDS = 0.6
+/** A frame longer than this (a stall, a hidden window) counts as this long,
+ *  so the next frame does not dump a burst of text. */
+const MAX_FRAME_MS = 50
 
 /**
  * Typewriter reveal for streamed text. While `active`, the returned string
- * grows toward `text` at a steady rate, so bursty deltas read as an even
+ * grows toward `text` frame by frame, so bursty deltas read as an even
  * stream. When `active` is false it returns `text` as is.
  *
- * The steady rate is 72 characters a second. A stream that runs faster
- * falls further and further behind it; pass `keepUpSeconds` to speed the
- * reveal up so it never trails the stream by more than about that long.
+ * The pace follows the stream: the further the shown text trails, the
+ * faster it moves (about `KEEP_UP_SECONDS` to close any gap), with a floor
+ * of 72 characters a second. Text already there when the hook mounts is
+ * shown at once; only what arrives after is revealed.
  */
-export function useCharacterReveal(text: string, active: boolean, keepUpSeconds?: number): string {
-  const [visibleText, setVisibleText] = useState(() => (active ? '' : text))
-  const keepUpRef = useRef(keepUpSeconds)
-  keepUpRef.current = keepUpSeconds
+export function useCharacterReveal(text: string, active: boolean): string {
+  const [visibleText, setVisibleText] = useState(text)
   const activeRef = useRef(active)
   const targetRef = useRef(text)
-  const visibleRef = useRef(active ? '' : text)
+  const visibleRef = useRef(text)
   const rafRef = useRef<number | null>(null)
   const lastFrameRef = useRef(0)
   const carryRef = useRef(0)
@@ -42,28 +46,18 @@ export function useCharacterReveal(text: string, active: boolean, keepUpSeconds?
 
       const target = targetRef.current
       const current = visibleRef.current
-      if (current === target) return
-
-      if (!target.startsWith(current)) {
-        setVisible(target)
+      if (current === target || !target.startsWith(current)) {
+        if (current !== target) setVisible(target)
+        lastFrameRef.current = 0
         return
       }
 
-      const elapsed = lastFrameRef.current > 0 ? now - lastFrameRef.current : 16.7
+      const elapsed = lastFrameRef.current > 0 ? Math.min(MAX_FRAME_MS, now - lastFrameRef.current) : 16.7
       lastFrameRef.current = now
       const remaining = target.length - current.length
-      const keepUp = keepUpRef.current
-      const rate = keepUp ? Math.max(REVEAL_CHARS_PER_SECOND, remaining / keepUp) : REVEAL_CHARS_PER_SECOND
+      const rate = Math.max(REVEAL_CHARS_PER_SECOND, remaining / KEEP_UP_SECONDS)
       carryRef.current += (elapsed / 1000) * rate
-
-      const catchUp = keepUp
-        ? remaining
-        : remaining > 240 ? MAX_REVEAL_CHARS_PER_FRAME : remaining > 96 ? 3 : 1
-      const perFrame = keepUp ? remaining : MAX_REVEAL_CHARS_PER_FRAME
-      const count = Math.min(
-        remaining,
-        Math.max(1, Math.min(perFrame, Math.floor(carryRef.current), catchUp)),
-      )
+      const count = Math.min(remaining, Math.max(1, Math.floor(carryRef.current)))
       carryRef.current = Math.max(0, carryRef.current - count)
 
       let nextIndex = current.length
@@ -74,6 +68,9 @@ export function useCharacterReveal(text: string, active: boolean, keepUpSeconds?
 
       if (nextIndex < target.length) {
         rafRef.current = requestAnimationFrame(step)
+      } else {
+        // Caught up: the wait for the next delta is not reveal time.
+        lastFrameRef.current = 0
       }
     },
     [setVisible],

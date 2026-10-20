@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useHarness, type SessionSlice } from '../state/store'
 import { renderMarkdown } from '../lib/markdown'
@@ -173,13 +173,45 @@ function PaneTranscript({
   writable: boolean
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
   const messages = safeArray<Message>(slice?.messages)
+  const hasTranscript = !!slice && messages.length > 0
 
+  // Follow the tail while the reader is at the bottom, and leave them be
+  // once they scroll up: the pane grows on every delta, text and thinking
+  // alike, and a reader looking at history must not be pulled down.
+  const stickRef = useRef(true)
   useEffect(() => {
     const el = scrollerRef.current
-    if (!el) return
+    const content = contentRef.current
+    if (!el || !content) return
+    stickRef.current = true
     el.scrollTop = el.scrollHeight
-  }, [messages.length, slice?.thinking, slice?.isStreaming])
+    const onScroll = () => {
+      stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    const ro =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => {
+            if (stickRef.current) el.scrollTop = el.scrollHeight
+          })
+    ro?.observe(content)
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      ro?.disconnect()
+    }
+  }, [hasTranscript])
+
+  // The operator's own message brings the pane back to the bottom.
+  const lastRole = messages[messages.length - 1]?.role
+  useEffect(() => {
+    const el = scrollerRef.current
+    if (!el || lastRole !== 'user') return
+    stickRef.current = true
+    el.scrollTop = el.scrollHeight
+  }, [messages.length, lastRole])
 
   if (!slice) {
     return (
@@ -202,7 +234,7 @@ function PaneTranscript({
 
   return (
     <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-      <div className="space-y-5 px-5 py-5">
+      <div ref={contentRef} className="space-y-5 px-5 py-5">
         {messages.map((message) => (
           <PaneMessage key={message.id} message={message} slice={slice} jevRun={!!snapshot?.id.startsWith('jev_')} />
         ))}
@@ -306,14 +338,7 @@ function PanePart({
     if (jevRun && looksLikeJevLog(part.text)) {
       return <JevRunView text={part.text} live={!!slice.isStreaming} />
     }
-    const html = renderMarkdown(part.text)
-    return (
-      <div
-        className="md selectable text-[12.5px]"
-        // eslint-disable-next-line react/no-danger
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-    )
+    return <PaneMarkdown text={part.text} />
   }
 
   if (part.type === 'thinking' && part.text) {
@@ -577,4 +602,17 @@ function sliceForSessionView(
 
 function safeArray<T>(value: T[] | undefined | null): T[] {
   return Array.isArray(value) ? value : []
+}
+
+/** A pane re-renders its whole transcript on every delta of its session;
+ *  only the streaming part's text changes, so the rest reuse their markup. */
+function PaneMarkdown({ text }: { text: string }) {
+  const html = useMemo(() => renderMarkdown(text), [text])
+  return (
+    <div
+      className="md selectable text-[12.5px]"
+      // eslint-disable-next-line react/no-danger
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  )
 }

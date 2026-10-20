@@ -1740,6 +1740,13 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     if (!parsed || typeof parsed !== 'object') return undefined
     return parsed
   }, [part.type, isActiveTail, searchQuery, sourceText, isJevLog])
+  // Every part of the streaming message re-renders on each delta; only the
+  // tail's text changes, so the others reuse their decorated markup.
+  const textHtml = useMemo(() => {
+    if (part.type !== 'text' || isJevLog) return ''
+    const decorated = decorateCardMentions(renderedTextHtml, kanbanLookup)
+    return searchQuery ? highlightHtml(decorated, searchQuery) : decorated
+  }, [part.type, isJevLog, renderedTextHtml, kanbanLookup, searchQuery])
 
   if (part.type === 'text') {
     if (isJevLog) {
@@ -1755,13 +1762,11 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     if (parsedJson !== undefined) {
       return <StructuredJsonView data={parsedJson} />
     }
-    const decorated = decorateCardMentions(renderedTextHtml, kanbanLookup)
-    const html = searchQuery ? highlightHtml(decorated, searchQuery) : decorated
     return (
       <div
         className="md selectable"
         // eslint-disable-next-line react/no-danger
-        dangerouslySetInnerHTML={{ __html: html }}
+        dangerouslySetInnerHTML={{ __html: textHtml }}
       />
     )
   }
