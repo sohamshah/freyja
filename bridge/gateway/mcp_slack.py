@@ -214,6 +214,15 @@ class SlackElicitationBridge(ElicitationBridge):
                 )
                 sent += 1
                 self.posted.append({"requestId": event.get("requestId"), "chat_id": source.chat_id})
+                # The session waits on the operator's /mcp answer; the
+                # next inbound message sets it back to processing.
+                setter = getattr(adapter, "set_session_status", None)
+                if setter is not None:
+                    await setter(
+                        source.chat_id,
+                        thread_id=getattr(source, "thread_id", None) or getattr(source, "message_id", None),
+                        status="suspended",
+                    )
             except Exception:  # noqa: BLE001
                 logger.exception("mcp elicitation: Slack post failed")
         if sent == 0:

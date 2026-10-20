@@ -40,7 +40,7 @@ from bridge.gateway.pid import (
     release_lock,
 )
 from bridge.gateway.control_channel import ControlChannelReader
-from bridge.gateway.platforms.base import IncomingMessage, Platform
+from bridge.gateway.platforms.base import IncomingMessage, MessageSource, Platform
 from bridge.gateway.platforms.slack import SlackAdapter
 from bridge.gateway.session_router import (
     gateway_source_block,
@@ -615,6 +615,8 @@ class GatewayDaemon:
             except Exception:  # noqa: BLE001
                 logger.debug("talk wake hook install failed", exc_info=True)
 
+        await self._title_and_welcome(adapter, message, session)
+
         # If the session's transcript is large, surface a quick
         # "catching up" notice in Slack so the operator doesn't stare
         # at an empty typing indicator while the bridge sanitizes the
@@ -862,6 +864,58 @@ class GatewayDaemon:
             # have fired. Best-effort unregister so a half-registered
             # consumer doesn't leak.
             unregister_session_listener(key, consumer.on_event)
+
+    _WELCOME = (
+        "Hi, I'm Freyja. I run on your Mac with the same tools as the desktop "
+        "app: files, shell, browser, screen, memory and scheduled jobs. "
+        "Reply here or @mention me in a channel, press Stop on a reply to "
+        "interrupt it, and use the thumbs under a reply to tell me how I did. "
+        "`/freyja help` lists the commands."
+    )
+
+    async def _title_and_welcome(self, adapter: Any, message: IncomingMessage, session: Any) -> None:
+        """Name the session thread from its first message, and greet a
+        brand new DM once.
+
+        A thread the operator starts was never titled before, so the
+        Messages tab and the desktop sidebar showed every row as
+        "Freyja". The title comes from the message that roots the thread;
+        the Haiku auto-rename and the operator's own rename overwrite it
+        later. Best-effort and silent on failure.
+        """
+        src = message.source
+        if src.platform != Platform.SLACK or message.is_slash_command:
+            return
+        rename = getattr(adapter, "rename_session", None)
+        bindings = getattr(adapter, "bindings", None)
+        root = src.thread_id or src.message_id
+        is_root = bool(src.message_id) and root == src.message_id
+        if src.chat_type == "code":
+            root = None
+            is_root = False
+        text = (message.text or "").strip()
+        if rename is not None and is_root and text:
+            try:
+                if bindings is None or bindings.title_for(src.chat_id, root) is None:
+                    await rename(src.chat_id, root, text)
+            except Exception:  # noqa: BLE001
+                logger.debug("thread title failed", exc_info=True)
+        if src.chat_type != "dm" or getattr(session, "_slack_welcomed", False):
+            return
+        try:
+            inner = getattr(session, "session", None)
+            transcript = getattr(inner, "transcript", None)
+            entries = list(getattr(transcript, "entries", []) or []) if transcript is not None else []
+            has_history = any(getattr(e, "message", None) is not None for e in entries)
+        except Exception:  # noqa: BLE001
+            has_history = True
+        setattr(session, "_slack_welcomed", True)
+        if has_history:
+            return
+        try:
+            await adapter.send(src.chat_id, self._WELCOME, thread_id=root, raw_hint=message.raw)
+        except Exception:  # noqa: BLE001
+            logger.debug("welcome send failed", exc_info=True)
 
     _REDELIVERY_TTL_SEC = 3600.0
 
@@ -1429,6 +1483,14 @@ class GatewayDaemon:
                 "[gateway] /reset complete: session_key=%s — next message starts fresh",
                 key,
             )
+            setter = getattr(adapter, "set_session_status", None)
+            if setter is not None:
+                try:
+                    await setter(
+                        message.source.chat_id, thread_id=message.source.thread_id, status="closed",
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("closed status after /reset failed", exc_info=True)
             await adapter.send(  # type: ignore[attr-defined]
                 message.source.chat_id,
                 "Session reset. Next message starts fresh.",
@@ -1757,18 +1819,220 @@ class GatewayDaemon:
         )
         return "\n".join(lines)
 
-    def _cancel_session(self, session_key: str) -> bool:
+    def _cancel_session(self, session_key: str, *, stopped_by_user: bool = False) -> bool:
+        """Cancel the session's running turn and seal its Slack message.
+
+        ``stopped_by_user`` means Slack's Stop button fired: Slack has
+        sealed the streams itself and asked for no further calls, so the
+        consumer is only silenced.
+        """
         if self.state is None:
             return False
         sessions = getattr(self.state, "sessions", {})
         session = sessions.get(session_key)
         if session is None:
             return False
+        consumer = getattr(session, "_active_stream_consumer", None)
+        if consumer is not None and not getattr(consumer, "finalized", True):
+            try:
+                consumer.abort(stopped_by_user=stopped_by_user)
+            except Exception:  # noqa: BLE001
+                logger.debug("consumer abort on cancel failed", exc_info=True)
         task = getattr(session, "pending_task", None)
         if task is not None and not task.done():
             task.cancel()
             return True
         return False
+
+    # ── agent session surface (Slack) ─────────────────────────────
+
+    @staticmethod
+    def _slack_key_for(adapter: Any, info: dict[str, Any]) -> str:
+        """Session key for a Slack (channel, thread) pair from an event."""
+        from bridge.gateway.session_router import session_key_for
+
+        chat_id = str(info.get("chat_id") or "")
+        thread_ts = info.get("thread_ts") or None
+        bindings = getattr(adapter, "bindings", None)
+        if chat_id.startswith("D"):
+            chat_type = "dm"
+        elif bindings is not None and bindings.is_code_channel(chat_id):
+            chat_type = "code"
+        else:
+            chat_type = "channel"
+        source = MessageSource(
+            platform=Platform.SLACK,
+            workspace_id=str(info.get("team_id") or "") or "_unknown",
+            chat_type=chat_type,
+            chat_id=chat_id,
+            user_id=None,
+            thread_id=None if chat_type in {"dm", "code"} else thread_ts,
+        )
+        return session_key_for(source)
+
+    def _slack_adapter(self) -> Any | None:
+        return self._adapter_for_platform(Platform.SLACK)
+
+    async def _on_session_stopped(self, info: dict[str, Any]) -> None:
+        """The operator pressed Stop on a session. Cancel the turn; Slack
+        already sealed the streaming messages it listed."""
+        adapter = self._slack_adapter()
+        key = self._slack_key_for(adapter, info)
+        cancelled = self._cancel_session(key, stopped_by_user=True)
+        logger.info("[gateway] stop button: session=%s cancelled=%s", key, cancelled)
+
+    async def _on_session_title_changed(self, info: dict[str, Any]) -> None:
+        """The operator renamed a session in Slack. Mirror it to the
+        session index through the same event the desktop rename uses."""
+        adapter = self._slack_adapter()
+        key = self._slack_key_for(adapter, info)
+        title = str(info.get("title") or "").strip()
+        if not title:
+            return
+        try:
+            from bridge.freyja_bridge import emit
+            emit({"type": "session_renamed", "sessionId": key, "title": title, "source": "slack"})
+        except Exception:  # noqa: BLE001
+            logger.debug("session_renamed emit failed", exc_info=True)
+
+    async def _on_home_opened(self, info: dict[str, Any]) -> None:
+        """Messages tab: 2 to 4 prompts from live state. Home tab: the
+        status view (defaults, sessions, jobs, skills waiting)."""
+        adapter = self._slack_adapter()
+        if adapter is None:
+            return
+        tab = str(info.get("tab") or "")
+        team_id = str(info.get("team_id") or "")
+        user_id = str(info.get("user_id") or "")
+        chat_id = str(info.get("chat_id") or "")
+        if tab == "messages" and chat_id:
+            prompts = self._suggested_prompts(adapter, team_id, user_id, chat_id)
+            if prompts:
+                await adapter.set_suggested_prompts(chat_id, prompts, title="Try")
+        elif tab == "home" and user_id:
+            view = await asyncio.to_thread(self._home_view, adapter)
+            await adapter.publish_home(user_id, view, team_id=team_id or None)
+
+    def _suggested_prompts(
+        self, adapter: Any, team_id: str, user_id: str, chat_id: str
+    ) -> list[dict[str, str]]:
+        from bridge.gateway import slack_blocks as _blocks
+
+        items: list[tuple[str, str]] = []
+        sessions = getattr(self.state, "sessions", {}) if self.state else {}
+        dm_key = f"freyja:slack:{team_id or '_unknown'}:dm:{chat_id}"
+        if dm_key in sessions:
+            items.append((
+                "Continue where we left off",
+                "Continue where we left off in this DM. Start with a two line recap of the open items.",
+            ))
+        context = ""
+        try:
+            context = adapter.describe_app_context(team_id, user_id)
+        except Exception:  # noqa: BLE001
+            context = ""
+        if context:
+            items.append((
+                "Summarize what I'm looking at",
+                f"Summarize what I'm looking at right now ({context}) and list anything that needs me.",
+            ))
+        items.append(("What did I leave open yesterday?", "What did I leave open yesterday? Check my sessions, scheduled jobs and notes."))
+        items.append(("Morning briefing", "Give me my morning briefing."))
+        return _blocks.suggested_prompts(items)
+
+    def _home_view(self, adapter: Any) -> dict[str, Any]:
+        """Runs on a thread: it reads job files and candidate YAML."""
+        from bridge.gateway import slack_blocks as _blocks
+        from bridge.gateway.config import GatewayConfig
+
+        cfg = GatewayConfig.load()
+        bindings = getattr(adapter, "bindings", None)
+        rows: list[dict[str, Any]] = []
+        sessions = getattr(self.state, "sessions", {}) if self.state else {}
+        for key, sess in list(sessions.items()):
+            if not str(key).startswith("freyja:slack:"):
+                continue
+            parts = str(key).split(":")
+            chat_id = parts[4] if len(parts) > 4 else ""
+            thread = parts[5] if len(parts) > 5 and "." in parts[5] else None
+            title = bindings.title_for(chat_id, thread) if bindings is not None else None
+            pending = getattr(sess, "pending_task", None)
+            working = bool(pending and not pending.done())
+            model = getattr(sess, "model_id", "") or ""
+            rows.append({
+                "title": title or f"{parts[3] if len(parts) > 3 else 'chat'} {chat_id}",
+                "detail": ("working" if working else "idle") + (f", {model}" if model else ""),
+            })
+        jobs: list[dict[str, Any]] = []
+        try:
+            from bridge.scheduler.persistence import load_all_jobs
+            from bridge.scheduler.scheduling import cadence_label
+
+            for j in sorted(load_all_jobs(), key=lambda j: (j.next_fire_at or 1e18, j.name))[:12]:
+                if getattr(j, "status", "active") != "active" or not getattr(j, "enabled", True):
+                    continue
+                when = _format_ts(getattr(j, "next_fire_at", None))
+                try:
+                    cadence = cadence_label(j.schedule)
+                except Exception:  # noqa: BLE001
+                    cadence = ""
+                jobs.append({"title": j.name, "detail": " · ".join(x for x in (cadence, f"next {when}") if x)})
+        except Exception:  # noqa: BLE001
+            logger.debug("home view: jobs unavailable", exc_info=True)
+        candidates: list[dict[str, Any]] = []
+        try:
+            from bridge.knowledge.learning import candidates as _cands
+
+            for c in _cands.list_pending()[:12]:
+                candidates.append({
+                    "title": getattr(c, "name", "") or getattr(c, "candidate_id", ""),
+                    "detail": (getattr(c, "description", "") or "")[:120],
+                })
+        except Exception:  # noqa: BLE001
+            logger.debug("home view: candidates unavailable", exc_info=True)
+        return _blocks.home_view(
+            model=getattr(self.state, "default_model", None) or cfg.default_model,
+            mode=getattr(cfg, "default_strategy", None) or "bus",
+            sessions=rows,
+            jobs=jobs,
+            candidates=candidates,
+            generated_at=time.strftime("%H:%M"),
+        )
+
+    async def _on_feedback(self, info: dict[str, Any]) -> None:
+        """Thumbs, reactions and the thumbs-down note. Recorded next to the
+        skill learning events and echoed as a bridge event, so the skill
+        outcome rollup and the desktop both see it."""
+        adapter = self._slack_adapter()
+        key = str(info.get("session_key") or "") or self._slack_key_for(adapter, info)
+        verdict = "+" if str(info.get("verdict")) == "+" else "-"
+        record = {
+            "event": "feedback",
+            "skill": "",
+            "session_id": key,
+            "verdict": verdict,
+            "kind": str(info.get("kind") or ""),
+            "reaction": str(info.get("reaction") or ""),
+            "note": str(info.get("note") or "")[:1000],
+            "message_ts": str(info.get("message_ts") or ""),
+            "turn_ts": str(info.get("turn_ts") or ""),
+            "user": str(info.get("user_id") or ""),
+            "platform": "slack",
+        }
+        logger.info(
+            "[gateway] feedback %s on %s (%s)%s",
+            verdict, key, record["kind"], f": {record['note']}" if record["note"] else "",
+        )
+        try:
+            from bridge.knowledge.learning import events as _events
+            await asyncio.to_thread(_events.append, dict(record))
+        except Exception:  # noqa: BLE001
+            logger.debug("feedback event write failed", exc_info=True)
+        try:
+            from bridge.freyja_bridge import emit
+            emit({"type": "feedback", "sessionId": key, **{k: v for k, v in record.items() if k not in {"event", "skill", "session_id"}}})
+        except Exception:  # noqa: BLE001
+            logger.debug("feedback emit failed", exc_info=True)
 
     def _reset_session(self, session_key: str) -> None:
         if self.state is None:
@@ -2477,6 +2741,12 @@ class GatewayDaemon:
                 register_approval_adapter(Platform.SLACK.value, adapter)
             except Exception:  # noqa: BLE001
                 logger.exception("approval adapter registration failed")
+            # Agent session surface: Stop button, sidebar renames, the
+            # Messages tab opening, and feedback all land here.
+            adapter.on_session_stopped = self._on_session_stopped
+            adapter.on_session_title_changed = self._on_session_title_changed
+            adapter.on_home_opened = self._on_home_opened
+            adapter.on_feedback = self._on_feedback
             logger.info("slack adapter connected")
         else:
             logger.warning(

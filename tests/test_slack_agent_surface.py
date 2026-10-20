@@ -13,30 +13,47 @@ failure mode that is invisible rather than loud:
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from pathlib import Path
 
 import pytest
 
 from bridge.gateway.platforms.slack import SlackAdapter
 
 
-def _adapter() -> SlackAdapter:
+def _adapter(tmp_path=None) -> SlackAdapter:
     """A SlackAdapter with only the state these helpers touch."""
+    from bridge.gateway.slack_bindings import ThreadBindings
+
     a = SlackAdapter.__new__(SlackAdapter)
     a._app_context = {}
     a._APP_CONTEXT_MAX = 500
     a._seen_app_authors = set()
+    a._app = object()
+    a._team_clients = {}
+    a._channel_team = {}
+    a.bindings = ThreadBindings(
+        (tmp_path or Path(tempfile.mkdtemp())) / "bindings.json", flush_delay=0
+    )
     return a
 
 
 class _Client:
+    """Fakes agents.sessions.rename; ``fail`` mimics a thread with no session."""
+
     def __init__(self, fail: bool = False):
         self.calls: list[dict] = []
+        self.status_calls: list[dict] = []
         self._fail = fail
 
-    async def assistant_threads_setTitle(self, **kwargs):
+    async def agents_sessions_rename(self, **kwargs):
         if self._fail:
-            raise RuntimeError("method_not_supported")
+            raise RuntimeError("not_authorized")
         self.calls.append(kwargs)
+        return {"ok": True}
+
+    async def agents_sessions_setStatus(self, **kwargs):
+        self.status_calls.append(kwargs)
         return {"ok": True}
 
 
@@ -48,7 +65,8 @@ def test_proactive_thread_gets_a_title():
     assert len(c.calls) == 1
     assert c.calls[0]["channel_id"] == "D123"
     assert c.calls[0]["thread_ts"] == "1788.1"
-    assert c.calls[0]["title"] == "Build finished: 12 passed"
+    # Slack's rename rejects colons (`invalid_name`), so they go.
+    assert c.calls[0]["title"] == "Build finished 12 passed"
 
 
 def test_title_is_truncated_not_paragraph_length():
@@ -75,10 +93,30 @@ def test_empty_content_sets_no_title():
     assert c.calls == []
 
 
-def test_title_failure_is_swallowed():
-    """Cosmetic: a workspace without the scope must not fail the send."""
+def test_title_on_a_thread_without_a_session_creates_one():
+    """rename answers not_authorized until a session exists; the title
+    then rides on the setStatus call that creates it."""
     a, c = _adapter(), _Client(fail=True)
-    asyncio.run(a._title_thread(c, "D1", "1.0", "hello"))  # must not raise
+    asyncio.run(a._title_thread(c, "D1", "1.0", "hello there"))  # must not raise
+    assert c.calls == []
+    assert c.status_calls and c.status_calls[0]["title"] == "hello there"
+    assert c.status_calls[0]["status"] == "active"
+
+
+def test_operator_title_is_not_overwritten_by_an_automatic_one():
+    a, c = _adapter(), _Client()
+    a.bindings.set_title("D1", "1.0", "My own name", by_user=True)
+    asyncio.run(a._title_thread(c, "D1", "1.0", "auto title"))
+    assert c.calls == []
+    asyncio.run(a.rename_session("D1", "1.0", "Renamed by me", by_user=True, client=c))
+    assert c.calls[-1]["title"] == "Renamed by me"
+
+
+def test_same_title_is_not_sent_twice():
+    a, c = _adapter(), _Client()
+    asyncio.run(a._title_thread(c, "D1", "1.0", "Same title"))
+    asyncio.run(a._title_thread(c, "D1", "1.0", "Same title"))
+    assert len(c.calls) == 1
 
 
 # ── app context ──────────────────────────────────────────────────────

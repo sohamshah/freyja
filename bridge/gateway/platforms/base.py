@@ -177,6 +177,7 @@ class PlatformAdapter(Protocol):
         thread_id: str | None = None,
         ephemeral_user_id: str | None = None,
         raw_hint: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> SendResult:
         """Send a new message.
 
@@ -201,16 +202,15 @@ class PlatformAdapter(Protocol):
         ...
 
     # ── Streaming surface (Thinking Steps on Slack) ───────────────────
-    # The streaming methods open ONE message that grows progressively
-    # with both prose body (markdown_text) and structured "task card"
-    # chunks. Slack renders the task cards as collapsible widgets with
-    # a per-card status (in_progress / completed / error) — the new
-    # native equivalent of our prior emoji-laden progress bubble.
+    # The streaming methods open ONE message per turn that grows with
+    # prose (markdown text chunks), task cards (one per tool call) and
+    # Block Kit widgets (tables, charts) in the order they happen.
+    # Slack renders the cards as collapsible rows with a status.
     #
     # On Slack: thin wrappers over chat.startStream / chat.appendStream
-    # / chat.stopStream from slack-sdk 3.40+. On adapters that don't
-    # support streaming, the consumer detects None message_id from
-    # start_stream and falls back to send/edit.
+    # / chat.stopStream from slack-sdk 3.45. On adapters that don't
+    # support streaming, the consumer detects a failed start_stream and
+    # falls back to one send per turn.
 
     async def start_stream(
         self,
@@ -219,15 +219,16 @@ class PlatformAdapter(Protocol):
         thread_id: str | None = None,
         markdown_text: str | None = None,
         chunks: list[Any] | None = None,
-        task_display_mode: str | None = "plan",
+        task_display_mode: str | None = "timeline",
         raw_hint: dict[str, Any] | None = None,
         recipient_team_id: str | None = None,
         recipient_user_id: str | None = None,
+        username: str | None = None,
     ) -> SendResult:
         """Open a streaming message. Returns SendResult.message_id =
         the stream's ts, which the caller passes to subsequent
         append_stream / stop_stream calls. On Slack, thread_id is
-        REQUIRED (chat.startStream rejects thread_ts=None)."""
+        required except in a code channel."""
         ...
 
     async def append_stream(
@@ -251,10 +252,12 @@ class PlatformAdapter(Protocol):
         markdown_text: str | None = None,
         chunks: list[Any] | None = None,
         blocks: list[Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        session_status: str | None = None,
     ) -> SendResult:
-        """Finalize the stream. ``blocks`` (Block Kit) may only appear
-        here — Slack rejects them on start/append per the docs. Used
-        for inline image attachments on the final message."""
+        """Finalize the stream with the tail prose (``chunks``), blocks
+        under it (images, feedback buttons), message ``metadata`` and
+        the ``session_status`` to leave the session in."""
         ...
 
     async def upload_file(
@@ -293,10 +296,9 @@ class PlatformAdapter(Protocol):
         thread_id: str | None = None,
         status: str = "is thinking...",
     ) -> SendResult:
-        """Render a platform-native typing/status indicator for the
-        next turn. Best-effort: adapters that don't have a native
-        status surface should no-op silently and return ok. Slack:
-        uses ``assistant.threads.setStatus``."""
+        """The session is working. On Slack this is
+        ``agents.sessions.setStatus(processing)``; adapters without a
+        session surface no-op and return ok."""
         ...
 
     async def stop_typing(
@@ -305,9 +307,48 @@ class PlatformAdapter(Protocol):
         *,
         thread_id: str | None = None,
     ) -> SendResult:
-        """Clear any active typing/status indicator. Always called at
-        turn boundaries, including on error paths, to avoid dangling
-        indicators."""
+        """The session is idle again. Always called at turn boundaries,
+        including on error paths, because ``processing`` does not clear
+        itself."""
+        ...
+
+    async def set_session_status(
+        self,
+        chat_id: str,
+        *,
+        thread_id: str | None = None,
+        status: str,
+        title: str | None = None,
+        initiator_user_id: str | None = None,
+        username: str | None = None,
+    ) -> SendResult:
+        """Set the agent session state: ``processing`` (working),
+        ``suspended`` (waiting on the operator), ``active`` (idle) or
+        ``closed``. ``title`` names the session on creation."""
+        ...
+
+    async def rename_session(
+        self,
+        chat_id: str,
+        thread_id: str | None,
+        title: str,
+        *,
+        by_user: bool = False,
+    ) -> SendResult:
+        """Title the session thread. A title the operator chose wins over
+        an automatic one unless ``by_user`` is set."""
+        ...
+
+    async def send_blocks(
+        self,
+        chat_id: str,
+        blocks: list[dict[str, Any]],
+        *,
+        thread_id: str | None = None,
+        text: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        """Post a Block Kit message (tables, charts, cards) on its own."""
         ...
 
 

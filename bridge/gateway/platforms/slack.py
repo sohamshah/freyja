@@ -62,6 +62,8 @@ from bridge.gateway.platforms.base import (
     truncate_for_platform,
 )
 from bridge.gateway.platforms.slack_manifest import known_slash_command_names
+from bridge.gateway import slack_blocks as _blocks
+from bridge.gateway.slack_bindings import ThreadBindings
 
 logger = logging.getLogger(__name__)
 
@@ -318,10 +320,21 @@ class SlackAdapter:
         self._channel_team: dict[str, str] = {}      # channel_id → team_id
         self._bot_user_id: str | None = None          # first workspace's bot
 
-        # Tracking for mention-gating heuristics.
-        self._bot_message_ts: set[str] = set()        # ts values we sent
-        self._mentioned_threads: set[str] = set()     # thread_ts the bot joined
+        # Mention-gating state, persisted so a daemon restart does not
+        # make the bot ignore replies in threads it already joined.
+        # Also holds code channels Freyja opened and session titles.
+        self.bindings = ThreadBindings()
+        # Threads checked against Slack and found not to be ours; bounded
+        # so a busy channel cannot make us refetch the same parent.
+        self._not_our_threads: dict[str, float] = {}
         self._dedup: dict[str, float] = {}            # event_ts → seen-at monotonic
+        # Daemon hooks for the agent-session surface. Each is an async
+        # callable taking one dict, set by the gateway after construction.
+        self.on_session_stopped: Any = None
+        self.on_session_title_changed: Any = None
+        self.on_home_opened: Any = None
+        self.on_feedback: Any = None
+        self.on_code_channel_command: Any = None
         self._denied_notice_at: dict[str, float] = {}  # user_id → last denial notice
         # Latest `app_context_changed` entities per (team_id, user_id) —
         # what the operator was last looking at. Bounded because it is a
@@ -333,6 +346,8 @@ class SlackAdapter:
         # captured the first time it happens. Tiny and self-limiting:
         # a workspace has a handful of apps, not thousands.
         self._seen_app_authors: set[str] = set()
+        # Channels that delivered a `message.session` event (logged once).
+        self._seen_session_channels: set[str] = set()
         # Deferred app_mention tasks awaiting a possible message.channels
         # twin. When a user @mentions the bot in a channel WITH a file
         # attachment, Slack delivers two events: app_mention (no files)
@@ -646,6 +661,51 @@ class SlackAdapter:
             await ack()
             await self._handle_skill_candidate_click(body, respond, action="discard")
 
+        # ── Agent session surface ──────────────────────────────────
+        # The native Stop button. Slack only renders it when the app is
+        # subscribed to this event. On receipt the turn is cancelled;
+        # Slack seals the streams it lists itself.
+        @self._app.event("agent_session_stopped")
+        async def _on_agent_session_stopped(event, say):  # noqa: ARG001
+            await self._handle_session_stopped(event or {})
+
+        # The operator renamed a session thread in the sidebar.
+        @self._app.event("agent_session_title_changed")
+        async def _on_agent_session_title_changed(event, say):  # noqa: ARG001
+            await self._handle_session_title_changed(event or {})
+
+        # Messages tab or Home tab opened: suggested prompts + home view.
+        @self._app.event("app_home_opened")
+        async def _on_app_home_opened(event, say):  # noqa: ARG001
+            await self._handle_home_opened(event or {})
+
+        # Emoji on one of Freyja's messages is feedback.
+        @self._app.event("reaction_added")
+        async def _on_reaction_added(event, say):  # noqa: ARG001
+            await self._handle_reaction(event or {})
+
+        @self._app.event("reaction_removed")
+        async def _on_reaction_removed(event, say):  # noqa: ARG001
+            pass
+
+        # Thumbs up / down under a reply.
+        @self._app.action(_blocks.FEEDBACK_ACTION_ID)
+        async def _on_feedback_buttons(ack, body):
+            await ack()
+            await self._handle_feedback_click(body or {})
+
+        # The "what went wrong" modal after a thumbs down.
+        @self._app.view(_blocks.FEEDBACK_NOTE_CALLBACK_ID)
+        async def _on_feedback_note(ack, body, view):
+            await ack()
+            await self._handle_feedback_note(body or {}, view or {})
+
+        # Link buttons on cards open their URL client-side; Slack still
+        # sends the interaction and expects an ack.
+        @self._app.action(re.compile(r"^freyja_card_link_"))
+        async def _on_card_link(ack):
+            await ack()
+
     async def _handle_skill_candidate_click(
         self,
         body: dict[str, Any],
@@ -748,6 +808,15 @@ class SlackAdapter:
                 request_id,
             )
             return
+        # The operator answered; the turn is working again.
+        try:
+            channel = str((body.get("channel") or {}).get("id") or "")
+            msg = body.get("message") or {}
+            thread_ts = str(msg.get("thread_ts") or msg.get("ts") or "")
+            if channel:
+                await self.set_session_status(channel, thread_id=thread_ts or None, status="processing")
+        except Exception:  # noqa: BLE001
+            logger.debug("[slack] status after approval click failed", exc_info=True)
         # Replace the buttons with a static confirmation block so the
         # operator can't click again and we leave an audit trail.
         verb = "approved" if approved else "denied"
@@ -1102,40 +1171,49 @@ class SlackAdapter:
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
         is_mentioned = bool(bot_uid and f"<@{bot_uid}>" in text)
+        # A code channel Freyja opened: every message is for it, no
+        # mention needed, and the whole channel is one session.
+        is_code = self.bindings.is_code_channel(channel_id)
+        if channel_type == "session" and channel_id not in self._seen_session_channels:
+            self._seen_session_channels.add(channel_id)
+            logger.info(
+                "[slack] first message.session delivery: channel=%s thread=%s keys=%s",
+                channel_id, event_thread_ts, sorted(event.keys()),
+            )
 
         # Mention gating in channels: respond if mentioned OR if inside
         # a thread the bot was already mentioned in OR if replying to a
-        # message the bot sent.
-        if not is_dm and bot_uid:
+        # message the bot sent. The persisted bindings cover restarts;
+        # when they miss, the thread parent is checked once against
+        # Slack (bot author or Freyja metadata) before giving up.
+        if not is_dm and not is_code and bot_uid:
             if not is_mentioned:
                 reply_to_bot_thread = (
-                    is_thread_reply and event_thread_ts in self._bot_message_ts
+                    is_thread_reply and self.bindings.has_message_ts(event_thread_ts)
                 )
-                in_mentioned_thread = (
-                    event_thread_ts is not None
-                    and event_thread_ts in self._mentioned_threads
-                )
+                in_mentioned_thread = self.bindings.has_thread(event_thread_ts)
                 if not reply_to_bot_thread and not in_mentioned_thread:
-                    return
+                    if not (
+                        is_thread_reply
+                        and await self._thread_is_ours(channel_id, event_thread_ts, team_id)
+                    ):
+                        return
 
         # Strip the bot mention from the text + remember the thread so
         # future thread messages auto-respond without re-mention.
         if is_mentioned and bot_uid:
             text = text.replace(f"<@{bot_uid}>", "").strip()
             if event_thread_ts:
-                self._mentioned_threads.add(event_thread_ts)
-                if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
-                    excess = list(self._mentioned_threads)[
-                        : self._MENTIONED_THREADS_MAX // 2
-                    ]
-                    for t in excess:
-                        self._mentioned_threads.discard(t)
+                self.bindings.add_thread(event_thread_ts)
 
         # Compute thread_id used as part of the session key. For DMs +
         # channel mentions outside of a thread, we use ts so each
         # top-level interaction gets its own session. For thread
-        # replies, use the thread root.
-        if event_thread_ts:
+        # replies, use the thread root. A code channel is one session
+        # and answers at the top level.
+        if is_code:
+            thread_for_key = None
+        elif event_thread_ts:
             thread_for_key = event_thread_ts
         elif not is_dm:
             thread_for_key = ts   # channel mention → its own thread/session
@@ -1157,7 +1235,7 @@ class SlackAdapter:
         # Resolve user display name (best-effort).
         user_name = await self._resolve_user_name(user_id, team_id) if user_id else None
 
-        chat_type = "dm" if is_dm else "channel"
+        chat_type = "dm" if is_dm else ("code" if is_code else "channel")
         source = MessageSource(
             platform=Platform.SLACK,
             workspace_id=team_id or "_unknown",
@@ -1287,6 +1365,7 @@ class SlackAdapter:
         thread_id: str | None = None,
         ephemeral_user_id: str | None = None,
         raw_hint: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> SendResult:
         if not self._app:
             return SendResult(ok=False, error="not connected")
@@ -1339,17 +1418,15 @@ class SlackAdapter:
         }
         if thread_id:
             kwargs["thread_ts"] = thread_id
+        if metadata:
+            kwargs["metadata"] = metadata
         try:
             result = await client.chat_postMessage(**kwargs)
             sent_ts = (result or {}).get("ts") if result else None
             if sent_ts:
-                self._bot_message_ts.add(str(sent_ts))
+                self.bindings.add_message_ts(str(sent_ts))
                 if thread_id:
-                    self._bot_message_ts.add(str(thread_id))
-                if len(self._bot_message_ts) > self._BOT_TS_MAX:
-                    excess = list(self._bot_message_ts)[: self._BOT_TS_MAX // 2]
-                    for t in excess:
-                        self._bot_message_ts.discard(t)
+                    self.bindings.add_message_ts(str(thread_id))
             # A proactive DM (no thread_id) ROOTS a new thread under the
             # agent experience, where every DM is a thread shown in the
             # Messages-tab timeline. Untitled, they all read "Freyja" and
@@ -1414,10 +1491,11 @@ class SlackAdapter:
         thread_id: str | None = None,
         markdown_text: str | None = None,
         chunks: list[Any] | None = None,
-        task_display_mode: str | None = "plan",
+        task_display_mode: str | None = "timeline",
         raw_hint: dict[str, Any] | None = None,
         recipient_team_id: str | None = None,
         recipient_user_id: str | None = None,
+        username: str | None = None,
     ) -> SendResult:
         """Wrap ``chat.startStream``. thread_id is required by the API
         — Slack's streaming methods don't support top-level messages.
@@ -1428,10 +1506,14 @@ class SlackAdapter:
         if not self._app:
             return SendResult(ok=False, error="not connected")
         if not thread_id:
-            return SendResult(
-                ok=False,
-                error="thread_id required for chat.startStream",
-            )
+            # Code channels take top-level streams: Slack documents
+            # thread_ts="0" as "no thread" for chat.startStream.
+            if not self.bindings.is_code_channel(chat_id):
+                return SendResult(
+                    ok=False,
+                    error="thread_id required for chat.startStream",
+                )
+            thread_id = "0"
         client = self._get_client(chat_id)
         if client is None:
             return SendResult(ok=False, error=f"no client for chat {chat_id}")
@@ -1445,6 +1527,8 @@ class SlackAdapter:
             kwargs["chunks"] = chunks
         if task_display_mode:
             kwargs["task_display_mode"] = task_display_mode
+        if username:
+            kwargs["username"] = username
         # Required to put the message into actual streaming state.
         # Without these, chat.startStream returns 200/ts but the
         # message stays non-streaming and every subsequent
@@ -1457,7 +1541,10 @@ class SlackAdapter:
             res = await client.chat_startStream(**kwargs)
             ts = res.get("ts") if hasattr(res, "get") else None
             if ts:
-                self._bot_message_ts.add(str(ts))
+                self.bindings.add_message_ts(str(ts))
+                if thread_id and thread_id != "0":
+                    # The thread root is now one Freyja answers in.
+                    self.bindings.add_message_ts(str(thread_id))
             return SendResult(ok=bool(res.get("ok")), message_id=ts, raw=getattr(res, "data", None) or {})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[slack] chat.startStream failed: %s", exc)
@@ -1504,11 +1591,16 @@ class SlackAdapter:
         markdown_text: str | None = None,
         chunks: list[Any] | None = None,
         blocks: list[Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        session_status: str | None = None,
     ) -> SendResult:
-        """Wrap ``chat.stopStream``. ``blocks`` is the only place
-        Slack accepts Block Kit in the streaming envelope (per docs:
-        'Blocks may be used in chat.stopStream only'). Used to attach
-        final-state Block Kit content like image previews."""
+        """Wrap ``chat.stopStream``.
+
+        ``blocks`` land under the streamed content (image previews,
+        the feedback buttons). ``metadata`` stamps the message with the
+        session key. ``session_status`` is what the agent session shows
+        once the stream is sealed (``active`` by default on Slack's side).
+        """
         if not self._app:
             return SendResult(ok=False, error="not connected")
         client = self._get_client(chat_id)
@@ -1524,6 +1616,10 @@ class SlackAdapter:
             kwargs["chunks"] = chunks
         if blocks:
             kwargs["blocks"] = blocks
+        if metadata:
+            kwargs["metadata"] = metadata
+        if session_status:
+            kwargs["session_status"] = session_status
         try:
             res = await client.chat_stopStream(**kwargs)
             return SendResult(ok=bool(res.get("ok")), message_id=stream_id, raw=getattr(res, "data", None) or {})
@@ -1711,39 +1807,563 @@ class SlackAdapter:
             error=first_error if first_message_id is None else None,
         )
 
-    # Longest thread title we set. Slack truncates in the UI well before
-    # this; the cap is about not shipping a whole paragraph as a "title".
-    _THREAD_TITLE_MAX = 70
+    # Longest thread title we set. Slack's rename rejects anything past
+    # about seventy characters and anything with a colon (`invalid_name`).
+    _THREAD_TITLE_MAX = 60
+    _TITLE_BAD_CHARS = re.compile(r"[:`*_<>#\[\]{}|\\]+")
+
+    def _clean_title(self, content: str) -> str:
+        title = " ".join((content or "").split())
+        title = self._TITLE_BAD_CHARS.sub(" ", title)
+        title = " ".join(title.split()).strip(" -.,;!?")
+        if len(title) > self._THREAD_TITLE_MAX:
+            cut = title[: self._THREAD_TITLE_MAX].rsplit(" ", 1)[0].rstrip(" ,;-")
+            title = (cut or title[: self._THREAD_TITLE_MAX - 1]) + "…"
+        return title
 
     async def _title_thread(
         self, client: Any, chat_id: str, thread_ts: str, content: str
     ) -> None:
-        """Give a freshly-rooted DM thread a human-readable title.
+        """Give a freshly-rooted DM thread a title from its first line."""
+        await self.rename_session(chat_id, thread_ts, content, client=client)
 
-        Uses the legacy ``assistant.threads.setTitle`` rather than
-        ``agents.sessions.rename`` for two reasons: Slack keeps it
-        working through the same compatibility bridge that carries
-        ``setStatus`` (which we also deliberately stayed on), and the
-        installed slack_sdk exposes no binding for the new method — it
-        would have to be a hand-rolled ``api_call``. Revisit together
-        with the setStatus migration, not separately.
+    async def rename_session(
+        self,
+        chat_id: str,
+        thread_id: str | None,
+        title: str,
+        *,
+        by_user: bool = False,
+        client: Any = None,
+    ) -> SendResult:
+        """Title an agent session with ``agents.sessions.rename``.
 
-        Best-effort: a missing title is cosmetic, never a correctness
-        issue, so every failure here is swallowed at debug level.
+        The title is trimmed to a line and stripped of the characters
+        Slack rejects. A title the operator set in the sidebar is kept
+        over anything automatic. On a thread that has no session yet
+        (``not_authorized``) the session is created with the title via
+        ``agents.sessions.setStatus`` instead, which Slack allows.
+        Best-effort: a missing title is cosmetic.
         """
-        title = " ".join((content or "").split())
-        # Strip leading markdown/emoji chrome so the title starts on a word.
-        title = title.lstrip("*_`>#-:  ").strip()
-        if not title:
-            return
-        if len(title) > self._THREAD_TITLE_MAX:
-            title = title[: self._THREAD_TITLE_MAX - 1].rstrip() + "…"
+        clean = self._clean_title(title)
+        if not clean:
+            return SendResult(ok=False, error="empty title")
+        if not by_user and self.bindings.title_is_users(chat_id, thread_id):
+            return SendResult(ok=True, error="kept the operator's title")
+        if self.bindings.title_for(chat_id, thread_id) == clean:
+            return SendResult(ok=True)
+        client = client or self._get_client(chat_id)
+        if client is None or not self._app:
+            return SendResult(ok=False, error="not connected")
+        kwargs: dict[str, Any] = {"channel_id": chat_id, "title": clean}
+        if thread_id:
+            kwargs["thread_ts"] = thread_id
         try:
-            await client.assistant_threads_setTitle(
-                channel_id=chat_id, thread_ts=thread_ts, title=title
+            await client.agents_sessions_rename(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc)
+            if "not_authorized" in err or "session_not_found" in err:
+                res = await self.set_session_status(
+                    chat_id, thread_id=thread_id, status="active", title=clean,
+                    client=client,
+                )
+                if not res.ok:
+                    return res
+            else:
+                logger.debug("[slack] rename skipped: %s", exc)
+                return SendResult(ok=False, error=err)
+        self.bindings.set_title(chat_id, thread_id, clean, by_user=by_user)
+        return SendResult(ok=True)
+
+    async def set_session_status(
+        self,
+        chat_id: str,
+        *,
+        thread_id: str | None = None,
+        status: str,
+        title: str | None = None,
+        initiator_user_id: str | None = None,
+        username: str | None = None,
+        client: Any = None,
+    ) -> SendResult:
+        """``agents.sessions.setStatus``: processing, suspended, active, closed.
+
+        ``processing`` is what the sidebar shows as working, ``suspended``
+        as waiting for the operator, ``active`` as idle, ``closed`` as
+        done. Nothing clears ``processing`` by itself (Slack times it out
+        after an hour), so every path that sets it must end in ``active``
+        or ``closed``: the stream consumer's finalize, abort and turn
+        failure paths all do. Errors are swallowed at debug level; a
+        wrong badge is cosmetic.
+        """
+        if not self._app:
+            return SendResult(ok=True)
+        client = client or self._get_client(chat_id)
+        if client is None:
+            return SendResult(ok=True)
+        kwargs: dict[str, Any] = {"channel_id": chat_id, "status": status}
+        if thread_id and thread_id != "0":
+            kwargs["thread_ts"] = thread_id
+        if title:
+            kwargs["title"] = self._clean_title(title)
+        if initiator_user_id:
+            kwargs["initiator_user_id"] = initiator_user_id
+        if username:
+            kwargs["username"] = username[:80]
+        try:
+            await client.agents_sessions_setStatus(**kwargs)
+            return SendResult(ok=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[slack] setStatus(%s) skipped: %s", status, exc)
+            return SendResult(ok=False, error=str(exc))
+
+    async def send_typing(
+        self,
+        chat_id: str,
+        *,
+        thread_id: str | None = None,
+        status: str = "is thinking...",
+    ) -> SendResult:
+        """The session is working. Maps to ``agents.sessions.setStatus``
+        with ``processing``; the free text is no longer shown by Slack.
+        ``stop_typing`` is the required counterpart."""
+        return await self.set_session_status(chat_id, thread_id=thread_id, status="processing")
+
+    async def stop_typing(
+        self,
+        chat_id: str,
+        *,
+        thread_id: str | None = None,
+    ) -> SendResult:
+        """The session is idle again (``active``)."""
+        return await self.set_session_status(chat_id, thread_id=thread_id, status="active")
+
+    async def set_suggested_prompts(
+        self,
+        chat_id: str,
+        prompts: list[dict[str, str]],
+        *,
+        title: str | None = None,
+    ) -> SendResult:
+        """Prompts at the top of the Messages tab. No ``thread_ts``: under
+        ``agent_view`` the call is per DM, and passing a thread fails
+        silently. Up to four."""
+        if not self._app or not prompts:
+            return SendResult(ok=True)
+        client = self._get_client(chat_id)
+        if client is None:
+            return SendResult(ok=True)
+        kwargs: dict[str, Any] = {"channel_id": chat_id, "prompts": prompts[:4]}
+        if title:
+            kwargs["title"] = title[:75]
+        try:
+            await client.assistant_threads_setSuggestedPrompts(**kwargs)
+            return SendResult(ok=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[slack] setSuggestedPrompts skipped: %s", exc)
+            return SendResult(ok=False, error=str(exc))
+
+    async def publish_home(
+        self, user_id: str, view: dict[str, Any], *, team_id: str | None = None
+    ) -> SendResult:
+        """``views.publish`` the Home tab for one user."""
+        if not self._app or not user_id:
+            return SendResult(ok=True)
+        client = self._get_client("", team_id)
+        if client is None:
+            return SendResult(ok=True)
+        try:
+            await client.views_publish(user_id=user_id, view=view)
+            return SendResult(ok=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[slack] views.publish skipped: %s", exc)
+            return SendResult(ok=False, error=str(exc))
+
+    async def send_blocks(
+        self,
+        chat_id: str,
+        blocks: list[dict[str, Any]],
+        *,
+        thread_id: str | None = None,
+        text: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        """Post Block Kit (tables, charts, cards) as its own message."""
+        if not self._app:
+            return SendResult(ok=False, error="not connected")
+        client = self._get_client(chat_id)
+        if client is None:
+            return SendResult(ok=False, error=f"no client for chat {chat_id}")
+        kwargs: dict[str, Any] = {
+            "channel": chat_id,
+            "blocks": blocks,
+            "text": text or "Freyja sent a widget",
+        }
+        if thread_id:
+            kwargs["thread_ts"] = thread_id
+        if metadata:
+            kwargs["metadata"] = metadata
+        try:
+            result = await client.chat_postMessage(**kwargs)
+            sent_ts = result.get("ts")
+            if sent_ts:
+                self.bindings.add_message_ts(str(sent_ts))
+            return SendResult(ok=True, message_id=sent_ts, raw=result)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[slack] send_blocks failed: %s", exc)
+            return SendResult(ok=False, error=str(exc))
+
+    async def send_markdown(
+        self,
+        chat_id: str,
+        markdown: str,
+        *,
+        thread_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        """Post standard markdown through ``markdown_text`` (tables, task
+        lists and fences render natively; 12,000 characters)."""
+        if not self._app:
+            return SendResult(ok=False, error="not connected")
+        client = self._get_client(chat_id)
+        if client is None:
+            return SendResult(ok=False, error=f"no client for chat {chat_id}")
+        kwargs: dict[str, Any] = {"channel": chat_id, "markdown_text": markdown[:12_000]}
+        if thread_id:
+            kwargs["thread_ts"] = thread_id
+        if metadata:
+            kwargs["metadata"] = metadata
+        try:
+            result = await client.chat_postMessage(**kwargs)
+            sent_ts = result.get("ts")
+            if sent_ts:
+                self.bindings.add_message_ts(str(sent_ts))
+            return SendResult(ok=True, message_id=sent_ts, raw=result)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[slack] send_markdown failed: %s", exc)
+            return SendResult(ok=False, error=str(exc))
+
+    async def open_feedback_modal(
+        self, trigger_id: str, private_metadata: str, *, team_id: str | None = None
+    ) -> None:
+        if not self._app or not trigger_id:
+            return
+        client = self._get_client("", team_id)
+        if client is None:
+            return
+        try:
+            await client.views_open(
+                trigger_id=trigger_id, view=_blocks.feedback_note_view(private_metadata)
             )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[slack] setTitle skipped: %s", exc)
+            logger.debug("[slack] feedback modal skipped: %s", exc)
+
+    _NOT_OURS_MAX = 2000
+
+    async def _thread_is_ours(
+        self, channel_id: str, thread_ts: str | None, team_id: str | None
+    ) -> bool:
+        """Does this thread belong to Freyja, by its parent message?
+
+        Used when neither binding set knows the thread (the file was
+        lost, or the thread predates it). One ``conversations.replies``
+        call for the parent: a bot-authored parent or one carrying
+        ``freyja_session`` metadata means yes, and the thread is bound
+        so the next reply needs no lookup. Negatives are cached.
+        """
+        if not thread_ts:
+            return False
+        key = f"{channel_id}|{thread_ts}"
+        if key in self._not_our_threads:
+            return False
+        client = self._get_client(channel_id, team_id)
+        if client is None:
+            return False
+        ours = False
+        try:
+            resp = await client.conversations_replies(
+                channel=channel_id, ts=thread_ts, limit=1, inclusive=True,
+                include_all_metadata=True,
+            )
+            parent = next(
+                (m for m in (resp.get("messages") or []) if str(m.get("ts") or "") == str(thread_ts)),
+                None,
+            )
+            if parent:
+                bot_ids = set(self._team_bot_user_ids.values())
+                if self._bot_user_id:
+                    bot_ids.add(self._bot_user_id)
+                meta = parent.get("metadata") or {}
+                ours = (
+                    str(parent.get("user") or "") in bot_ids
+                    or str(meta.get("event_type") or "") == "freyja_session"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[slack] thread ownership check failed: %s", exc)
+        if ours:
+            self.bindings.add_thread(str(thread_ts))
+        else:
+            if len(self._not_our_threads) >= self._NOT_OURS_MAX:
+                self._not_our_threads.pop(next(iter(self._not_our_threads)), None)
+            self._not_our_threads[key] = time.monotonic()
+        return ours
+
+    # ── agent session event handlers ──────────────────────────────
+
+    def _team_for(self, event: dict[str, Any], channel_id: str) -> str:
+        team_id = str(event.get("team_id") or event.get("team") or "")
+        if not team_id:
+            team_id = self._channel_team.get(channel_id, "")
+        if not team_id and len(self._team_clients) == 1:
+            team_id = next(iter(self._team_clients.keys()))
+        return team_id
+
+    async def _handle_session_stopped(self, event: dict[str, Any]) -> None:
+        channel_id = str(event.get("channel") or "")
+        info = {
+            "chat_id": channel_id,
+            "thread_ts": str(event.get("thread_ts") or "") or None,
+            "user_id": str(event.get("user") or ""),
+            "team_id": self._team_for(event, channel_id),
+            "streaming_message_ts": list(event.get("streaming_message_ts") or []),
+        }
+        logger.info(
+            "[slack] stop pressed: channel=%s thread=%s by=%s",
+            channel_id, info["thread_ts"], info["user_id"],
+        )
+        if self.on_session_stopped is None:
+            return
+        try:
+            await self.on_session_stopped(info)
+        except Exception:  # noqa: BLE001
+            logger.exception("[slack] on_session_stopped raised")
+
+    async def _handle_session_title_changed(self, event: dict[str, Any]) -> None:
+        channel_id = str(event.get("channel") or "")
+        thread_ts = str(event.get("thread_ts") or "") or None
+        title = str(event.get("title") or "").strip()
+        if not channel_id or not title:
+            return
+        self.bindings.set_title(channel_id, thread_ts, title, by_user=True)
+        info = {
+            "chat_id": channel_id,
+            "thread_ts": thread_ts,
+            "title": title,
+            "previous_title": str(event.get("previous_title") or ""),
+            "user_id": str(event.get("user") or ""),
+            "team_id": self._team_for(event, channel_id),
+        }
+        if self.on_session_title_changed is None:
+            return
+        try:
+            await self.on_session_title_changed(info)
+        except Exception:  # noqa: BLE001
+            logger.exception("[slack] on_session_title_changed raised")
+
+    async def _handle_home_opened(self, event: dict[str, Any]) -> None:
+        channel_id = str(event.get("channel") or "")
+        info = {
+            "chat_id": channel_id,
+            "user_id": str(event.get("user") or ""),
+            "tab": str(event.get("tab") or ""),
+            "team_id": self._team_for(event, channel_id),
+            "has_view": bool(event.get("view")),
+        }
+        if self.on_home_opened is None:
+            return
+        try:
+            await self.on_home_opened(info)
+        except Exception:  # noqa: BLE001
+            logger.exception("[slack] on_home_opened raised")
+
+    _FEEDBACK_REACTIONS_POSITIVE = {"+1", "thumbsup", "white_check_mark", "heavy_check_mark", "heart", "tada", "raised_hands", "100"}
+    _FEEDBACK_REACTIONS_NEGATIVE = {"-1", "thumbsdown", "x", "no_entry", "no_entry_sign", "face_with_raised_eyebrow", "confused"}
+
+    async def _handle_reaction(self, event: dict[str, Any]) -> None:
+        item = event.get("item") or {}
+        if str(item.get("type") or "") != "message":
+            return
+        channel_id = str(item.get("channel") or "")
+        ts = str(item.get("ts") or "")
+        reaction = str(event.get("reaction") or "").split("::", 1)[0]
+        if reaction in self._FEEDBACK_REACTIONS_POSITIVE:
+            verdict = "+"
+        elif reaction in self._FEEDBACK_REACTIONS_NEGATIVE:
+            verdict = "-"
+        else:
+            return
+        user_id = str(event.get("user") or "")
+        bot_ids = set(self._team_bot_user_ids.values())
+        if user_id in bot_ids:
+            return
+        item_user = str(event.get("item_user") or "")
+        if not (self.bindings.has_message_ts(ts) or item_user in bot_ids):
+            return
+        if self.on_feedback is None:
+            return
+        try:
+            await self.on_feedback({
+                "kind": "reaction",
+                "chat_id": channel_id,
+                "message_ts": ts,
+                "thread_ts": None,
+                "user_id": user_id,
+                "team_id": self._team_for(event, channel_id),
+                "verdict": verdict,
+                "reaction": reaction,
+                "session_key": "",
+                "note": "",
+            })
+        except Exception:  # noqa: BLE001
+            logger.exception("[slack] on_feedback (reaction) raised")
+
+    async def _handle_feedback_click(self, body: dict[str, Any]) -> None:
+        actions = body.get("actions") or []
+        if not actions:
+            return
+        value = str(actions[0].get("value") or "")
+        parsed = _blocks.parse_feedback_value(value)
+        channel_id = str((body.get("channel") or {}).get("id") or "")
+        msg = body.get("message") or {}
+        user_id = str((body.get("user") or {}).get("id") or "")
+        team_id = str((body.get("team") or {}).get("id") or "") or self._team_for({}, channel_id)
+        info = {
+            "kind": "button",
+            "chat_id": channel_id,
+            "message_ts": str(msg.get("ts") or ""),
+            "thread_ts": str(msg.get("thread_ts") or "") or None,
+            "user_id": user_id,
+            "team_id": team_id,
+            "verdict": parsed["verdict"],
+            "reaction": "",
+            "session_key": parsed["session_key"],
+            "turn_ts": parsed["turn_ts"],
+            "note": "",
+        }
+        if self.on_feedback is not None:
+            try:
+                await self.on_feedback(info)
+            except Exception:  # noqa: BLE001
+                logger.exception("[slack] on_feedback (button) raised")
+        if parsed["verdict"] == "-":
+            private = json.dumps({
+                "k": parsed["session_key"], "c": channel_id,
+                "m": info["message_ts"], "t": info["thread_ts"] or "",
+            })
+            await self.open_feedback_modal(
+                str(body.get("trigger_id") or ""), private, team_id=team_id or None,
+            )
+
+    async def _handle_feedback_note(self, body: dict[str, Any], view: dict[str, Any]) -> None:
+        try:
+            private = json.loads(str(view.get("private_metadata") or "{}"))
+        except ValueError:
+            private = {}
+        values = ((view.get("state") or {}).get("values") or {})
+        note = ""
+        block = values.get(_blocks.FEEDBACK_NOTE_BLOCK_ID) or {}
+        element = block.get(_blocks.FEEDBACK_NOTE_ACTION_ID) or {}
+        note = str(element.get("value") or "").strip()
+        if not note or self.on_feedback is None:
+            return
+        channel_id = str(private.get("c") or "")
+        try:
+            await self.on_feedback({
+                "kind": "note",
+                "chat_id": channel_id,
+                "message_ts": str(private.get("m") or ""),
+                "thread_ts": str(private.get("t") or "") or None,
+                "user_id": str((body.get("user") or {}).get("id") or ""),
+                "team_id": str((body.get("team") or {}).get("id") or "") or self._team_for({}, channel_id),
+                "verdict": "-",
+                "reaction": "",
+                "session_key": str(private.get("k") or ""),
+                "note": note[:1000],
+            })
+        except Exception:  # noqa: BLE001
+            logger.exception("[slack] on_feedback (note) raised")
+
+    # ── code channels (Slack Code) ─────────────────────────────────
+
+    @staticmethod
+    def _code_error(exc: Exception) -> str:
+        err = str(exc)
+        if "feature_disabled" in err:
+            return (
+                "feature_disabled: Slack Code is not turned on for this workspace or app. "
+                "A workspace admin enables it under Slack Code settings, and the app "
+                "manifest must declare features.code_channels.enabled."
+            )
+        if "missing_scope" in err:
+            return "missing_scope: the bot token lacks code_channels:manage; reinstall the app after updating the manifest."
+        return err
+
+    async def code_channel_create(
+        self,
+        name: str,
+        *,
+        team_id: str | None,
+        origin_chat_id: str | None,
+        origin_ts: str | None,
+        session_id: str,
+        is_private: bool | None = None,
+    ) -> SendResult:
+        """``agents.conversations.create``: a per-task channel. The id is
+        recorded in the bindings so messages there need no mention."""
+        if not self._app:
+            return SendResult(ok=False, error="not connected")
+        client = self._get_client(origin_chat_id or "", team_id)
+        if client is None:
+            return SendResult(ok=False, error="no client")
+        kwargs: dict[str, Any] = {"name": name[:80], "session_id": session_id[:120]}
+        if team_id:
+            kwargs["team_id"] = team_id
+        if origin_chat_id:
+            kwargs["origin_channel_id"] = origin_chat_id
+        if origin_ts:
+            kwargs["origin_message_ts"] = origin_ts
+        if is_private is not None:
+            kwargs["is_private"] = is_private
+        try:
+            res = await client.agents_conversations_create(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            return SendResult(ok=False, error=self._code_error(exc))
+        data = res.data if hasattr(res, "data") else dict(res)
+        channel = data.get("channel")
+        channel_id = (
+            str(channel.get("id") or "") if isinstance(channel, dict)
+            else str(channel or data.get("channel_id") or "")
+        )
+        if not channel_id:
+            return SendResult(ok=False, error="create returned no channel id", raw=data)
+        self.bindings.add_code_channel(channel_id, {
+            "name": name, "session_id": session_id, "team_id": team_id or "",
+            "origin_chat_id": origin_chat_id or "", "origin_ts": origin_ts or "",
+            "created_at": time.time(),
+        })
+        if team_id:
+            self._channel_team[channel_id] = team_id
+        return SendResult(ok=True, message_id=channel_id, raw=data)
+
+    async def code_channel_call(self, method: str, **kwargs: Any) -> SendResult:
+        """One ``agents.conversations.<method>`` call with the error mapping."""
+        if not self._app:
+            return SendResult(ok=False, error="not connected")
+        channel_id = str(kwargs.get("channel_id") or kwargs.get("channel") or "")
+        client = self._get_client(channel_id)
+        if client is None:
+            return SendResult(ok=False, error="no client")
+        fn = getattr(client, f"agents_conversations_{method}", None)
+        if fn is None:
+            return SendResult(ok=False, error=f"slack-sdk has no agents.conversations.{method}")
+        try:
+            res = await fn(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            return SendResult(ok=False, error=self._code_error(exc))
+        data = res.data if hasattr(res, "data") else dict(res)
+        if method == "archive":
+            self.bindings.remove_code_channel(channel_id)
+        return SendResult(ok=bool(data.get("ok", True)), message_id=channel_id, raw=data)
 
     def describe_app_context(self, team_id: str, user_id: str) -> str:
         """Render what this operator last had open, for the prompt.
@@ -2154,14 +2774,17 @@ class SlackAdapter:
             kwargs["thread_ts"] = thread_id
         try:
             result = await client.chat_postMessage(**kwargs)
-            return SendResult(
-                ok=True,
-                message_id=result.get("ts"),
-                raw=result,
-            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[slack] send_approval_request failed: %s", exc)
             return SendResult(ok=False, error=str(exc))
+        # The session is waiting on the operator; Slack renders
+        # `suspended` as exactly that. The click handler sets it back.
+        await self.set_session_status(chat_id, thread_id=thread_id, status="suspended")
+        return SendResult(
+            ok=True,
+            message_id=result.get("ts"),
+            raw=result,
+        )
 
     async def send_skill_candidate(
         self,

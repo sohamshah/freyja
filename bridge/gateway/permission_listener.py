@@ -91,6 +91,34 @@ class SlackPermissionListener:
                 )
             except RuntimeError:
                 pass
+        elif etype == "session_renamed" and event.get("source") != "slack":
+            # The bridge's Haiku auto-title (or a desktop rename): give
+            # the Slack thread the same name. Slack-originated renames
+            # come from Slack already and are not echoed back.
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._mirror_title(event), self._loop,
+                )
+            except RuntimeError:
+                pass
+
+    async def _mirror_title(self, event: dict[str, Any]) -> None:
+        title = str(event.get("title") or "").strip()
+        rename = getattr(self.adapter, "rename_session", None)
+        if not title or rename is None:
+            return
+        source = getattr(self.session_ref, "gateway_source", None) or self.source
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        if not chat_id:
+            return
+        if getattr(source, "chat_type", "") == "code":
+            thread: str | None = None
+        else:
+            thread = getattr(source, "thread_id", None) or getattr(source, "message_id", None) or self.reply_thread_id
+        try:
+            await rename(chat_id, thread, title, by_user=(event.get("source") == "user"))
+        except Exception:  # noqa: BLE001
+            logger.debug("title mirror to Slack failed", exc_info=True)
 
     # ── implementation ──
 

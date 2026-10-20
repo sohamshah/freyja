@@ -86,8 +86,9 @@ SLACK_TOOL_ALLOWLIST: frozenset[str] = frozenset({
 # platforms. Keeps the default allowlist small but allows per-platform
 # customization.
 _PLATFORM_EXTRAS: dict[str, frozenset[str]] = {
-    # No extras yet; reserved for things like Slack-specific tools
-    # (e.g. a future `slack_react` for emoji reactions).
+    # Slack-only tools: native widgets in the reply and Slack Code
+    # channels. Neither touches the operator's machine.
+    "slack": frozenset({"send_attachment", "slack_widget", "code_channel"}),
 }
 
 

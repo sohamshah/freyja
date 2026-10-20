@@ -329,6 +329,11 @@ def session_key_for(
         # a single per-workspace DM bucket so we don't lose the turn.
         return f"freyja:{platform}:{workspace}:dm"
 
+    # A code channel (Slack Code) is one session for the whole channel,
+    # shared by everyone in it, answered at the top level.
+    if source.chat_type == "code" and source.chat_id:
+        return f"freyja:{platform}:{workspace}:code:{source.chat_id}"
+
     # channel / group / thread
     parts: list[str] = [f"freyja:{platform}:{workspace}", source.chat_type]
     if source.chat_id:
@@ -427,6 +432,15 @@ def gateway_source_block(source: MessageSource) -> str:
             )
     elif source.chat_type == "group":
         lines.append("This is a small group conversation — multiple users present.")
+    elif source.chat_type == "code":
+        ch = source.chat_name or source.chat_id or "a code channel"
+        sender = source.user_name or source.user_id or "a user"
+        lines.append(
+            f"You're in the code channel {ch} that you opened for a task; "
+            f"{sender} sent the message. Reply at the top level, keep the "
+            "view tabs and context bar current with the code_channel tool, "
+            "and archive the channel with a summary when the task is done."
+        )
 
     lines.append(
         "Format with platform-appropriate markdown (Slack mrkdwn renders "
@@ -451,6 +465,22 @@ def gateway_source_block(source: MessageSource) -> str:
         "show / attach a file — don't explain you can't, just call the "
         "tool. Up to 10 files per call."
     )
+    if getattr(source.platform, "value", source.platform) == "slack":
+        lines.append(
+            "Your reply streams live into one Slack message: prose, your tool "
+            "calls as collapsible cards, and widgets, in the order you produce "
+            "them. Standard markdown renders natively (tables, task lists, "
+            "fenced code, headers), so write normal markdown, not Slack mrkdwn. "
+            "For a list of records (3+ rows) call `slack_widget(kind='table')`, "
+            "for numbers over time or across categories `slack_widget(kind='chart')`, "
+            "for entities to compare (tickets, PRs, options) `slack_widget(kind='cards')`; "
+            "the widget appears where you call it, then keep writing below it "
+            "without repeating its contents. For a job with many steps or one "
+            "that produces a diff or a report, `code_channel(action='open')` "
+            "gives it its own channel with diff/report tabs and slash commands. "
+            "The operator can press Stop on your reply, and rate it with the "
+            "thumbs under it."
+        )
     # Inject either the restrictive guidance (filter on, shared workspace)
     # or a strong positive override (filter off, single-operator install).
     # The positive override is critical: pretrained models bias toward
