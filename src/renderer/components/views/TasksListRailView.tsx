@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { AgentView, TaskCardView } from '../shared/types'
 import { renderMarkdown } from '../../lib/markdown'
 import { DetailDrawer, DrawerAction, DrawerSection, DrawerTimeline } from '../shared/DetailDrawer'
@@ -13,6 +13,9 @@ interface Props {
   contextPct: number
   cost: number
   onAttach: (id: string, mode?: 'replace' | 'split') => void
+  /** A task to open on arrival (the activity panel's task rows link here). */
+  focusTaskId?: string | null
+  onFocusTaskHandled?: () => void
 }
 
 type Bucket = 'now' | 'next' | 'blocked' | 'done'
@@ -37,7 +40,18 @@ const GLYPH_CLASS: Record<Bucket, string> = {
 /** Done tasks past this many collapse behind a "show earlier" row. */
 const DONE_VISIBLE = 5
 
-export function TasksListRailView({ title, goal, latestAsk, tasks, agents, contextPct, cost, onAttach }: Props) {
+export function TasksListRailView({
+  title,
+  goal,
+  latestAsk,
+  tasks,
+  agents,
+  contextPct,
+  cost,
+  onAttach,
+  focusTaskId,
+  onFocusTaskHandled,
+}: Props) {
   const [openTaskId, setOpenTaskId] = useState<string | null>(null)
   const [showAllDone, setShowAllDone] = useState(false)
 
@@ -48,6 +62,22 @@ export function TasksListRailView({ title, goal, latestAsk, tasks, agents, conte
     map.done.sort((a, b) => (b.completedAt ?? b.updatedAt ?? 0) - (a.completedAt ?? a.updatedAt ?? 0))
     return map
   }, [tasks])
+
+  // A task picked elsewhere (the activity panel) opens here: its card in
+  // the drawer, its row unfolded from "show earlier" and scrolled to.
+  useEffect(() => {
+    if (!focusTaskId) return
+    if (tasks.some((t) => t.id === focusTaskId)) {
+      setOpenTaskId(focusTaskId)
+      if (buckets.done.slice(DONE_VISIBLE).some((t) => t.id === focusTaskId)) setShowAllDone(true)
+      requestAnimationFrame(() => {
+        document
+          .querySelector(`[data-task-row="${CSS.escape(focusTaskId)}"]`)
+          ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      })
+    }
+    onFocusTaskHandled?.()
+  }, [focusTaskId, tasks, buckets, onFocusTaskHandled])
 
   const tasksById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks])
   const openTask = openTaskId ? tasksById.get(openTaskId) ?? null : null
@@ -302,6 +332,7 @@ function TaskRow({
       }}
       role="button"
       tabIndex={0}
+      data-task-row={task.id}
       className={`grid cursor-pointer grid-cols-[18px_minmax(0,1fr)_auto] items-baseline gap-3 rounded-md px-3 py-2 transition ${
         selected
           ? 'bg-accent/[0.08] ring-1 ring-inset ring-accent/40'

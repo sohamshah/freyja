@@ -6,6 +6,7 @@ import { formatDuration, formatTokens } from '../lib/format'
 import { Conversation } from './Conversation'
 import { ToolCallChip } from './ToolCallChip'
 import { Widget } from './Widget'
+import { ThinkingStream } from './ThinkingStream'
 import { AppshotChip } from './AppshotCard'
 import { ScopedErrorBoundary } from './ScopedErrorBoundary'
 import { JevRunView, jevStatus } from './JevRun'
@@ -275,15 +276,32 @@ function PaneMessage({
         assistant
       </div>
       <div className="space-y-2.5">
-        {safeArray<MessagePart>(message.parts).map((part, index) => (
-          <PanePart key={index} part={part} slice={slice} jevRun={jevRun} />
+        {safeArray<MessagePart>(message.parts).map((part, index, parts) => (
+          <PanePart
+            key={index}
+            part={part}
+            slice={slice}
+            jevRun={jevRun}
+            live={!!slice.isStreaming && slice.currentStreamingMessageId === message.id && index === parts.length - 1}
+          />
         ))}
       </div>
     </div>
   )
 }
 
-function PanePart({ part, slice, jevRun }: { part: MessagePart; slice: SessionSlice; jevRun: boolean }) {
+function PanePart({
+  part,
+  slice,
+  jevRun,
+  live,
+}: {
+  part: MessagePart
+  slice: SessionSlice
+  jevRun: boolean
+  /** This part is the tail of the message still streaming. */
+  live: boolean
+}) {
   if (part.type === 'text' && part.text) {
     if (jevRun && looksLikeJevLog(part.text)) {
       return <JevRunView text={part.text} live={!!slice.isStreaming} />
@@ -300,10 +318,7 @@ function PanePart({ part, slice, jevRun }: { part: MessagePart; slice: SessionSl
 
   if (part.type === 'thinking' && part.text) {
     return (
-      <div className="max-h-[220px] overflow-auto rounded-lg bg-white/[0.025] p-3 font-mono text-[11px] leading-[1.55] text-fg-2 ring-hairline">
-        <div className="mb-1 label">thinking</div>
-        <div className="selectable whitespace-pre-wrap">{part.text}</div>
-      </div>
+      <ThinkingStream text={part.text} live={live} startedAt={part.startedAt} endedAt={part.endedAt} compact />
     )
   }
 

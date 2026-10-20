@@ -367,6 +367,8 @@ const PROFILE_HEX: Record<string, string> = {
 export function MissionDashboard() {
   const tab = useHarness((s) => s.missionDashboardTab)
   const toggleDashboard = useHarness((s) => s.toggleMissionDashboard)
+  const focusTaskId = useHarness((s) => s.missionDashboardFocusTaskId)
+  const clearTaskFocus = useHarness((s) => s.clearDashboardTaskFocus)
   const activeSessionId = useHarness((s) => s.activeSessionId)
   const sessions = useHarness((s) => s.sessions)
   const sessionArchive = useHarness((s) => s.sessionArchive)
@@ -888,6 +890,8 @@ export function MissionDashboard() {
             contextPct={contextPct}
             cost={dashboard.cost}
             onAttach={attach}
+            focusTaskId={focusTaskId}
+            onFocusTaskHandled={clearTaskFocus}
           />
         )}
         {tab === 'profiles' && <ProfilesTab />}

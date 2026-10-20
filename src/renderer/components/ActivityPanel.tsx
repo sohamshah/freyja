@@ -336,6 +336,8 @@ interface ActivityTaskItem {
 }
 
 function TaskProgressSection({ tasks }: { tasks: ActivityTaskItem[] }) {
+  const openDashboardTask = useHarness((s) => s.openDashboardTask)
+  const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
   if (tasks.length === 0) return null
   const done = tasks.filter((task) => task.status === 'done').length
   const blocked = tasks.filter((task) => task.status === 'blocked').length
@@ -366,16 +368,19 @@ function TaskProgressSection({ tasks }: { tasks: ActivityTaskItem[] }) {
           const complete = task.status === 'done'
           const cancelled = task.status === 'cancelled'
           return (
-            <div
+            <button
               key={task.id}
-              className={`group rounded-lg px-2.5 py-2 ring-hairline ${
+              type="button"
+              onClick={() => openDashboardTask(task.id)}
+              title="Open in the dashboard's tasks tab"
+              className={`group block w-full rounded-lg px-2.5 py-2 text-left ring-hairline transition hover:ring-accent/30 ${
                 task.status === 'blocked'
-                  ? 'bg-warn/[0.045]'
+                  ? 'bg-warn/[0.045] hover:bg-warn/[0.07]'
                   : task.status === 'active'
-                    ? 'bg-accent/[0.05]'
+                    ? 'bg-accent/[0.05] hover:bg-accent/[0.08]'
                     : complete
-                      ? 'bg-ok/[0.035]'
-                      : 'bg-white/[0.025]'
+                      ? 'bg-ok/[0.035] hover:bg-ok/[0.06]'
+                      : 'bg-white/[0.025] hover:bg-white/[0.05]'
               }`}
             >
               <div className="flex items-start gap-2.5">
@@ -384,7 +389,7 @@ function TaskProgressSection({ tasks }: { tasks: ActivityTaskItem[] }) {
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className={`truncate text-[11.5px] leading-[1.35] text-fg-1 ${complete || cancelled ? 'line-through decoration-fg-3/70' : ''}`}>
+                    <span className={`truncate text-[11.5px] leading-[1.35] text-fg-1 group-hover:text-fg-0 ${complete || cancelled ? 'line-through decoration-fg-3/70' : ''}`}>
                       {task.title}
                     </span>
                     <span className={`shrink-0 font-mono text-[8.5px] uppercase ${activityTaskStatusClass(task.status)}`}>
@@ -404,13 +409,18 @@ function TaskProgressSection({ tasks }: { tasks: ActivityTaskItem[] }) {
                   )}
                 </div>
               </div>
-            </div>
+            </button>
           )
         })}
         {hidden > 0 && (
-          <div className="rounded bg-white/[0.02] px-2 py-1.5 font-mono text-[9.5px] text-fg-3 ring-hairline">
+          <button
+            type="button"
+            onClick={() => toggleMissionDashboard(true, 'tasks')}
+            title="Open the dashboard's tasks tab"
+            className="block w-full rounded bg-white/[0.02] px-2 py-1.5 text-left font-mono text-[9.5px] text-fg-3 ring-hairline transition hover:bg-white/[0.05] hover:text-fg-1"
+          >
             +{hidden} more task{hidden === 1 ? '' : 's'}
-          </div>
+          </button>
         )}
       </div>
     </div>

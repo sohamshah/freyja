@@ -1,6 +1,8 @@
 import { createContext, memo, startTransition, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useHarness, type SystemEventRecord } from '../state/store'
 import { renderMarkdown } from '../lib/markdown'
+import { useCharacterReveal } from '../lib/characterReveal'
+import { ThinkingStream } from './ThinkingStream'
 import { HeroWelcome } from './HeroWelcome'
 import { ToolCallChip, ToolResultImages } from './ToolCallChip'
 import { Widget } from './Widget'
@@ -13,7 +15,6 @@ import { looksLikeJevLog, parseJevResult } from '../lib/jevLog'
 import { ChildSessionBreadcrumb } from './ChildSessionBreadcrumb'
 import { ConversationSearch } from './ConversationSearch'
 import { SearchQueryContext } from './searchContext'
-import { Spinner } from '../lib/spinner'
 import { highlightHtml, highlightRuns } from '../lib/searchHighlight'
 import { MessageContextMenu, type MessageMenuAction } from './MessageContextMenu'
 import {
@@ -1787,7 +1788,15 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     return <SubagentCard id={part.subagentId} />
   }
   if (part.type === 'thinking' && part.text) {
-    return <ThinkingBlock text={part.text} isActive={isActiveTail} />
+    return (
+      <ThinkingStream
+        text={part.text}
+        live={isActiveTail}
+        startedAt={part.startedAt}
+        endedAt={part.endedAt}
+        searchQuery={searchQuery}
+      />
+    )
   }
   if (part.type === 'system') {
     // Goal verdicts get a richer inline card — the operator wants to
@@ -2209,135 +2218,6 @@ function InlineGoalVerdict({ eventId }: { eventId: string }) {
       ) : null}
     </div>
   )
-}
-
-function ThinkingBlock({ text, isActive }: { text: string; isActive: boolean }) {
-  // `isActive` means this is the literal tail of the currently-streaming
-  // message — i.e. the model is still emitting deltas for THIS thinking
-  // block. Once text / tool calls appear after it, it's done and the
-  // rain animation + caret stop, even if the overall turn is still going.
-  const [collapsed, setCollapsed] = useState(false)
-  const visibleText = useCharacterReveal(text, isActive && !collapsed)
-
-  return (
-    <div className="rounded-xl glass-raised p-3">
-      <button
-        onClick={() => setCollapsed((v) => !v)}
-        className="mb-1.5 flex w-full items-center gap-2 text-left label"
-      >
-        {isActive && !collapsed && (
-          <Spinner name="rain" className="text-accent" />
-        )}
-        <span className="font-mono text-[10px] uppercase tracking-wider text-fg-2">
-          {collapsed ? '+ thinking' : 'thinking'}
-        </span>
-      </button>
-      {!collapsed && (
-        <div className="selectable font-mono text-[11px] leading-[1.65] text-fg-2 whitespace-pre-wrap max-h-[300px] overflow-y-auto">
-          {visibleText}
-          {isActive && <span className="caret" />}
-        </div>
-      )}
-    </div>
-  )
-}
-
-const REVEAL_CHARS_PER_SECOND = 72
-const MAX_REVEAL_CHARS_PER_FRAME = 6
-
-function useCharacterReveal(text: string, active: boolean): string {
-  const [visibleText, setVisibleText] = useState(() => (active ? '' : text))
-  const activeRef = useRef(active)
-  const targetRef = useRef(text)
-  const visibleRef = useRef(active ? '' : text)
-  const rafRef = useRef<number | null>(null)
-  const lastFrameRef = useRef(0)
-  const carryRef = useRef(0)
-
-  const cancelFrame = useCallback(() => {
-    if (rafRef.current != null) {
-      cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
-    }
-  }, [])
-
-  const setVisible = useCallback((next: string) => {
-    visibleRef.current = next
-    setVisibleText(next)
-  }, [])
-
-  const step = useCallback(
-    (now: number) => {
-      rafRef.current = null
-      if (!activeRef.current) return
-
-      const target = targetRef.current
-      const current = visibleRef.current
-      if (current === target) return
-
-      if (!target.startsWith(current)) {
-        setVisible(target)
-        return
-      }
-
-      const elapsed = lastFrameRef.current > 0 ? now - lastFrameRef.current : 16.7
-      lastFrameRef.current = now
-      carryRef.current += (elapsed / 1000) * REVEAL_CHARS_PER_SECOND
-
-      const remaining = target.length - current.length
-      const catchUp = remaining > 240 ? MAX_REVEAL_CHARS_PER_FRAME : remaining > 96 ? 3 : 1
-      const count = Math.min(
-        remaining,
-        Math.max(1, Math.min(MAX_REVEAL_CHARS_PER_FRAME, Math.floor(carryRef.current), catchUp)),
-      )
-      carryRef.current = Math.max(0, carryRef.current - count)
-
-      let nextIndex = current.length
-      for (let i = 0; i < count && nextIndex < target.length; i++) {
-        nextIndex = nextCharacterBoundary(target, nextIndex)
-      }
-      setVisible(target.slice(0, nextIndex))
-
-      if (nextIndex < target.length) {
-        rafRef.current = requestAnimationFrame(step)
-      }
-    },
-    [setVisible],
-  )
-
-  const schedule = useCallback(() => {
-    if (rafRef.current != null || !activeRef.current) return
-    rafRef.current = requestAnimationFrame(step)
-  }, [step])
-
-  useEffect(() => {
-    activeRef.current = active
-    targetRef.current = text
-
-    if (!active) {
-      cancelFrame()
-      lastFrameRef.current = 0
-      carryRef.current = 0
-      if (visibleRef.current !== text) setVisible(text)
-      return
-    }
-
-    if (!text.startsWith(visibleRef.current)) {
-      setVisible('')
-    }
-    if (visibleRef.current !== text) schedule()
-  }, [active, cancelFrame, schedule, setVisible, text])
-
-  useEffect(() => cancelFrame, [cancelFrame])
-
-  return visibleText
-}
-
-function nextCharacterBoundary(text: string, index: number): number {
-  if (index >= text.length) return text.length
-  const codePoint = text.codePointAt(index)
-  if (codePoint === undefined) return index + 1
-  return index + (codePoint > 0xffff ? 2 : 1)
 }
 
 /**

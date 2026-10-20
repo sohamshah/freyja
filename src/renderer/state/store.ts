@@ -467,6 +467,10 @@ export interface HarnessState extends SessionSlice {
     | 'findings'
     | 'telemetry'
     | 'scheduler'
+  /** A task the dashboard's tasks tab should open as soon as it renders.
+   *  Set by `openDashboardTask`; the tasks view clears it once the card
+   *  is open. */
+  missionDashboardFocusTaskId: string | null
   /** Cross-session compaction metrics dashboard (header button toggle). */
   metricsDashboardOpen: boolean
   /** Global artifact browser (⌘⇧A) — every file every session ever produced,
@@ -614,6 +618,9 @@ export interface HarnessActions {
     open?: boolean,
     tab?: HarnessState['missionDashboardTab'],
   ): void
+  /** Open the mission dashboard on its tasks tab with one task's card open. */
+  openDashboardTask(taskId: string): void
+  clearDashboardTaskFocus(): void
   toggleMetricsDashboard(open?: boolean): void
   toggleArtifactsBrowser(open?: boolean, focusPath?: string | null): void
   toggleMorningRoom(open?: boolean): void
@@ -1393,6 +1400,7 @@ function emptyState(): HarnessState {
     commandPaletteOpen: false,
     missionDashboardOpen: false,
     missionDashboardTab: 'overview',
+    missionDashboardFocusTaskId: null,
     metricsDashboardOpen: false,
     artifactsBrowserOpen: false,
     artifactsBrowserFocusPath: null,
@@ -1997,14 +2005,15 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       // Append to the current streaming message as a thinking part
       // so it renders inline, not as a detached block at the bottom.
       if (!slice.currentStreamingMessageId) return next
+      const now = Date.now()
       next.messages = slice.messages.map((m) => {
         if (m.id !== slice.currentStreamingMessageId) return m
         const parts = [...m.parts]
         const last = parts[parts.length - 1]
         if (last?.type === 'thinking') {
-          parts[parts.length - 1] = { ...last, text: (last.text ?? '') + ev.thinking }
+          parts[parts.length - 1] = { ...last, text: (last.text ?? '') + ev.thinking, endedAt: now }
         } else {
-          parts.push({ type: 'thinking', text: ev.thinking })
+          parts.push({ type: 'thinking', text: ev.thinking, startedAt: now, endedAt: now })
         }
         return { ...m, parts }
       })
@@ -4551,6 +4560,18 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       missionDashboardOpen: open ?? !prev.missionDashboardOpen,
       missionDashboardTab: tab ?? prev.missionDashboardTab,
     }))
+  },
+
+  openDashboardTask(taskId) {
+    set({
+      missionDashboardOpen: true,
+      missionDashboardTab: 'tasks',
+      missionDashboardFocusTaskId: taskId,
+    })
+  },
+
+  clearDashboardTaskFocus() {
+    set({ missionDashboardFocusTaskId: null })
   },
 
   toggleMetricsDashboard(open) {

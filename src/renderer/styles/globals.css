@@ -1532,3 +1532,217 @@ body.splash-active [data-splash-target='hero-icon'] {
     transition-duration: 1ms;
   }
 }
+
+/* ── Thinking ─────────────────────────────────────────────────────────
+   An aside, not a card (ThinkingStream.tsx). The thought reads in the
+   editorial serif, italic and light, set off by a hairline rule, so it
+   is a different voice from the answer's mono. Live: a six-line window
+   of the newest text, the oldest lines fading out at the top, under a
+   shimmering "thinking" and the step the model is on. Done: one quiet
+   line that opens on click. */
+.thought {
+  --thought-size: 13.5px;
+  --thought-lines: 6;
+  min-width: 0;
+}
+.thought--compact {
+  --thought-size: 12.5px;
+  --thought-lines: 5;
+}
+
+.thought-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 0;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: #6e6e6e;
+  transition: color 160ms ease;
+}
+.thought-head:hover {
+  color: #a8a8a8;
+}
+.thought-head:focus-visible {
+  outline: 1px solid rgba(168, 212, 252, 0.45);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+/* A small rotated square: hollow once done, a lit lamp while live. */
+.thought-mark {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 1px;
+  transform: rotate(45deg);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 1px;
+  transition: border-color 220ms ease, background-color 220ms ease, box-shadow 220ms ease;
+}
+.thought[data-live='true'] .thought-mark {
+  border-color: var(--accent);
+  background: rgba(168, 212, 252, 0.4);
+  box-shadow: 0 0 8px rgba(168, 212, 252, 0.5);
+  animation: thought-lamp 1.6s ease-in-out infinite;
+}
+@keyframes thought-lamp {
+  0%, 100% { opacity: 0.55; box-shadow: 0 0 4px rgba(168, 212, 252, 0.25); }
+  50% { opacity: 1; box-shadow: 0 0 10px rgba(168, 212, 252, 0.6); }
+}
+
+.thought-verb {
+  flex: none;
+  color: #a8a8a8;
+}
+.thought[data-live='true'] .thought-verb {
+  background: linear-gradient(90deg, #6e6e6e 0%, #6e6e6e 38%, #c4e0fc 50%, #6e6e6e 62%, #6e6e6e 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: thought-shimmer 2.4s linear infinite;
+}
+@keyframes thought-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+
+.thought-time {
+  flex: none;
+  color: #4a4a4a;
+  font-variant-numeric: tabular-nums;
+}
+.thought-head:hover .thought-time {
+  color: #6e6e6e;
+}
+
+.thought-topic {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: 12.5px;
+  letter-spacing: 0;
+  color: #6e6e6e;
+}
+.thought[data-live='true'] .thought-topic,
+.thought-head:hover .thought-topic {
+  color: #a8a8a8;
+}
+
+.thought-caret {
+  flex: none;
+  margin-left: auto;
+  color: #4a4a4a;
+  opacity: 0;
+  transition: transform 260ms var(--ease-out-expo), opacity 160ms ease;
+}
+.thought-head:hover .thought-caret,
+.thought-head:focus-visible .thought-caret,
+.thought[data-open='true']:not([data-live='true']) .thought-caret {
+  opacity: 1;
+}
+.thought[data-open='true'] .thought-caret {
+  transform: rotate(90deg);
+}
+
+/* The thought itself. `.md` supplies lists, code and links; these rules
+   swap its mono for the serif. */
+.thought-body.md {
+  margin: 7px 0 4px 3px;
+  padding: 1px 0 1px 15px;
+  border-left: 1px solid transparent;
+  border-image: linear-gradient(to bottom, rgba(168, 212, 252, 0.32), rgba(255, 255, 255, 0.05)) 1;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: var(--thought-size);
+  line-height: 1.62;
+  color: #a8a8a8;
+  font-feature-settings: normal;
+}
+.thought-body.md p {
+  margin: 0 0 0.75em 0;
+}
+.thought-body.md p:last-child {
+  margin-bottom: 0;
+}
+.thought-body.md strong {
+  color: #e8e8e8;
+  font-weight: 500;
+}
+.thought-body.md em {
+  background: none;
+  padding: 0;
+  color: #c9c9c9;
+}
+.thought-body.md code,
+.thought-body.md pre {
+  font-style: normal;
+}
+/* Step titles ("**Checking the reducer**" on a line of its own). */
+.thought-body.md h4 {
+  margin: 1.1em 0 0.35em 0;
+  font-family: var(--font-mono);
+  font-style: normal;
+  font-weight: 500;
+  font-size: 9.5px;
+  line-height: 1.4;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #6e6e6e;
+}
+.thought-body.md h4:first-child {
+  margin-top: 0;
+}
+
+/* Live: a fixed window anchored to the bottom. New lines push the old
+   ones up; once they overflow, the top fades out instead of cutting. */
+.thought-window {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  max-height: calc(var(--thought-size) * 1.62 * var(--thought-lines) + 10px);
+  overflow: hidden;
+}
+.thought-window > .thought-body {
+  flex: none;
+}
+.thought-window[data-overflowing='true'] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 62%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 62%);
+}
+/* The pen: a lit dot where the next words land. */
+.thought-window .thought-body > :last-child::after {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 6px;
+  vertical-align: 0.1em;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(168, 212, 252, 0.7);
+  animation: thought-lamp 1.1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thought[data-live='true'] .thought-mark,
+  .thought[data-live='true'] .thought-verb,
+  .thought-window .thought-body > :last-child::after {
+    animation: none;
+  }
+  .thought[data-live='true'] .thought-verb {
+    color: #a8a8a8;
+    background: none;
+  }
+}

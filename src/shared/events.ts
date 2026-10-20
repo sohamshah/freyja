@@ -246,6 +246,11 @@ export interface MessagePart {
   /** For `systemSubtype === 'mcp_result' | 'mcp_error'`: the /mcp
    *  subcommand (status, tools, catalog, …) that produced this block. */
   mcpAction?: string
+  /** For `type === 'thinking'`: when the first and the latest delta of this
+   *  block arrived (epoch ms). The renderer shows "thought for 12s" from
+   *  them. Absent on transcripts rebuilt from disk. */
+  startedAt?: number
+  endedAt?: number
 }
 
 /** A capture of one window: its image plus the text the app exposes through
