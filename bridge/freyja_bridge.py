@@ -5227,6 +5227,19 @@ class _BridgeSession:
                     "info",
                     f"gateway session {self.id}: registered send_attachment tool",
                 )
+                # Native Slack widgets in the live reply, and Slack Code
+                # channels for long jobs. Both read the session at call
+                # time for the live stream consumer and the gateway source.
+                from bridge.tools.code_channel_tool import CodeChannelTool
+                from bridge.tools.slack_widget_tool import SlackWidgetTool
+                registry.register(SlackWidgetTool(
+                    get_gateway_source=lambda: getattr(self, "gateway_source", None),
+                    get_session=lambda: self,
+                ))
+                registry.register(CodeChannelTool(
+                    get_gateway_source=lambda: getattr(self, "gateway_source", None),
+                    get_session=lambda: self,
+                ))
             except Exception as exc:  # noqa: BLE001
                 import traceback
                 log(
@@ -5246,7 +5259,7 @@ class _BridgeSession:
                 # it to ship files back regardless of the safety
                 # posture, and it's not destructive.
                 allowed = set(tools_allowed_for_gateway(platform))
-                allowed.add("send_attachment")
+                allowed.update({"send_attachment", "slack_widget", "code_channel"})
                 for name in list(registry._tools.keys()):  # noqa: SLF001
                     if name not in allowed:
                         registry._tools.pop(name, None)  # noqa: SLF001

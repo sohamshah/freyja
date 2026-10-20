@@ -1144,7 +1144,7 @@ Parameters:
         # Without this force-include, an explore-fast sub-agent that
         # finds an interesting image can't share it back to the
         # operator — the parent has to fetch it manually.
-        _GATEWAY_FORCE_INCLUDE = frozenset({"send_attachment"})
+        _GATEWAY_FORCE_INCLUDE = frozenset({"send_attachment", "slack_widget"})
         for name in _GATEWAY_FORCE_INCLUDE:
             if name in parent_tools:
                 allowed = allowed | {name}
