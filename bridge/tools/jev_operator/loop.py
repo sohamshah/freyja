@@ -23,6 +23,7 @@ from bridge.tools.jev_operator.decide import (
     ALWAYS_GATED_KEYS,
     COMMIT_KEYS,
     KEY_OPTIONS,
+    _PLANNER_CLICK,
     Decision,
     Thresholds,
     decide,
@@ -263,6 +264,17 @@ def is_irreversible(el: Element) -> bool:
     return el.role in GATED_ROLES and bool(_IRREVERSIBLE.search(name))
 
 
+def is_open(el: Element) -> bool:
+    """A control that shows its panel, list or menu open (aria-expanded, or an
+    open disclosure triangle)."""
+    return getattr(el, "expanded", None) is True or el.toggle_state() == "expanded"
+
+
+# A sub-goal or goal that asks for a panel to be shut lets the control that
+# opened it be clicked again.
+_CLOSE_WORDS = re.compile(r"\b(close|collapse|hide|fold)\b", re.I)
+
+
 def installed_apps() -> list[str]:
     names: set[str] = set()
     for d in APP_DIRS:
@@ -475,6 +487,9 @@ class Operator:
         self._consecutive_waits = 0
         self._settle_next = False  # after a scroll, wait for the animation to end before acting
         self._clicked_toggle: tuple[str, str, str, str | None] | None = None
+        # (window, role, label) of a control the last action clicked while it was
+        # closed: if it shows open now, that click opened it.
+        self._opened_by_last: tuple[str | None, str, str] | None = None
         self._seen_windows: set[str] = set()
         self._start_windows: list[str] | None = None
         self._window_checks: set[str] = set()
@@ -1218,7 +1233,28 @@ class Operator:
             kind = d.operation
             prev_append, self._last_append = self._last_append, None
             try:
-                if d.target is not None and d.target.offscreen and d.operation in ("click", "double_click", "type"):
+                if d.operation == "click" and d.target is not None and self._reshuts(d.target):
+                    # The last click opened this control's panel, and nothing was done
+                    # in it: a second click shuts it again. On a token form Jev opened
+                    # "Add permissions", then clicked it again under the same sub-goal,
+                    # twice, and the run stopped with no permission added.
+                    refusal = (
+                        f"not clicking [{d.target.index}] {d.target.label!r} again: the last "
+                        "click opened it, and a second click would close what it opened"
+                    )
+                    await self._say(f"  {refusal}")
+                    self.history.append(
+                        {"step": step, "kind": "refused", "action": describe(d), "ok": False,
+                         "changed": False, "error": refusal}
+                    )
+                    self._log({"event": "outcome", "step": step, **self.history[-1]})
+                    if self._subgoal and _PLANNER_CLICK.match(self._subgoal):
+                        # The sub-goal's click is made; decide against the goal.
+                        self._subgoal = None
+                    before, pending = obs, None
+                    stuck_streak += 1
+                    continue
+                elif d.target is not None and d.target.offscreen and d.operation in ("click", "double_click", "type"):
                     # Scrolled out of view: this step scrolls toward the control, and Jev
                     # picks it again once it is in view (gates apply then).
                     plan = obs.scroll_toward(d.target)
@@ -1412,6 +1448,14 @@ class Operator:
                     "Cancel, so nothing was confirmed. Re-run with allow_irreversible=true to answer OK.",
                     pending=f"{action_desc} -> confirm {declined!r}",
                     screen=obs.screen_text,
+                )
+            if kind not in ("scroll", "scroll_down", "scroll_up"):
+                # A scroll leaves an open panel as it was; any other action is
+                # something done after the opening click.
+                self._opened_by_last = (
+                    (d.target.window, d.target.role, d.target.label)
+                    if kind == "click" and d.target is not None and not is_open(d.target)
+                    else None
                 )
             before = obs
             self._last_new_lines = 0  # what the reads after this action add is its own
@@ -1711,6 +1755,13 @@ class Operator:
                     el = obs.by_index(int(m.group(1)))
                     if el is not None:
                         self._subgoal_refs[el.index] = (el.role, el.label)
+
+    def _reshuts(self, el: Element) -> bool:
+        """Whether clicking `el` would close the panel the run's last action opened
+        with it, when nothing asks for the panel to be closed."""
+        if self._opened_by_last != (el.window, el.role, el.label) or not is_open(el):
+            return False
+        return not _CLOSE_WORDS.search(self._subgoal or self.cfg.goal)
 
     def _bound_subgoal(self, obs: Observation) -> str | None:
         """The sub-goal with its [N] indices renumbered for this screen. The

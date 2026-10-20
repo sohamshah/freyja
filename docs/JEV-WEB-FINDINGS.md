@@ -325,6 +325,24 @@ Per task, origin/main against the kept version: `desk/refunds` 3 to 8 of 24, `de
 
 Over every env, 1 run per task, origin/main and the kept version each passed 54 of 68 tasks with 233 of 281 marks, and stops for no text went from 11 to 0. `desk/routing` fell from 7 to 0 of 8 in that round, but no routing run types anything, and 3 more runs each gave 8 of 24 on origin/main and 9 of 24 with the change.
 
+## A list its own button closes, and a tab that opens late
+
+Two live runs from 2026-10-15 to 2026-10-18 stopped on page behaviour the envs did not have.
+
+The first was a code host's token form. Its "Add permissions" button opens a list of about 38 permissions with a search field, and the list comes before the form in page order. Opening it moved the button in Jev's table from [36] to [76], and a second click on the button closes the list. Jev clicked the button, and on the next step clicked it again. It did this twice, and the run stopped with no permission added. `console/key_permissions` rebuilds the form on the Cirrolux console, with the list's place (`portal_panel`) and the closing click (`toggle_opener`) as quirks. The fix refuses a click on a control whose panel the last action opened, while nothing was done in the panel. A second version also decided again whenever Jev judged the sub-goal done, not only when it chose `done`. Each version had 5 runs:
+
+| Version | Clicks on "Add permissions" | LLM calls a run | Seconds a run |
+|---|---|---|---|
+| origin/main | 26 | 7.0 | 41 |
+| origin/main, both quirks off | 7 | 6.8 | 42 |
+| The refusal (kept) | 5 | 5.2 | 34 |
+| Deciding again for a finished sub-goal | 10 | 5.4 | 37 |
+| Both | 5 | 5.4 | 34 |
+
+All versions finished all 5 runs, because on the mock the planner told Jev to click "Storage objects" after a few round trips. The live run's planner kept telling it to click the button. The refusal brought every run down to one click on the button. Over every env, 1 run per task, origin/main passed 56 of 69 tasks with 241 of 287 marks, and the refusal 55 with 231. The refusal fired twice in that round: once on the new task, and once on `desk/expenses`, correctly, on a Decision list Jev had just opened (that run ended with 4 marks against 1). A run where it does not fire runs as before, so the other differences are run-to-run noise in the desk and mail tasks. Deciding again fired more than 80 times in 26 tasks, added nothing on the new task, and its round passed 52 tasks, so it was dropped.
+
+The second was a file viewer's Download. The viewer asks its server first and opens the virus-scan warning in a new tab about a second later. The page script reports a new tab only when the click itself opens one, so the run went on reading the viewer. The warning's "Download anyway" was never listed, and the run waited until it was stopped. Now, for 15 seconds after a click, each read checks the front tab and moves the run to a new tab on the same site. A live run on the same file on 2026-10-20 followed the warning tab 1.3 s after its click and finished in 19 s with 1 LLM call. The envs inject the page script and never follow tabs, so no env task measures the rule. Unit tests cover it.
+
 ## Still open
 
 - **Trusted-only controls.** Some controls ignore script events, like the live Travelers panel. A page run needs a trusted-input fallback for them: the real pointer, scoped to the run's tab and its window position. Until then, `computer_use` handles them.

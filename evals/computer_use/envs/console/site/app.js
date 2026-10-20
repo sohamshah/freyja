@@ -200,6 +200,7 @@
   function render() {
     R.progress.classList.remove('on');
     var name = viewName();
+    if (name !== 'keys') leaveKeys();
     markNav(name);
     VIEWS[name](renderSeq);
   }
@@ -286,7 +287,7 @@
       el('div', { class: 'sn-list' }, NAV.map(function (n, i) { return item(n, i, NAV.length); })
         .concat([R.moreBtn, R.moreList])),
       el('div', { class: 'sn-foot' }, [
-        el('a', { class: 'sn-item sn-key', href: 'page.html?p=api-key', 'data-spa': 'quick' }, [svg('key', 20), el('span', { class: 'sn-text', text: 'Get API key' })]),
+        el('a', { class: 'sn-item sn-key', href: 'keys.html', 'data-spa': 'quick' }, [svg('key', 20), el('span', { class: 'sn-text', text: 'Get API key' })]),
         el('hr'),
         el('a', { class: 'sn-item', href: 'page.html?p=billing', 'data-spa': 'quick' }, [svg('card', 20), el('span', { class: 'sn-text', text: 'Billing' })]),
         el('a', { class: 'sn-item', href: 'page.html?p=tutorials', 'data-spa': 'quick' }, [svg('cap', 20), el('span', { class: 'sn-text', text: 'Tutorials' })]),
@@ -458,8 +459,11 @@
   function textField(id, label, opts) {
     opts = opts || {};
     var k = skeleton(id, label, opts.required);
-    var input = el('input', { class: 'ff-input', id: id, type: opts.type || 'text', autocomplete: 'off',
-      'aria-required': opts.required ? 'true' : null, 'aria-describedby': id + '-err' });
+    // opts.rows: a multi-line field (a textarea in the same outline).
+    var input = opts.rows ? el('textarea', { class: 'ff-input', id: id, rows: String(opts.rows), 'aria-describedby': id + '-err' })
+      : el('input', { class: 'ff-input', id: id, type: opts.type || 'text', autocomplete: 'off',
+        'aria-required': opts.required ? 'true' : null, 'aria-describedby': id + '-err' });
+    if (opts.rows) k.wrapper.classList.add('ff-area');
     k.wrapper.appendChild(el('div', { class: 'ff-infix' }, [input]));
     function sync() { k.float(input.value || document.activeElement === input); }
     k.wrapper.addEventListener('click', function (e) { if (e.target !== input && e.target !== k.label) input.focus(); });
@@ -473,12 +477,14 @@
   // The select. With overlay_selects it is Material's: a div with role
   // combobox; a click on the field (or the trigger) opens an option panel that
   // exists only while open, at the end of <body> behind a transparent
-  // backdrop. Off: a native <select> in the same outline.
-  function selectField(id, label, options, value, onChange) {
-    var k = skeleton(id, label, true);
+  // backdrop. Off: a native <select> in the same outline. opts.optional: not
+  // a required field.
+  function selectField(id, label, options, value, onChange, opts) {
+    var req = !(opts && opts.optional);
+    var k = skeleton(id, label, req);
     var cur = value || '';
     if (!Q.overlay_selects) {
-      var sel = el('select', { class: 'ff-native' + (cur ? '' : ' empty'), id: id, 'aria-required': 'true', 'aria-describedby': id + '-err' },
+      var sel = el('select', { class: 'ff-native' + (cur ? '' : ' empty'), id: id, 'aria-required': String(req), 'aria-describedby': id + '-err' },
         [el('option', { value: '', text: '' })].concat(options.map(function (o) { return el('option', { value: o, text: o }); })));
       sel.value = cur;
       k.wrapper.appendChild(sel);
@@ -492,7 +498,7 @@
     }
     var valueText = el('span', { class: 'ff-value-text' });
     var box = el('div', { class: 'ff-select', id: id, role: 'combobox', tabindex: '0', 'aria-haspopup': 'listbox',
-      'aria-expanded': 'false', 'aria-labelledby': id + '-label', 'aria-required': 'true', 'aria-disabled': 'false',
+      'aria-expanded': 'false', 'aria-labelledby': id + '-label', 'aria-required': String(req), 'aria-disabled': 'false',
       'aria-describedby': id + '-err' }, [el('div', { class: 'ff-trigger' }, [el('div', { class: 'ff-value' }, [valueText])])]);
     k.wrapper.appendChild(box);
     k.wrapper.appendChild(el('div', { class: 'ff-arrow' }, [svg('drop', 24)]));
@@ -1280,6 +1286,320 @@
     });
   };
 
+  // ─── new access key ────────────────────────────────────────────────────
+  // A key form laid out like a code host's fine-grained token form. The page
+  // reports the whole form on every change (keys/draft) and only the server's
+  // copy is scored. Two quirks shape the "Add permissions" panel: with
+  // portal_panel it renders in a container before the app, so its controls
+  // come first in page order; with toggle_opener a second click on the button
+  // closes it.
+  var K = null;              // the open key form
+  var draftBusy = false, draftAgain = false;
+  function keyForm() {
+    if (!K) return { cleared: true };
+    function perms(list) { return list.map(function (p) { return { name: p.name, level: p.level }; }); }
+    return { name: K.f.name.get(), description: K.f.description.get(), owner: K.owner, expiration: K.days,
+      message: K.f.message.get(), access: K.access, projects: K.projects.slice(),
+      permissions: { project: perms(K.perms.project), org: perms(K.perms.org) } };
+  }
+  // One request at a time, so the server never keeps an older form than the
+  // last one sent; changes made meanwhile go out together when it answers.
+  function saveDraft() {
+    document.body.setAttribute('data-draft', 'pending');
+    if (draftBusy) { draftAgain = true; return; }
+    draftBusy = true; draftAgain = false;
+    api('keys/draft', keyForm()).then(draftDone, draftDone);
+  }
+  function draftDone() {
+    draftBusy = false;
+    if (draftAgain) saveDraft(); else document.body.setAttribute('data-draft', 'saved');
+  }
+  function leaveKeys() { if (K) { K = null; saveDraft(); } }
+
+  VIEWS.keys = function (seq) {
+    setCrumbs([[PLATFORM, 'page.html?p=dashboard'], ['API keys', 'page.html?p=api-key'], ['New access key', 'keys.html']]);
+    setTitle('New access key');
+    api('keys').then(function (r) {
+      if (!current(seq)) return;
+      drawKeys(r.data);
+      shown('keys');
+      saveDraft();
+    });
+  };
+  function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-'); }
+  function drawKeys(d) {
+    var k = K = { owner: d.owner, days: d.expiration, access: 'none', projects: [], perms: { project: [], org: [] } };
+    var exp = {};
+    d.expirations.forEach(function (x) { exp[x.label] = x; exp[x.days] = x; });
+    function ownerOf(name) { return d.owners.filter(function (o) { return o.name === name; })[0] || {}; }
+    function projectOf(id) { return d.projects.filter(function (p) { return p.id === id; })[0]; }
+    function help(text, id) { return el('p', { class: 'k-help', id: id || null, text: text }); }
+
+    k.f = {
+      name: textField('k-name', 'Key name', { required: true }),
+      description: textField('k-description', 'Description', {}),
+      message: textField('k-message', 'Request message', { rows: 3 }),
+    };
+    ['name', 'description', 'message'].forEach(function (n) { k.f[n].ctl.addEventListener('input', saveDraft); });
+    var owner = selectField('k-owner', 'Resource owner', d.owners.map(function (o) { return o.name; }), d.owner,
+      function (v) { k.owner = v; syncOwner(); saveDraft(); });
+    var expHelp = help('', 'k-expiration-help');
+    var expiration = selectField('k-expiration', 'Expiration', d.expirations.map(function (x) { return x.label; }), exp[d.expiration].label,
+      function (v) { k.days = exp[v].days; syncExpiry(); saveDraft(); });
+    function syncExpiry() { expHelp.textContent = 'The key stops working on ' + exp[k.days].date + '.'; }
+    var msgBox = el('div', { class: 'k-msg' }, [k.f.message.node,
+      help('', 'k-message-help')]);
+    function syncOwner() {
+      var o = ownerOf(k.owner);
+      msgBox.classList.toggle('hidden', !o.approval);
+      msgBox.lastChild.textContent = k.owner + ' approves every key that reaches its projects. Tell its administrators what this key is for.';
+    }
+
+    // ─── project access ──────────────────────────────────────────────────
+    var badge = el('span', { class: 'k-badge hidden' });
+    var selectBtn = el('button', { class: 'btn outlined', id: 'k-select-projects', type: 'button', onclick: openProjects },
+      [svg('project', 18), 'Select projects', badge]);
+    var chosen = el('div', { class: 'k-chosen' });
+    var pickBox = el('div', { class: 'k-pick hidden' }, [selectBtn, chosen]);
+    var ACCESS = [['none', 'No project access', 'The key reaches no project.'],
+      ['all', 'All projects', 'Every project the owner has now, and every project it creates later.'],
+      ['selected', 'Only select projects', 'Pick the projects the key can reach, at most 50.']];
+    var radios = el('div', { class: 'k-radios', role: 'radiogroup', 'aria-label': 'Project access' }, ACCESS.map(function (a) {
+      return radio('k-access', a[0], 'k-access-' + a[0], [el('span', { class: 'rt', text: a[1] }), ' ', el('span', { class: 'rh', text: a[2] })],
+        a[0] === k.access, function (v) { k.access = v; pickBox.classList.toggle('hidden', v !== 'selected'); saveDraft(); });
+    }));
+    function drawChosen() {
+      badge.textContent = k.projects.length ? String(k.projects.length) : '';
+      badge.classList.toggle('hidden', !k.projects.length);
+      chosen.textContent = '';
+      k.projects.forEach(function (id) {
+        var p = projectOf(id);
+        chosen.appendChild(el('div', { class: 'k-chosen-row' }, [svg('project', 18), el('span', { class: 'nm', text: p.name }),
+          el('span', { class: 'id', text: p.id }),
+          el('button', { class: 'btn text', type: 'button', 'aria-label': 'Remove ' + p.name, text: 'Remove', onclick: function () {
+            k.projects = k.projects.filter(function (x) { return x !== id; });
+            drawChosen(); saveDraft();
+          } })]));
+      });
+    }
+    // "Select projects": a modal dialog with a search field, a box per project
+    // and a Close button.
+    function openProjects() {
+      closeAllOverlays();
+      var input = el('input', { type: 'text', 'aria-label': 'Search projects', placeholder: 'Search projects', autocomplete: 'off' });
+      var none = el('div', { class: 'pk-msg hidden', text: 'No projects match.' });
+      var count = el('span', { class: 'kp-count' });
+      var rows = d.projects.map(function (p) {
+        var box = el('input', { type: 'checkbox', id: 'kp-' + p.id, 'aria-label': p.name + ' (' + p.id + ')', checked: k.projects.indexOf(p.id) >= 0 });
+        box.addEventListener('change', function () {
+          k.projects = k.projects.filter(function (x) { return x !== p.id; });
+          if (box.checked) k.projects.push(p.id);
+          drawChosen(); counted(); saveDraft();
+        });
+        var row = el('div', { class: 'kp-row' }, [el('div', { class: 'mdc-checkbox' }, [box, el('div', { class: 'box' }), el('div', { class: 'tick' }, [svg('tick', 18)])]),
+          el('label', { for: 'kp-' + p.id, class: 'kp-name', text: p.name }), el('span', { class: 'kp-id', text: p.id })]);
+        row.hay = (p.name + ' ' + p.id).toLowerCase();
+        return row;
+      });
+      var list = el('div', { class: 'kp-list' }, rows.concat([none]));
+      function counted() { count.textContent = k.projects.length + ' of ' + d.projects.length + ' selected'; }
+      input.addEventListener('input', function () {
+        var v = input.value.trim().toLowerCase(), n = 0;
+        rows.forEach(function (r) { var on = !v || r.hay.indexOf(v) >= 0; r.classList.toggle('hidden', !on); if (on) n++; });
+        none.classList.toggle('hidden', n > 0);
+      });
+      var dlg = el('div', { class: 'dialog kp', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'kp-title', tabindex: '-1' }, [
+        el('div', { class: 'kp-head' }, [el('h2', { id: 'kp-title', text: 'Select projects' }),
+          el('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Close', onclick: close }, [svg('close', 20)])]),
+        el('p', { class: 'kp-sub', text: 'Projects of ' + k.owner + ' this key can reach.' }),
+        el('div', { class: 'pk-search kp-search' }, [el('span', { style: 'display:flex;color:#5e6266' }, [svg('search', 20)]), input]),
+        list,
+        el('div', { class: 'kp-foot' }, [count]),
+      ]);
+      var bd = el('div', { class: 'cdk-overlay-backdrop dark' });
+      var wrap = el('div', { class: 'cdk-global-wrapper' }, [el('div', { class: 'cdk-overlay-pane', style: 'position:static' }, [dlg])]);
+      bd.addEventListener('click', close);
+      R.ov.appendChild(bd);
+      R.ov.appendChild(wrap);
+      var unhide = hideBehind();
+      var ovl = pushOverlay({ escape: close, close: close });
+      counted();
+      setTimeout(function () { input.focus(); }, 0);
+      function close() {
+        bd.remove(); wrap.remove(); dropOverlay(ovl); unhide();
+        selectBtn.focus({ preventScroll: true });
+      }
+    }
+
+    // ─── permissions ─────────────────────────────────────────────────────
+    var KINDS = { project: ['Projects', 'No project permissions added yet', 'Project permissions apply to the projects the key can reach.'],
+      org: ['Organization', 'No organization permissions added yet', 'Organization permissions apply to the owner itself, not to its projects.'] };
+    var tabs = {}, counts = {}, panes = {}, lists = {}, openers = {};
+    var panel = null;        // the open permission panel
+    Object.keys(KINDS).forEach(function (kind) {
+      counts[kind] = el('span', { class: 'k-count', text: '0' });
+      tabs[kind] = el('button', { type: 'button', role: 'tab', id: 'k-tab-' + kind, 'aria-controls': 'k-pane-' + kind,
+        'aria-selected': String(kind === 'project'), class: kind === 'project' ? 'on' : '', onclick: function () { showTab(kind); } },
+        [KINDS[kind][0], counts[kind]]);
+      openers[kind] = el('button', { class: 'btn outlined perm-opener', type: 'button', id: 'k-add-' + kind, 'aria-expanded': 'false' },
+        [svg('plus', 18), 'Add permissions']);
+      openers[kind].addEventListener('click', function () {
+        if (panel && panel.kind === kind) {
+          if (Q.toggle_opener) panel.close(false);
+          else panel.input.focus({ preventScroll: true });
+          return;
+        }
+        openPanel(kind);
+      });
+      lists[kind] = el('div', { class: 'perm-list' });
+      panes[kind] = el('div', { class: 'perm-pane' + (kind === 'project' ? '' : ' hidden'), role: 'tabpanel', id: 'k-pane-' + kind,
+        'aria-labelledby': 'k-tab-' + kind }, [
+        el('div', { class: 'perm-head' }, [help(KINDS[kind][2]), el('div', { class: 'perm-anchor' }, [openers[kind]])]),
+        lists[kind]]);
+      drawPerms(kind);
+    });
+    function showTab(kind) {
+      Object.keys(KINDS).forEach(function (t) {
+        tabs[t].setAttribute('aria-selected', String(t === kind));
+        tabs[t].classList.toggle('on', t === kind);
+        panes[t].classList.toggle('hidden', t !== kind);
+      });
+    }
+    // The panel: a focused search field and the permissions not added yet, as
+    // plain buttons. Not a dialog: the rest of the form stays readable.
+    function openPanel(kind) {
+      closeAllOverlays();
+      var opener = openers[kind];
+      var have = {};
+      k.perms[kind].forEach(function (p) { have[p.name] = 1; });
+      var input = el('input', { type: 'text', role: 'combobox', 'aria-label': 'Search', 'aria-expanded': 'true',
+        'aria-autocomplete': 'list', 'aria-controls': 'perm-list-' + kind, placeholder: 'Search permissions', autocomplete: 'off' });
+      var items = d.permissions[kind].filter(function (n) { return !have[n]; }).map(function (n) {
+        return el('button', { type: 'button', class: 'pp-item', text: n, onclick: function () { pick(n); } });
+      });
+      var none = el('div', { class: 'pp-none hidden', text: 'No permissions match.' });
+      var node = el('div', { class: 'perm-panel', id: 'perm-panel-' + kind }, [
+        el('div', { class: 'pp-search' }, [svg('search', 18), input]),
+        el('div', { class: 'pp-list', id: 'perm-list-' + kind }, items.concat([none]))]);
+      if (Q.portal_panel) {
+        // A container before the app's root, as a portal library makes one.
+        if (!R.portal) R.portal = el('div', { class: 'portal-root' });
+        if (document.body.firstChild !== R.portal) document.body.insertBefore(R.portal, document.body.firstChild);
+        R.portal.appendChild(node);
+      } else {
+        opener.parentNode.insertBefore(node, opener.nextSibling);
+      }
+      opener.setAttribute('aria-expanded', 'true');
+      var me = { kind: kind, input: input, close: close };
+      panel = me;
+      var ovl = pushOverlay({ kind: 'panel', escape: function () { close(true); }, close: function () { close(false); }, reposition: placePanel });
+      placePanel();
+      // A press outside closes it; the opener is not outside, its own click decides.
+      var off = closeOnOutside([node, opener], function () { close(false); });
+      input.focus({ preventScroll: true });
+      input.addEventListener('input', function () {
+        var v = input.value.trim().toLowerCase(), n = 0;
+        items.forEach(function (b) { var on = b.textContent.toLowerCase().indexOf(v) >= 0; b.classList.toggle('hidden', !on); if (on) n++; });
+        none.classList.toggle('hidden', n > 0);
+      });
+      input.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        var first = items.filter(function (b) { return !b.classList.contains('hidden'); })[0];
+        if (first && input.value.trim()) pick(first.textContent);
+      });
+      function placePanel() {
+        var r = opener.getBoundingClientRect(), h = node.offsetHeight, below = window.innerHeight - r.bottom - 8;
+        var up = !(below >= h || below >= r.top - 8);
+        if (Q.portal_panel) {
+          node.style.left = Math.max(8, r.right - node.offsetWidth) + 'px';
+          node.style.top = (up ? r.top - h - 4 : r.bottom + 4) + 'px';
+        } else node.classList.toggle('up', up);
+      }
+      function pick(n) {
+        if (kind === 'project' && !k.perms.project.length) k.perms.project.push({ name: d.mandatory, level: 'Read-only', mandatory: true });
+        k.perms[kind].push({ name: n, level: 'Read-only' });
+        close(true);
+        drawPerms(kind);
+        saveDraft();
+      }
+      function close(refocus) {
+        if (panel !== me) return;
+        panel = null;
+        off(); node.remove(); dropOverlay(ovl);
+        opener.setAttribute('aria-expanded', 'false');
+        if (refocus) opener.focus({ preventScroll: true });
+      }
+    }
+    function drawPerms(kind) {
+      var box = lists[kind], list = k.perms[kind];
+      counts[kind].textContent = String(list.length);
+      box.textContent = '';
+      if (!list.length) { box.appendChild(el('p', { class: 'perm-empty', text: KINDS[kind][1] })); return; }
+      list.forEach(function (p) {
+        var ctl;
+        if (p.mandatory) ctl = [el('span', { class: 'perm-fixed', text: 'Read-only (mandatory)' })];
+        else {
+          var access = selectField('perm-' + kind + '-' + slug(p.name), 'Access', d.levels, p.level,
+            function (v) { p.level = v; saveDraft(); }, { optional: true });
+          ctl = [access.node, el('button', { class: 'btn text', type: 'button', text: 'Remove', onclick: function () { removePerm(kind, p.name); } })];
+        }
+        box.appendChild(el('div', { class: 'perm-row', 'data-perm': p.name }, [
+          el('div', { class: 'perm-name' }, [el('div', { class: 'pn', text: p.name }),
+            p.mandatory ? el('div', { class: 'k-help', text: 'Read the names, labels and settings of the projects. Every key with project permissions has it.' }) : null]),
+          el('div', { class: 'perm-ctl' }, ctl)]));
+      });
+    }
+    function removePerm(kind, n) {
+      k.perms[kind] = k.perms[kind].filter(function (p) { return p.name !== n; });
+      // Metadata comes with the other project permissions and goes with the last of them.
+      if (kind === 'project' && k.perms.project.every(function (p) { return p.mandatory; })) k.perms.project = [];
+      drawPerms(kind);
+      saveDraft();
+    }
+
+    // ─── bottom ──────────────────────────────────────────────────────────
+    var genErr = el('div', { class: 'k-err', role: 'alert' });
+    var gen = el('button', { class: 'btn primary', type: 'button', text: 'Generate key and request access' });
+    gen.addEventListener('click', function () {
+      gen.disabled = true;
+      api('keys/generate', keyForm()).then(function (r) {
+        gen.disabled = false;
+        var errs = (r.data && r.data.errors) || {};
+        k.f.name.error(errs.name || '');
+        genErr.textContent = Object.keys(errs).filter(function (x) { return x !== 'name'; }).map(function (x) { return errs[x]; }).join(' ');
+        if (r.status !== 200) { if (errs.name) k.f.name.ctl.scrollIntoView({ block: 'center' }); return; }
+        var name = k.f.name.get();
+        K = null;
+        setCard({ title: 'New access key', body: [el('div', { class: 'kf' }, [el('div', { class: 'success', role: 'status' }, [
+          el('h3', {}, [svg('checkCircle', 26), r.data.approval ? 'Access requested for ' + name : 'Key ' + name + ' generated']),
+          el('p', { text: r.data.approval ? 'An administrator of ' + k.owner + ' must approve the key before it works. You will get an email when they do.'
+            : 'The key works now.' }),
+          el('a', { class: 'btn primary', href: 'page.html?p=api-key', 'data-spa': 'quick', text: 'Back to API keys' })])])] });
+      });
+    });
+    var cancel = el('a', { class: 'btn text dark', href: 'page.html?p=api-key', 'data-spa': 'quick', text: 'Cancel' });
+
+    var col = el('div', { class: 'kf' }, [
+      el('p', { class: 'kf-lead', text: 'A key lets a program call the ' + CONSOLE + ' API with only the projects and permissions you give it.' }),
+      k.f.name.node, help('A unique name, so you can tell this key from your others.'),
+      k.f.description.node,
+      owner.node, help('The owner pays for what the key does. Projects and permissions below belong to it.'),
+      expiration.node, expHelp,
+      msgBox,
+      el('h2', { class: 'kf-h', text: 'Project access' }),
+      radios, pickBox,
+      el('h2', { class: 'kf-h', text: 'Permissions' }),
+      help('Give the key only the permissions it needs. Each one is read-only unless you change it.'),
+      el('div', { class: 'perm-box' }, [el('div', { class: 'perm-tabs', role: 'tablist', 'aria-label': 'Permission types' }, [tabs.project, tabs.org]),
+        panes.project, panes.org]),
+      el('div', { class: 'kf-foot' }, [gen, cancel]), genErr,
+    ]);
+    syncExpiry();
+    syncOwner();
+    setCard({ title: 'New access key', body: [col] });
+  }
+
   // ─── console-wide search results ───────────────────────────────────────
   VIEWS.search = function (seq) {
     var q = params().get('q') || '';
@@ -1312,7 +1632,7 @@
     experiments: ['Experiments', 'No experiments in this project.'], training: ['Training', 'No training jobs in this project.'],
     ray: ['Ray', 'No Ray clusters in this project.'], pipelines: ['Pipelines', 'No pipeline runs in this project.'],
     metadata: ['Metadata', 'No metadata stores in this project.'], monitoring: ['Monitoring', 'No monitoring jobs in this project.'],
-    'api-key': ['Get API key', 'API keys are turned off for ' + S_ORG() + ' by an organization policy. Use a service account instead.'],
+    'api-key': ['API keys', 'You have no access keys yet. Keys owned by ' + S_ORG() + ' work only after an administrator approves them.'],
     billing: ['Billing', 'Billing account Lumen Robotics main (0A1B2C-3D4E5F-6A7B8C) pays for every project in this organization.'],
     tutorials: ['Tutorials', 'Step-by-step tutorials open in the documentation.'], deploy: ['Deploy model', 'Choose a model in the model catalog first.'],
     studio: ['Studio', 'Studio is not available in this project.'], 'new-project': ['New project', 'An organization policy stops you from creating projects. Ask an administrator.'],
@@ -1326,7 +1646,8 @@
     setCrumbs([[PLATFORM, 'page.html?p=dashboard'], [p[0], 'page.html?p=' + enc(id)]]);
     setTitle(p[0]);
     var links = id === 'dashboard' || id === 'models' ? el('p', {}, [el('a', { href: 'catalog.html', 'data-spa': 'swap', text: 'Open the model catalog' }), ' · ',
-      el('a', { href: 'agreements.html', 'data-spa': 'quick', text: 'Agreements' })]) : null;
+      el('a', { href: 'agreements.html', 'data-spa': 'quick', text: 'Agreements' })])
+      : id === 'api-key' ? el('p', {}, [el('a', { href: 'keys.html', 'data-spa': 'quick', text: 'New access key' })]) : null;
     setCard({ title: p[0], body: [el('div', { class: 'pad' }, [el('p', { text: p[1] }), links])] });
     shown('page');
   };

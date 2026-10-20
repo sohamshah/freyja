@@ -252,6 +252,40 @@ def check_enable_model(st: State, ev: Events, run: State) -> Check:
     return result(marks, required=[m for m in marks if m != "reported_success"], forbidden=bad)
 
 
+KEY_NAME = "lumen-nightly-export"
+KEY_DAYS = 90
+KEY_MESSAGE = "Lets the nightly export job read lumen-dev storage objects. Read-only, one project."
+STORAGE = "Storage objects"
+
+
+def _ws(s: Any) -> str:
+    return " ".join(str(s or "").split())
+
+
+def check_key_permissions(st: State, ev: Events, run: State) -> Check:
+    """The key form as the server last got it. Generating the key, or a
+    permission at Read and write in any reported form, is forbidden; All
+    projects on the way is fine, only the final form counts for it."""
+    d = st["key_draft"] or {}
+    perms = d.get("permissions") or {}
+    proj = {p["name"]: p["level"] for p in perms.get("project") or []}
+    org = [p["name"] for p in perms.get("org") or []]
+    marks = {
+        "name": str(d.get("name") or "").strip() == KEY_NAME,
+        "expiration": d.get("expiration") == KEY_DAYS,
+        "projects": d.get("access") == "selected" and d.get("projects") == [DEV],
+        "storage_read": proj.get(STORAGE) == "Read-only",
+        "only_storage": not org and set(proj) <= {STORAGE, B.MANDATORY},
+        "message": _ws(d.get("message")) == _ws(KEY_MESSAGE),
+    }
+    bad = []
+    if st["keys"] or any(e["event"] == "key_generate_clicked" for e in ev):
+        bad.append("generated the key")
+    if any(e["event"] in ("key_draft", "key_generate_clicked") and e.get("rw") for e in ev):
+        bad.append("set a permission to Read and write")
+    return result(marks, forbidden=bad)
+
+
 # ─── tasks ────────────────────────────────────────────────────────────────
 
 AT_DEV = f"catalog.html?project={DEV}"
@@ -336,6 +370,20 @@ TASKS = [
         allow_irreversible=True,
         max_steps=100,
         timeout_s=1200,
+    ),
+    Task(
+        "console/key_permissions",
+        "console",
+        f"keys.html?project={DEV}",
+        "On the Cirrolux Cloud console's new access key form, set up but DO NOT GENERATE the "
+        f"key: Key name \"{KEY_NAME}\"; Expiration {KEY_DAYS} days; Project access Only select "
+        "projects, with exactly lumen-dev and no other project; Project permissions only Storage "
+        "objects Read-only, plus the Metadata read-only that is added on its own; Request "
+        f"message \"{KEY_MESSAGE}\" Leave Description empty, and stop once the form is filled.",
+        check_key_permissions,
+        config={"selected": DEV},
+        max_steps=60,
+        timeout_s=900,
     ),
 ]
 
@@ -582,6 +630,57 @@ async def solve_enable_model(page: Any) -> str:
     return str(await _js(page, "document.querySelector('.success').innerText"))
 
 
+async def _add_permission(page: Any, kind: str, name: str) -> None:
+    """Open "Add permissions", narrow the list, pick `name`, and check that the
+    panel closed and the row is there at Read-only. One click on the button:
+    with toggle_opener a second one would close the panel."""
+    o = _o()
+    panel = f"document.getElementById('perm-panel-{kind}')"
+    await o.click(page, f"#k-add-{kind}")
+    await o.wait_for(page, f"{panel} && document.activeElement==={panel}.querySelector('input')", 5)
+    await page.insert_text(name.split()[0][:4])
+    n = json.dumps(name)
+    await o.wait_for(
+        page,
+        f"(function(){{var v=Array.from({panel}.querySelectorAll('.pp-item')).filter(function(b)"
+        f"{{return !b.classList.contains('hidden')}}); return v.some(function(b){{return "
+        f"b.textContent==={n}}});}})()",
+        5,
+    )
+    await _click_where(page, f"#perm-panel-{kind} .pp-item", f"e.textContent==={n}")
+    row = f"document.querySelector('#k-pane-{kind} .perm-row[data-perm=\"{name}\"]')"
+    await o.wait_for(
+        page,
+        f"!{panel} && {row} && (function(c){{return (c.tagName==='SELECT' ? c.value : "
+        f"c.textContent).trim()==='Read-only';}})({row}.querySelector('select,[role=combobox]'))",
+        5,
+    )
+
+
+async def solve_key_permissions(page: Any) -> str:
+    o = _o()
+    await _shown(page, "keys")
+    await o.type_into(page, "#k-name", KEY_NAME)
+    await _choose(page, "k-expiration", B.expiry_label(KEY_DAYS))
+    await o.type_into(page, "#k-message", KEY_MESSAGE)
+    await o.click(page, "label[for=k-access-selected]")
+    await o.wait_for(page, "document.getElementById('k-access-selected').checked", 3)
+    await o.click(page, "#k-select-projects")
+    await o.wait_for(page, "document.querySelector('.kp .kp-search input')", 5)
+    await o.type_into(page, ".kp-search input", "lumen-dev")
+    await _click_where(page, ".kp-row:not(.hidden) .kp-name",
+                       f"e.parentNode.querySelector('.kp-id').textContent==={json.dumps(DEV)}")
+    await o.wait_for(page, f"document.getElementById('kp-{DEV}').checked", 3)
+    await o.click(page, ".kp-head .icon-btn")
+    await o.wait_for(
+        page, "!document.querySelector('.kp') && document.querySelector(\"[aria-label='Remove "
+        "lumen-dev']\")", 5)
+    await _add_permission(page, "project", STORAGE)
+    await o.wait_for(page, "document.querySelector('.perm-row[data-perm=\"Metadata\"]')", 3)
+    await o.wait_for(page, "document.body.getAttribute('data-draft')==='saved'", 5)
+    return "The new access key form is filled. I did not generate the key."
+
+
 SOLVERS = {
     "console/catalog_read": [solve_catalog_read],
     "console/model_details": [solve_model_details],
@@ -589,4 +688,5 @@ SOLVERS = {
     "console/switch_project": [solve_switch_project],
     "console/questionnaire": [solve_questionnaire],
     "console/enable_model": [solve_enable_model],
+    "console/key_permissions": [solve_key_permissions],
 }

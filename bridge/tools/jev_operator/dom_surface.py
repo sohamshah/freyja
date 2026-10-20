@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from bridge.tools.jev_operator.act import ActionRecord
 from bridge.tools.jev_operator.observe import (
@@ -51,6 +52,10 @@ SETTLE_S = {"click": 3.0, "key": 3.0, "type": 1.5, "scroll": 1.0, "open_url": 12
 # After typing into a field that shows suggestions, wait at least this long:
 # widgets wait ~300 ms after the last keystroke, then fetch.
 SUGGEST_WAIT_S = 0.8
+# A click can open its tab after the click returned: a file host's Download asks
+# its server first and opens the virus-scan warning in a new tab later. For this
+# long after a click, each read checks the front tab for one.
+LATE_TAB_S = 15.0
 MAX_OPTIONS = 25
 # Page rows carry more than an app's: a grid cell's column and row ("Business Bundle:
 # $361 Standard (9:05 PM DEN -> 2:48 AM MCO ...)"). At 80 characters the row was cut off.
@@ -329,6 +334,8 @@ class DOMSurface:
         # Tabs that existed when the run started, plus the ones it opened: a tab
         # in front after a click is followed only if it is not one of these.
         self.known_tabs: set[str] | None = None
+        self._clicked_at: float | None = None  # monotonic time of a click that opened no tab yet
+        self._passed_tabs: set[str] = set()  # late tabs on another site, not followed
         self.may_confirm = False  # answer a page's confirm() with OK (allow_irreversible)
         # A confirm() the page raised after an action (async) and the run declined.
         self.declined_confirm: str | None = None
@@ -498,6 +505,40 @@ class DOMSurface:
             self.known_tabs.add(tid)
             await self.settle("open_url", min_s=0.3)
 
+    async def _follow_late_tab(self) -> None:
+        """A tab the last click opened after the click returned. A file viewer's
+        Download opened its virus-scan warning in a new tab, and the run went on
+        reading the viewer: the warning's "Download anyway" was never listed,
+        and the run waited until it was stopped."""
+        if self._injected_js or self.known_tabs is None or self._clicked_at is None:
+            self._clicked_at = None
+            return
+        if time.monotonic() - self._clicked_at > LATE_TAB_S:
+            self._clicked_at = None
+            return
+        try:
+            tid = await asyncio.to_thread(active_tab_id, self.bundle)
+            if not tid or tid == self.tab_id or tid in self.known_tabs or tid in self._passed_tabs:
+                return
+            _title, url = await asyncio.to_thread(tab_info, self.bundle, tid)
+        except DOMUnavailable:
+            return
+        # Seconds after the click, the tab in front may be one the person opened:
+        # follow only a tab on the site the run is on.
+        if _site(url) != _site(self.url) or not _site(url):
+            self._passed_tabs.add(tid)
+            self._log({"event": "dom_tab_not_followed", "tab": tid,
+                       "why": f"opened after the click on another site: {_clip(url, 80)}"})
+            return
+        self._log({"event": "dom_tab", "tab": tid,
+                   "how": "the click opened a new tab after it returned"})
+        self.tab_id = tid
+        self.own_tab = True
+        self._clicked_at = None
+        remember_tab(self.bundle, tid)
+        self.known_tabs.add(tid)
+        await self.settle("open_url", min_s=0.3)
+
     async def settle(self, kind: str, *, min_s: float = 0.0) -> None:
         """Wait until the page stops changing, at most SETTLE_S[kind] seconds.
 
@@ -544,6 +585,8 @@ class DOMSurface:
 
     async def observe(self, target: Any) -> Observation:
         self._target = target
+        if self._clicked_at is not None:
+            await self._follow_late_tab()
         t0 = time.perf_counter()
         snap = await self._js("snapshot()", reset=False)
         read_ms = int((time.perf_counter() - t0) * 1000)
@@ -814,6 +857,8 @@ class DOMSurface:
             good = g.endswith(w) if not replace else g == w
             if got is not None and not good:
                 return done(False, f"readback mismatch: typed {want!r}, field shows {got!r}")
+        if op == "click":
+            self._clicked_at = None if res.get("newTab") else time.monotonic()
         if res.get("newTab"):
             await self._follow_new_tab()
         elif res.get("suggest"):
@@ -875,3 +920,9 @@ def _note_dialogs(rec: ActionRecord, dialogs: Any) -> None:
 
 def _ms(t0: float) -> int:
     return int((time.perf_counter() - t0) * 1000)
+
+
+def _site(url: str) -> str:
+    """The last two parts of the host name: a file viewer and its download host
+    (drive.example.com, drive.usercontent.example.com) are one site."""
+    return ".".join((urlparse(url).hostname or "").lower().split(".")[-2:])

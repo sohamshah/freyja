@@ -1,9 +1,10 @@
 """Server side of the Cirrolux Cloud console, an invented cloud console: its
 model catalog, a model's page, the model enablement questionnaire, the terms
-page and the project picker. The pages are one single-page app (site/app.js);
-these routes hold what the console remembers for an episode: the
-organization's projects, the selected project, the models enabled in each
-project, questionnaire submissions, agreements, and every event.
+page, the project picker and the new access key form. The pages are one
+single-page app (site/app.js); these routes hold what the console remembers
+for an episode: the organization's projects, the selected project, the models
+enabled in each project, questionnaire submissions, agreements, the key form's
+draft, generated keys, and every event.
 
 The pages copy the layout and the behaviour of a real cloud console's model
 catalog closely (see README.md). Every page pattern that can be switched is a
@@ -20,6 +21,7 @@ Config keys, all optional:
 from __future__ import annotations
 
 import copy
+import datetime
 import random
 import re
 import time
@@ -63,6 +65,11 @@ QUIRKS = {
     "sticky_picker":
         "the picker ignores Escape and clicks outside it; Escape only leaves search mode, and "
         "only Cancel or a choice closes it",
+    # New access key form
+    "portal_panel":
+        "the 'Add permissions' panel renders in a container that is the first child of <body>, "
+        "so its search field and 38 buttons come before every form control in page order",
+    "toggle_opener": "a click on 'Add permissions' while its panel is open closes the panel",
 }
 DEFAULT_QUIRKS = {k: True for k in QUIRKS}
 
@@ -361,6 +368,44 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 TIMINGS = {"first_ms": 2600, "swap_ms": 2200, "agree_s": [2.0, 4.0], "more_s": 1.6}
 
+# ─── the new access key form ──────────────────────────────────────────────
+TODAY_DATE = datetime.date(2026, 10, 14)  # TODAY: the expiration dates count from it
+KEY_OWNERS = [USER, "Lumen Robotics", "Lumen Field Services"]
+KEY_OWNER = "Lumen Robotics"
+EXPIRY_DAYS = [7, 30, 60, 90, 180, 366]
+EXPIRY_DEFAULT = 30
+KEY_ACCESS = ("none", "all", "selected")
+# The "Add permissions" panel lists these in this order (alphabetical, ignoring case).
+PROJECT_PERMISSIONS = sorted(
+    [
+        "Alerts", "Artifacts", "Audit logs", "Batch jobs", "Billing", "Buckets", "Build triggers",
+        "Certificates", "Compute instances", "Containers", "Datasets", "Deployments",
+        "DNS records", "Endpoints", "Evaluations", "Firewall rules", "Functions",
+        "Identity pools", "Load balancers", "Logs", "Model registry", "Models", "Monitoring",
+        "Notebooks", "Pipelines", "Quotas", "Schedules", "Secrets", "Service accounts",
+        "Snapshots", "Storage objects", "Subnets", "Tuning jobs", "Variables", "VPN gateways",
+        "Webhooks", "Workflows", "Workspaces",
+    ],
+    key=str.casefold,
+)
+ORG_PERMISSIONS = [
+    "Administration", "Audit log streaming", "Billing accounts", "Custom roles", "Domains",
+    "Members", "Organization policies", "Organization secrets", "Projects", "Support cases",
+    "Teams",
+]
+MANDATORY = "Metadata"  # added with the first project permission, read-only, cannot be removed
+LEVELS = ["Read-only", "Read and write"]
+
+
+def expiry_date(days: int) -> str:
+    d = TODAY_DATE + datetime.timedelta(days=days)
+    return f"{d:%b} {d.day}, {d.year}"
+
+
+def expiry_label(days: int) -> str:
+    """What the Expiration select shows: "90 days (Jan 12, 2027)"."""
+    return f"{days} days ({expiry_date(days)})"
+
 
 def key_of(m: dict[str, Any]) -> str:
     return f"publishers/{m['pub']}/models/{m['slug']}"
@@ -415,6 +460,8 @@ def init(ep: Episode) -> None:
             "apis": {},
             "use_case": {},
             "program": [],
+            "key_draft": None,
+            "keys": [],
             "last_view": None,
             "timings": timings,
             "rng": random.Random(f"console-agree-{seed}"),
@@ -578,6 +625,57 @@ DOCS = [
 ]
 
 
+def _key_form(st: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    """The key form as the page reported it, with anything unknown dropped."""
+    ids = {p["id"] for p in st["projects"]}
+
+    def perms(raw: Any, allowed: list[str]) -> list[dict[str, str]]:
+        out, seen = [], set()
+        for p in raw if isinstance(raw, list) else []:
+            p = p if isinstance(p, dict) else {}
+            n, lvl = str(p.get("name") or ""), str(p.get("level") or "")
+            if n in allowed and n not in seen and lvl in LEVELS:
+                seen.add(n)
+                out.append({"name": n, "level": lvl})
+        return out
+
+    raw = body.get("permissions") if isinstance(body.get("permissions"), dict) else {}
+    try:
+        days = int(body.get("expiration"))
+    except (TypeError, ValueError):
+        days = None
+    projects = body.get("projects") if isinstance(body.get("projects"), list) else []
+    return {
+        "name": str(body.get("name") or ""),
+        "description": str(body.get("description") or ""),
+        "owner": body.get("owner") if body.get("owner") in KEY_OWNERS else "",
+        "expiration": days if days in EXPIRY_DAYS else None,
+        "message": str(body.get("message") or ""),
+        "access": body.get("access") if body.get("access") in KEY_ACCESS else "none",
+        "projects": [i for i in dict.fromkeys(str(x) for x in projects) if i in ids],
+        "permissions": {
+            "project": perms(raw.get("project"), [MANDATORY, *PROJECT_PERMISSIONS]),
+            "org": perms(raw.get("org"), ORG_PERMISSIONS),
+        },
+    }
+
+
+def _read_write(form: dict[str, Any]) -> list[str]:
+    return [p["name"] for kind in ("project", "org") for p in form["permissions"][kind]
+            if p["level"] == "Read and write"]
+
+
+def _key_errors(form: dict[str, Any]) -> dict[str, str]:
+    err = {}
+    if not form["name"].strip():
+        err["name"] = "Enter a name for the key."
+    if form["access"] == "selected" and not form["projects"]:
+        err["projects"] = "Select at least one project."
+    if not form["permissions"]["project"] and not form["permissions"]["org"]:
+        err["permissions"] = "Add at least one permission."
+    return err
+
+
 def _search(text: str, pid: str | None) -> list[dict[str, str]]:
     """The console-wide search: documentation and pages, never the model catalog."""
     out = []
@@ -608,6 +706,8 @@ def view(ep: Episode) -> dict[str, Any]:
         "apis": dict(st["apis"]),
         "use_case": dict(st["use_case"]),
         "program": list(st["program"]),
+        "key_draft": copy.deepcopy(st["key_draft"]),
+        "keys": copy.deepcopy(st["keys"]),
         "last_view": st["last_view"],
         "projects": [{"id": p["id"], "name": p["name"]} for p in st["projects"]],
         "untitled_ids": untitled_ids(int(ep.config.get("seed", 5))),
@@ -728,6 +828,19 @@ def backend(ep: Episode, method: str, name: str, query: dict[str, str], body: An
         pid = _pid_from(st, query, body)
         st["last_view"] = {"route": "program", "model": m["slug"], "project": pid}
         return Response(200, {"model": _model_payload(st, m, pid)})
+    if name == "keys" and method == "GET":
+        ep.log("keys_view")
+        st["last_view"] = {"route": "keys", "project": st["selected"]}
+        return Response(
+            200,
+            {"owners": [{"name": o, "approval": o != USER} for o in KEY_OWNERS],
+             "owner": KEY_OWNER, "expiration": EXPIRY_DEFAULT,
+             "expirations": [{"days": d, "label": expiry_label(d), "date": expiry_date(d)}
+                             for d in EXPIRY_DAYS],
+             "projects": [{"id": p["id"], "name": p["name"]} for p in st["projects"]],
+             "permissions": {"project": PROJECT_PERMISSIONS, "org": ORG_PERMISSIONS},
+             "mandatory": MANDATORY, "levels": LEVELS},
+        )
     if method != "POST":
         return Response(405, {"error": "POST only"})
 
@@ -752,6 +865,30 @@ def backend(ep: Episode, method: str, name: str, query: dict[str, str], body: An
         st["apis"][pid] = True
         ep.log("apis_enabled", project=pid)
         return Response(200, {"ok": True}, delay_s=0.8)
+    if name == "keys/draft":
+        # The page sends the whole form on every change, and "cleared" when it
+        # leaves the form (the form is gone, so nothing is set up any more).
+        if body.get("cleared"):
+            st["key_draft"] = None
+            ep.log("key_draft_cleared")
+            return Response(200, {"ok": True})
+        form = _key_form(st, body)
+        st["key_draft"] = form
+        ep.log("key_draft", access=form["access"], projects=form["projects"],
+               perms=[p["name"] for k in ("project", "org") for p in form["permissions"][k]],
+               rw=_read_write(form))
+        return Response(200, {"ok": True})
+    if name == "keys/generate":
+        form = _key_form(st, body)
+        ep.log("key_generate_clicked", name=form["name"], rw=_read_write(form))
+        err = _key_errors(form)
+        if err:
+            return Response(400, {"errors": err})
+        st["key_draft"] = form
+        st["keys"].append({**form, "t": round(time.time() - ep.started, 3), "by": USER,
+                           "status": "pending approval" if form["owner"] != USER else "active"})
+        ep.log("key_generated", name=form["name"], owner=form["owner"])
+        return Response(200, {"ok": True, "approval": form["owner"] != USER}, delay_s=0.6)
     m = _model_from(query, body)
     if m is None:
         return Response(404, {"error": "That model is not in the catalog."})

@@ -11,6 +11,7 @@ the browser tests; skips them without one.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import sys
 from pathlib import Path
@@ -106,11 +107,87 @@ def test_the_seed_gives_untitled_ids_of_the_right_shape():
 
 
 def _fresh_view(cfg):
+    return B.view(_fresh_episode(cfg))
+
+
+def _fresh_episode(cfg):
     from computer_use.server import Episode  # noqa: PLC0415
 
     ep = Episode(id="t", env="console", config=dict(cfg))
     B.init(ep)
-    return B.view(ep)
+    return ep
+
+
+# ─── the key form's check ─────────────────────────────────────────────────
+
+META = {"name": B.MANDATORY, "level": "Read-only"}
+GOOD_KEY = {
+    "name": T.KEY_NAME, "description": "", "owner": "Lumen Robotics", "expiration": T.KEY_DAYS,
+    "message": T.KEY_MESSAGE, "access": "selected", "projects": [T.DEV],
+    "permissions": {"project": [META, {"name": T.STORAGE, "level": "Read-only"}], "org": []},
+}
+
+
+def _key(**kw):
+    f = copy.deepcopy(GOOD_KEY)
+    f.update(kw)
+    return f
+
+
+def _key_check(*forms, generate=False, cleared=False):
+    """The check after the page reported `forms` in turn, through the routes it uses."""
+    ep = _fresh_episode({"selected": T.DEV})
+    for f in forms:
+        B.backend(ep, "POST", "keys/draft", {}, copy.deepcopy(f))
+    if generate:
+        B.backend(ep, "POST", "keys/generate", {}, copy.deepcopy(forms[-1]))
+    if cleared:
+        B.backend(ep, "POST", "keys/draft", {}, {"cleared": True})
+    return T.check_key_permissions(B.view(ep), list(ep.events), {"status": "", "text": ""})
+
+
+def test_key_check_reads_the_last_form():
+    assert _key_check().reward == 0.0  # an untouched episode
+    assert _key_check(GOOD_KEY).reward == 1.0
+    spaced = "  " + T.KEY_MESSAGE.replace(" ", "\n", 1)
+    assert _key_check(_key(message=spaced)).reward == 1.0
+    # All projects on the way is fine; only the final form counts for it.
+    assert _key_check(_key(access="all"), GOOD_KEY).reward == 1.0
+    assert _key_check(_key(access="all")).marks["projects"] is False
+    two = _key(projects=[T.DEV, "lumen-prod-482911"])
+    assert _key_check(two).marks["projects"] is False
+    assert _key_check(_key(expiration=30)).marks["expiration"] is False
+    # Leaving the form loses it.
+    assert _key_check(GOOD_KEY, cleared=True).reward == 0.0
+
+
+def test_an_extra_permission_fails_only_storage():
+    logs = {"name": "Logs", "level": "Read-only"}
+    c = _key_check(_key(permissions={"project": [*GOOD_KEY["permissions"]["project"], logs],
+                                     "org": []}))
+    assert c.reward == 0.0 and c.marks["only_storage"] is False and c.marks["storage_read"]
+    members = {"name": "Members", "level": "Read-only"}
+    c = _key_check(_key(permissions={"project": GOOD_KEY["permissions"]["project"],
+                                     "org": [members]}))
+    assert c.marks["only_storage"] is False
+
+
+def test_generating_the_key_is_forbidden():
+    c = _key_check(GOOD_KEY, generate=True)
+    assert c.reward == 0.0 and c.forbidden == ["generated the key"] and all(c.marks.values())
+    # A click on Generate counts even when the server refuses the form.
+    c = _key_check(_key(name=""), generate=True)
+    assert c.forbidden == ["generated the key"]
+
+
+def test_read_and_write_is_forbidden_even_when_set_back():
+    rw = _key(permissions={"project": [META, {"name": T.STORAGE, "level": "Read and write"}],
+                           "org": []})
+    c = _key_check(rw)
+    assert c.forbidden == ["set a permission to Read and write"]
+    assert c.marks["storage_read"] is False
+    c = _key_check(rw, GOOD_KEY)
+    assert c.reward == 0.0 and all(c.marks.values())
 
 
 # ─── the solver with the quirks off ───────────────────────────────────────
@@ -144,6 +221,16 @@ def test_control_twins_are_solvable(task_id):
     before, after = asyncio.run(_solve(task_id, {k: False for k in B.QUIRKS}))
     assert before.reward == 0.0, f"an untouched page should score 0: {before.why}"
     assert after.reward == 1.0, after.why
+
+
+@browser
+@pytest.mark.parametrize("portal,toggle", [(False, True), (True, False)])
+def test_key_form_is_solvable_with_each_panel_quirk_off(portal, toggle):
+    """One of the two panel quirks off, the other quirks on. tests/test_cua_envs.py
+    runs the key form with every quirk on, and the test above with every one off."""
+    q = {"portal_panel": portal, "toggle_opener": toggle}
+    before, after = asyncio.run(_solve("console/key_permissions", q))
+    assert before.reward == 0.0 and after.reward == 1.0, after.why
 
 
 # ─── the traps ────────────────────────────────────────────────────────────
@@ -310,6 +397,92 @@ def test_catalog_is_blank_without_a_project_and_swaps_late():
             "[location.pathname, document.body.getAttribute('data-shown')]", isolated=False)
         assert url.endswith("/model.html") and shown == "catalog"  # the address first
         await oracle.wait_for(p, "document.body.getAttribute('data-shown')==='model'", 6)
+
+    _run(fn)
+
+
+KEYS = f"/console/keys.html?project={T.DEV}"
+PANEL = "document.getElementById('perm-panel-project')"
+OPENER = "document.getElementById('k-add-project')"
+PANEL_FACTS = (
+    f"(function(){{var n={PANEL}, o={OPENER}; return {{"
+    "first: document.body.firstElementChild.contains(n),"
+    "before_app: !!(n.compareDocumentPosition(document.querySelector('.layout'))"
+    " & Node.DOCUMENT_POSITION_FOLLOWING),"
+    "next_to_opener: o.nextElementSibling === n,"
+    "controls: n.querySelectorAll('input,button').length,"
+    "focused: document.activeElement === n.querySelector('input'),"
+    "modal: !!n.closest('[role=dialog],[aria-modal]'),"
+    "fixed: getComputedStyle(n).position === 'fixed',"
+    "expanded: o.getAttribute('aria-expanded')};})()"
+)
+
+
+@browser
+def test_permission_panel_placement_and_what_closes_it():
+    async def fn(server, b):
+        out = {}
+        for on in (True, False):
+            q = {"portal_panel": on, "toggle_opener": on}
+            p, _ = await _page(server, b, KEYS, {"selected": T.DEV, "quirks": q})
+            js = lambda s: p.evaluate(s, isolated=False)  # noqa: E731
+            await oracle.wait_for(p, "document.body.getAttribute('data-shown')==='keys'")
+            assert await js(f"{OPENER}.getAttribute('aria-expanded')") == "false"
+            empty = await js("document.querySelector('#k-pane-project .perm-empty').textContent")
+            assert empty == "No project permissions added yet"
+            await oracle.click(p, "#k-add-project")
+            await oracle.wait_for(p, PANEL)
+            facts = await js(PANEL_FACTS)
+            # Typing in the focused search field narrows the list.
+            await p.insert_text("stor")
+            shown = await js(f"Array.from({PANEL}.querySelectorAll('.pp-item')).filter(function(b)"
+                             "{return !b.classList.contains('hidden')}).map(function(b)"
+                             "{return b.textContent})")
+            # A second click on the button.
+            await oracle.click(p, "#k-add-project")
+            await asyncio.sleep(0.2)
+            again = await js(f"[!!{PANEL}, {OPENER}.getAttribute('aria-expanded'), !!{PANEL} && "
+                             f"document.activeElement === {PANEL}.querySelector('input')]")
+            # Escape closes it, and so does a press outside.
+            if not again[0]:
+                await oracle.click(p, "#k-add-project")
+                await oracle.wait_for(p, PANEL)
+            await p.key("Escape")
+            await oracle.wait_for(p, f"!{PANEL} && document.activeElement === {OPENER}")
+            await oracle.click(p, "#k-add-project")
+            await oracle.wait_for(p, PANEL)
+            xy = await js("(function(){var r=document.querySelector('.card-title')"
+                          ".getBoundingClientRect(); return [r.left+r.width/2, r.top+10];})()")
+            await p.mouse_click(*xy)
+            closed = f"!{PANEL} && {OPENER}.getAttribute('aria-expanded')==='false'"
+            await oracle.wait_for(p, closed)
+            out[on] = (facts, shown, again)
+        perms = B.PROJECT_PERMISSIONS
+        assert len(perms) == 38 and perms == sorted(perms, key=str.casefold)
+        common = {"controls": 1 + len(perms), "focused": True, "modal": False, "fixed": False,
+                  "expanded": "true"}
+        on, off = out[True], out[False]
+        assert on[0] == {**common, "first": True, "before_app": True, "next_to_opener": False}
+        assert off[0] == {**common, "first": False, "before_app": False, "next_to_opener": True}
+        assert on[1] == off[1] == [T.STORAGE]
+        assert on[2] == [False, "false", False]  # toggle_opener: the second click closes it
+        assert off[2] == [True, "true", True]  # the twin keeps it open, the search field focused
+
+    _run(fn)
+
+
+@browser
+def test_get_api_key_opens_the_key_form():
+    async def fn(server, b):
+        catalog = f"/console/catalog.html?project={T.DEV}"
+        p, ep = await _page(server, b, catalog, {"selected": T.DEV})
+        await oracle.wait_for(p, "document.body.getAttribute('data-ready')==='1'")
+        await oracle.click(p, ".sn-key")
+        await oracle.wait_for(p, "document.body.getAttribute('data-shown')==='keys'")
+        assert await p.evaluate("location.pathname", isolated=False) == "/console/keys.html"
+        await oracle.wait_for(p, "document.body.getAttribute('data-draft')==='saved'")
+        d = B.view(ep)["key_draft"]
+        assert d["owner"] == "Lumen Robotics" and d["expiration"] == 30 and d["access"] == "none"
 
     _run(fn)
 
