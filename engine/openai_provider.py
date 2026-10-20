@@ -214,6 +214,21 @@ def _api_usage_from_response_usage(response_usage: Any) -> APIUsage:
     )
 
 
+def _summary_delta(sse_event: Any, previous: tuple[str, int] | None) -> tuple[str, tuple[str, int]]:
+    """A reasoning-summary delta, with a paragraph break where a new summary
+    part (or a new reasoning item) begins.
+
+    A reasoning item's summary comes in parts ("**Step title**\n\nbody"
+    each), streamed back to back with nothing between them, so the live
+    thinking read "...done.**Next step**" and the step titles were lost.
+    """
+    at = (str(getattr(sse_event, "item_id", "") or ""), int(getattr(sse_event, "summary_index", 0) or 0))
+    delta = sse_event.delta or ""
+    if previous is not None and previous != at:
+        delta = "\n\n" + delta
+    return delta, at
+
+
 @dataclass
 class OpenAIConfig:
     """Configuration for the OpenAI Responses API provider.
@@ -1290,6 +1305,7 @@ class OpenAIProvider:
         try:
             event_stream = await self._async_client.responses.create(**request_params)
 
+            summary_at: tuple[str, int] | None = None
             async for sse_event in event_stream:
                 stream_event: StreamEvent | None = None
 
@@ -1299,7 +1315,8 @@ class OpenAIProvider:
 
                 # Reasoning summary text delta
                 elif sse_event.type == "response.reasoning_summary_text.delta":
-                    stream_event = ThinkingDeltaEvent(thinking=sse_event.delta)
+                    delta, summary_at = _summary_delta(sse_event, summary_at)
+                    stream_event = ThinkingDeltaEvent(thinking=delta)
 
                 # New output item added -- emit ToolUseStartEvent for function calls
                 elif sse_event.type == "response.output_item.added":
@@ -1388,6 +1405,7 @@ class OpenAIProvider:
         try:
             event_stream = await self._async_client.responses.create(**request_params)
 
+            summary_at: tuple[str, int] | None = None
             async for sse_event in event_stream:
                 stream_event: StreamEvent | None = None
 
@@ -1398,8 +1416,9 @@ class OpenAIProvider:
 
                 # Reasoning summary text delta
                 elif sse_event.type == "response.reasoning_summary_text.delta":
-                    thinking_parts.append(sse_event.delta)
-                    stream_event = ThinkingDeltaEvent(thinking=sse_event.delta)
+                    delta, summary_at = _summary_delta(sse_event, summary_at)
+                    thinking_parts.append(delta)
+                    stream_event = ThinkingDeltaEvent(thinking=delta)
 
                 # New output item added
                 elif sse_event.type == "response.output_item.added":

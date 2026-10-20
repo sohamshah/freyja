@@ -595,8 +595,14 @@ def _install_python_logging_bridge() -> None:
         root.setLevel(logging.INFO)
 
 
-def emit_error(message: str, recoverable: bool = False) -> None:
-    emit({"type": "error", "message": message, "recoverable": recoverable})
+def emit_error(message: str, recoverable: bool = False, session_id: str | None = None) -> None:
+    """Report an error to the renderer. With `session_id`, the error ends
+    that session's live turn; without one it is only a notice (a toast),
+    so a background failure never cuts off the reply on screen."""
+    event: dict[str, Any] = {"type": "error", "message": message, "recoverable": recoverable}
+    if session_id:
+        event["sessionId"] = session_id
+    emit(event)
 
 
 # A rejected tool definition: Anthropic's "tools.27.custom.name: ...",
@@ -4730,6 +4736,9 @@ class _BridgeSession:
         # including done=false-with-real-criteria.
         self._consecutive_judge_failures: int = 0
         self._turn_text_parts: list[str] = []
+        # Where the current model call's text starts in _turn_text_parts:
+        # a stream_reset (retry after a failed call) cuts back to it.
+        self._turn_text_mark = 0
         # Why the latest turn failed ("<reason>: <provider message>"), or
         # None. A scheduled run that nothing answered reports this instead
         # of guessing.
@@ -4820,7 +4829,7 @@ class _BridgeSession:
         try:
             provider = build_provider(self.model_id, thinking_level=self.reasoning_level)
         except ValueError as exc:
-            emit_error(str(exc), recoverable=True)
+            emit_error(str(exc), recoverable=True, session_id=self.id)
             raise
         self.provider = provider
 
@@ -5607,6 +5616,7 @@ class _BridgeSession:
         self.task_board = None
         self.goal_state = None
         self._turn_text_parts = []
+        self._turn_text_mark = 0
 
     async def try_restore_transcript(self) -> bool:
         """Attempt to restore engine transcript from disk.
@@ -10419,13 +10429,13 @@ class _BridgeSession:
     ) -> None:
         await self.initialize()
         if self.session is None:
-            emit_error("session not initialized")
+            emit_error("session not initialized", session_id=self.id)
             return
         if self.runtime != "native":
             await self._run_harness_turn(user_content, attachments)
             return
         if self.runner is None:
-            emit_error("runner not initialized")
+            emit_error("runner not initialized", session_id=self.id)
             return
 
         # Suppress the stale-task reminder on the FIRST provider call
@@ -10513,6 +10523,7 @@ class _BridgeSession:
         self.current_turn_id = f"turn-{self.turn_counter}"
         self._record_turn_message_cursor()
         self._turn_text_parts = []
+        self._turn_text_mark = 0
         self.last_turn_error = None
         emit({"type": "turn_start", "sessionId": self.id, "turnId": self.current_turn_id})
 
@@ -10739,7 +10750,7 @@ class _BridgeSession:
                     _backfill_orphan_tool_results(self.session)
                 except Exception as be:  # noqa: BLE001
                     log("warn", f"orphan backfill failed: {be}")
-            emit_error(f"turn failed: {exc}", recoverable=True)
+            emit_error(f"turn failed: {exc}", recoverable=True, session_id=self.id)
             traceback.print_exc(file=sys.stderr)
             emit(
                 {
@@ -10950,6 +10961,7 @@ class _BridgeSession:
         self.current_turn_id = f"turn-{self.turn_counter}"
         self._record_turn_message_cursor()
         self._turn_text_parts = []
+        self._turn_text_mark = 0
         self.last_turn_error = None
         emit(
             {
@@ -10984,7 +10996,7 @@ class _BridgeSession:
         )
         adapter = await self._ensure_harness_adapter()
         if adapter is None:
-            emit_error(f"failed to start {self.runtime} harness", recoverable=True)
+            emit_error(f"failed to start {self.runtime} harness", recoverable=True, session_id=self.id)
             emit(
                 {
                     "type": "turn_complete",
@@ -11005,7 +11017,7 @@ class _BridgeSession:
         except Exception as exc:  # noqa: BLE001
             log("warn", f"harness run_turn raised: {exc}")
             traceback.print_exc(file=sys.stderr)
-            emit_error(f"harness turn failed: {exc}", recoverable=True)
+            emit_error(f"harness turn failed: {exc}", recoverable=True, session_id=self.id)
             emit(
                 {
                     "type": "turn_complete",
@@ -11183,6 +11195,14 @@ class _BridgeSession:
                         "partialJson": getattr(event, "partial_json", ""),
                     }
                 )
+            elif etype == "stream_start":
+                self._turn_text_mark = len(self._turn_text_parts)
+                emit({"type": "stream_start", "sessionId": self.id})
+            elif etype == "stream_reset":
+                # A retry is about to stream the reply again: what the
+                # failed call streamed is not part of it.
+                del self._turn_text_parts[self._turn_text_mark:]
+                emit({"type": "stream_reset", "sessionId": self.id})
         except Exception as exc:  # noqa: BLE001
             log("error", f"on_stream error: {exc}")
 

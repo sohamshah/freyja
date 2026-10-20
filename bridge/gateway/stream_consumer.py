@@ -295,6 +295,11 @@ class _StreamState:
     # reject MarkdownTextChunk), so there's no need for live streaming,
     # throttling, or a separate text_buffer / fallback_committed split.
     body_buffer: str = ""
+    # Where the current model call's prose starts in body_buffer. A
+    # stream_reset (the engine retries a call that failed mid-stream)
+    # cuts back to it, so the reply is not posted as partial + whole.
+    body_mark: int = 0
+    body_mark_break: bool = False
     # A non-text event (tool call, thinking) fired since the last body
     # append. The model's next text block is a NEW paragraph — the raw
     # deltas carry no separator between blocks, so without this flag a
@@ -469,6 +474,8 @@ class SlackStreamConsumer:
             "tool_use_start",
             "tool_input_end",
             "tool_result",
+            "stream_start",
+            "stream_reset",
         }:
             return
         try:
@@ -481,6 +488,21 @@ class SlackStreamConsumer:
 
     async def _handle_event_async(self, event: dict[str, Any]) -> None:
         etype = event.get("type")
+
+        # Markers only move the body mark; they are not activity, so they
+        # must not open the stream or set the typing status.
+        if etype == "stream_start":
+            async with self._lock:
+                self._state.body_mark = len(self._state.body_buffer)
+                self._state.body_mark_break = self._state.body_break_pending
+            return
+        if etype == "stream_reset":
+            async with self._lock:
+                self._state.body_buffer = self._state.body_buffer[: self._state.body_mark]
+                # The failed call's text used up the pending paragraph
+                # break; the retried text needs it again.
+                self._state.body_break_pending = self._state.body_mark_break
+            return
 
         # Set the Slack Assistant Threads typing status on the first
         # event of the turn (best-effort; harmless if it fails on

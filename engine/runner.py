@@ -1201,6 +1201,10 @@ class AsyncAgentRunner:
         # operator read it, so the model should remember writing it.
         self._stop_note: dict[str, Any] | None = None
         self._stream_partial: list[str] = []
+        # A streamed attempt failed after showing something. The next
+        # attempt (a retry) first tells listeners to drop it: see
+        # _call_provider_stream.
+        self._stream_needs_reset = False
 
         # Tool result truncator
         self.truncator = ToolResultTruncator(self.config)
@@ -1378,6 +1382,7 @@ class AsyncAgentRunner:
         self.stop_keeping_cache()
         self._stop_note = None
         self._stream_partial = []
+        self._stream_needs_reset = False
         try:
             return await self._run(
                 session, user_message, stop_condition=stop_condition, stream=stream,
@@ -2160,6 +2165,17 @@ class AsyncAgentRunner:
         self._notify_llm_call(provider, start, streaming=False, response=response, error=None)
         return response
 
+    async def _emit_stream_marker(self, kind: str) -> None:
+        """Send a `stream_start` / `stream_reset` marker to the stream listener."""
+        if not self.on_stream:
+            return
+        try:
+            result = self.on_stream(StreamEvent(type=kind))
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:  # noqa: BLE001
+            logger.debug("stream marker %s failed", kind, exc_info=True)
+
     async def _call_provider_stream(self, session: Session) -> ProviderResponse:
         """Make a streaming completion call."""
         provider = (
@@ -2173,14 +2189,31 @@ class AsyncAgentRunner:
         streamed_text: list[str] = []
         self._stream_partial = streamed_text
 
+        # Listeners (the bridge, the renderer, Slack) append every delta to
+        # what they show. `stream_start` marks where this attempt begins;
+        # `stream_reset` tells them to cut back to that mark. A retry after
+        # a failed attempt that streamed sends the reset first, so the
+        # failed partial is not followed by the whole reply again. A final
+        # failure sends none: its partial stays beside the error.
+        if self._stream_needs_reset:
+            self._stream_needs_reset = False
+            await self._emit_stream_marker("stream_reset")
+        await self._emit_stream_marker("stream_start")
+        streamed_any = False
+
         async def _handle_event(event: StreamEvent) -> None:
+            nonlocal streamed_any
             etype = getattr(event, "type", None)
             if etype == "text_delta":
                 streamed_text.append(getattr(event, "text", "") or "")
             elif etype == "text_reset":
                 # The provider switched models mid-stream (refusal
-                # fallback); the text before this is not the reply.
+                # fallback); what this attempt streamed is not the reply.
                 streamed_text.clear()
+                await self._emit_stream_marker("stream_reset")
+                return
+            if etype in ("text_delta", "thinking_delta", "tool_use_start", "tool_input_delta"):
+                streamed_any = True
             if self.on_stream:
                 result = self.on_stream(event)
                 if asyncio.iscoroutine(result):
@@ -2208,6 +2241,8 @@ class AsyncAgentRunner:
             # A failed attempt's text is not the reply (the retry streams a
             # new one), so a stop during the backoff must not keep it.
             self._stream_partial = []
+            if streamed_any:
+                self._stream_needs_reset = True
             self._notify_llm_call(provider, start, streaming=True, response=None, error=exc)
             # See _call_provider_async: re-cast a raw transient transport error
             # (e.g. httpx RemoteProtocolError "peer closed connection" mid-stream)

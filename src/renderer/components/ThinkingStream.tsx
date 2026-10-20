@@ -175,15 +175,24 @@ function formatSeconds(ms: number): string {
   return ms < 60_000 ? `${Math.floor(ms / 1000)}s` : formatDuration(ms)
 }
 
+/** A step title glued to the end of the previous sentence, as GPT thinking
+ *  streamed before its summary parts were split ("...done.**Next step**").
+ *  Prose never puts bold straight after a full stop with no space. */
+const GLUED_TITLE = /([.!?:;)\]])(\*\*[A-Z][^*\n]{2,120}\*\*)(?=\n|$)/g
+
+function unglueTitles(text: string): string {
+  return text.replace(GLUED_TITLE, '$1\n\n$2')
+}
+
 /** Step titles become small headings, so the renderer can set them apart
  *  from the prose without touching bold text inside a sentence. */
 function withStepTitles(text: string): string {
-  return text.replace(STEP_TITLE, (_, title: string) => `\n#### ${title.trim()}\n`)
+  return unglueTitles(text).replace(STEP_TITLE, (_, title: string) => `\n#### ${title.trim()}\n`)
 }
 
 function stepTitles(text: string): string[] {
   const out: string[] = []
-  for (const m of text.matchAll(STEP_TITLE)) out.push(m[1].trim())
+  for (const m of unglueTitles(text).matchAll(STEP_TITLE)) out.push(m[1].trim())
   return out
 }
 

@@ -1516,6 +1516,9 @@ Parameters:
         )
 
         collected_text: list[str] = []
+        # Where the current model call's text starts in collected_text; a
+        # stream_reset (retry after a failed call) cuts back to it.
+        text_mark = {"at": 0}
         tool_count = 0
         current_tool_id: dict[str, str] = {"id": ""}
         cancelled = record.cancel_event
@@ -1571,6 +1574,12 @@ Parameters:
                         "partialJson": getattr(event, "partial_json", ""),
                     },
                 )
+            elif etype == "stream_start":
+                text_mark["at"] = len(collected_text)
+                await _fire(self._spec.emit_event, {"type": "stream_start", "sessionId": record.id})
+            elif etype == "stream_reset":
+                del collected_text[text_mark["at"]:]
+                await _fire(self._spec.emit_event, {"type": "stream_reset", "sessionId": record.id})
 
         async def on_system_event(event: Any) -> None:
             await _fire(

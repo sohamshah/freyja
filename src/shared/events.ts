@@ -394,6 +394,11 @@ export interface Message {
    *  it into a summary (F1). Toggled via the message context menu and
    *  broadcast back via the entry_pin_changed event. */
   pinned?: boolean
+  /** Where the model call now streaming began in this message: the part
+   *  count and the length of the last part's text at `stream_start`. A
+   *  `stream_reset` (the engine retries a call that failed mid-stream)
+   *  cuts the message back to it. Cleared when the turn completes. */
+  attemptMark?: { parts: number; lastLen: number }
 }
 
 /** Which execution runtime drives the session.
@@ -1042,11 +1047,17 @@ type SessionId = { sessionId?: string }
 
 export type BridgeEvent =
   | ({ type: 'ready'; mode: BridgeMode; capabilities: Record<string, unknown> } & SessionId)
-  | { type: 'error'; message: string; recoverable?: boolean }
+  // With a sessionId the error ends that session's live turn; without one
+  // it is only a notice.
+  | ({ type: 'error'; message: string; recoverable?: boolean } & SessionId)
   | { type: 'log'; level: 'info' | 'warn' | 'error' | 'debug'; message: string }
   | ({ type: 'turn_start'; turnId: string } & SessionId)
   | ({ type: 'text_delta'; text: string } & SessionId)
   | ({ type: 'thinking_delta'; thinking: string } & SessionId)
+  // A model call starts streaming / the engine retries one that failed
+  // mid-stream: cut the message back to where that call began.
+  | ({ type: 'stream_start' } & SessionId)
+  | ({ type: 'stream_reset' } & SessionId)
   | ({ type: 'tool_use_start'; id: string; name: string } & SessionId)
   | ({ type: 'tool_input_delta'; id: string; partialJson: string } & SessionId)
   // `toolName` is the tool that runs. It differs from the `tool_use_start`

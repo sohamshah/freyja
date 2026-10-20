@@ -1893,6 +1893,152 @@ function pendingFor(
   return pending.find((p) => p.clientId === clientId)
 }
 
+/** Events the slice reducer applies to a session's transcript. */
+const TRANSCRIPT_EVENTS = new Set<string>([
+  'bus_message', 'file_change_set', 'followups_promoted', 'inbox_event', 'inbox_injected',
+  'message_appended', 'stream_reset', 'stream_start', 'subagent_done', 'subagent_spawn',
+  'subagent_update', 'system_event', 'text_delta', 'thinking_delta', 'tool_input_delta',
+  'tool_input_end', 'tool_result', 'tool_use_start', 'turn_complete', 'turn_start',
+  'usage_snapshot', 'usage', 'widget_render',
+])
+/** Events held for a session whose saved transcript is loading. */
+const eventsAwaitingLoad = new Map<string, BridgeEvent[]>()
+/** Sessions whose saved transcript could not be read. Their events apply
+ *  to an empty slice, which must then never be saved over the file. */
+const unreadableSessions = new Set<string>()
+
+function mustLoadBeforeApplying(state: HarnessState, sessionId: string, ev: BridgeEvent): boolean {
+  if (!TRANSCRIPT_EVENTS.has(ev.type)) return false
+  if (sessionId === state.activeSessionId || state.sessionArchive[sessionId]) return false
+  if (unreadableSessions.has(sessionId)) return false
+  const row = sessionTreeIndex(state.sessions).byId.get(sessionId)
+  return !!row && (row.messageCount ?? 0) > 0
+}
+
+async function loadThenApply(sessionId: string): Promise<void> {
+  let loaded = false
+  try {
+    loaded = await useHarness.getState().loadPersistedSessionIntoArchive(sessionId)
+  } catch {
+    loaded = false
+  }
+  if (!loaded && !useHarness.getState().sessionArchive[sessionId]) unreadableSessions.add(sessionId)
+  const waiting = eventsAwaitingLoad.get(sessionId) ?? []
+  eventsAwaitingLoad.delete(sessionId)
+  batchStoreUpdates(() => {
+    for (const ev of waiting) useHarness.getState().handleEvent(ev)
+  })
+  // The turn_complete that would have scheduled these saves may have
+  // been among the held events.
+  schedulePersistSession(sessionId)
+  schedulePersistIndex()
+}
+
+/** When the running bridge said `ready`. A turn that began before it
+ *  belongs to a bridge that is gone. 0 until the first `ready` (and after
+ *  a renderer reload, which gets no new `ready`: the bridge kept running). */
+let bridgeReadyAt = 0
+
+/** End a slice's turn as `turn_complete` would, settling its spinning
+ *  tool chips with `reason`. */
+function endTurn(slice: SessionSlice, reason: string): SessionSlice {
+  const streamingId = slice.currentStreamingMessageId
+  if (!slice.isStreaming && !streamingId) return slice
+  const message = streamingId ? slice.messages.find((m) => m.id === streamingId) : undefined
+  return {
+    ...slice,
+    messages: message
+      ? slice.messages.map((m) =>
+          m.id === streamingId ? { ...m, completedAt: m.completedAt ?? Date.now(), attemptMark: undefined } : m,
+        )
+      : slice.messages,
+    toolCalls: settleUnfinishedTools(slice.toolCalls, message?.parts ?? [], reason),
+    currentStreamingMessageId: null,
+    currentTurnId: null,
+    isStreaming: false,
+  }
+}
+
+/** A slice read from disk that still says a turn is streaming, from a
+ *  bridge that has since been replaced: nothing will ever end that turn. */
+function endTurnIfFromOldBridge(slice: SessionSlice): SessionSlice {
+  if (!bridgeReadyAt || (!slice.isStreaming && !slice.currentStreamingMessageId)) return slice
+  const started = slice.messages.find((m) => m.id === slice.currentStreamingMessageId)?.createdAt ?? 0
+  return started < bridgeReadyAt ? endTurn(slice, 'Not run: the app restarted') : slice
+}
+
+function endTurnsOfOldBridge<T extends HarnessState>(state: T): T {
+  const reason = 'Not run: the bridge restarted'
+  let sessionArchive = state.sessionArchive
+  for (const [id, slice] of Object.entries(state.sessionArchive)) {
+    const ended = endTurn(slice, reason)
+    if (ended === slice) continue
+    if (sessionArchive === state.sessionArchive) sessionArchive = { ...state.sessionArchive }
+    sessionArchive[id] = ended
+  }
+  const active = sliceFromState(state)
+  const ended = endTurn(active, reason)
+  if (ended === active && sessionArchive === state.sessionArchive) return state
+  return {
+    ...state,
+    sessionArchive,
+    ...(ended === active
+      ? {}
+      : {
+          messages: ended.messages,
+          toolCalls: ended.toolCalls,
+          currentStreamingMessageId: null,
+          currentTurnId: null,
+          isStreaming: false,
+        }),
+  }
+}
+
+/** The slice fields an `error` changes: the message appended to the reply
+ *  being streamed, and the turn over. */
+function endTurnWithError(
+  slice: SessionSlice,
+  message: string,
+): Pick<SessionSlice, 'messages' | 'currentStreamingMessageId' | 'currentTurnId' | 'isStreaming'> {
+  const streamingId = slice.currentStreamingMessageId
+  const messages = streamingId
+    ? slice.messages.map((m) =>
+        m.id === streamingId
+          ? {
+              ...m,
+              parts: [...m.parts, { type: 'system', text: message, systemSubtype: 'error' } satisfies MessagePart],
+            }
+          : m,
+      )
+    : slice.messages
+  return { messages, currentStreamingMessageId: null, currentTurnId: null, isStreaming: false }
+}
+
+/** Close out tool chips in `parts` that are still running: `error` with
+ *  `reason` as the result. Returns `toolCalls` itself when none were. */
+function settleUnfinishedTools(
+  toolCalls: Record<string, ToolCallRecord>,
+  parts: MessagePart[],
+  reason: string,
+): Record<string, ToolCallRecord> {
+  let out = toolCalls
+  const now = Date.now()
+  for (const part of parts) {
+    if (part.type !== 'tool_call' || !part.toolCallId) continue
+    const call = out[part.toolCallId]
+    if (!call || call.status !== 'running') continue
+    if (out === toolCalls) out = { ...toolCalls }
+    out[part.toolCallId] = {
+      ...call,
+      status: 'error',
+      result: reason,
+      isError: true,
+      durationMs: call.durationMs ?? Math.max(0, now - call.startedAt),
+    }
+  }
+  return out
+}
+
 function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
   const next: SessionSlice = { ...slice }
 
@@ -2017,6 +2163,59 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         }
         return { ...m, parts }
       })
+      return next
+    }
+
+    case 'stream_start': {
+      // A model call starts streaming: remember where it begins, so a
+      // retry after it fails can cut back to here (stream_reset).
+      const streamingId = slice.currentStreamingMessageId
+      if (!streamingId) return next
+      next.messages = slice.messages.map((m) => {
+        if (m.id !== streamingId) return m
+        const last = m.parts[m.parts.length - 1]
+        const lastLen = last && (last.type === 'text' || last.type === 'thinking') ? (last.text ?? '').length : 0
+        return { ...m, attemptMark: { parts: m.parts.length, lastLen } }
+      })
+      return next
+    }
+
+    case 'stream_reset': {
+      // The engine is retrying a model call that failed mid-stream (or the
+      // provider switched models mid-reply). What that call streamed is
+      // not the reply: drop its thinking, text and never-run tool chips,
+      // or the retry would show up after the failed partial.
+      const streamingId = slice.currentStreamingMessageId
+      const message = streamingId ? slice.messages.find((m) => m.id === streamingId) : undefined
+      const mark = message?.attemptMark
+      if (!message || !mark || mark.parts > message.parts.length) return next
+      const kept = message.parts.slice(0, mark.parts)
+      const last = kept[kept.length - 1]
+      if (last && (last.type === 'text' || last.type === 'thinking') && (last.text ?? '').length > mark.lastLen) {
+        kept[kept.length - 1] = { ...last, text: (last.text ?? '').slice(0, mark.lastLen) }
+      }
+      const dropped = new Set(
+        message.parts
+          .slice(mark.parts)
+          .filter((p) => p.type === 'tool_call' && p.toolCallId)
+          .map((p) => p.toolCallId as string),
+      )
+      if (dropped.size > 0) {
+        const toolCalls = { ...slice.toolCalls }
+        const widgets = { ...slice.widgets }
+        for (const id of dropped) {
+          delete toolCalls[id]
+          delete widgets[id]
+        }
+        next.toolCalls = toolCalls
+        next.widgets = widgets
+        next.toolCallOrder = slice.toolCallOrder.filter((id) => !dropped.has(id))
+      }
+      next.messages = slice.messages.map((m) => (m.id === streamingId ? { ...m, parts: kept } : m))
+      next.thinking = kept
+        .filter((p) => p.type === 'thinking')
+        .map((p) => p.text ?? '')
+        .join('')
       return next
     }
 
@@ -2539,8 +2738,16 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         if (streamingId) {
           const endedAt = Date.now()
           next.messages = slice.messages.map((m) =>
-            m.id === streamingId && !m.completedAt ? { ...m, completedAt: endedAt } : m,
+            m.id === streamingId
+              ? { ...m, completedAt: m.completedAt ?? endedAt, attemptMark: undefined }
+              : m,
           )
+          // Every tool that runs reports a result. A chip still spinning
+          // when its turn ends never ran (a call cut off at the output
+          // limit, an unfinished turn): settle it instead of spinning on.
+          const message = slice.messages.find((m) => m.id === streamingId)
+          const toolCalls = settleUnfinishedTools(slice.toolCalls, message?.parts ?? [], 'Not run: the turn ended first')
+          if (toolCalls !== slice.toolCalls) next.toolCalls = toolCalls
         }
         next.currentStreamingMessageId = null
         next.currentTurnId = null
@@ -2686,6 +2893,23 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
   ...emptyState(),
 
   handleEvent(ev) {
+    // A transcript event for a session with a saved history that is not
+    // in memory waits while that history loads, then applies on top of
+    // it. Applied to an empty slice, it would show only this turn, and
+    // the turn's save would write that stub over the history on disk.
+    const targetId = (ev as { sessionId?: string }).sessionId
+    if (targetId) {
+      const waiting = eventsAwaitingLoad.get(targetId)
+      if (waiting) {
+        waiting.push(ev)
+        return
+      }
+      if (mustLoadBeforeApplying(get(), targetId, ev)) {
+        eventsAwaitingLoad.set(targetId, [ev])
+        void loadThenApply(targetId)
+        return
+      }
+    }
     // The bridge said which of a session's sub-agents are really running:
     // settle the records it no longer has and save what changed.
     const reportedRunning = reportedRunningSubagents(ev)
@@ -2715,6 +2939,12 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     set((prev) => {
       // Non-session global events live in their own section.
       if (ev.type === 'ready') {
+        // A new bridge (a restart, a crash and the drop to demo mode):
+        // no turn of the old one will ever send turn_complete. End them
+        // all, or they tick "thinking" forever and new sends queue as
+        // follow-ups to a turn that is gone.
+        bridgeReadyAt = Date.now()
+        prev = endTurnsOfOldBridge(prev)
         const models = (ev.capabilities?.models as ModelChoice[] | undefined) ?? []
         const capModel = (ev.capabilities?.model as string | undefined) ?? prev.model
         const nextReasoning = normalizeReasoningFor(
@@ -3095,37 +3325,30 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         return prev
       }
       if (ev.type === 'error') {
-        let messages = prev.messages
-        if (prev.currentStreamingMessageId) {
-          messages = prev.messages.map((m) =>
-            m.id === prev.currentStreamingMessageId
-              ? {
-                  ...m,
-                  parts: [
-                    ...m.parts,
-                    {
-                      type: 'system',
-                      text: ev.message,
-                      systemSubtype: 'error',
-                    } satisfies MessagePart,
-                  ],
-                }
-              : m,
-          )
-        }
-        return {
-          ...prev,
-          logs: [...prev.logs.slice(-200), { level: 'error', message: ev.message, at: Date.now() }],
-          messages,
-          currentStreamingMessageId: null,
-          currentTurnId: null,
-          isStreaming: false,
+        const notice = {
+          logs: [...prev.logs.slice(-200), { level: 'error' as const, message: ev.message, at: Date.now() }],
           toast: {
             id: nextId('toast'),
             message: ev.message,
-            tone: 'warn',
+            tone: 'warn' as const,
             at: Date.now(),
           },
+        }
+        // Only an error that names its session ends a live turn, and only
+        // that session's: a sub-agent failing in the background used to
+        // cut off the reply streaming on screen. Without a session it is
+        // a notice (a delivery that failed, a bridge that crashed).
+        const target = ev.sessionId
+        if (!target) return { ...prev, ...notice }
+        if (target === prev.activeSessionId) {
+          return { ...prev, ...notice, ...endTurnWithError(sliceFromState(prev), ev.message) }
+        }
+        const archived = prev.sessionArchive[target]
+        if (!archived) return { ...prev, ...notice }
+        return {
+          ...prev,
+          ...notice,
+          sessionArchive: { ...prev.sessionArchive, [target]: { ...archived, ...endTurnWithError(archived, ev.message) } },
         }
       }
       if (ev.type === 'memory_retrieved' || ev.type === 'memory_updated') {
@@ -5369,6 +5592,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     if (!session) return
     const slice = sliceForSession(state, sessionId)
     if (!slice || !hasPersistableSessionState(session, slice)) return
+    // Its history on disk could not be read, so this slice holds only what
+    // streamed since: saving it would replace that history.
+    if (unreadableSessions.has(sessionId)) return
     const startedAt = performance.now()
     const res = await api.sessionSave(persistedPayloadFromSession(session, slice))
     const durationMs = performance.now() - startedAt
@@ -5423,7 +5649,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     if (!api?.sessionLoad) return false
     const res = await api.sessionLoad(sessionId)
     if (!res?.ok || !res.session?.slice) return false
-    const slice = normalizePersistedFrames(res.session.slice as SessionSlice)
+    const slice = endTurnIfFromOldBridge(normalizePersistedFrames(res.session.slice as SessionSlice))
     set((prev) => ({
       sessionArchive: {
         ...prev.sessionArchive,
