@@ -162,7 +162,11 @@ def main() -> int:
             continue
         tmp = path.with_name(path.name + ".externalize-tmp")
         tmp.write_text(converted, encoding="utf-8")
+        st = path.stat()
         os.replace(tmp, path)
+        # Keep the mtime: the briefer reads a session log's mtime as when
+        # the session last worked (bridge/briefing.py _last_work_ms).
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
 
     mode = "rewrote" if args.apply else "would rewrite"
     stored = sum(unique.values())

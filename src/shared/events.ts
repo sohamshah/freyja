@@ -1776,9 +1776,19 @@ export interface BriefingAction {
 
 export interface BriefingProject {
   name: string
+  /** 'quiet' only appears in version-1 editions. */
   state: 'ready' | 'in_motion' | 'blocked' | 'quiet'
   attention?: boolean
+  /** YYYY-MM-DD of the newest work in any of the project's sessions (v2). */
+  last_active?: string | null
+  /** Where it stands now. */
   summary: string
+  /** What changed since the last edition (v2). */
+  moved?: string[] | null
+  /** Open work and who owns it (v2). */
+  pending?: string[] | null
+  /** The single next action, naming who does it (v2). */
+  next?: string | null
   session_id?: string | null
 }
 

@@ -111,6 +111,7 @@ def _structured(edition: dict[str, Any]) -> dict[str, Any]:
                 "state": p.get("state"),
                 "attention": bool(p.get("attention")),
                 "summary": p.get("summary"),
+                "next": p.get("next"),
             }
         )
     decisions = []

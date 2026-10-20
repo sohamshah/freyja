@@ -388,6 +388,7 @@ export function MorningRoom() {
                   <ProjectLine
                     key={i}
                     project={p}
+                    editionDate={doc.date}
                     onOpen={() =>
                       p.session_id
                         ? dispatchIntent(
@@ -515,14 +516,51 @@ function SectionLabel(props: { label: string; count?: string }) {
   )
 }
 
-function ProjectLine(props: { project: BriefingProject; onOpen?: () => void }) {
-  const { project: p, onOpen } = props
+/** The briefer writes moved/pending as arrays, but a model can slip and
+ *  write one string; take either. */
+function factList(v: unknown): string[] {
+  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === 'string' && !!x.trim())
+  return typeof v === 'string' && v.trim() ? [v] : []
+}
+
+/** "today" / "yesterday" / "3d ago", relative to the edition's date. */
+function activeAgo(lastActive: string | null | undefined, editionDate: string): string | null {
+  if (!lastActive || !/^\d{4}-\d{2}-\d{2}$/.test(lastActive)) return null
+  const days = Math.round(
+    (Date.parse(editionDate + 'T12:00:00') - Date.parse(lastActive + 'T12:00:00')) / 86_400_000,
+  )
+  if (!Number.isFinite(days) || days < 0) return null
+  return days === 0 ? 'today' : days === 1 ? 'yesterday' : `${days}d ago`
+}
+
+function ProjectLine(props: {
+  project: BriefingProject
+  editionDate: string
+  onOpen?: () => void
+}) {
+  const { project: p, editionDate, onOpen } = props
+  const moved = factList(p.moved)
+  const pending = factList(p.pending)
+  const next = typeof p.next === 'string' && p.next.trim() ? p.next : null
+  const ago = activeAgo(p.last_active, editionDate)
   return (
     <div className={p.attention ? 'mroom-proj-line attention' : 'mroom-proj-line'}>
       <span className="mroom-glyph">{STATE_GLYPH[p.state] ?? '·'}</span>
       <span className="mroom-proj-name">{p.name}</span>
-      <span className="mroom-proj-stat">{STATE_LABEL[p.state] ?? p.state}</span>
-      <span className="mroom-proj-summary">{p.summary}</span>
+      <span className="mroom-proj-stat">
+        {STATE_LABEL[p.state] ?? p.state}
+        {ago && <span className="mroom-proj-ago">{ago}</span>}
+      </span>
+      <div className="mroom-proj-body">
+        <div className="mroom-proj-summary">{p.summary}</div>
+        {(moved.length > 0 || pending.length > 0 || next) && (
+          <dl className="mroom-proj-facts">
+            {moved.length > 0 && <ProjectFacts label="moved" items={moved} />}
+            {pending.length > 0 && <ProjectFacts label="pending" items={pending} />}
+            {next && <ProjectFacts label="next" items={[next]} accent />}
+          </dl>
+        )}
+      </div>
       {p.session_id ? (
         <button className="mroom-open" onClick={onOpen}>
           open
@@ -531,6 +569,19 @@ function ProjectLine(props: { project: BriefingProject; onOpen?: () => void }) {
         <span />
       )}
     </div>
+  )
+}
+
+function ProjectFacts(props: { label: string; items: string[]; accent?: boolean }) {
+  return (
+    <>
+      <dt className="mroom-fact-lbl">{props.label}</dt>
+      <dd className={props.accent ? 'mroom-fact mroom-fact-next' : 'mroom-fact'}>
+        {props.items.map((t, i) => (
+          <div key={i}>{t}</div>
+        ))}
+      </dd>
+    </>
   )
 }
 
@@ -801,7 +852,26 @@ const STYLES = `
   text-transform: uppercase;
 }
 .mroom-proj-line.attention .mroom-proj-stat { color: #a8d4fc; }
-.mroom-proj-summary { color: #a8a8a8; line-height: 1.5; max-width: 60ch; }
+.mroom-proj-ago {
+  display: block; margin-top: 5px;
+  color: #4a4a4a; letter-spacing: 0.12em;
+}
+.mroom-proj-body { max-width: 60ch; }
+.mroom-proj-summary { color: #a8a8a8; line-height: 1.5; }
+.mroom-proj-facts {
+  display: grid; grid-template-columns: 56px 1fr;
+  column-gap: 12px; row-gap: 6px;
+  margin: 10px 0 0;
+}
+.mroom-fact-lbl {
+  color: #4a4a4a; font-size: 9px; letter-spacing: 0.22em;
+  text-transform: uppercase; padding-top: 2px;
+}
+.mroom-fact {
+  margin: 0; color: #6e6e6e; font-size: 11.5px; line-height: 1.5;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.mroom-fact-next { color: #c4e0fc; }
 .mroom-open, .mroom-run {
   background: none; border: none; padding: 0;
   font-family: inherit; font-size: 10px; letter-spacing: 0.10em;

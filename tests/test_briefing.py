@@ -62,7 +62,7 @@ def _seed_wm(home, session_id, summary, open_threads=0):
 
 def test_prompt_renders_schema_and_escapes(home):
     p = briefing.briefer_prompt()
-    assert '"version": 1,' in p                       # schema embedded intact
+    assert '"version": 2,' in p                       # schema embedded intact
     assert "({summary, actionsCompleted})" in p        # {{}} escape resolved
     assert "{BRIEFING_SCHEMA_DOC}" not in p            # interpolation happened
     assert "STAGE work" in p                           # execution boundary stated
@@ -185,7 +185,7 @@ def test_render_recency_block_inlines_overview_and_flags_missing_wm(home):
     _seed_wm(home, "session-pwc", "Prepped all 5 client questions for Thursday sync.", open_threads=3)
     # session-bare has NO working_memory.json on purpose.
     block = briefing.render_recency_block(now=NOW)
-    assert "Sessions active since your last briefing" in block
+    assert "Sessions with new work since your last briefing" in block
     assert "session-pwc" in block
     assert "Prepped all 5 client questions" in block       # overview inlined
     assert "3 open thread(s)" in block                      # open-thread count surfaced
@@ -205,7 +205,8 @@ def test_fire_context_block_only_fires_for_briefer(home):
 def test_prompt_points_at_the_injected_block(home):
     p = briefing.briefer_prompt()
     assert "authoritative reading list" in p
-    assert "Sessions active since your last briefing" in p
+    assert "Sessions with new work since your last briefing" in p
+    assert f"Also worked on in the last {briefing.ACTIVE_WINDOW_DAYS} days" in p
 
 
 def test_ensure_briefer_job_refreshes_stale_prompt(home):
@@ -222,3 +223,83 @@ def test_ensure_briefer_job_refreshes_stale_prompt(home):
     sched.updated.clear()
     asyncio.run(briefing.ensure_briefer_job(state))
     assert sched.updated == []
+
+
+# ─── Work signal + active window ───────────────────────────────────────
+
+D = 24 * H
+
+
+def _seed_work(home, session_id, at, name="raw_messages.jsonl"):
+    """A session log whose mtime says when the session last worked."""
+    import os
+
+    from bridge.project_paths import safe_session_id
+
+    pdir = home / "projects" / safe_session_id(session_id)
+    pdir.mkdir(parents=True, exist_ok=True)
+    f = pdir / name
+    f.write_text("{}\n")
+    os.utime(f, (at, at))
+
+
+def test_last_work_comes_from_session_logs_not_index_time(home):
+    # An old session that a re-index touched: updatedAt is fresh, but its
+    # logs say it last worked a month ago. It must not read as fresh.
+    _seed_sessions(home, [
+        ("session-reindexed", int((NOW - 1 * H) * 1000), "Old project"),
+        ("session-real-1",    int((NOW - 2 * H) * 1000), "Real 1"),
+        ("session-real-2",    int((NOW - 3 * H) * 1000), "Real 2"),
+        ("session-real-3",    int((NOW - 4 * H) * 1000), "Real 3"),
+    ])
+    _seed_work(home, "session-reindexed", NOW - 30 * D)
+    _seed_work(home, "session-real-1", NOW - 2 * H, "action_ledger.jsonl")
+    # session-real-2/3 have no logs: they fall back to updatedAt.
+    fresh = [sid for _, sid, _ in briefing.recency_shortlist(now=NOW, since=NOW - 1 * D)]
+    assert fresh == ["session-real-1", "session-real-2", "session-real-3"]
+    others = briefing.active_window(now=NOW, exclude=set(fresh))
+    assert others == []                                   # a month old is out of the window
+
+
+def test_active_window_lists_recent_sessions_outside_the_fresh_set(home):
+    _seed_sessions(home, [
+        ("session-f1", int((NOW - 1 * H) * 1000), "F1"),
+        ("session-f2", int((NOW - 2 * H) * 1000), "F2"),
+        ("session-f3", int((NOW - 3 * H) * 1000), "F3"),
+        ("session-2d", int((NOW - 2 * D) * 1000), "Two days"),
+        ("session-6d", int((NOW - 6 * D) * 1000), "Six days"),
+        ("session-9d", int((NOW - 9 * D) * 1000), "Nine days"),
+    ])
+    fresh = {sid for _, sid, _ in briefing.recency_shortlist(now=NOW, since=NOW - 1 * D)}
+    assert fresh == {"session-f1", "session-f2", "session-f3"}
+    others = [sid for _, sid, _ in briefing.active_window(now=NOW, exclude=fresh)]
+    assert others == ["session-2d", "session-6d"]
+
+
+def test_sessions_with_a_parent_are_left_out(home):
+    sdir = home / "sessions"
+    sdir.mkdir(parents=True, exist_ok=True)
+    (sdir / "_index.json").write_text(json.dumps({"version": 1, "sessions": [
+        {"id": "session-parent", "updatedAt": int((NOW - 2 * H) * 1000), "title": "Parent"},
+        {"id": "jev_1a1_1", "updatedAt": int((NOW - 1 * H) * 1000), "title": "jev: Open x",
+         "parentSessionId": "session-parent"},
+    ]}))
+    ids = [sid for _, sid, _ in briefing.recency_shortlist(now=NOW, since=NOW - 1 * D)]
+    assert ids == ["session-parent"]
+
+
+def test_render_recency_block_reads_gateway_sessions_from_their_dir(home):
+    sid = "freyja:slack:T1:channel:C2:1792.5"
+    _seed_sessions(home, [
+        (sid,             int((NOW - 1 * H) * 1000), "slack:T1:channel:C2:1792.5"),
+        ("session-a",     int((NOW - 2 * H) * 1000), "A"),
+        ("session-b",     int((NOW - 3 * H) * 1000), "B"),
+        ("session-older", int((NOW - 4 * D) * 1000), ""),
+    ])
+    _seed_wm(home, "freyja-slack-T1-channel-C2-1792.5", "Reviewed the deploy PR.")
+    _seed_wm(home, "session-older", "Drafted the launch post.")
+    block = briefing.render_recency_block(now=NOW)
+    assert "Reviewed the deploy PR." in block               # found via the safe dir name
+    assert "dir freyja-slack-T1-channel-C2-1792.5" in block
+    tail = block.split("# Also worked on")[1]
+    assert 'session-older · "Drafted the launch post."' in tail   # untitled → summary

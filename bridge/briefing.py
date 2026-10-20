@@ -51,6 +51,13 @@ _SHORTLIST_MIN = 3          # always surface at least the N most-recent
 _SHORTLIST_MAX = 30         # bound the injected block
 _DEFAULT_LOOKBACK_SECONDS = 72 * 3600  # fallback window if no prior edition
 _OVERVIEW_PREVIEW_CHARS = 320
+# A project is on the page only if one of its sessions had work this
+# recently. Older work is a choice the user made not to act on.
+ACTIVE_WINDOW_DAYS = 7
+_ACTIVE_LIST_MAX = 40
+# Files a session writes only when work happens: a model call appends to
+# raw_messages.jsonl, a tool call to action_ledger.jsonl.
+_WORK_FILES = ("raw_messages.jsonl", "action_ledger.jsonl")
 
 
 def briefing_root() -> Path:
@@ -81,20 +88,24 @@ def local_iana_timezone() -> str:
 # BriefingDoc). Bump "version" on breaking changes.
 
 BRIEFING_SCHEMA_DOC = """{
-  "version": 1,
+  "version": 2,
   "date": "YYYY-MM-DD",
   "generated_at_iso": "ISO-8601 with offset",
   "since_label": "HH:MM yesterday" or "your last visit",
   "hero": {
-    "projects_in_motion": <int — MUST equal the number of projects below whose state is not "quiet">,
+    "projects_in_motion": <int — MUST equal the number of projects below>,
     "events_since": <int>
   },
   "projects": [
     {
-      "name": "short project name",
-      "state": "ready" | "in_motion" | "blocked" | "quiet",
-      "attention": <bool — true when this needs the user's eyes>,
-      "summary": "ONE sentence, letterpress voice — what moved / where it stands",
+      "name": "short project name, stable day to day",
+      "state": "blocked" | "ready" | "in_motion",
+      "attention": <bool — true for blocked and ready>,
+      "last_active": "YYYY-MM-DD — newest work in any of its sessions, from the injected block",
+      "summary": "where it stands now — 1-2 short sentences",
+      "moved": ["what changed since the last edition — past tense, one fact each (0-3)"],
+      "pending": ["open work — what is left and who owns it (0-4)"],
+      "next": "the single next action, verb first, naming who does it — or null",
       "session_id": "most relevant session id, or null"
     }
   ],
@@ -170,30 +181,79 @@ def _updated_ms(s: dict) -> float:
         return 0.0
 
 
-def recency_shortlist(*, now: float, since: float) -> list[tuple[float, str, str]]:
-    """Non-subagent sessions active since ``since`` (epoch s), newest
-    first, as ``(updated_ms, session_id, title)``. Always returns at
-    least ``_SHORTLIST_MIN`` (the most recent, even if older than
-    ``since``) so a quiet window still surfaces the latest activity, and
-    never more than ``_SHORTLIST_MAX``."""
+def _project_dir(session_id: str) -> Path:
+    from bridge.project_paths import safe_session_id
+
+    return Path(_home_str()) / "projects" / safe_session_id(session_id)
+
+
+def _last_work_ms(s: dict) -> float:
+    """When a session last did work, in epoch ms.
+
+    The index's updatedAt is not that: opening a session or a backfill
+    pass moves it with no new work. On 2026-10-19 a re-index moved six
+    old sessions to that day, one last worked on Jul 1, and they would
+    have read as fresh. The session's own logs change only when a model
+    or tool call happens, so their mtime is the work signal. A session
+    with neither file (a Jev run, an index-only row) falls back to
+    updatedAt."""
+    pdir = _project_dir(_session_id(s))
+    newest = 0.0
+    for name in _WORK_FILES:
+        try:
+            newest = max(newest, (pdir / name).stat().st_mtime * 1000.0)
+        except OSError:
+            continue
+    return newest or _updated_ms(s)
+
+
+def _work_rows() -> list[tuple[float, str, str]]:
+    """Every non-subagent session as ``(last_work_ms, session_id,
+    title)``, newest work first. A session with a parent (a Jev run) is
+    left out: its parent's ledger records the run."""
     rows: list[tuple[float, str, str]] = []
     for s in _sessions_index():
         sid = _session_id(s)
-        if not sid or sid.startswith(_SKIP_PREFIXES):
+        if not sid or sid.startswith(_SKIP_PREFIXES) or s.get("parentSessionId"):
             continue
-        rows.append((_updated_ms(s), sid, str(s.get("title") or "")[:80]))
+        rows.append((_last_work_ms(s), sid, str(s.get("title") or "")[:80]))
     rows.sort(reverse=True)
+    return rows
+
+
+def recency_shortlist(
+    *, now: float, since: float, rows: list[tuple[float, str, str]] | None = None
+) -> list[tuple[float, str, str]]:
+    """Non-subagent sessions with work since ``since`` (epoch s), newest
+    first, as ``(last_work_ms, session_id, title)``. Always returns at
+    least ``_SHORTLIST_MIN`` (the most recent, even if older than
+    ``since``) so a quiet window still surfaces the latest activity, and
+    never more than ``_SHORTLIST_MAX``."""
+    rows = _work_rows() if rows is None else rows
     recent = [r for r in rows if r[0] / 1000.0 >= since]
     if len(recent) < _SHORTLIST_MIN:
         recent = rows[:_SHORTLIST_MIN]
     return recent[:_SHORTLIST_MAX]
 
 
+def active_window(
+    *, now: float, exclude: set[str], rows: list[tuple[float, str, str]] | None = None
+) -> list[tuple[float, str, str]]:
+    """Sessions with work in the last ``ACTIVE_WINDOW_DAYS`` that are not
+    in ``exclude`` (the fresh set), newest first. With the fresh set,
+    this is every session a project on the page may come from."""
+    rows = _work_rows() if rows is None else rows
+    floor = now - ACTIVE_WINDOW_DAYS * 86400
+    return [
+        r for r in rows if r[0] / 1000.0 >= floor and r[1] not in exclude
+    ][:_ACTIVE_LIST_MAX]
+
+
 def _wm_overview(session_id: str) -> dict | None:
     """Best-effort {summary, open_threads} for a session's working
     memory. None when the file is missing/unparseable (e.g. backfill
     hasn't summarized it yet) — the session still belongs on the list."""
-    p = Path(_home_str()) / "projects" / session_id / "working_memory.json"
+    p = _project_dir(session_id) / "working_memory.json"
     try:
         d = json.loads(p.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
@@ -242,41 +302,45 @@ def render_recency_block(*, now: float | None = None) -> str:
     today_str = time.strftime("%Y-%m-%d", time.localtime(now))
     prior = _prior_briefing_ts(today_str)
     since = prior if prior is not None else (now - _DEFAULT_LOOKBACK_SECONDS)
-    entries = recency_shortlist(now=now, since=since)
+    rows = _work_rows()
+    entries = recency_shortlist(now=now, since=since, rows=rows)
     if not entries:
         return ""
+    others = active_window(now=now, exclude={sid for _, sid, _ in entries}, rows=rows)
 
     home = _home_str()
     since_label = (
         time.strftime("%Y-%m-%d %H:%M", time.localtime(prior))
         if prior is not None else "the last ~72h"
     )
+
+    def when(ms: float, fmt: str = "%Y-%m-%d %H:%M") -> str:
+        return time.strftime(fmt, time.localtime(ms / 1000.0)) if ms else "unknown"
+
     lines = [
-        f"# Sessions active since your last briefing ({since_label}) — READ EVERY ONE",
+        f"# Sessions with new work since your last briefing ({since_label}) — READ EVERY ONE",
         "",
-        "This is the authoritative, complete set of non-subagent sessions "
-        "touched since your last edition, newest first. It is computed "
-        "deterministically — do NOT rely on your own scan to find what's new. "
-        f"For EACH entry below, read its full "
-        f"`{home}/projects/<id>/working_memory.json` (and the tail of that "
-        "dir's `action_ledger.jsonl`) before you sample any older session. "
-        "Never skip an entry because it looks finished: a delivered artifact "
-        "awaiting the user is a `ready` project, not a non-event. The previews "
-        "are partial — open the files for the real content. This list also "
-        "OVERRIDES your working notes: if a note says to ignore or skip a "
-        "project, but one of its sessions appears here, that note is STALE — "
-        "the session is active NOW. Surface it.",
+        "This is the complete set of non-subagent sessions with new work since "
+        "your last edition, newest first. It is computed from the session "
+        "logs — do NOT rely on your own scan to find what's new. For EACH "
+        "entry, read its full `working_memory.json` and the tail of its "
+        f"`action_ledger.jsonl` under `{home}/projects/<dir>/`. Never skip an "
+        "entry because it looks finished: a delivered artifact awaiting the "
+        "user is a `ready` project, not a non-event. The previews are partial "
+        "— open the files for the real content. This list OVERRIDES your "
+        "working notes: if a note says to ignore or skip a project, but one of "
+        "its sessions appears here, that note is STALE — the session is active "
+        "NOW. Surface it.",
         "",
     ]
     for i, (ms, sid, title) in enumerate(entries, 1):
         ov = _wm_overview(sid)
-        when = (
-            time.strftime("%Y-%m-%d %H:%M", time.localtime(ms / 1000.0))
-            if ms else "unknown"
-        )
         ttl = f' · "{title}"' if title else ""
+        dir_note = ""
+        if _project_dir(sid).name != sid:
+            dir_note = f" · dir {_project_dir(sid).name}"
         if ov is None:
-            lines.append(f"{i}. {sid}{ttl} · updated {when}")
+            lines.append(f"{i}. {sid}{ttl} · last work {when(ms)}{dir_note}")
             lines.append(
                 "    overview: (working memory not yet summarized — read this "
                 "session's action_ledger.jsonl tail directly)"
@@ -284,8 +348,32 @@ def render_recency_block(*, now: float | None = None) -> str:
         else:
             summary = " ".join((ov["summary"] or "").split())[:_OVERVIEW_PREVIEW_CHARS]
             threads = f" · {ov['open_threads']} open thread(s)" if ov["open_threads"] else ""
-            lines.append(f"{i}. {sid}{ttl} · updated {when}{threads}")
+            lines.append(f"{i}. {sid}{ttl} · last work {when(ms)}{threads}{dir_note}")
             lines.append(f"    overview: {summary or '(empty)'}")
+
+    lines += [
+        "",
+        f"# Also worked on in the last {ACTIVE_WINDOW_DAYS} days",
+        "",
+        "These sessions had work before your last edition. Open one only when "
+        "a project needs its detail. A project is on today's page only if one "
+        "of its sessions is in this list or the one above. Every session not "
+        f"listed here had no work in the last {ACTIVE_WINDOW_DAYS} days, even "
+        "when `_index.json` shows a recent updatedAt (opening a session or a "
+        "re-index moves that time without new work).",
+        "",
+    ]
+    if others:
+        for ms, sid, title in others:
+            if not title or sid.endswith(title):
+                # Gateway threads are titled with their own id; the
+                # start of the summary says what the thread is about.
+                ov = _wm_overview(sid)
+                title = " ".join(((ov or {}).get("summary") or "").split())[:80]
+            ttl = f' · "{title}"' if title else ""
+            lines.append(f"- {sid}{ttl} · last work {when(ms, '%Y-%m-%d')}")
+    else:
+        lines.append("- (none)")
     return "\n".join(lines)
 
 
@@ -306,74 +394,151 @@ def briefer_prompt() -> str:
     """Render the briefer's prompt with the live FREYJA_HOME. Called at
     job-creation time (the prompt is snapshotted onto the JobRecord)."""
     home = _home_str()
-    return f"""You are Freyja's briefing agent. Produce today's morning briefing by
-reading the state of every project, session, and scheduled job, then
-writing two files. You STAGE work for the user to commit — you never
-execute project work yourself.
+    return f"""You are Freyja's briefing agent. Each morning you tell the user where
+their active projects stand, what needs them, and what to do next. You
+read their sessions and scheduled jobs, then write two files.
+You STAGE work for the user to commit — you never execute project work
+yourself.
 
 # Read (in this order)
 
-1. Your working notes (injected above) — calibration you've learned
-   about how this user wants their briefing.
-2. **The "Sessions active since your last briefing" block above is your
-   authoritative reading list** — it is computed deterministically and
-   names EVERY non-subagent session touched since the last edition,
-   newest first, with a working-memory preview. **It outranks your
-   working notes**: if your notes tell you to ignore/skip a project but
-   one of its sessions is listed here, the note is STALE (the project
-   re-activated) — surface the session anyway. Read each listed
-   session's full {home}/projects/<id>/working_memory.json AND the tail
+1. **The "Sessions with new work since your last briefing" block above
+   is your authoritative reading list.** It is computed from the session
+   logs and names EVERY non-subagent session with new work since the
+   last edition, newest first. **It outranks your working notes**: if a
+   note tells you to ignore or skip a project but one of its sessions is
+   listed, the note is STALE — surface the session. For each listed
+   session, read {home}/projects/<dir>/working_memory.json AND the tail
    of its action_ledger.jsonl (last ~30 lines; createdAt is epoch ms).
-   Do not skip any — this set is what "new since yesterday" means, and a
-   delivered artifact awaiting the user is a `ready` project. If that
-   block is absent, fall back to scanning {home}/projects/*/working_memory.json.
-3. Yesterday's briefing, if it exists: the newest directory under
-   {home}/briefing/ (format YYYY-MM-DD) — read its briefing.json so
-   today's edition reflects what changed rather than restating, and so
-   project NAMES stay stable day to day.
-4. Carry-forward context: after the fresh set, you MAY sample older
-   {home}/projects/*/working_memory.json for long-running projects that
-   didn't move recently but still belong in the picture (e.g. an open PR,
-   a paused series). Each has an `overview` ({{summary, actionsCompleted}})
-   and an entity graph (workstreams / decisions / findings / open_threads
-   / artifact_notes). open_threads with status "open" are decision
-   candidates. Don't exhaustively read all of them — the fresh set above
-   is the priority.
-5. Session index: {home}/sessions/_index.json — titles + updatedAt
-   for mapping session ids to human names and recency.
-6. Scheduled jobs: {home}/schedules/jobs/*.json and each job's
-   newest run under {home}/schedules/runs/<job_id>/. Failed or
-   partial_failure runs are decision candidates; enabled jobs with
-   upcoming fires belong in today's plan context.
+   <dir> is the session id with every character outside [A-Za-z0-9_.-]
+   replaced by "-" (the block names the dir when it differs). Do not skip
+   any: a delivered artifact awaiting the user is a `ready` project.
+2. The "Also worked on in the last {ACTIVE_WINDOW_DAYS} days" list in the
+   same block. Open one of those sessions only when a project needs its
+   detail.
+3. Your working notes (injected above): names, clustering, and what this
+   user engages with.
+4. The newest edition under {home}/briefing/ (YYYY-MM-DD dirs). Read its
+   briefing.json so today says what changed instead of restating, and so
+   project names stay stable.
+5. Scheduled jobs: {home}/schedules/jobs/*.json and each job's newest run
+   under {home}/schedules/runs/<job_id>/. A failed or partial_failure run
+   is a decision candidate.
+6. {home}/sessions/_index.json maps session ids to titles. Its updatedAt
+   is NOT a work signal: opening a session or a re-index moves it with
+   no new work. Use the dates in the injected block.
 
-Use bash (ls, cat, jq if available, python3) — read efficiently. The
-fresh-set files above are the ones you MUST open; everything else is
-optional context.
+If the injected block is absent, scan {home}/projects/*/working_memory.json
+and take the newer mtime of each dir's raw_messages.jsonl and
+action_ledger.jsonl as that session's last work.
 
-# Synthesize
+Use bash (ls, cat, jq if available, python3) and read efficiently. Each
+working_memory.json has an `overview` ({{summary, actionsCompleted}}) and
+an entity graph (workstreams / decisions / findings / open_threads /
+artifact_notes). open_threads with status "open" are decision candidates.
 
-· Cluster sessions into PROJECTS by intent: matching/related workstream
-  titles, shared artifact paths, session-title similarity. A project is
-  the durable thing the user is trying to accomplish; sessions are
-  visits to it. 3-8 projects is typical — if you find 20, you're
-  splitting too fine.
-· Project state: "blocked" if an unresolved open_thread or failed run
-  gates progress; "ready" if a deliverable awaits the user; "in_motion"
-  if work progressed in the last ~48h; else "quiet". attention=true
-  for blocked/ready states.
-· DECISIONS: only calls the USER must make — unresolved open_threads
-  that gate work, failed scheduled runs needing a judgment, conflicting
-  definitions, "should I continue X". 0-5 of them, ordered by urgency ×
-  time-pressure. Each gets a default recommendation in the body (state
-  it plainly: "Default: ...") and 1-2 actions with concrete intents.
-· TODAY: stage 1 run per active project (max ~5). Each entry's intent
-  should be a `prompt` intent with a fully self-contained prompt that
-  an agent could execute without asking questions, OR `fire_job` when
-  an existing scheduled job covers it, OR `open_session` when the right
-  move is the user resuming a conversation.
-· VOICE: letterpress-terse. One-sentence summaries. No filler, no
-  "exciting progress!", no hedging. Numbers are load-bearing. Write
-  like the call sheet of someone whose time matters.
+# What goes on the page
+
+A project is the durable thing the user is trying to get done; sessions
+are visits to it. Cluster sessions into projects by intent: related
+titles, shared repos or artifact paths. 3-8 projects is typical — if you
+find 20, you're splitting too fine.
+
+The page shows ACTIVE projects only:
+
+· A project is on the page only if at least one of its sessions is in
+  the injected block (new work since the last edition, or work in the
+  last {ACTIVE_WINDOW_DAYS} days). Nothing else puts a project on the
+  page: not your notes, not yesterday's edition, not an unread
+  deliverable.
+· Yesterday's edition and your notes keep names stable. They are not a
+  roster. A project from yesterday with no session in the block drops
+  off today. That is correct, not a loss.
+· Do not count how long something has waited. An old deliverable the
+  user has not opened, or an approved plan nobody started, means the
+  user chose not to act. Leave it off; no "N days unread" lines.
+· Signals you gather yourself (disk space, a failed scheduled run) are
+  not projects. If one needs action, it goes in Needs you or Today.
+· State: "blocked" when an unresolved question or a failed run stops
+  progress. "ready" when a deliverable from the window waits for the
+  user. "in_motion" when work moved and more remains. A project that is
+  none of these has nothing to say: leave it off. attention=true for
+  blocked and ready.
+· Order: blocked, then ready, then in_motion. Within a state, newest
+  work first.
+
+# Project entries
+
+Each entry answers four questions for a reader who missed yesterday:
+
+· summary — Where does it stand now? 1-2 short sentences about the
+  current state, not the history.
+· moved — What changed since the last edition? 0-3 items, past tense,
+  one fact each. Empty when nothing moved.
+· pending — What work is still open, and who owns it? 0-4 items. Start
+  an item with the owner when it is not the user ("Platform team: ...").
+· next — The single most useful next action. Verb first. Say who does
+  it: "You:" for the user, a name for someone else, "Freyja:" for work
+  an agent can do (and stage that work in Today). null only when nothing
+  is left to do.
+
+Say each fact once. Don't repeat the summary in moved or pending.
+
+This entry is too dense:
+
+  "summary": "PR #812 is held because the staging config points the
+  payments client at a placeholder host, and you withdrew your approval.
+  Separately, 4 PRs (#820, #818, #805, #790) wait on review."
+
+This one is right:
+
+  "summary": "The payments migration (PR #812) is blocked. Its staging
+  config sends traffic to a placeholder host.",
+  "moved": ["You withdrew your approval of #812 on Saturday.",
+            "PR #820 (retry fix) opened Sunday."],
+  "pending": ["Platform team: point the staging config at the real host.",
+              "4 PRs wait for reviewers; #790 (cache eviction) is the oldest."],
+  "next": "You: request reviewers on #820 and #818."
+
+# Needs you (decisions)
+
+· Only calls the USER must make: an unresolved question that stops
+  work, a failed scheduled run that needs a judgment, two definitions
+  that conflict, "should I continue X". 0-5 of them, ordered by urgency
+  × time pressure.
+· Each body gives the evidence in 2-3 sentences and ends with a plain
+  recommendation: "Default: ...". Give 1-2 actions with concrete
+  intents.
+· A decision may rest on a session older than {ACTIVE_WINDOW_DAYS} days
+  only when waiting costs more each day (money spent daily, a booking
+  that can sell out).
+· Before you repeat an ask from the last edition, check it is still
+  open (for a PR, `gh pr view`). Repeat an unanswered ask in at most 5
+  editions. Word the 5th as the final ask ("skipping it keeps the
+  default"), then drop it.
+
+# Today
+
+Stage 1 run per active project (max ~5). Each entry's intent is a
+`prompt` intent with a fully self-contained prompt an agent could run
+without asking questions, OR `fire_job` when an existing scheduled job
+covers it, OR `open_session` when the right move is the user resuming a
+conversation.
+
+# Writing
+
+Write for a reader who knows the projects but missed yesterday.
+
+· Short sentences. One idea per sentence. Active voice. Plain words.
+· Say what a thing is, not only its number: "PR #820 (retry fix)", not
+  "#820". Never list bare numbers; count them and name the one that
+  matters.
+· Name the owner of every open item.
+· Use a number only when it changes what the user does. No event
+  counts, token counts, or day counters in project entries.
+· No filler, no hedging, no praise ("great progress").
+· No internal ids (session ids, run ids) in prose. PR numbers and commit
+  hashes are fine when the user needs them to act.
 
 # Write
 
@@ -397,19 +562,30 @@ mkdir -p {home}/briefing/$(date +%F)/ then write BOTH:
    field (use null) rather than fabricating a target. generated_at_iso
    MUST be the real current time INCLUDING seconds (e.g. via
    `date +%Y-%m-%dT%H:%M:%S%z`) so two rebriefs are always distinguishable.
+   Before writing, check every project: its last_active must fall inside
+   the last {ACTIVE_WINDOW_DAYS} days or come from the block's first list.
+   Drop any project that fails.
 
 2. {home}/briefing/$(date +%F)/briefing.md — the same content as a
-   readable memo: hero line, ## Projects, ## Needs you, ## Today,
-   colophon. This is the Slack/archive rendering.
+   readable memo: hero line; ## Projects, with "### <name> · <state>",
+   the summary, then Moved / Pending / Next bullets for each project;
+   ## Needs you; ## Today; colophon. This is the Slack/archive rendering.
 
 # Learn
 
 Before finishing, append to your working notes anything that will make
 tomorrow's briefing better: clustering choices you made (so tomorrow's
-edition keeps project names STABLE), sources that were empty/noisy,
+edition keeps project names STABLE), sources that were empty or noisy,
 calibration about what the user engaged with. Keep project names
 consistent day to day — renaming projects daily destroys the user's
-mental model.
+mental model. Keep the notes short; collapse old run logs into a few
+durable facts.
+
+Notes never put a project on the page. Don't keep a fixed roster of
+projects, and don't keep day counters for work the user hasn't touched.
+Older notes may contain both ("stable project clusters", "N days
+unread", "undispatched since"). Those rules are retired: this prompt
+replaces them.
 
 NEVER write a permanent suppression rule into your notes — no "ignore
 project X", "skip EMA/work sessions", "these are complete one-off
