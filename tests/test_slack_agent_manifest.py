@@ -75,3 +75,39 @@ def test_scopes_cover_the_agent_session_methods():
     methods additionally require chat:write."""
     assert "assistant:write" in BOT_SCOPES
     assert "chat:write" in BOT_SCOPES
+
+
+def test_agent_session_events_are_subscribed():
+    """The Stop button, operator renames and the Messages tab open event
+    all need their subscriptions; without `agent_session_stopped` Slack
+    warns on every setStatus and renders no Stop control."""
+    events = set(BOT_EVENTS)
+    assert {
+        "agent_session_stopped",
+        "agent_session_title_changed",
+        "app_home_opened",
+        "reaction_added",
+        "message.session",
+    } <= events
+
+
+def test_scopes_cover_feedback_customize_and_code_channels():
+    scopes = set(BOT_SCOPES)
+    assert "reactions:read" in scopes
+    assert "chat:write.customize" in scopes
+    assert "code_channels:manage" in scopes
+
+
+def test_code_channels_feature_is_declared_without_a_url():
+    features = build_manifest()["features"]
+    cc = features["code_channels"]
+    assert cc["enabled"] is True
+    # Socket Mode apps have no public URL; Slack routes agent slash
+    # commands over the socket, so declaring a URL would be a lie.
+    assert "slash_command_url" not in cc
+
+
+def test_suggested_prompts_stay_empty_in_the_manifest():
+    """Runtime prompts (assistant.threads.setSuggestedPrompts) fail with
+    static_prompts_configured when the manifest declares any."""
+    assert build_manifest()["features"]["agent_view"]["suggested_prompts"] == []

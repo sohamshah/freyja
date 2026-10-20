@@ -80,6 +80,8 @@ BOT_SCOPES: list[str] = [
     "channels:history",        # read public channel message history
     "channels:read",           # list channels the bot is in
     "chat:write",              # send messages
+    "chat:write.customize",    # per-session username/icon on agents.sessions.setStatus
+    "code_channels:manage",    # agents.conversations.* (Slack Code channels)
     "commands",                # register + handle slash commands
     "files:read",              # download user-attached files
     "files:write",             # upload files (images, voice, docs)
@@ -88,6 +90,7 @@ BOT_SCOPES: list[str] = [
     "im:history",              # read DM message history
     "im:read",                 # list DMs
     "im:write",                # send DMs (sometimes implied by chat:write)
+    "reactions:read",          # reaction_added on Freyja's replies (feedback)
     "users:read",              # resolve user IDs to display names
 ]
 
@@ -145,19 +148,28 @@ USER_SCOPES_OPTIONAL: list[str] = [
 # Bot events the adapter subscribes to via Socket Mode.
 # See: https://api.slack.com/events
 BOT_EVENTS: list[str] = [
+    "agent_session_stopped",                # the native Stop button on a session
+    "agent_session_title_changed",          # operator renamed a session thread
     "app_context_changed",                  # what the user is looking at
+    "app_home_opened",                      # Messages tab / Home tab opened
     "app_mention",                          # @bot in any channel
     "message.channels",                     # public channel messages
     "message.groups",                       # private channel messages
     "message.im",                           # DM messages
+    "message.session",                      # code channel + session thread messages
+    "reaction_added",                       # emoji feedback on Freyja's replies
 ]
 # Removed with the agent_view migration: `assistant_thread_started` and
 # `assistant_thread_context_changed` are Assistant-era lifecycle events
 # that Slack stops sending once the app is on the Agent experience. Their
 # replacements are `app_home_opened` (tab == "messages") for "user opened
 # the DM" and `app_context_changed` for "user switched what they're
-# viewing". We subscribe to the latter but not the former: Freyja has no
-# welcome/onboarding flow that needs to fire on open.
+# viewing".
+#
+# `agent_session_stopped` is what makes Slack render a Stop button on a
+# session: without the subscription every `agents.sessions.setStatus`
+# call answers with `missing_agent_session_stopped_event_subscription`
+# and the operator has no way to interrupt a turn inside a thread.
 
 
 def build_manifest(
@@ -207,7 +219,20 @@ def build_manifest(
             # agent_description is required, max 300 chars.
             "agent_view": {
                 "agent_description": agent_description,
+                # Stays empty on purpose: suggested prompts are set at
+                # runtime from live state on `app_home_opened`, and the
+                # runtime call fails with `static_prompts_configured`
+                # when the manifest also declares prompts.
                 "suggested_prompts": [],
+            },
+            # Slack Code: per-task channels with a diff/HTML/canvas view
+            # bar, a context bar and runtime slash commands. Socket Mode
+            # apps need no slash_command_url. The workspace must have the
+            # feature turned on; until then agents.conversations.create
+            # answers `feature_disabled` and the code_channel tool says so.
+            "code_channels": {
+                "enabled": True,
+                "suppress_mention_ephemeral": True,
             },
         },
         "oauth_config": {
