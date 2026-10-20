@@ -380,7 +380,9 @@ function PanePart({
   if (part.type === 'system') {
     return (
       <div className="flex items-center gap-2 rounded-md bg-white/[0.025] px-2.5 py-1.5 text-[11px] text-fg-2 ring-hairline">
-        <span className="font-mono text-[10px] uppercase text-warn/80">{part.systemSubtype}</span>
+        <span className="font-mono text-[10px] uppercase text-warn/80">
+          {part.systemSubtype === 'verification_nudge' ? 'self-check' : part.systemSubtype}
+        </span>
         <span>{part.text}</span>
       </div>
     )

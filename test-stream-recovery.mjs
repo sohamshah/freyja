@@ -125,6 +125,27 @@ await check('a reset never touches an earlier message', () => {
   assert.equal(h().messages.find((m) => m.parts.some((p) => p.text === 'Partial before the final failure')).attemptMark, undefined)
 })
 
+// ── The end-of-turn self-check ──────────────────────────────────────────
+
+await check('the self-check shows as a chip, and the reply after it is its own part', () => {
+  seed()
+  emit({ type: 'turn_start', sessionId: P, turnId: 't1' })
+  emit({ type: 'text_delta', sessionId: P, text: 'Done.' })
+  emit({
+    type: 'system_event',
+    sessionId: P,
+    subtype: 'verification_nudge',
+    message: 'Asked to check its work before finishing (6 bash calls in a row)',
+    details: { consecutive: 6, tools: ['bash'], iteration: 12, prompt: 'You made 6 consecutive bash calls. Before finishing, verify…' },
+  })
+  emit({ type: 'text_delta', sessionId: P, text: 'Verified: all fixed.' })
+  const parts = streaming().parts
+  assert.deepEqual(parts.map((p) => p.type), ['text', 'system', 'text'])
+  assert.equal(parts[1].systemSubtype, 'verification_nudge')
+  assert.match(parts[1].systemSummaryText, /Before finishing, verify/)
+  assert.equal(parts[2].text, 'Verified: all fixed.')
+})
+
 // ── Turn end settles chips that never ran ───────────────────────────────
 
 await check('a tool chip still spinning at turn_complete is settled', () => {

@@ -1828,6 +1828,23 @@ class AsyncAgentRunner:
                             f"{STEERING_TAG_OPEN}{verification_msg}{STEERING_TAG_CLOSE}"
                         )
                         ctx.verification_injected = True
+                        # The nudge is a hidden message, so say it happened:
+                        # the transcript shows a chip, and the reply that
+                        # follows starts a new paragraph instead of running
+                        # on from the one the model meant to end with.
+                        await self._emit_system_event(SystemEvent(
+                            type="verification_nudge",
+                            message=(
+                                f"Asked to check its work before finishing "
+                                f"({ctx.consecutive_same_tool} {tool_names_str} calls in a row)"
+                            ),
+                            details={
+                                "consecutive": ctx.consecutive_same_tool,
+                                "tools": list(ctx.last_tool_names),
+                                "iteration": ctx.iteration,
+                                "prompt": verification_msg,
+                            },
+                        ))
                         continue
 
                     # Input arrived while the final response streamed (a

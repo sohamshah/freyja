@@ -11210,6 +11210,10 @@ class _BridgeSession:
         try:
             subtype = getattr(event, "type", "unknown")
             details = getattr(event, "details", {}) or {}
+            if subtype == "verification_nudge" and self._turn_text_parts:
+                # The reply after the nudge is a new paragraph of this
+                # turn's text, as the engine joins it.
+                self._turn_text_parts.append("\n\n")
             emit(
                 {
                     "type": "system_event",

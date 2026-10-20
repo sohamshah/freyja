@@ -1858,6 +1858,9 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
         />
       )
     }
+    if (part.systemSubtype === 'verification_nudge') {
+      return <InlineVerificationNudge text={part.text ?? ''} prompt={part.systemSummaryText} />
+    }
     // /mcp replies: multi-line status tables, tool lists, catalog rows
     // and test reports render as a monospace block instead of the chip.
     if (part.systemSubtype === 'mcp_result' || part.systemSubtype === 'mcp_error') {
@@ -1922,6 +1925,44 @@ function InlineRefusal({ eventId, text }: { eventId: string; text: string }) {
         </div>
         <span className="text-fg-1">{text || 'Model declined to respond.'}</span>
       </div>
+    </div>
+  )
+}
+
+// ============ INLINE VERIFICATION NUDGE ============
+//
+// The engine asked the agent to check its work before ending its turn:
+// after at least 10 steps, the last 6+ of which called the same tools,
+// the model's attempt to finish gets a hidden steering message instead.
+// The chip makes that visible; it expands to the exact prompt sent.
+function InlineVerificationNudge({ text, prompt }: { text: string; prompt?: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const canExpand = !!prompt?.trim()
+  return (
+    <div className="rounded-md bg-white/[0.025] ring-hairline">
+      <button
+        type="button"
+        onClick={() => canExpand && setExpanded((v) => !v)}
+        title={canExpand ? (expanded ? 'Hide the prompt' : 'Show the prompt the agent got') : undefined}
+        className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-fg-2 ${
+          canExpand ? 'cursor-pointer hover:bg-white/[0.02]' : 'cursor-default'
+        }`}
+      >
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0 text-accent">
+          <circle cx="5" cy="5" r="4" fill="none" stroke="currentColor" strokeWidth="1" />
+          <path d="M3.2 5.1 L4.5 6.4 L6.9 3.8" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        <span className="font-mono text-[10.5px] uppercase text-accent/80">self-check</span>
+        <span className="min-w-0 flex-1 truncate text-fg-1">{text}</span>
+        {canExpand && (
+          <span className="shrink-0 font-mono text-[10px] text-fg-3">{expanded ? 'hide' : 'prompt'}</span>
+        )}
+      </button>
+      {expanded && prompt && (
+        <div className="selectable border-t border-white/[0.05] px-2.5 py-2 font-mono text-[11px] leading-[1.6] text-fg-2 whitespace-pre-wrap">
+          {prompt}
+        </div>
+      )}
     </div>
   )
 }

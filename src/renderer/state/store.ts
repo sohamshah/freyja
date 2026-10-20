@@ -2589,6 +2589,10 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         // operator's "did it actually fire and what did it produce" surface.
         'working_memory_start',
         'working_memory_complete',
+        // The engine asked the agent to check its work before ending its
+        // turn (a hidden steering message). The chip says so, and as a part
+        // it also starts the reply that follows on a new paragraph.
+        'verification_nudge',
       ]
       // The runner's automatic "halved N old tool results" pruning
       // (engine/runner.py:2078,2141) fires on most turns once context
@@ -2617,6 +2621,9 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           typeof ev.details?.raw_output === 'string'
             ? (ev.details.raw_output as string)
             : undefined
+      } else if (ev.subtype === 'verification_nudge') {
+        inlineExpandableText =
+          typeof ev.details?.prompt === 'string' ? (ev.details.prompt as string) : undefined
       }
       const systemPart: MessagePart = {
         type: 'system',

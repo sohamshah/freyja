@@ -476,7 +476,10 @@ class SlackStreamConsumer:
             "tool_result",
             "stream_start",
             "stream_reset",
+            "system_event",
         }:
+            return
+        if etype == "system_event" and event.get("subtype") != "verification_nudge":
             return
         try:
             asyncio.run_coroutine_threadsafe(
@@ -502,6 +505,13 @@ class SlackStreamConsumer:
                 # The failed call's text used up the pending paragraph
                 # break; the retried text needs it again.
                 self._state.body_break_pending = self._state.body_mark_break
+            return
+        if etype == "system_event":
+            # The engine asked the agent to check its work before ending
+            # (a hidden message). Its next words are a new paragraph, not
+            # a run-on of the reply it meant to end with.
+            async with self._lock:
+                self._state.body_break_pending = True
             return
 
         # Set the Slack Assistant Threads typing status on the first
