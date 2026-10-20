@@ -564,6 +564,9 @@ features:
       description: Show and adjust the agent's tool permissions
   agent_view:
     agent_description: Chat with Freyja in DMs or @mention me in channels.
+  code_channels:
+    enabled: true
+    suppress_mention_ephemeral: true
 oauth_config:
   scopes:
     bot:
@@ -572,6 +575,8 @@ oauth_config:
       - channels:history
       - channels:read
       - chat:write
+      - chat:write.customize
+      - code_channels:manage
       - commands
       - files:read
       - files:write
@@ -580,15 +585,21 @@ oauth_config:
       - im:history
       - im:read
       - im:write
+      - reactions:read
       - users:read
 settings:
   event_subscriptions:
     bot_events:
+      - agent_session_stopped
+      - agent_session_title_changed
       - app_context_changed
+      - app_home_opened
       - app_mention
       - message.channels
       - message.groups
       - message.im
+      - message.session
+      - reaction_added
   interactivity:
     is_enabled: true
   org_deploy_enabled: false
@@ -836,3 +847,26 @@ That last criterion is the real one. If the demo doesn't make people lean in, we
 ## 13. Document changelog
 
 - 2026-05-27: Initial draft.
+- 2026-10-20: Section 14 added for the agent session surface. The manifest in section 6 now lists the session events, the feedback scope, and code channels.
+
+## 14. The agent session surface (October 2026)
+
+Slack shipped the Agent Sessions API on 2026-08-20 and Slack Code on 2026-10-07. The gateway uses both since 2026-10-20. `docs/SLACK-AGENT-PLATFORM-2026.md` has the assessment that led to the change and the live probe results. The runtime shape is now:
+
+One message per turn. The consumer (`bridge/gateway/stream_consumer.py`) opens `chat.startStream` in `timeline` mode and grows one message with the prose as `MarkdownTextChunk` every 500 ms, the thinking and each tool call as `TaskUpdateChunk` cards, and any widget the agent sends as a `BlocksChunk`, all in the order they happen. `chat.stopStream` seals it with the tail prose, inline images, the feedback buttons, `freyja_session` metadata (session key and turn ts) and `session_status=active`. Standard markdown renders natively, so tables, task lists and fences in the prose need no conversion. A message past 30,000 characters of prose rolls over into a continuation stream in the same thread. If the stream fails or dies, the prose that Slack has not shown goes out as one `chat.postMessage`.
+
+Session status. `agents.sessions.setStatus` replaces the legacy typing status: `processing` on the first event of a turn, `suspended` while an approval, permission prompt or MCP elicitation waits on the operator, `active` at finalize, abort and turn failure, `closed` on `/reset`. The adapter's `send_typing` and `stop_typing` are thin wrappers over the same call for other callers.
+
+Stop button. Subscribing to `agent_session_stopped` is what makes Slack render Stop on a session. The gateway maps the event's channel and thread to a session key, cancels the turn, and silences the consumer without further API calls, because Slack seals the streams itself.
+
+Titles. The first message of a thread titles the session through `agents.sessions.rename` (or `setStatus` with a title when no session exists yet). Slack rejects colons and titles over about seventy characters. The bridge's Haiku auto-title is mirrored to Slack by the permission listener, and a rename the operator makes in the sidebar arrives as `agent_session_title_changed`, is kept over any automatic title, and is emitted as `session_renamed` for the desktop.
+
+Entry points. `app_home_opened` with `tab == "messages"` publishes two to four suggested prompts from live state (continue this DM, summarize what the operator is looking at, what was left open, the briefing). `tab == "home"` publishes a Home tab view with defaults, loaded sessions, scheduled jobs and skill candidates waiting for review. A brand new DM session gets one welcome line.
+
+Feedback. Every sealed reply carries `context_actions` with thumbs up and down; a thumbs down opens a modal asking for one sentence. `reaction_added` on a Freyja message with a thumbs, check or cross emoji counts the same way. Both land in the skill learning events log as `feedback` records and are emitted as a `feedback` bridge event.
+
+Restart-proof bindings. The mention gating sets (threads the bot joined, messages it sent), the code channels it opened and the session titles live in `~/.freyja/gateway/slack-bindings.json`, written at most every two seconds. When a channel thread reply is not in the sets, the adapter checks the thread parent once against Slack (bot author or `freyja_session` metadata) before ignoring it.
+
+Widgets. The `slack_widget` tool (`bridge/tools/slack_widget_tool.py`) builds data tables, charts (pie, bar, area, line), cards and carousels, collapsible containers, markdown blocks and video embeds through `bridge/gateway/slack_blocks.py`, which validates against Slack's limits, and puts them into the live message where the agent called it.
+
+Code channels. The `code_channel` tool (`bridge/tools/code_channel_tool.py`) opens a Slack Code channel for a multi-step job, sets diff, HTML, Block Kit, canvas and pull request views, the context bar, the channel's slash commands and the session status, and archives it with a summary posted back to the origin thread. Messages in a code channel route to the session `freyja:slack:<team>:code:<channel>` with no mention. The workspace must have Slack Code turned on; the probe on 2026-10-20 answered `feature_disabled`, so the tool is unit tested and the live path waits on that switch.
