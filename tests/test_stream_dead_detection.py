@@ -60,5 +60,13 @@ def test_no_call_site_still_matches_the_raw_string():
 
 
 def test_all_dead_stream_checks_use_the_predicate():
+    """Since 2026-10-20 every prose, thinking, tool card and widget append
+    goes through ``_stream_append_locked``, which is where the predicate
+    runs; the plan chunk in ``_ensure_phase_open`` has its own check. So
+    the predicate appears at those two sites and the one helper carries
+    the other four kinds of append."""
     src = inspect.getsource(SlackStreamConsumer)
-    assert src.count("_stream_is_dead(") >= 3
+    assert src.count("_stream_is_dead(") >= 2
+    assert src.count("await self._stream_append_locked(") >= 4
+    helper = inspect.getsource(SlackStreamConsumer._stream_append_locked)
+    assert "_stream_is_dead(" in helper
