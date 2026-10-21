@@ -12,6 +12,7 @@ import type { Words } from './stepWords'
 import { useNow } from './hooks'
 import { strandIndex } from '../../lib/seam'
 import type { ToolCallRecord } from '@shared/events'
+import { callsOf, useWorkView } from './source'
 
 /* ── A: one tool call, one quiet line ──────────────────────────────────
    A small ring stands where thinking has a diamond, then the step in plain
@@ -21,7 +22,8 @@ import type { ToolCallRecord } from '@shared/events'
 
 /** A call's record: the active session's store, or a pane's own slice. */
 export function useCall(id: string, record?: ToolCallRecord): ToolCallRecord | undefined {
-  const stored = useHarness((s) => (record ? undefined : s.toolCalls[id]))
+  const { sessionId } = useWorkView()
+  const stored = useHarness((s) => (record ? undefined : callsOf(s, sessionId)[id]))
   return record ?? stored
 }
 
@@ -244,12 +246,15 @@ export const StepGroup = memo(function StepGroup({ ids, u, records }: { ids: str
 })
 
 function useGroupRecords(ids: string[], records?: Record<string, ToolCallRecord>): Array<ToolCallRecord | undefined> {
-  const key = useHarness((s) =>
-    records ? '' : ids.map((id) => `${id}:${s.toolCalls[id]?.status ?? ''}:${s.toolCalls[id]?.durationMs ?? ''}`).join('|'),
-  )
+  const { sessionId } = useWorkView()
+  const key = useHarness((s) => {
+    if (records) return ''
+    const calls = callsOf(s, sessionId)
+    return ids.map((id) => `${id}:${calls[id]?.status ?? ''}:${calls[id]?.durationMs ?? ''}`).join('|')
+  })
   void key
-  const state = useHarness.getState()
-  return ids.map((id) => records?.[id] ?? state.toolCalls[id])
+  const calls = callsOf(useHarness.getState(), sessionId)
+  return ids.map((id) => records?.[id] ?? calls[id])
 }
 
 /* ── A: many calls at once (five or more) ──────────────────────────────

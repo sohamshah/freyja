@@ -10,6 +10,7 @@ import { formatShort } from './stepWords'
 import { helperDigest, parseDigest, replyLine } from './helperDigest'
 import { prefersReducedMotion, useNow } from './hooks'
 import type { SubagentRecord } from '@shared/events'
+import { subagentsOf, useWorkView } from './source'
 
 type HelperState = 'running' | 'done' | 'failed'
 
@@ -36,8 +37,9 @@ export function helperState(sub: SubagentRecord | undefined, snap: { completed?:
  * stays basted, in red, with a small cut across its branch.
  */
 export const Helpers = memo(function Helpers({ ids, u }: { ids: string[]; u: number }) {
-  const subs = useHarness(useShallow((s) => ids.map((id) => s.subagents[id])))
-  const statesKey = useHarness((s) => ids.map((id) => helperState(s.subagents[id], s.sessions.find((x) => x.id === id))).join(','))
+  const { sessionId } = useWorkView()
+  const subs = useHarness(useShallow((s) => ids.map((id) => subagentsOf(s, sessionId)[id])))
+  const statesKey = useHarness((s) => ids.map((id) => helperState(subagentsOf(s, sessionId)[id], s.sessions.find((x) => x.id === id))).join(','))
   const states = statesKey.split(',') as HelperState[]
   const n = ids.length
   const dense = n > 6

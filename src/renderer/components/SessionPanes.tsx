@@ -11,6 +11,8 @@ import { AppshotChip } from './AppshotCard'
 import { ScopedErrorBoundary } from './ScopedErrorBoundary'
 import { JevRunView, jevStatus } from './JevRun'
 import { looksLikeJevLog, parseJevResult } from '../lib/jevLog'
+import { WorkStretch } from './seam/WorkStretch'
+import { WorkViewContext, buildBlocks } from './seam/source'
 import type { Message, MessagePart, SessionSnapshot, SubagentRecord } from '@shared/events'
 
 export function SessionPanes() {
@@ -98,6 +100,7 @@ function SessionPane({
           switching the pane's session clears a stuck error. */}
       <ScopedErrorBoundary label="session transcript" resetKey={sessionId}>
         <PaneTranscript
+          sessionId={sessionId}
           snapshot={snapshot}
           slice={slice}
           writable={writable}
@@ -164,10 +167,12 @@ function PaneHeader({
 }
 
 function PaneTranscript({
+  sessionId,
   snapshot,
   slice,
   writable,
 }: {
+  sessionId: string
   snapshot?: SessionSnapshot
   slice?: SessionSlice
   writable: boolean
@@ -176,6 +181,7 @@ function PaneTranscript({
   const contentRef = useRef<HTMLDivElement>(null)
   const messages = safeArray<Message>(slice?.messages)
   const hasTranscript = !!slice && messages.length > 0
+  const workView = useMemo(() => ({ sessionId, compact: true }), [sessionId])
 
   // Follow the tail while the reader is at the bottom, and leave them be
   // once they scroll up: the pane grows on every delta, text and thinking
@@ -235,9 +241,11 @@ function PaneTranscript({
   return (
     <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
       <div ref={contentRef} className="space-y-5 px-5 py-5">
-        {messages.map((message) => (
-          <PaneMessage key={message.id} message={message} slice={slice} jevRun={!!snapshot?.id.startsWith('jev_')} />
-        ))}
+        <WorkViewContext.Provider value={workView}>
+          {messages.map((message) => (
+            <PaneMessage key={message.id} message={message} slice={slice} jevRun={!!snapshot?.id.startsWith('jev_')} />
+          ))}
+        </WorkViewContext.Provider>
       </div>
     </div>
   )
@@ -301,6 +309,19 @@ function PaneMessage({
     )
   }
 
+  return <PaneAssistant message={message} slice={slice} jevRun={jevRun} />
+}
+
+/** An assistant message in a pane: paragraphs, and the stretches of work
+ *  between them drawn as in the main conversation (quiet lines that fold
+ *  into a seam), reading this pane's session. */
+function PaneAssistant({ message, slice, jevRun }: { message: Message; slice: SessionSlice; jevRun: boolean }) {
+  const parts = safeArray<MessagePart>(message.parts)
+  const toolCalls = slice.toolCalls ?? EMPTY_RECORDS
+  const widgets = slice.widgets ?? EMPTY_RECORDS
+  const blocks = useMemo(() => buildBlocks(parts, toolCalls, widgets), [parts, toolCalls, widgets])
+  const streaming = !!slice.isStreaming && slice.currentStreamingMessageId === message.id
+  const liveIndex = streaming ? parts.length - 1 : -1
   return (
     <div>
       <div className="mb-1.5 flex items-center gap-2 label">
@@ -308,19 +329,25 @@ function PaneMessage({
         assistant
       </div>
       <div className="space-y-2.5">
-        {safeArray<MessagePart>(message.parts).map((part, index, parts) => (
-          <PanePart
-            key={index}
-            part={part}
-            slice={slice}
-            jevRun={jevRun}
-            live={!!slice.isStreaming && slice.currentStreamingMessageId === message.id && index === parts.length - 1}
-          />
-        ))}
+        {blocks.map((block, idx) =>
+          block.kind === 'stretch' ? (
+            <WorkStretch key={block.key} items={block.items} closed={idx < blocks.length - 1 || !streaming} liveIndex={liveIndex} />
+          ) : (
+            <PanePart
+              key={block.kind === 'widget' ? `w${block.toolCallId}` : `p${block.index}`}
+              part={block.kind === 'widget' ? parts[block.index] : block.part}
+              slice={slice}
+              jevRun={jevRun}
+              live={block.index === liveIndex}
+            />
+          ),
+        )}
       </div>
     </div>
   )
 }
+
+const EMPTY_RECORDS = {}
 
 function PanePart({
   part,

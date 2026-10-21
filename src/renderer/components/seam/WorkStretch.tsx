@@ -11,6 +11,7 @@ import { formatShort, stretchDiff, stretchMs, stretchPhrase, stretchUnits } from
 import type { HelperView, StretchData, StretchItem } from './stepWords'
 import { captureMarks, gather, unravel } from './choreo'
 import { prefersReducedMotion, useWidth } from './hooks'
+import { callsOf, subagentsOf, useWorkView } from './source'
 import type { MessagePart, ToolCallRecord } from '@shared/events'
 
 /**
@@ -41,10 +42,11 @@ export const WorkStretch = memo(function WorkStretch({
   )
   const helperIds = useMemo(() => items.flatMap((it) => (it.kind === 'helpers' ? it.ids : [])), [items])
   const plain = items.every((it) => it.kind === 'thought')
-  const calls = useHarness(useShallow((s) => callIds.map((id) => s.toolCalls[id])))
-  const subs = useHarness(useShallow((s) => helperIds.map((id) => s.subagents[id])))
-  const helperStates = useHarness((s) => helperIds.map((id) => helperState(s.subagents[id], s.sessions.find((x) => x.id === id))).join(','))
-  const focus = useHarness((s) => (s.focusedToolCallId && callIds.includes(s.focusedToolCallId) ? s.focusedToolCallSerial : 0))
+  const { sessionId, compact } = useWorkView()
+  const calls = useHarness(useShallow((s) => callIds.map((id) => callsOf(s, sessionId)[id])))
+  const subs = useHarness(useShallow((s) => helperIds.map((id) => subagentsOf(s, sessionId)[id])))
+  const helperStates = useHarness((s) => helperIds.map((id) => helperState(subagentsOf(s, sessionId)[id], s.sessions.find((x) => x.id === id))).join(','))
+  const focus = useHarness((s) => (!sessionId && s.focusedToolCallId && callIds.includes(s.focusedToolCallId) ? s.focusedToolCallSerial : 0))
 
   const [userOpen, setUserOpen] = useState(false)
   useEffect(() => {
@@ -104,7 +106,7 @@ export const WorkStretch = memo(function WorkStretch({
         <div className="wk-stretch-list">
           {items.map((it, i) => (
             <div key={itemKey(it, i)} className="wk-item">
-              {it.kind === 'thought' && <Thought part={it.part} live={it.index === liveIndex} query={query} />}
+              {it.kind === 'thought' && <Thought part={it.part} live={it.index === liveIndex} query={query} compact={compact} />}
             </div>
           ))}
         </div>
@@ -204,7 +206,7 @@ export const WorkStretch = memo(function WorkStretch({
           <div className="wk-stretch-list">
             {items.map((it, i) => (
               <div key={itemKey(it, i)} className="wk-item" data-ui={i} style={{ '--i': i } as CSSProperties}>
-                <ItemView item={it} u={i} liveIndex={liveIndex} query={query} />
+                <ItemView item={it} u={i} liveIndex={liveIndex} query={query} compact={compact} />
               </div>
             ))}
           </div>
@@ -216,16 +218,16 @@ export const WorkStretch = memo(function WorkStretch({
 
 type Mode = 'plain' | 'live' | 'folded' | 'open'
 
-function ItemView({ item, u, liveIndex, query }: { item: StretchItem; u: number; liveIndex: number; query: string }) {
-  if (item.kind === 'thought') return <Thought part={item.part} live={item.index === liveIndex} query={query} />
+function ItemView({ item, u, liveIndex, query, compact }: { item: StretchItem; u: number; liveIndex: number; query: string; compact: boolean }) {
+  if (item.kind === 'thought') return <Thought part={item.part} live={item.index === liveIndex} query={query} compact={compact} />
   if (item.kind === 'call') return <StepLine id={item.id} u={u} />
   if (item.kind === 'calls') return item.ids.length >= 5 ? <Crowd ids={item.ids} u={u} /> : <StepGroup ids={item.ids} u={u} />
   return <Helpers ids={item.ids} u={u} />
 }
 
-function Thought({ part, live, query }: { part: MessagePart; live: boolean; query: string }) {
+function Thought({ part, live, query, compact }: { part: MessagePart; live: boolean; query: string; compact: boolean }) {
   if (!part.text) return null
-  return <ThinkingStream text={part.text} live={live} startedAt={part.startedAt} endedAt={part.endedAt} searchQuery={query} />
+  return <ThinkingStream text={part.text} live={live} startedAt={part.startedAt} endedAt={part.endedAt} searchQuery={query} compact={compact} />
 }
 
 function itemKey(it: StretchItem, i: number): string {

@@ -10,7 +10,7 @@ import { SubagentCard } from './SubagentCard'
 import { WorkStretch } from './seam/WorkStretch'
 import { Seam } from './seam/Seam'
 import { helperDigest, parseDigest } from './seam/helperDigest'
-import type { StretchItem } from './seam/stepWords'
+import { buildBlocks } from './seam/source'
 import { AppshotChip } from './AppshotCard'
 import { JevResultSummary, JevRunView, jevStatus } from './JevRun'
 import { looksLikeJevLog, parseJevResult } from '../lib/jevLog'
@@ -1461,7 +1461,10 @@ const MessageView = memo(function MessageView({ message }: { message: Message })
   // Paragraphs, and the stretches of work between them. A stretch shows
   // its steps as quiet lines while the agent works, and folds into a seam
   // once a later paragraph starts or the turn ends.
-  const blocks = useMemo(() => buildBlocks(message.parts), [message.parts])
+  const blocks = useMemo(() => {
+    const st = useHarness.getState()
+    return buildBlocks(message.parts, st.toolCalls, st.widgets)
+  }, [message.parts])
   const lastPart = message.parts.length - 1
   const liveIndex = isStreamingMessage ? lastPart : -1
 
@@ -1602,90 +1605,6 @@ function TurnMeter({
       )}
     </div>
   )
-}
-
-type Block =
-  | { kind: 'text' | 'other'; part: MessagePart; index: number }
-  | { kind: 'stretch'; key: string; items: StretchItem[] }
-  | { kind: 'widget'; toolCallId: string }
-
-/** Split a message into paragraphs and the stretches of work between them.
- *  Thinking, tool calls and helpers join the open stretch; a paragraph, a
- *  widget or a system note closes it. Calls that ran together (one
- *  `groupId`) become one item. Spawn calls are dropped: the helper they
- *  started stands for them. Reads the store without subscribing; the
- *  caller memoizes on the parts, which change on every event that matters
- *  here. */
-/** Calls issued in one response start streaming within a moment of each
- *  other; a later response comes after a model round trip. */
-const TOGETHER_MS = 2500
-
-function buildBlocks(parts: MessagePart[]): Block[] {
-  const state = useHarness.getState()
-  const toolCalls = state.toolCalls
-  const widgets = state.widgets
-  const out: Block[] = []
-  let stretch: { kind: 'stretch'; key: string; items: StretchItem[] } | null = null
-  const open = (index: number) => {
-    if (!stretch) {
-      stretch = { kind: 'stretch', key: `s${index}`, items: [] }
-      out.push(stretch)
-    }
-    return stretch
-  }
-  parts.forEach((part, index) => {
-    if (part.type === 'text') {
-      if (!(part.text ?? '').trim()) return
-      stretch = null
-      out.push({ kind: 'text', part, index })
-      return
-    }
-    if (part.type === 'thinking') {
-      open(index).items.push({ kind: 'thought', part, index })
-      return
-    }
-    if (part.type === 'subagent' && part.subagentId) {
-      const items = open(index).items
-      const last = items[items.length - 1]
-      if (last?.kind === 'helpers') last.ids.push(part.subagentId)
-      else items.push({ kind: 'helpers', ids: [part.subagentId] })
-      return
-    }
-    if (part.type === 'tool_call' && part.toolCallId) {
-      const id = part.toolCallId
-      const tc = toolCalls[id]
-      if (tc && SUBAGENT_SPAWN_TOOLS.has(tc.name)) return
-      // Generative-UI widgets are the artifact itself: they stand on their
-      // own between paragraphs. An errored call (no widget) is a step.
-      if (tc?.name === 'show_widget' && (widgets[id] || tc.status === 'running')) {
-        stretch = null
-        out.push({ kind: 'widget', toolCallId: id })
-        return
-      }
-      const items = open(index).items
-      const last = items[items.length - 1]
-      // Calls that ran together share a groupId. Transcripts saved before
-      // the store kept sequential calls apart can share one across separate
-      // responses, so a call also has to start within moments of the one
-      // before it.
-      const prevId = last?.kind === 'call' ? last.id : last?.kind === 'calls' ? last.ids[last.ids.length - 1] : undefined
-      const prev = prevId ? toolCalls[prevId] : undefined
-      const together = !!tc?.groupId && !!prev && prev.groupId === tc.groupId && tc.startedAt - prev.startedAt <= TOGETHER_MS
-      if (together && last?.kind === 'calls') {
-        last.ids.push(id)
-        return
-      }
-      if (together && last?.kind === 'call') {
-        items[items.length - 1] = { kind: 'calls', ids: [last.id, id], groupId: tc!.groupId }
-        return
-      }
-      items.push({ kind: 'call', id })
-      return
-    }
-    stretch = null
-    out.push({ kind: 'other', part, index })
-  })
-  return out
 }
 
 /** Chromeless widget wrapper used inline in the message stream.
