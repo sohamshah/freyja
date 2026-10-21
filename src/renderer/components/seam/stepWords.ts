@@ -232,6 +232,8 @@ export interface HelperView {
   sub: SubagentRecord
   /** done | failed | running, with a finished child session counting as done. */
   state: 'running' | 'done' | 'failed'
+  /** Seen working in this view and now back: its strand is drawn in. */
+  back?: boolean
 }
 
 export interface StretchData {
@@ -267,7 +269,7 @@ export function stretchUnits(items: StretchItem[], data: StretchData, now: numbe
       return { k: 'calls', n: it.ids.length, strands: sampleStrands(states), label: `${it.ids.length} ${web ? 'searches' : 'calls'} at once · ${formatShort(wall)}` }
     }
     const views = it.ids.map((id) => data.helpers[id])
-    const states: StrandState[] = views.map((h) => (h?.state === 'failed' ? 'err' : h?.state === 'running' ? 'out' : 'ok'))
+    const states: StrandState[] = views.map((h) => (h?.state === 'failed' ? 'err' : h?.state === 'running' ? 'out' : h?.back ? 'back' : 'ok'))
     const wall = Math.max(0, ...views.map((h) => h?.sub.elapsedMs ?? 0))
     return { k: 'helpers', n: it.ids.length, strands: sampleStrands(states), label: `${it.ids.length} ${it.ids.length === 1 ? 'helper' : 'helpers'} · ${formatShort(wall)}` }
   })

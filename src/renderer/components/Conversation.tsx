@@ -8,6 +8,8 @@ import { ToolCallChip, ToolResultImages } from './ToolCallChip'
 import { Widget } from './Widget'
 import { SubagentCard } from './SubagentCard'
 import { WorkStretch } from './seam/WorkStretch'
+import { Seam } from './seam/Seam'
+import { helperDigest, parseDigest } from './seam/helperDigest'
 import type { StretchItem } from './seam/stepWords'
 import { AppshotChip } from './AppshotCard'
 import { JevResultSummary, JevRunView, jevStatus } from './JevRun'
@@ -1037,6 +1039,7 @@ function ConversationStream({
                     content={ev.content}
                     meta={ev.meta}
                     fallbackLabel={ev.fromLabel}
+                    at={ev.timestamp}
                     onOpen={
                       senderSession
                         ? () => openSessionPane(ev.fromSession, 'split')
@@ -1093,11 +1096,14 @@ function MemoChip({
   meta,
   fallbackLabel,
   onOpen,
+  at,
 }: {
   content: string
   meta?: MemoMeta
   fallbackLabel: string
   onOpen?: () => void
+  /** When the report arrived, epoch ms. */
+  at?: number
 }) {
   const [expanded, setExpanded] = useState(false)
   const state = meta?.state ?? 'done'
@@ -1133,15 +1139,18 @@ function MemoChip({
         meta?.elapsedMs != null ? formatDuration(meta.elapsedMs) : null,
         meta?.toolsCalled != null ? `${meta.toolsCalled} tools` : null,
       ].filter(Boolean)
+  const kind = meta?.agentType === 'stop' ? 'background work' : isMonitor ? 'monitor' : jev ? 'jev run' : meta?.agentType === 'bash' ? 'command' : null
+  const verb = meta?.agentType === 'stop' ? 'stopped' : jev ? tone.word : state === 'done' ? 'sent back' : tone.word
+  const look = isMonitor && state === 'running' ? 'event' : state === 'done' && (!jevTone || jevTone.word === 'done') ? 'done' : state === 'failed' || jev?.status === 'failed' ? 'failed' : 'stopped'
+  // A report that just arrived is sewn in: its thread draws up to the turn.
+  const fresh = at != null && Date.now() - at < 8000
   return (
-    <div className="my-2 select-text rounded-md border border-white/[0.10] bg-white/[0.02] px-3 py-1.5 font-mono text-[11.5px] leading-[1.55] text-fg-1">
-      <div className="flex items-center gap-2 text-[10.5px] uppercase tracking-[0.14em]">
-        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${tone.dot}`} />
-        <span className="text-fg-3">
-          {meta?.agentType === 'stop'
-            ? 'background work stopped'
-            : `${isMonitor ? 'monitor' : jev ? 'jev run' : meta?.agentType === 'bash' ? 'command' : 'sub-agent'} ${tone.word}`}
-        </span>
+    <div className="wk-report select-text" data-state={look} data-fresh={fresh ? 'true' : 'false'}>
+      <svg className="wk-report-thread" width="9" height="22" aria-hidden>
+        <path d="M4.5 -2V21" pathLength={1} />
+      </svg>
+      <div className="wk-report-head">
+        <span className="wk-helper-mark" aria-hidden />
         {onOpen ? (
           <button
             type="button"
@@ -1149,38 +1158,40 @@ function MemoChip({
               e.stopPropagation()
               onOpen()
             }}
-            className="truncate rounded px-1.5 py-0.5 normal-case tracking-normal text-fg-1 transition hover:bg-white/[0.06] hover:text-fg-0"
+            className="wk-report-who"
             title={`Open ${label}'s session`}
           >
             {label}
           </button>
         ) : (
-          <span className="truncate normal-case tracking-normal text-fg-1">{label}</span>
+          <span className="wk-report-who">{label}</span>
         )}
-        {stats.length > 0 && (
-          <span className="shrink-0 normal-case tracking-normal text-fg-4">{stats.join(' · ')}</span>
-        )}
-        {!!meta?.stillRunning && (
-          <span className="ml-auto shrink-0 normal-case tracking-normal text-fg-3">
-            {meta.stillRunning} still running
-          </span>
+        <span className="wk-report-verb">{verb}</span>
+        {kind && <span className="wk-report-kind">{kind}</span>}
+        {stats.length > 0 && <span className="wk-report-meta">{stats.join(' · ')}</span>}
+        {!!meta?.stillRunning && <span className="wk-report-meta">{meta.stillRunning} still working</span>}
+        {meta?.subagentId && <ReportSeam id={meta.subagentId} />}
+      </div>
+      <div className="wk-rule wk-report-body" onClick={() => setExpanded((v) => !v)}>
+        {jev ? (
+          <JevResultSummary result={jev} clamp={!expanded} showStatus={false} />
+        ) : (
+          <div className={`whitespace-pre-wrap ${expanded ? '' : 'line-clamp-2'} ${state === 'done' ? '' : 'wk-bad'}`}>{body}</div>
         )}
       </div>
-      {jev ? (
-        <div onClick={() => setExpanded((v) => !v)} className="mt-1 cursor-pointer">
-          <JevResultSummary result={jev} clamp={!expanded} showStatus={false} />
-        </div>
-      ) : (
-        <div
-          onClick={() => setExpanded((v) => !v)}
-          className={`mt-1 cursor-pointer whitespace-pre-wrap ${expanded ? '' : 'line-clamp-2'} ${
-            state === 'done' ? '' : tone.text
-          }`}
-        >
-          {body}
-        </div>
-      )}
     </div>
+  )
+}
+
+/** A helper's seam, signing its report: the shape of the work it did. */
+function ReportSeam({ id }: { id: string }) {
+  const digest = useHarness((s) => helperDigest(s, id))
+  const units = useMemo(() => parseDigest(digest).units, [digest])
+  if (units.length === 0) return null
+  return (
+    <span className="wk-report-seam">
+      <Seam units={units} maxWidth={190} />
+    </span>
   )
 }
 

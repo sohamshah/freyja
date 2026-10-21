@@ -156,6 +156,116 @@ button.wk-step-head:focus-visible {
 .wk-crowd-sep { margin: 0 0.55ch; color: rgb(var(--fg-4)); }
 .wk-crowd-more { margin-left: 17px; }
 
+/* ── A · helpers ──
+   A ribbon of fine parallel strands down from the line, one per helper.
+   Basted (dashed, blue) while it works; sewn solid when it comes back;
+   left basted in red, with a small cut, when it failed. */
+.wk-helpers-head { cursor: default; }
+.wk-helpers[data-state='live'] .wk-helpers-head .wk-step-text {
+  background: linear-gradient(90deg, rgb(var(--fg-2)) 0%, rgb(var(--fg-2)) 38%, var(--accent-hi) 50%, rgb(var(--fg-2)) 62%, rgb(var(--fg-2)) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: wk-shimmer 2.4s linear infinite;
+}
+.wk-helpers-rows { position: relative; display: flex; flex-direction: column; gap: 4px; margin-top: 3px; padding-left: 18px; }
+.wk-helpers[data-dense='true'] .wk-helpers-rows { gap: 0; }
+.wk-ribbon { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.wk-strand { fill: none; stroke-width: 0.9; stroke-linecap: round; stroke-linejoin: round; transition: stroke 400ms ease, opacity 500ms ease; }
+.wk-strand--baste { stroke: var(--seam-blue); stroke-dasharray: 2 2.4; }
+.wk-strand--baste[data-st='failed'] { stroke: color-mix(in srgb, var(--danger) 62%, rgb(var(--paper))); }
+.wk-strand--baste[data-st='done'] { opacity: 0; }
+.wk-strand--sewn { stroke: var(--seam-ink); stroke-width: 0.85; }
+.wk-strand-cut { fill: none; stroke: var(--danger); stroke-width: 1.1; stroke-linecap: round; }
+
+.wk-helper-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 0;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 16px;
+  letter-spacing: 0.02em;
+  color: rgb(var(--fg-1));
+}
+.wk-helper-head:focus-visible { outline: 1px solid rgb(var(--accent-rgb) / 0.45); outline-offset: 3px; border-radius: 3px; }
+.wk-helper-mark {
+  flex: none;
+  position: relative;
+  width: 7px;
+  height: 7px;
+  margin: 0 0.5px;
+  border-radius: 50%;
+  border: 1px solid rgb(var(--ink) / calc(var(--wk-mark) + 0.06));
+  transition: background-color 360ms ease, border-color 360ms ease;
+}
+.wk-helper-mark::after { content: ''; position: absolute; inset: -1px; border-radius: 50%; border: 1px solid transparent; opacity: 0; transition: opacity 240ms ease; }
+.wk-helper[data-state='running'] .wk-helper-mark { border-color: rgb(var(--accent-rgb) / 0.25); }
+.wk-helper[data-state='running'] .wk-helper-mark::after {
+  opacity: 1;
+  border-top-color: var(--accent);
+  border-right-color: rgb(var(--accent-rgb) / 0.45);
+  animation: wk-turn 1.4s linear infinite;
+}
+.wk-helper[data-state='done'] .wk-helper-mark { background: rgb(var(--ink) / 0.3); border-color: rgb(var(--ink) / 0.32); box-shadow: inset 0 0 0 1.5px rgb(var(--paper)); }
+.wk-helper[data-state='failed'] .wk-helper-mark { border-color: var(--danger); background: rgb(var(--danger-rgb) / 0.22); }
+.wk-helper-name { flex: none; color: rgb(var(--fg-0)); font-weight: 500; }
+.wk-helpers[data-dense='true'] .wk-helper-name { min-width: 9ch; }
+.wk-helper-task { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: rgb(var(--fg-2)); }
+.wk-helper-head:hover .wk-helper-task { color: rgb(var(--fg-1)); }
+.wk-helper-head:hover .wk-caret,
+.wk-helper[data-open='true'] > .wk-helper-head .wk-caret { opacity: 1; }
+.wk-helper[data-open='true'] > .wk-helper-head .wk-caret { transform: rotate(90deg); }
+.wk-helper-step,
+.wk-helper-say {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  animation: wk-wipe 560ms var(--ease-out-expo) both;
+}
+.wk-helper-step { color: rgb(var(--fg-3)); }
+.wk-helper[data-state='running'] .wk-helper-step {
+  background: linear-gradient(90deg, rgb(var(--fg-3)) 0%, rgb(var(--fg-3)) 38%, var(--accent-hi) 50%, rgb(var(--fg-3)) 62%, rgb(var(--fg-3)) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: wk-wipe 560ms var(--ease-out-expo) both, wk-shimmer 2.4s linear infinite;
+}
+.wk-helper-say { color: rgb(var(--fg-1)); }
+.wk-helper-say:not(.wk-bad)::before { content: '“'; color: rgb(var(--fg-3)); }
+.wk-helper-say:not(.wk-bad)::after { content: '”'; color: rgb(var(--fg-3)); }
+.wk-helper-seam { flex: none; display: flex; align-items: center; }
+/* Its working line folds away when it comes back, the seam reeled in. */
+.wk-helper-line2 { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; transition: grid-template-rows 620ms cubic-bezier(0.6, 0, 0.25, 1) 180ms, opacity 380ms ease 240ms; }
+.wk-helper-line2 > div { min-height: 0; min-width: 0; overflow: clip; overflow-clip-margin: 26px; }
+.wk-helper[data-state='done'] .wk-helper-line2,
+.wk-helper[data-state='failed'] .wk-helper-line2 { grid-template-rows: 0fr; opacity: 0; }
+.wk-helper-now { display: flex; align-items: center; gap: 10px; min-width: 0; height: 26px; margin-left: 17px; font-family: var(--font-mono); font-size: 10.5px; }
+.wk-helper-now .wk-helper-seam { transform-origin: 0 50%; transition: transform 720ms cubic-bezier(0.55, 0, 0.2, 1); }
+.wk-helper[data-state='done'] .wk-helper-now .wk-helper-seam,
+.wk-helper[data-state='failed'] .wk-helper-now .wk-helper-seam { transform: translate(-17px, -15px) scale(0.25); }
+
+/* A helper's reply, opened from its line. */
+.wk-reply { margin-left: 20px; }
+.wk-reply-meta { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: rgb(var(--fg-3)); }
+.wk-reply-body.md { margin-top: 7px; font-size: 12px; line-height: 1.65; color: rgb(var(--fg-1)); }
+.wk-reply-steps { margin-top: 10px; display: flex; flex-direction: column; font-family: var(--font-mono); font-size: 10.5px; line-height: 18px; color: rgb(var(--fg-2)); }
+.wk-reply-step { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.wk-reply-step > span:last-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.wk-reply-mark { flex: none; width: 6px; height: 6px; margin: 0 1px; border-radius: 50%; border: 1px solid rgb(var(--ink) / var(--wk-mark)); }
+.wk-reply-mark--think { width: 5px; height: 5px; margin: 0 1.5px; border-radius: 1px; transform: rotate(45deg); }
+.wk-reply-mark--fail { border-color: var(--danger); background: rgb(var(--danger-rgb) / 0.2); }
+.wk-reply-open { margin-top: 8px; font-family: var(--font-mono); font-size: 10px; color: var(--accent); text-decoration: underline dotted rgb(var(--accent-rgb) / 0.5); text-underline-offset: 3px; }
+.wk-reply-open:hover { color: var(--accent-hi); }
+
 /* ── B · the stretch and its seam ── */
 .wk-stretch { position: relative; }
 .wk-stretch[data-mode='folded'] { min-height: 26px; }
@@ -179,6 +289,7 @@ button.wk-step-head:focus-visible {
 }
 .wk-stretch-list > .wk-item.wk-hl .wk-step-text,
 .wk-stretch-list > .wk-item.wk-hl .thought-topic { color: var(--accent-hi); }
+.wk-stretch-list > .wk-item.wk-hl .wk-helpers-head .wk-step-text { color: var(--accent-hi); }
 
 .wk-seam-row {
   position: absolute;
@@ -276,10 +387,51 @@ button.wk-step-head:focus-visible {
   .wk-step[data-state='live'] .wk-step-mark::after,
   .wk-step[data-state='live'] .wk-step-text,
   .wk-crowd-word[data-state='running'],
+  .wk-helper[data-state='running'] .wk-helper-mark::after,
+  .wk-helper[data-state='running'] .wk-helper-step,
+  .wk-helpers[data-state='live'] .wk-helpers-head .wk-step-text,
   .wk-stretch-list > .wk-item,
   .wk-step-cmd { animation: none !important; }
   .wk-step[data-state='live'] .wk-step-text,
   .wk-crowd-word[data-state='running'] { color: rgb(var(--fg-1)); background: none; }
   .wk-stretch-fold,
   .wk-stretch-list > .wk-item { transition-duration: 1ms !important; transition-delay: 0s !important; }
+}
+
+/* ── A report from a helper that ran in the background ──
+   A quiet letter, not a card: the helper's mark, its name and what it
+   sent back, signed with its seam, the report under a hairline rule. A
+   thread joins it to the turn above; when the report has just arrived,
+   the thread is sewn in, drawn from the report up. */
+.wk-report { position: relative; margin: 14px 0 10px; }
+.wk-report-thread { position: absolute; left: 0; top: -18px; overflow: visible; pointer-events: none; }
+.wk-report-thread path { fill: none; stroke: rgb(var(--ink) / 0.22); stroke-width: 1; stroke-linecap: round; stroke-dasharray: 1 2; }
+.wk-report[data-fresh='true'] .wk-report-thread path { animation: wk-sew 760ms cubic-bezier(0.5, 0, 0.2, 1) both; }
+@keyframes wk-sew { from { stroke-dashoffset: -1; } to { stroke-dashoffset: 0; } }
+.wk-report-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 24px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 16px;
+  letter-spacing: 0.02em;
+  color: rgb(var(--fg-2));
+}
+.wk-report[data-state='done'] .wk-helper-mark { background: rgb(var(--ink) / 0.3); border-color: rgb(var(--ink) / 0.32); box-shadow: inset 0 0 0 1.5px rgb(var(--paper)); }
+.wk-report[data-state='failed'] .wk-helper-mark { border-color: var(--danger); background: rgb(var(--danger-rgb) / 0.22); }
+.wk-report[data-state='stopped'] .wk-helper-mark { border-color: rgb(var(--warn-rgb) / 0.8); }
+.wk-report[data-state='event'] .wk-helper-mark { border-color: var(--accent); background: rgb(var(--accent-rgb) / 0.3); }
+.wk-report-who { flex: none; max-width: 40%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: rgb(var(--fg-0)); font-weight: 500; }
+button.wk-report-who:hover { color: var(--accent-hi); }
+.wk-report-verb { flex: none; color: rgb(var(--fg-2)); }
+.wk-report[data-state='failed'] .wk-report-verb { color: var(--danger); }
+.wk-report-kind { flex: none; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: rgb(var(--fg-3)); }
+.wk-report-meta { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: rgb(var(--fg-3)); font-variant-numeric: tabular-nums; }
+.wk-report-seam { flex: none; margin-left: auto; display: flex; align-items: center; }
+.wk-report-body { margin-top: 4px; cursor: pointer; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6; color: rgb(var(--fg-1)); }
+@media (prefers-reduced-motion: reduce) {
+  .wk-report[data-fresh='true'] .wk-report-thread path { animation: none; }
 }

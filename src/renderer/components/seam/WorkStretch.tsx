@@ -4,15 +4,14 @@ import { useShallow } from 'zustand/react/shallow'
 import { useHarness } from '../../state/store'
 import { SearchQueryContext } from '../searchContext'
 import { ThinkingStream } from '../ThinkingStream'
-import { SubagentCard } from '../SubagentCard'
-import { SubagentSwarmGrid } from '../SubagentSwarmGrid'
+import { Helpers, helperState } from './Helpers'
 import { Seam } from './Seam'
 import { Caret, Crowd, DiffTag, StepGroup, StepLine } from './Steps'
 import { formatShort, stretchDiff, stretchMs, stretchPhrase, stretchUnits } from './stepWords'
 import type { HelperView, StretchData, StretchItem } from './stepWords'
 import { captureMarks, gather, unravel } from './choreo'
 import { prefersReducedMotion, useWidth } from './hooks'
-import type { MessagePart, SubagentRecord, ToolCallRecord } from '@shared/events'
+import type { MessagePart, ToolCallRecord } from '@shared/events'
 
 /**
  * A stretch of work: the thinking and tool calls between two paragraphs.
@@ -54,13 +53,19 @@ export const WorkStretch = memo(function WorkStretch({
   const searching = query.trim().length > 0
   const mode: Mode = plain ? 'plain' : !closed ? 'live' : userOpen || searching ? 'open' : 'folded'
 
+  // Helpers seen working in this view: when one comes back, its strand in
+  // the seam is drawn in again (a helper that was already back when the
+  // transcript opened just shows as back).
+  const seenOut = useRef(new Set<string>())
   const data: StretchData = useMemo(() => {
     const out: StretchData = { calls: {}, helpers: {} }
     callIds.forEach((id, i) => { out.calls[id] = calls[i] })
     const states = helperStates.split(',')
     helperIds.forEach((id, i) => {
       const sub = subs[i]
-      if (sub) out.helpers[id] = { sub, state: (states[i] as HelperView['state']) || 'running' }
+      const state = (states[i] as HelperView['state']) || 'running'
+      if (state === 'running') seenOut.current.add(id)
+      if (sub) out.helpers[id] = { sub, state, back: state === 'done' && seenOut.current.has(id) }
     })
     return out
   }, [callIds, calls, helperIds, subs, helperStates])
@@ -215,7 +220,7 @@ function ItemView({ item, u, liveIndex, query }: { item: StretchItem; u: number;
   if (item.kind === 'thought') return <Thought part={item.part} live={item.index === liveIndex} query={query} />
   if (item.kind === 'call') return <StepLine id={item.id} u={u} />
   if (item.kind === 'calls') return item.ids.length >= 5 ? <Crowd ids={item.ids} u={u} /> : <StepGroup ids={item.ids} u={u} />
-  return item.ids.length === 1 ? <SubagentCard id={item.ids[0]} /> : <SubagentSwarmGrid ids={item.ids} />
+  return <Helpers ids={item.ids} u={u} />
 }
 
 function Thought({ part, live, query }: { part: MessagePart; live: boolean; query: string }) {
@@ -227,17 +232,6 @@ function itemKey(it: StretchItem, i: number): string {
   if (it.kind === 'thought') return `t${it.index}`
   if (it.kind === 'call') return it.id
   return `${it.kind}-${it.ids[0] ?? i}`
-}
-
-/** A helper's state, trusting its finished session over its record. */
-export function helperState(sub: SubagentRecord | undefined, snap: { completed?: boolean; success?: boolean } | undefined): HelperView['state'] {
-  if (snap) {
-    if (!snap.completed) return 'running'
-    return snap.success === false ? 'failed' : 'done'
-  }
-  if (!sub) return 'running'
-  if (sub.state === 'failed' || sub.state === 'cancelled') return 'failed'
-  return sub.state === 'done' ? 'done' : 'running'
 }
 
 function inView(el: HTMLElement): boolean {
