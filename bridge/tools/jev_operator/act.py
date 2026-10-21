@@ -501,11 +501,18 @@ class Actuator:
             if part:
                 await asyncio.to_thread(self.native.type_text, part)
 
-    async def type_raw(self, text: str) -> ActionRecord:
+    async def type_raw(self, text: str, *, replace: bool = False, focused: Any = None) -> ActionRecord:
+        """Type into whatever has the keyboard; `replace` selects the field's
+        contents first (the planner's "replace all of it"). `focused` is for
+        the DOM surface, which fills the page field instead."""
         await self._planned("type_text", f"Type {text!r}")
         t0 = time.perf_counter()
         await self._guard("type_text", t0)
         try:
+            if replace:
+                for _ in range(2):
+                    await asyncio.to_thread(self.native.press_key, "a", modifiers=["cmd"])
+                    await asyncio.sleep(0.1)
             await self._type_text(text, multiline=False)
         except Exception as exc:  # noqa: BLE001
             return await self._executed("type_text", t0, ok=False, error=str(exc))

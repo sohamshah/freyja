@@ -26,7 +26,7 @@ DEFAULT_LLM_MODEL = "claude-opus-5-5"
 # returned truncated JSON; measured replies now use 130-550 tokens. The check's
 # report can list a few hundred rows read across pages.
 TEXT_MAX_TOKENS = 2048
-REPLAN_MAX_TOKENS = 2048
+REPLAN_MAX_TOKENS = 4096
 VERIFY_MAX_TOKENS = 6144
 # Door calls per run. The first budget, 8, was a guess for one-screen desktop
 # goals. A whole booking as one goal went 0/5 at 8, 1/5 at 16 and 5/5 at 32,
@@ -110,6 +110,9 @@ class LLMHelper:
         self._complete = completer
         self.max_calls = max_calls
         self.stats = LLMStats()
+        # The last reply was cut off by its token limit and did not parse: a
+        # door that copied a long text instead of naming it.
+        self.last_overflow = False
 
     @property
     def budget_left(self) -> int:
@@ -136,11 +139,13 @@ class LLMHelper:
         self.stats.cache_read_tokens += cache[0]
         self.stats.cache_write_tokens += cache[1]
         parsed = parse_json(text)
+        stop = getattr(self._complete, "last_stop", None)
+        self.last_overflow = parsed is None and stop == "max_tokens"
         self.stats.log.append(
             {
                 "door": door,
                 "ms": ms,
-                "stop_reason": getattr(self._complete, "last_stop", None),
+                "stop_reason": stop,
                 "input_tokens": usage[0],
                 "cache_write_tokens": cache[1],
                 "output_tokens": usage[1],
@@ -259,8 +264,11 @@ class LLMHelper:
                 "or press keys on controls listed in an accessibility table; it asked for help. Decide what to do next. "
                 "Controls marked scrolled out of view are valid targets: acting on one scrolls toward it first.\n"
                 'Return JSON: {"status": "continue"|"done"|"give_up", "subgoal": string|null, '
-                '"direct_action": null | {"kind": "click", "x": int, "y": int, "target": string} | {"kind": "click", "target": string} '
-                '| {"kind": "key", "combo": "cmd+n"} | {"kind": "type", "text": string} '
+                '"direct_action": null | {"kind": "click", "x": int, "y": int, "target": string, "expect": string} '
+                '| {"kind": "click", "target": string, "expect": string} '
+                '| {"kind": "key", "combo": "cmd+n", "expect": string} '
+                '| {"kind": "type", "text": string, "replace": bool, "expect": string} '
+                '| {"kind": "type", "from_goal": {"after": string, "until": string | null}, "replace": bool, "expect": string} '
                 '| {"kind": "wait", "seconds": int}, '
                 '"direct_actions": null | [direct_action, ...], '
                 '"note": string}.\n'
@@ -279,7 +287,17 @@ class LLMHelper:
                 "instead: up to four actions in order. Only the first click may carry x and y, which are right for this "
                 "screenshot alone; every later click names its target and the operator finds it on a fresh screenshot before "
                 "clicking, so name what singles the control out (\"the Export… item in the open File menu\"), not where it is. "
-                "The operator stops the list at the first target it cannot see or action that changes nothing, and asks again. "
+                "Never copy more than a line of the goal's text into the reply. A long text the goal gives to type "
+                "(JSON, a message, code) is named by where it sits in the goal: from_goal.after is the few words "
+                "right before it in the goal and from_goal.until the few words right after it (null when it runs "
+                "to the goal's end); the operator types the goal's own text between them, exactly, into the field "
+                "that has the focus (click it first), and replace: true clears the field first. A subgoal "
+                'refers to it as "the JSON in the goal". A reply that repeats the text runs past its length '
+                "limit and is thrown away. "
+                "Give every action an expect: what the screen shows once it has worked, as one short statement a "
+                'yes/no question can check against a fresh screenshot ("the File menu is open", "the Name field reads '
+                'Ada", "a Save dialog is showing"). The operator checks it after the action and stops the list, and '
+                "asks again, at the first expectation that does not hold or target it cannot see. "
                 "Prefer subgoal over direct_action. "
                 + WAIT_HELP
             )

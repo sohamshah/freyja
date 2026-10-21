@@ -121,6 +121,21 @@ def test_fill_readback_mismatch_and_match():
     assert run(s.execute("type_into", obs.elements[0], "Bob", replace=True)).ok
 
 
+def test_a_planner_type_fills_the_focused_page_field_as_a_page_operation():
+    """type_raw on the DOM surface never reaches the OS keyboard: it fills the
+    field that has the focus, replacing its contents when asked, and fails
+    when nothing on the page is focused."""
+    page = FakePage([action(1, "fill", "Manifest", value="{}", focused=True), action(2, label="Save")])
+    s = surface(page)
+    obs = run(s.observe(TARGET))
+    focused = next(e for e in obs.elements if e.focused)
+    page.act_results = [{"ok": True, "readback": '{"a": 1}'}]
+    rec = run(s.execute("type_raw", '{"a": 1}', replace=True, focused=focused))
+    assert rec.ok and page.calls[-1][1:3] == ["fill", {"text": '{"a": 1}', "mode": "replace"}]
+    rec = run(s.execute("type_raw", "x", replace=False, focused=None))
+    assert not rec.ok and "focus" in rec.error and len(page.calls) == 1
+
+
 def test_secure_field_refused():
     page = FakePage([action(1, "fill", "Password", role="password", value="x")])
     s = surface(page)

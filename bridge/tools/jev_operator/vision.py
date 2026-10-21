@@ -40,6 +40,10 @@ VISIBLE_MIN = 0.5
 CONFIDENCE_MIN = 0.5
 # Window captures for grounding: the largest the service takes, lossless.
 CAPTURE_MAX_DIM = MAX_SIDE
+# P(the planner's expectation holds) at or above which an action counts as
+# having worked. Noul answers run cold on Jev (a 0.66 temperature in the
+# calibration audits), so the line sits under a Choice's 0.7.
+EXPECT_MIN = 0.6
 
 
 @dataclass(frozen=True)
@@ -151,6 +155,38 @@ async def locate(
         confidence=box.confidence,
         stages=stages,
         input_tokens=tokens,
+        latency_ms=int((time.perf_counter() - t0) * 1000),
+    )
+
+
+@dataclass(frozen=True)
+class Checked:
+    p: float
+    input_tokens: int
+    latency_ms: int
+
+    @property
+    def holds(self) -> bool:
+        return self.p >= EXPECT_MIN
+
+
+async def check(provider: DecisionProvider, image: bytes, expectation: str, *, model: str = BOX_MODEL) -> Checked:
+    """Whether the planner's expectation ("the File menu is open", "the Name
+    field reads Ada") holds in the capture: one Noul on the image."""
+    t0 = time.perf_counter()
+    src = Image.open(io.BytesIO(image))
+    src.load()
+    shot = ImageAsset(_png(_fit(src)))
+    what = expectation.strip().rstrip(".")
+    answers = await provider.decide(
+        {"screen": shot.ref},
+        {"holds": Noul(f"Is this true of `screen` right now: {what}?")},
+        model=model,
+        assets=[shot],
+    )
+    return Checked(
+        p=answers.noul("holds"),
+        input_tokens=answers.input_tokens,
         latency_ms=int((time.perf_counter() - t0) * 1000),
     )
 

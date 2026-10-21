@@ -135,14 +135,51 @@ gate exists; with it, the same step was left to the planner.
 ## 5. Real macOS windows
 
 `macos_ax.py` scores Box on labelled controls of real app windows against
-their accessibility frames, through the operator's own capture path. It needs
-the screen unlocked (macOS hides every window from the accessibility API while
-it is locked) and was not run in this pass. The `smoke.py` run on a live
-screenshot of the whole display (3456 x 2234, fitted to 1568 x 1014) put the
-Noul and Choice answers right (menu bar yes, Dock hidden, browser in front)
-and the two menu-bar boxes a little off their targets: a 34 px wide Apple
-menu is 15 px at that scale. Window captures, which the operator sends, are
-two to three times larger per control than a full-display capture.
+their accessibility frames, through the operator's own capture path (the
+screen must be unlocked: macOS hides every window from the accessibility API
+while it is locked). Ten Apple apps, 201 controls (buttons, rows, radio
+buttons, menu buttons, text fields), the hit rule as in §1; Claude Opus 5.5
+placed 120 of them from the same captures as a baseline.
+
+| Variant | Hit | Lookup p50 | Tokens / lookup |
+|---|---|---|---|
+| PNG at 1568, two-stage (the operator's path) | **74.6%** | 528 ms | 4,478 |
+| PNG at 1568, single Box | 70.6% | 386 ms | 4,017 |
+| JPEG at 1280 | 68.2% | 526 ms | 3,246 |
+| Claude Opus 5.5 (120 controls) | 93.3% | 1,725 ms | |
+
+By app, two-stage PNG: System Settings 90%, Calculator 88%, Contacts 84%,
+Activity Monitor 81%, Font Book 78%, TextEdit 75% (4 controls), Calendar 70%,
+Notes 71%, Reminders 70%, Finder 43%. By control: rows 81%, radio buttons 87%,
+text fields 100%, buttons 68%, menu buttons 40%. By size: controls under 0.1%
+of the capture 37%, 0.1 to 0.3% 64%, 0.3 to 1% 79%, over 1% 96%. Finder is
+the hard case: sidebar rows and toolbar buttons that are tiny in a large
+window. Confidence at 0.5 keeps 83% of lookups at 77% precision; at 0.7, 62%
+at 81%. Real windows are harder than the web pages of §2 (81 to 88%) and
+easier than ScreenSpot's full desktops at single-stage (70%); the planner
+baseline holds at over 90% here too.
+
+## 6. Expectations in place of the frame diff
+
+A replan's actions now carry an `expect` (what the screen shows once the
+action has worked); after each one, Jev answers a Noul on the fresh capture
+and that verdict, not the share of changed pixels, says whether the plan goes
+on. On an empty, textless screen the loop also skips Jev's decision question
+and asks the planner at once. The blind suite of §4, 3 reps:
+
+| Arm | Passed | Planner calls / run | Jev decisions / run | Seconds / run |
+|---|---|---|---|---|
+| frame diff (§4, 18 runs) | 15/18 | 4.1 | 4.2 | 23 |
+| expectations | 15/18 | 4.0 | 0 | 24 |
+
+Every one of the 35 plans gave each action an expectation (2.8 actions a
+plan). Of 60 checks (p50 276 ms, 3,362 tokens, $0.00014 each), 53 held at a
+median p of 0.99 and 7 did not, every one at p=0.00 and every one on
+`form_save`'s native `<select>`, whose open list the headless capture does
+not draw: the checks were right both ways. The gain is not in the pass rate
+(the same harness limit decides it) but in what a verdict means: a click that
+opened the wrong menu changes the window too, and a frame diff cannot tell.
+The removed decision calls pay for the checks in time.
 
 ## What this justifies
 
@@ -150,15 +187,19 @@ two to three times larger per control than a full-display capture.
 - Jev places described targets on later captures, behind two gates
   (`VISIBLE_MIN` 0.5, `CONFIDENCE_MIN` 0.5), with the conditional second
   look (`SMALL_BOX` 0.5% of the image).
-- Window change at 0.008% is progress; a plan stops at the first action that
-  changes nothing or a target Jev cannot place.
+- An action's expectation, checked by Jev on a fresh capture, is progress;
+  window change at 0.008% stands in when a plan gives no expectation. A plan
+  stops at the first expectation that does not hold or target Jev cannot
+  place.
 - The end-state check gets the final capture when the screen has no text.
+- A screen with no controls and no text goes to the planner without a
+  decision call.
 
 ## Not measured
 
 Native macOS apps with empty accessibility trees (the case this is for) have
-not been driven end to end; the blind web runs are a proxy with a stronger
-planner baseline than a real app with custom-drawn controls may allow. Jev's
-own rate limit and the image feature's stability across releases ("the
-request format, the answers, and the limits on this page can change between
-releases") are the operational risks; `BOX_MODEL` pins `jev-1.14.0`.
+not been driven end to end; §5 scores their controls one at a time, and the
+blind web runs are the whole-task proxy. Jev's own rate limit and the image
+feature's stability across releases ("the request format, the answers, and
+the limits on this page can change between releases") are the operational
+risks; `BOX_MODEL` pins `jev-1.14.0`.

@@ -29,7 +29,7 @@ from bridge.tools.jev_operator.decide import (
     decide,
     describe,
 )
-from bridge.tools.jev_operator.handoff import MAX_WAIT_S, LLMHelper
+from bridge.tools.jev_operator.handoff import MAX_WAIT_S, REPLAN_MAX_TOKENS, LLMHelper
 from bridge.tools.jev_operator.observe import (
     STATE_ROLES,
     WINDOW_CHROME,
@@ -131,6 +131,9 @@ PIXEL_CHANGE_MIN = 0.00008
 # see. Measured on blind runs, see evals/jev_box/RESULTS.md.
 MAX_DIRECT_ACTIONS = 4
 MAX_PLAN_WAIT_S = 5.0
+# A second look at an expectation that did not hold, for a screen that is
+# still arriving (a page load, a sheet sliding in).
+EXPECT_RETRY_S = 1.5
 MAX_VERIFY_ROUNDS = 2
 PROBE_RETRIES = 2
 # Besides the final screen, the end-state check reads the other screens the run
@@ -453,6 +456,26 @@ class Target:
 
 
 StepCb = Callable[[str], Awaitable[None] | None]
+
+
+def goal_span(goal: str, after: Any, until: Any) -> str | None:
+    """The goal's own text between two short quotes from it: what the planner
+    names instead of copying. `after` is the words right before the span,
+    `until` the words right after (None for the goal's end). Leading and
+    trailing blank lines go; the text itself is typed as written."""
+    if not isinstance(after, str) or not after.strip():
+        return None
+    start = goal.find(after.strip())
+    if start < 0:
+        return None
+    start += len(after.strip())
+    end = len(goal)
+    if isinstance(until, str) and until.strip():
+        end = goal.find(until.strip(), start)
+        if end < 0:
+            return None
+    text = goal[start:end].strip("\n").strip(" \t")
+    return text or None
 
 
 class Operator:
@@ -1120,6 +1143,16 @@ class Operator:
                     "already read (the page's whole text is read at every step, so scrolling "
                     "does not reveal more of it)",
                 )
+                if out is not None:
+                    return out
+                continue
+
+            if not obs.elements and not obs.full_text.strip() and self.llm is not None:
+                # No controls and no text: Jev would answer need_help at low
+                # confidence and the planner's screenshot is the only reading
+                # of this screen, so the planner is asked at once.
+                step += 1
+                out = await self._replan(obs, target, reason="the app exposes no controls and no text")
                 if out is not None:
                     return out
                 continue
@@ -1934,6 +1967,12 @@ class Operator:
             if shot is not None:
                 out = await self._ask_planner(obs, shot, reason)
         if out is None:
+            if self.llm.last_overflow:
+                reason += (
+                    f"; the planner's reply ran past {REPLAN_MAX_TOKENS} tokens and was "
+                    "thrown away (a long text copied from the goal instead of named)"
+                )
+                await self._say(f"  → planner reply overflowed {REPLAN_MAX_TOKENS} tokens")
             return self._finish_blocked(obs, reason)
         status = out.get("status")
         if status == "done":
@@ -2013,11 +2052,14 @@ class Operator:
             await self._direct(da, obs, first=(i == 0))
             if frame is None or len(self.history) == taken or not self.history[-1].get("ok"):
                 return
-            outcome = await self._pixel_outcome(target, frame)
+            expect = da.get("expect")
+            outcome = await self._pixel_outcome(
+                target, frame, expect=expect.strip() if isinstance(expect, str) else None
+            )
             if outcome is None:
                 return
-            changed, frame = outcome
-            if not changed:
+            progressed, frame = outcome
+            if not progressed:
                 return
 
     async def _check_done(self, obs: Observation, target: Target, *, by: str) -> RunResult | None:
@@ -2275,7 +2317,25 @@ class Operator:
                     "diff": "executed",
                 }
             )
-        elif kind == "type" and isinstance(da.get("text"), str):
+        elif kind == "type" and (isinstance(da.get("text"), str) or isinstance(da.get("from_goal"), dict)):
+            text = da.get("text")
+            if not isinstance(text, str):
+                span = da["from_goal"]
+                text = goal_span(self.cfg.goal, span.get("after"), span.get("until"))
+                if not text:
+                    self.history.append(
+                        {
+                            "step": len(self.history) + 1,
+                            "kind": "type",
+                            "action": "planner type refused",
+                            "ok": False,
+                            "changed": False,
+                            "diff": f"the goal has no text after {span.get('after')!r}"
+                            + (f" and before {span.get('until')!r}" if span.get("until") else ""),
+                        }
+                    )
+                    return
+                da = {**da, "text": text}
             focused = next((e for e in obs.elements if e.focused), None)
             if focused is not None and focused.subrole == "AXSecureTextField":
                 self.history.append(
@@ -2289,7 +2349,9 @@ class Operator:
                     }
                 )
                 return
-            rec = await self.surface.execute("type_raw", da["text"])
+            rec = await self.surface.execute(
+                "type_raw", da["text"], replace=bool(da.get("replace")), focused=focused
+            )
             self.history.append(
                 {
                     "step": len(self.history) + 1,
@@ -2356,17 +2418,27 @@ class Operator:
             }
         )
 
-    async def _pixel_outcome(self, target: Target, before: bytes) -> tuple[bool, bytes] | None:
-        """After an action taken from a screenshot, a changed window is the
-        only sign of progress an app with no accessibility tree gives. A
-        window that looks as it did two actions ago is a toggle undoing
-        itself, not progress. Returns whether the window changed and the new
-        capture, or None when there is no capture to compare."""
+    async def _pixel_outcome(
+        self, target: Target, before: bytes, expect: str | None = None
+    ) -> tuple[bool, bytes] | None:
+        """After an action taken from a screenshot, what says it worked. With
+        an expectation from the planner ("the File menu is open"), Jev answers
+        whether it holds in a fresh capture, and that is the verdict: a click
+        that opened the wrong menu changed the window too. Without one, a
+        changed window is the only sign an app with no accessibility tree
+        gives; a window that looks as it did two actions ago is a toggle
+        undoing itself, not progress. Returns whether the action counts as
+        progress and the new capture, or None when there is no capture."""
         await self.actuator.settle()
         shot = await self._window_shot(target)
         if shot is None:
             return None
         after = shot[0].data
+        held: bool | None = None
+        if expect:
+            held, after = await self._expectation(target, expect, after)
+            if after is None:
+                return None
         try:
             change = vision.frame_change(before, after)
             undone = (
@@ -2380,18 +2452,47 @@ class Operator:
         self._pixel_frames.append(after)
         del self._pixel_frames[:-3]
         share = f"{change:.0%}" if change >= 0.01 else f"{change:.2%}"
+        progressed = held if held is not None else (changed and not undone)
         if self.history:
-            self.history[-1]["changed"] = changed
+            self.history[-1]["changed"] = progressed
             if changed:
                 self.history[-1]["diff"] += f"; {share} of the window changed" + (
                     " (back to an earlier screen)" if undone else ""
                 )
-        self._log({"event": "pixel_outcome", "change": round(change, 5), "changed": changed, "undone": undone})
+        self._log({"event": "pixel_outcome", "change": round(change, 5), "changed": changed, "undone": undone,
+                   "held": held})
         await self._say(f"  → {'changed' if changed else 'no change'}: {share} of the window")
-        if changed and not undone:
+        if progressed:
             self._replans_since_progress = 0
             self._progress_since_verify = True
-        return changed and not undone, after
+        return progressed, after
+
+    async def _expectation(
+        self, target: Target, expect: str, after: bytes
+    ) -> tuple[bool | None, bytes | None]:
+        """Whether the planner's expectation holds in the capture; one more
+        look after a pause when it does not, for a screen still arriving.
+        None when Jev could not answer (the frame diff decides then)."""
+        try:
+            chk = await vision.check(self.provider, after, expect)
+            if not chk.holds:
+                await asyncio.sleep(EXPECT_RETRY_S)
+                shot = await self._window_shot(target)
+                if shot is None:
+                    return None, None
+                after = shot[0].data
+                chk = await vision.check(self.provider, after, expect)
+        except DecisionError as exc:
+            self._log({"event": "expectation", "expect": expect, "error": str(exc)[:200]})
+            return None, after
+        except Exception:  # a capture that is not an image (a stub in tests)
+            return None, after
+        self._log({"event": "expectation", "expect": expect, "p": round(chk.p, 3), "held": chk.holds,
+                   "input_tokens": chk.input_tokens, "latency_ms": chk.latency_ms})
+        await self._say(f"  → Jev: {expect!r} {'holds' if chk.holds else 'does not hold'} (p={chk.p:.2f})")
+        if self.history:
+            self.history[-1]["diff"] += f"; expected {expect!r}: {'holds' if chk.holds else 'does not hold'} (p={chk.p:.2f})"
+        return chk.holds, after
 
     async def _verify(self, obs: Observation) -> dict[str, Any] | None:
         if self.llm is None or not self.cfg.verify_with_llm or self.llm.budget_left <= 0:

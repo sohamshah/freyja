@@ -103,16 +103,31 @@ all (`bridge/tools/jev_operator/vision.py`). A small first box is asked again on
 around it at the capture's own resolution. The click is left to the planner when Jev does
 not see the target (P(visible) < 0.5) or its box confidence is under 0.5: on ScreenSpot-v2
 the boxes above that line are inside the target 92% of the time and the ones below it are
-the look-alike rows where grounding fails. After every action taken from a screenshot,
-code compares a new capture with the last one: a window that changed (more than 0.008% of
-it, which a ticked checkbox clears and a caret does not) is progress and the plan goes
-on; one that did not stops the plan, and so does a target Jev cannot place. A changed
-window counts toward the stuck rules exactly as a changed element table does, so a run on
-an app with no accessibility tree can go on past two replans. When such a run ends, the
-end-state check gets a capture of the final window, since it has no text to judge from.
-Measured on the web environments driven blind (no elements, no text): 3 of 6 tasks before,
-every run ending `blocked` after about 3 planner calls; 5 of 6 after, ending `done`
-(`evals/jev_box/RESULTS.md`).
+the look-alike rows where grounding fails. Every action carries `expect`, what the screen
+shows once it has worked ("the File menu is open", "the Name field reads Ada"); after the
+action, Jev answers a Noul on a fresh capture of the window (about 280 ms, 3,400 tokens),
+once more after 1.5 s when it did not hold, and that verdict says whether the plan goes
+on. A click that opened the wrong menu changes the window too, which is why the verdict
+is not a pixel diff; the diff (more than 0.008% of the window, which a ticked checkbox
+clears and a caret does not) stands in only for an action with no expectation. The plan
+stops at the first expectation that does not hold or target Jev cannot place. An action
+that worked counts toward the stuck rules exactly as a changed element table does, so a
+run on an app with no accessibility tree can go on past two replans. A screen with no
+controls and no text goes to the planner at once, without a decision call Jev could only
+answer `need_help` to. When such a run ends, the end-state check gets a capture of the
+final window, since it has no text to judge from. Measured on the web environments driven
+blind (no elements, no text): 3 of 6 tasks before, every run ending `blocked` after about
+3 planner calls; 5 of 6 after, ending `done`, the sixth a harness limit; of 60
+expectation checks, the 53 that held had a median p of 0.99 and the 7 that did not, at
+p=0.00, were all right (`evals/jev_box/RESULTS.md`).
+
+A long text the goal gives to type (a manifest, a message) is never copied into the
+planner's reply, which has a 4,096-token limit: the action names where the text sits in
+the goal (`from_goal.after`, the words before it; `from_goal.until`, the words after it)
+and code types the goal's own text between them, with `replace: true` to clear the field
+first. A planner reply cut off by its limit is reported as such and ends the run. On the
+DOM surface a planner `type` fills the page field that has the focus, as a page operation;
+it never sends OS keystrokes, which would land in whatever app is in front.
 
 The doors use `$FREYJA_JEV_OPERATOR_LLM`, default `claude-opus-5-5`. They ask for thinking off, but Opus 5.5 cannot turn thinking off, and the level falls back to the model's default (medium).
 Replayed door calls took 4-8 s on Opus 5.5 against about 2 s on Haiku 4.5; Opus planned

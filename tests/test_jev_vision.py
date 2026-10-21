@@ -29,18 +29,34 @@ def png(width: int, height: int, rect: tuple[int, int, int, int] | None = None) 
 
 
 class SeeingProvider(ScriptedProvider):
-    """Answers Box questions from a script of (visible, box) pairs, one per
-    request, and everything else as ScriptedProvider does."""
+    """Answers Box questions from a script of (visible, box) pairs and
+    image-only Noul checks (an expectation) from `checks`, one per request;
+    everything without an image as ScriptedProvider does."""
 
-    def __init__(self, script, boxes: list[tuple[float, tuple[float, float, float, float]]], confidence: float = 0.8) -> None:
+    def __init__(
+        self,
+        script,
+        boxes: list[tuple[float, tuple[float, float, float, float]]],
+        confidence: float = 0.8,
+        checks: list[float] | None = None,
+    ) -> None:
         super().__init__(script)
         self.boxes = list(boxes)
         self.confidence = confidence
+        self.checks = list(checks or [])
         self.image_calls: list[dict[str, Any]] = []
+        self.check_calls: list[dict[str, Any]] = []
 
     async def decide(self, state, questions, *, model=None, assets=None) -> Answers:
-        if not any(isinstance(q, Box) for q in questions.values()):
+        if assets is None:
             return await super().decide(state, questions, model=model)
+        if not any(isinstance(q, Box) for q in questions.values()):
+            self.check_calls.append({"questions": questions, "assets": assets})
+            p = self.checks.pop(0) if self.checks else 0.9
+            return Answers(
+                answers={name: NoulAnswer(p=p) for name in questions},
+                model="jev-1.14.0", provider="scripted", latency_ms=2, input_tokens=3000,
+            )
         self.image_calls.append({"state": state, "questions": questions, "model": model, "assets": assets})
         visible, (left, top, right, bottom) = self.boxes.pop(0)
         out: dict[str, Any] = {}
@@ -189,13 +205,16 @@ def test_a_described_irreversible_control_is_refused_without_an_element(tmp_path
             ]})
 
     native = Bare()
-    provider = SeeingProvider([("need_help", None), ("done", None)], [(0.9, (0.05, 0.733, 0.35, 0.833))])
+    # The screen never changes, so every replan returns the same plan until
+    # the run gives up; a box per replan.
+    provider = SeeingProvider([], [(0.9, (0.05, 0.733, 0.35, 0.833))] * 4)
     op, _ = make_operator(native, provider, goal="g", llm=LLMHelper(seeing_planner("the red Delete account button"), max_calls=6))
     op.actuator.frame = frames(png(400, 300))
     res = asyncio.run(op.run())
     assert native.clicks == []
     refused = next(h for h in res.history if h["kind"] == "click")
     assert refused["action"].endswith("refused") and "looks irreversible" in refused["diff"]
+    assert provider.calls == [], "Jev is never asked what to do about an empty screen"
 
 
 def test_the_planners_own_coordinates_win_on_the_screenshot_it_read(tmp_path, monkeypatch):
@@ -307,3 +326,107 @@ def test_a_plan_leaves_an_unsure_click_to_the_planner(tmp_path, monkeypatch):
     assert native.clicks == ["Continue"] and len(provider.image_calls) == 1
     skipped = next(h for h in res.history if "skipped" in h["action"])
     assert "unsure" in skipped["diff"] and "0.30" in skipped["diff"]
+
+
+def test_check_asks_one_noul_on_the_capture():
+    p = SeeingProvider([], [], checks=[0.93])
+    chk = asyncio.run(vision.check(p, png(400, 300), "the File menu is open."))
+    assert chk.holds and chk.p == 0.93 and chk.input_tokens == 3000
+    q = p.check_calls[0]["questions"]["holds"]
+    assert q.instructions == "Is this true of `screen` right now: the File menu is open?"
+
+
+def test_an_expectation_that_holds_is_progress_and_one_that_does_not_stops_the_plan(tmp_path, monkeypatch):
+    """Two clicks with expectations. The first holds (p=0.9) although the
+    window barely changed; the second does not hold on two looks, so the
+    third action never runs and the step is not progress."""
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.EXPECT_RETRY_S", 0)
+    native = FormNative()
+    provider = SeeingProvider(
+        [("need_help", None), ("need_help", None), ("done", None)],
+        [(0.95, (0.4, 0.733, 0.7, 0.833))],
+        checks=[0.9, 0.2, 0.25],
+    )
+    plan = [
+        {"kind": "click", "x": 220, "y": 235, "target": "the Continue button", "expect": "the form shows a second page"},
+        {"kind": "click", "target": "the Continue button", "expect": "a confirmation sheet is showing"},
+        {"kind": "type", "text": "never typed"},
+    ]
+    op, _ = make_operator(native, provider, goal="g", llm=LLMHelper(plan_planner(plan), max_calls=6))
+    op.actuator.frame = frames(png(400, 300))   # the window never changes
+    res = asyncio.run(op.run())
+    assert native.clicks == ["Continue", "Continue"]
+    assert len(provider.check_calls) == 3, "one check, then a second look at the one that did not hold"
+    clicks = [h for h in res.history if h["kind"] == "click"]
+    assert clicks[0]["changed"] is True and "holds (p=0.90)" in clicks[0]["diff"]
+    assert clicks[1]["changed"] is False and "does not hold (p=0.25)" in clicks[1]["diff"]
+    assert not any(h["kind"] == "type" for h in res.history)
+
+
+def test_a_screen_with_no_controls_and_no_text_goes_straight_to_the_planner(tmp_path, monkeypatch):
+    """Jev is not asked what to do about a screen it cannot read."""
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+
+    class Bare(FormNative):
+        def read_ax_tree(self, pid, max_depth=8):
+            return json.dumps({"role": "AXApplication", "title": "FormApp", "children": [
+                {"role": "AXWindow", "title": "Sign in", "focused": True, "bounds": [0, 40, 400, 300], "children": []}
+            ]})
+
+    native = Bare()
+    provider = SeeingProvider([("done", None)], [(0.9, (0.4, 0.733, 0.7, 0.833))])
+
+    async def planner(messages, system_prompt, max_tokens):
+        if "planner" in system_prompt:
+            return json.dumps({"status": "done", "subgoal": None, "direct_action": None, "note": "nothing to do"})
+        return json.dumps({"satisfied": True, "summary": "ok", "subgoal": None})
+
+    op, _ = make_operator(native, provider, goal="g", llm=LLMHelper(planner, max_calls=6))
+    op.actuator.frame = frames(png(400, 300))
+    res = asyncio.run(op.run())
+    assert provider.calls == [], "no Jev decision on an empty, textless screen"
+    assert res.status == "done"
+
+
+def test_goal_span_names_the_goals_own_text():
+    from bridge.tools.jev_operator.loop import goal_span
+
+    goal = 'Open the editor and replace the manifest with the exact JSON below, then save.\n{"a": 1,\n "b": [2, 3]}\nDo not create a new app.'
+    assert goal_span(goal, "JSON below, then save.", "Do not create") == '{"a": 1,\n "b": [2, 3]}'
+    assert goal_span(goal, "JSON below, then save.", None) == '{"a": 1,\n "b": [2, 3]}\nDo not create a new app.'
+    assert goal_span(goal, "not in the goal", None) is None
+    assert goal_span(goal, "JSON below, then save.", "nor this") is None
+    assert goal_span(goal, "", None) is None
+
+
+def test_a_planner_type_from_the_goal_types_the_goals_text_not_the_planners(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    native = FormNative()
+    # Direct actions run from the second planner call on, the one with a screenshot.
+    provider = SeeingProvider([("need_help", None), ("need_help", None), ("done", None)], [])
+    plan = [{"kind": "type", "from_goal": {"after": "type this:", "until": "then stop"}}]
+    goal = 'In the Name field type this:\n{"name": "Ada"}\nthen stop.'
+    op, _ = make_operator(native, provider, goal=goal, llm=LLMHelper(plan_planner(plan), max_calls=6))
+    op.actuator.frame = frames(png(400, 300))
+    res = asyncio.run(op.run())
+    typed = next(h for h in res.history if h["kind"] == "type")
+    assert typed["action"] == "planner typed \'{\"name\": \"Ada\"}\'"
+
+
+def test_a_planner_reply_cut_off_by_its_token_limit_is_reported(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    native = FormNative()
+    provider = SeeingProvider([("need_help", None)], [])
+
+    async def planner(messages, system_prompt, max_tokens):
+        planner.last_stop = "max_tokens"
+        return '{"status": "continue", "subgoal": "Type this exact JSON: {\"display_information\": {\"name\": \"Fre'
+
+    planner.last_stop = None
+    planner.last_usage = (9000, 2048)
+    planner.last_cache = (0, 0)
+    op, _ = make_operator(native, provider, goal="g", llm=LLMHelper(planner, max_calls=6))
+    res = asyncio.run(op.run())
+    assert res.status == "blocked"
+    assert "ran past 4096 tokens" in res.summary and "copied from the goal" in res.summary

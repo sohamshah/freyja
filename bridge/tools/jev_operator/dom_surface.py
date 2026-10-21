@@ -765,6 +765,14 @@ class DOMSurface:
         if action == "type_into":
             el, text = args[0], args[1]
             return await self._type_into(el, text, replace=bool(kwargs.get("replace", True)))
+        if action == "type_raw":
+            # The planner's "type this now": into the page's focused field, as
+            # a page operation. OS keystrokes would land in whatever app is in
+            # front, and a page run promises the browser can stay behind.
+            el = kwargs.get("focused")
+            if el is None or getattr(el, "kind", "") != "type":
+                return await self._fail("type_text", "no field on the page has the focus to type into")
+            return await self._type_into(el, str(args[0]), replace=bool(kwargs.get("replace", False)))
         if action == "press":
             key = KEY_MAP.get(str(args[0]).lower())
             if key is None:

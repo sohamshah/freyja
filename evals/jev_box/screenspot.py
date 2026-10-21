@@ -75,28 +75,66 @@ def crop_window(src: Image.Image, cx: float, cy: float, frac: float) -> tuple[in
     return (x0, y0, min(W, x0 + cw), min(H, y0 + ch))
 
 
+def _median_box(answers: list[dict]) -> dict:
+    """Edge-wise median of several Box answers, with the median confidence."""
+    out = {}
+    for k in ("left", "top", "right", "bottom"):
+        vals = sorted(a["box"][k] for a in answers)
+        out[k] = vals[len(vals) // 2]
+    return {"box": out, "confidence": sorted(a.get("confidence") or 0 for a in answers)[len(answers) // 2]}
+
+
+def _ask_box(png: bytes, instr: str, model: str, votes: int) -> tuple[dict, dict, float]:
+    """One Box question, or `votes` of them in parallel with the median box.
+    Returns (answer, usage summed, latency of the slowest)."""
+    ref, art = api.asset(png)
+
+    def once():
+        return api.ask({"screen": ref}, {"target": {"type": "box", "instructions": instr}}, {ref: art}, model=model)
+
+    if votes <= 1:
+        r = once()
+        return r.answers["target"], r.usage, r.latency_ms
+    with ThreadPoolExecutor(max_workers=votes) as ex:
+        results = list(ex.map(lambda _: once(), range(votes)))
+    usage = {"input_tokens": sum(r.usage.get("input_tokens", 0) for r in results),
+             "output_tokens": sum(r.usage.get("output_tokens", 0) for r in results)}
+    ans = _median_box([r.answers["target"] for r in results])
+    ans["samples"] = [r.answers["target"]["box"] for r in results]
+    return ans, usage, max(r.latency_ms for r in results)
+
+
+def _parse_variant(variant: str) -> tuple[str, int, bool]:
+    """'plain', 'plain+crop', 'plain+vote3', 'plain+vote3+crop' -> (prompt, votes, crop)."""
+    parts = variant.split("+")
+    votes = 1
+    crop = False
+    for p in parts[1:]:
+        if p.startswith("vote"):
+            votes = int(p[4:])
+        elif p == "crop":
+            crop = True
+    return parts[0], votes, crop
+
+
 def run_item(item: dict, img_dir: Path, model: str, variant: str) -> dict:
     src = Image.open(img_dir / item["img_filename"])
     W, H = src.size
-    two_stage = variant.endswith("+crop")
-    prompt_name = variant.replace("+crop", "")
+    prompt_name, votes, two_stage = _parse_variant(variant)
     instr = PROMPTS[prompt_name].format(instruction=item["instruction"].strip().rstrip("."))
 
     prep = api.prepare(src)
-    ref, art = api.asset(prep.png)
     t0 = time.perf_counter()
-    res = api.ask({"screen": ref}, {"target": {"type": "box", "instructions": instr}}, {ref: art}, model=model)
-    ans = res.answers["target"]
+    ans, usage, ms = _ask_box(prep.png, instr, model, votes)
     cx, cy = api.box_center(ans)
-    stage1 = {"box": ans["box"], "confidence": ans.get("confidence"), "usage": res.usage, "latency_ms": res.latency_ms}
+    stage1 = {"box": ans["box"], "confidence": ans.get("confidence"), "usage": usage, "latency_ms": ms,
+              "samples": ans.get("samples")}
     stage2 = None
     if two_stage:
         x0, y0, x1, y1 = crop_window(src, cx, cy, 0.4)
         crop = src.crop((x0, y0, x1, y1))
         prep2 = api.prepare(crop)
-        ref2, art2 = api.asset(prep2.png)
-        res2 = api.ask({"screen": ref2}, {"target": {"type": "box", "instructions": instr}}, {ref2: art2}, model=model)
-        a2 = res2.answers["target"]
+        a2, usage2, ms2 = _ask_box(prep2.png, instr, model, votes)
         b = a2["box"]
         # map crop fractions back to full-image fractions
         box = {
@@ -105,7 +143,7 @@ def run_item(item: dict, img_dir: Path, model: str, variant: str) -> dict:
             "top": (y0 + b["top"] * (y1 - y0)) / H,
             "bottom": (y0 + b["bottom"] * (y1 - y0)) / H,
         }
-        stage2 = {"box": box, "confidence": a2.get("confidence"), "usage": res2.usage, "latency_ms": res2.latency_ms, "crop": [x0, y0, x1, y1]}
+        stage2 = {"box": box, "confidence": a2.get("confidence"), "usage": usage2, "latency_ms": ms2, "crop": [x0, y0, x1, y1]}
         cx, cy = (box["left"] + box["right"]) / 2, (box["top"] + box["bottom"]) / 2
     total_ms = (time.perf_counter() - t0) * 1000
 
