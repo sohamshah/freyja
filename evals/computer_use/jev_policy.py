@@ -112,7 +112,9 @@ def _surface_class() -> type:
                     ok=True,
                 )
             if action == "type_raw":
-                await self.page.insert_text(str(args[0]))
+                if kwargs.get("replace"):
+                    await self.page.select_all()
+                await self.page.type_text(str(args[0]))
                 await self.settle("type")
                 return ActionRecord(
                     kind="type_text", description=f"type {args[0]!r}", duration_ms=_ms(t0), ok=True

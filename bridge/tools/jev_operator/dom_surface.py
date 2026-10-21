@@ -87,6 +87,26 @@ _RUN_IN_TAB = """on run argv
 end run
 """
 _ACTIVE_TAB = 'tell application "{app}" to return (id of active tab of front window) as text'
+# Bring one tab, by id, to the front of its window and that window forward:
+# the pointer and keyboard reach only what is in front.
+_SELECT_TAB = """on run argv
+    set tid to item 1 of argv
+    tell application "{app}"
+        repeat with wi from 1 to (count of windows)
+            set ids to id of every tab of window wi
+            repeat with i from 1 to (count of ids)
+                if ((item i of ids) as text) is tid then
+                    set active tab index of window wi to i
+                    set index of window wi to 1
+                    activate
+                    return "ok"
+                end if
+            end repeat
+        end repeat
+    end tell
+    error "freyja: tab " & tid & " is gone" number 1404
+end run
+"""
 # Title and address of one tab, by id, from the browser's own tab properties.
 _TAB_INFO = """on run argv
     set tid to item 1 of argv
@@ -215,6 +235,11 @@ def osascript_run_js(
             os.unlink(path)
         except OSError:
             pass
+
+
+def select_tab(bundle_id: str, tab_id: str, timeout_s: float = PROBE_TIMEOUT_S) -> str:
+    app = _app(bundle_id)
+    return _osascript(_SELECT_TAB.format(app=app), [tab_id], timeout_s, app).strip()
 
 
 def active_tab_id(bundle_id: str, timeout_s: float = PROBE_TIMEOUT_S) -> str:
@@ -768,11 +793,15 @@ class DOMSurface:
         if action == "type_raw":
             # The planner's "type this now": into the page's focused field, as
             # a page operation. OS keystrokes would land in whatever app is in
-            # front, and a page run promises the browser can stay behind.
+            # front, and a page run promises the browser can stay behind; only
+            # a page that draws its own controls (`pixels`), with the browser
+            # brought forward for it, gets keystrokes.
             el = kwargs.get("focused")
-            if el is None or getattr(el, "kind", "") != "type":
-                return await self._fail("type_text", "no field on the page has the focus to type into")
-            return await self._type_into(el, str(args[0]), replace=bool(kwargs.get("replace", False)))
+            if el is not None and getattr(el, "kind", "") == "type":
+                return await self._type_into(el, str(args[0]), replace=bool(kwargs.get("replace", False)))
+            if kwargs.get("pixels"):
+                return await self.actuator.type_raw(str(args[0]), replace=bool(kwargs.get("replace", False)))
+            return await self._fail("type_text", "no field on the page has the focus to type into")
         if action == "press":
             key = KEY_MAP.get(str(args[0]).lower())
             if key is None:
@@ -787,6 +816,21 @@ class DOMSurface:
             return await self._scroll(down)
         # launch, click_point, type_raw: not page operations.
         return await getattr(self.actuator, action)(*args, **kwargs)
+
+    async def bring_front(self) -> str | None:
+        """The run's tab to the front of its window and the browser forward,
+        before the pointer or keyboard is used on a page that draws its own
+        controls. Returns what went wrong, or None."""
+        focus = getattr(self.actuator, "focus", None)
+        if focus is None:
+            return None  # a headless page: nothing is behind anything
+        try:
+            await focus(self.bundle)
+            if self.tab_id:
+                await asyncio.to_thread(select_tab, self.bundle, self.tab_id)
+        except Exception as exc:  # noqa: BLE001
+            return str(exc)[:200]
+        return None
 
     async def _fail(self, kind: str, error: str, t0: float | None = None) -> ActionRecord:
         ms = _ms(t0) if t0 else 0

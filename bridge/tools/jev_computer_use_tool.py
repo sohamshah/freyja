@@ -127,14 +127,17 @@ not touched, and a link that opens another tab is followed. Without an address
 it continues in the front tab only if an earlier run opened or worked in it; it
 never starts in a tab no run has used (the person's own tabs: mail, a call), and
 says which tab was in front so you can give its address. Page runs use no
-pointer or keyboard, so the browser can stay behind other windows. To read something, say what to
+pointer or keyboard, so the browser can stay behind other windows, except on a
+page that draws its own controls (a canvas app, an embedded frame): there the
+run brings the browser forward and clicks and types from screenshots, with Jev
+placing the described controls. To read something, say what to
 report ("… and report the price of X", "list every project's name and ID"):
 the values come back under `Read:`, including ones read on earlier pages of a
 list, and `page:` names where the run ended. Controls below the visible area
 are reachable directly; dropdown options are listed as rows, and a custom
 dropdown's options appear once a click opens it. An embedded frame (another
-site's widget inside the page) cannot be read or clicked by a page run: the
-result names it; do that step with `computer_use`.
+site's widget inside the page) cannot be read through the page; the run names
+it and works inside it from screenshots.
 
 It runs in the BACKGROUND by default: the call returns at once with a run id,
 and the result (summary plus a handoff block when it did not finish cleanly)

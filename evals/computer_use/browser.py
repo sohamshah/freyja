@@ -395,7 +395,23 @@ class Page:
         base = {"key": key, "windowsVirtualKeyCode": code, "nativeVirtualKeyCode": code}
         if key == "Enter":
             base["text"] = "\r"
+        elif len(key) == 1:
+            # A printable key carries its text, as a real keystroke does: an
+            # editable field inserts it and a canvas app reads e.key.
+            base["text"] = key
         await self.send("Input.dispatchKeyEvent", {"type": "keyDown", **base})
+        await self.send("Input.dispatchKeyEvent", {"type": "keyUp", **base})
+
+    async def type_text(self, text: str) -> None:
+        """Keystroke by keystroke, the way a person's typing reaches a page."""
+        for ch in text:
+            await self.key("Enter" if ch == "\n" else ch)
+
+    async def select_all(self) -> None:
+        """cmd+a: the editing command for a field, and a keydown with metaKey
+        for an app that handles its own keyboard."""
+        base = {"key": "a", "modifiers": 4, "windowsVirtualKeyCode": 65, "nativeVirtualKeyCode": 65}
+        await self.send("Input.dispatchKeyEvent", {"type": "keyDown", "commands": ["selectAll"], **base})
         await self.send("Input.dispatchKeyEvent", {"type": "keyUp", **base})
 
     async def title(self) -> str:

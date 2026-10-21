@@ -12,6 +12,7 @@ import pytest
 
 from bridge.tools.jev_operator import act as act_module
 from bridge.tools.jev_operator import dom_surface
+from bridge.tools.jev_operator.act import ActionRecord
 from bridge.tools.jev_operator.dom_surface import DOMSurface, DOMUnavailable
 from bridge.tools.jev_operator.loop import is_irreversible
 from bridge.tools.jev_operator.observe import meaningful_change
@@ -134,6 +135,35 @@ def test_a_planner_type_fills_the_focused_page_field_as_a_page_operation():
     assert rec.ok and page.calls[-1][1:3] == ["fill", {"text": '{"a": 1}', "mode": "replace"}]
     rec = run(s.execute("type_raw", "x", replace=False, focused=None))
     assert not rec.ok and "focus" in rec.error and len(page.calls) == 1
+
+
+def test_a_page_that_draws_its_own_controls_gets_keystrokes_and_the_browser_forward(monkeypatch):
+    """With no focused page field, a pixel-mode type goes to the actuator's
+    keystrokes; outside pixel mode it fails. bring_front focuses the browser
+    and selects the run's tab; headless (no focus on the actuator) is a no-op."""
+    typed: list[tuple] = []
+    focused: list[str] = []
+    selected: list[tuple] = []
+
+    async def type_raw(text, *, replace=False, **_):
+        typed.append((text, replace))
+        return ActionRecord(kind="type_text", description="t", duration_ms=1, ok=True)
+
+    async def focus(bundle):
+        focused.append(bundle)
+
+    monkeypatch.setattr("bridge.tools.jev_operator.dom_surface.select_tab", lambda b, t, timeout_s=None: selected.append((b, t)) or "ok")
+    page = FakePage([])
+    s = DOMSurface(bundle=TARGET.bundle, actuator=SimpleNamespace(type_raw=type_raw, focus=focus), run_js=page, js_source="/*js*/")
+    s.tab_id = "T9"
+    rec = run(s.execute("type_raw", "Rook & Rose", replace=True, focused=None, pixels=True))
+    assert rec.ok and typed == [("Rook & Rose", True)]
+    rec = run(s.execute("type_raw", "x", replace=False, focused=None, pixels=False))
+    assert not rec.ok and "focus" in rec.error and len(typed) == 1
+    assert run(s.bring_front()) is None
+    assert focused == [TARGET.bundle] and selected == [(TARGET.bundle, "T9")]
+    headless = DOMSurface(bundle=TARGET.bundle, actuator=SimpleNamespace(), run_js=page, js_source="/*js*/")
+    assert run(headless.bring_front()) is None and len(focused) == 1
 
 
 def test_secure_field_refused():

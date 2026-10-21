@@ -181,6 +181,40 @@ not draw: the checks were right both ways. The gain is not in the pass rate
 opened the wrong menu changes the window too, and a frame diff cannot tell.
 The removed decision calls pay for the checks in time.
 
+## 7. A page that draws its own controls: the canvas environment
+
+The blind runs of §4 and §6 strip a normal page's elements; `envs/canvas`
+(Ledger, a dashboard drawn on one `<canvas>`, and a portal page that embeds it
+in an iframe) is honestly blank: no DOM controls, no DOM text, the keyboard
+handled by the canvas. On the DOM surface such a page now gets the pointer
+path: the planner is offered pixel clicks and text to type when the page lists
+no controls or shows an embedded frame, the surface brings the browser and its
+tab forward, and the clicks and keystrokes go through the actuator. Six tasks
+(ship an order through a confirmation sheet, three settings changes including
+typing a name and picking from a drawn dropdown, a reading task, and the ship
+task inside the iframe), 3 reps each, planner Claude Opus 5.5:
+
+| Arm | Passed | Ended `done` | Planner calls / run | Seconds / run |
+|---|---|---|---|---|
+| DOM surface before (page-only planner schema) | 3/15 | 3/15 | 3.0 | 18 |
+| DOM surface with the pointer path | **15/15** | 15/15 | 4.3 | 24 |
+| the same task inside an iframe, no way around it | **3/3** | 3/3 | 5.0 | 29 |
+
+Before, the planner answered every blind page with a wait and then gave up
+("the operator cannot click Settings"); the three passes were the reading
+task, which needs no click. After, Jev placed all 15 of its lookups (later
+clicks of a plan: a 34 by 18 pixel toggle, a dropdown option, the Save button)
+at confidence 0.57 to 0.97, and 48 expectation checks split 42 held and 6 not:
+three were the click on Mark shipped that opened the confirmation sheet
+instead of shipping, which is the right verdict and sent the planner back for
+the sheet, and three were compound expectations ("the dialog is closed and
+the order shows shipped") with a side panel still open, which is why the
+planner is now told to expect one thing. The embedded-frame runs first ended
+blocked at the sheet: two expectations in a row did not hold, and the stuck
+count read that as no progress although each click had moved the run. The
+stuck count now resets on any real change of the window; only the plan stops
+at a failed expectation.
+
 ## What this justifies
 
 - Planner coordinates stay primary on the screenshot the planner read.
@@ -194,6 +228,9 @@ The removed decision calls pay for the checks in time.
 - The end-state check gets the final capture when the screen has no text.
 - A screen with no controls and no text goes to the planner without a
   decision call.
+- A web page that draws its own controls, or shows an embedded frame, gets
+  the pointer path: the browser is brought forward and the planner's clicks
+  and keystrokes run as on a native app.
 
 ## Not measured
 

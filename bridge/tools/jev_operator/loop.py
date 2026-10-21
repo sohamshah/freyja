@@ -527,6 +527,7 @@ class Operator:
         self._start_windows: list[str] | None = None
         self._window_checks: set[str] = set()
         self._shot_geometry: tuple[tuple[float, ...], int, int] | None = None
+        self._pixels = False  # the planner was offered pointer actions on a web page
         self.read_ms: list[int] = []
         # What the end-state check reports from (see SEEN_MAX_CHARS): each distinct
         # screen the run read, as (page, lines). A line kept once for the whole run
@@ -1888,9 +1889,17 @@ class Operator:
         b = win.bounds
         return frame, (float(b.x), float(b.y), float(b.w), float(b.h))
 
+    def _draws_its_own_controls(self, obs: Observation) -> bool:
+        """A web page the table does not describe: no controls at all (a
+        canvas app), or an embedded frame whose inside the page cannot read."""
+        return self.surface.name == "dom" and (
+            not obs.elements or "[embedded frame" in obs.screen_text
+        )
+
     async def _ask_planner(self, obs: Observation, shot: Any, reason: str) -> dict[str, Any] | None:
         assert self.llm is not None
         self._shot_geometry = None
+        self._pixels = shot is not None and self._draws_its_own_controls(obs)
         if shot is not None:
             frame, bounds = shot
             self._shot_geometry = (bounds, frame.width, frame.height)
@@ -1914,6 +1923,7 @@ class Operator:
             planner_notes=self._planner_notes,
             run_seconds=round(time.perf_counter() - self._t_start),
             start_screen=self._start_screen,
+            pixels=self._pixels,
         )
         self._log_llm(since)
         self._log({"event": "replan", "reason": reason, "out": out, "screenshot": shot is not None})
@@ -2035,6 +2045,22 @@ class Operator:
         plan stops at the first action that fails, is skipped, or changes
         nothing: the screen it expected did not come."""
         frame = shot[0].data if shot is not None else None
+        if self._pixels and any(d.get("kind") in ("click", "type") for d in plan):
+            front = getattr(self.surface, "bring_front", None)
+            problem = await front() if front is not None else None
+            self._log({"event": "bring_front", "ok": problem is None, "error": problem})
+            if problem is not None:
+                self.history.append(
+                    {
+                        "step": len(self.history) + 1,
+                        "kind": str(plan[0].get("kind")),
+                        "action": "planner action refused",
+                        "ok": False,
+                        "changed": False,
+                        "diff": f"the browser could not be brought forward: {problem}",
+                    }
+                )
+                return
         for i, da in enumerate(plan):
             if i and da.get("kind") == "wait":
                 # A pause inside a plan is short; a long watch is its own replan.
@@ -2350,7 +2376,8 @@ class Operator:
                 )
                 return
             rec = await self.surface.execute(
-                "type_raw", da["text"], replace=bool(da.get("replace")), focused=focused
+                "type_raw", da["text"], replace=bool(da.get("replace")), focused=focused,
+                pixels=self._pixels,
             )
             self.history.append(
                 {
@@ -2462,7 +2489,11 @@ class Operator:
         self._log({"event": "pixel_outcome", "change": round(change, 5), "changed": changed, "undone": undone,
                    "held": held})
         await self._say(f"  → {'changed' if changed else 'no change'}: {share} of the window")
-        if progressed:
+        # The plan goes on only when its expectation held; the run's stuck
+        # count resets on any real change, since a click that opened a sheet
+        # the planner did not expect still moved the run (an embedded-frame
+        # run ended blocked at the confirmation sheet after two such clicks).
+        if changed and not undone:
             self._replans_since_progress = 0
             self._progress_since_verify = True
         return progressed, after

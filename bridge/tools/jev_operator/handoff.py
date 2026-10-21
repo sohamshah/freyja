@@ -58,6 +58,22 @@ WAIT_HELP = (
 )
 
 
+PIXEL_ACTIONS_HELP = (
+    "Never copy more than a line of the goal's text into the reply. A long text the goal gives to type "
+    "(JSON, a message, code) is named by where it sits in the goal: from_goal.after is the few words "
+    "right before it in the goal and from_goal.until the few words right after it (null when it runs "
+    "to the goal's end); the operator types the goal's own text between them, exactly, into the field "
+    "that has the focus (click it first), and replace: true clears the field first. A subgoal "
+    'refers to it as "the JSON in the goal". A reply that repeats the text runs past its length '
+    "limit and is thrown away. "
+    "Give every action an expect: what the screen shows once it has worked, as one short statement about "
+    'one thing a yes/no question can check against a fresh screenshot ("the File menu is open", "the Name '
+    'field reads Ada", "a Save dialog is showing"), never two joined by and. The operator checks it after '
+    "the action and stops the list, and asks again, at the first expectation that does not hold or target "
+    "it cannot see. "
+)
+
+
 def default_llm_model() -> str:
     """Model behind the doors. Opus 5.5 takes 4-8 s per door call against about
     2 s for Haiku 4.5, but judges the end state and plans recoveries better;
@@ -227,8 +243,42 @@ class LLMHelper:
         planner_notes: list[str] | None = None,
         run_seconds: int | None = None,
         start_screen: str = "",
+        pixels: bool = False,
     ) -> dict[str, Any] | None:
-        if surface == "dom":
+        if surface == "dom" and pixels and screenshot is not None:
+            # A page that draws its own controls (a canvas, an embedded
+            # frame): the table lists nothing for what the screenshot shows,
+            # and the operator falls back to the pointer and keyboard.
+            how = (
+                "You are the planner behind a fast operator working on one web page in a browser. "
+                "The table lists the page's controls, but this page draws its own (a canvas, an "
+                "embedded frame): the table lists nothing, or nothing for what the screenshot shows, "
+                "and the screenshot is the reading. The operator can still click a listed control, "
+                "type into a listed field, open a web address, and, for what the page draws, click "
+                "a point of the screenshot and type into whatever then has the focus (the browser is "
+                "brought to the front for that). It cannot use the browser's address bar, tabs, "
+                "menus or keyboard shortcuts. It asked for help. Decide what to do next.\n"
+                'Return JSON: {"status": "continue"|"done"|"give_up", "subgoal": string|null, '
+                '"direct_action": null | {"kind": "open_url", "url": string} '
+                '| {"kind": "click", "x": int, "y": int, "target": string, "expect": string} '
+                '| {"kind": "click", "target": string, "expect": string} '
+                '| {"kind": "type", "text": string, "replace": bool, "expect": string} '
+                '| {"kind": "type", "from_goal": {"after": string, "until": string | null}, "replace": bool, "expect": string} '
+                '| {"kind": "wait", "seconds": int}, '
+                '"direct_actions": null | [direct_action, ...], '
+                '"note": string}.\n'
+                "subgoal is one concrete instruction against listed controls, when there are any for "
+                "the step. For what the page draws, return direct_actions: up to four actions in order. "
+                "For a click, give x and y, pixels in the screenshot (its size is screenshot_size), and "
+                'target, the control as it looks there ("the blue Save button", "the SMS alerts toggle"). '
+                "Only the first click may carry x and y, which are right for this screenshot alone; "
+                "every later click names its target and the operator finds it on a fresh screenshot "
+                "before clicking, so name what singles the control out, not where it is. A type goes to "
+                "the control that has the focus, so a click on the field comes first. "
+                + PIXEL_ACTIONS_HELP
+                + WAIT_HELP
+            )
+        elif surface == "dom":
             # A web page read through its DOM: no window chrome, no shortcuts.
             how = (
                 "You are the planner behind a fast operator working on one web page in a browser. "
@@ -287,18 +337,8 @@ class LLMHelper:
                 "instead: up to four actions in order. Only the first click may carry x and y, which are right for this "
                 "screenshot alone; every later click names its target and the operator finds it on a fresh screenshot before "
                 "clicking, so name what singles the control out (\"the Export… item in the open File menu\"), not where it is. "
-                "Never copy more than a line of the goal's text into the reply. A long text the goal gives to type "
-                "(JSON, a message, code) is named by where it sits in the goal: from_goal.after is the few words "
-                "right before it in the goal and from_goal.until the few words right after it (null when it runs "
-                "to the goal's end); the operator types the goal's own text between them, exactly, into the field "
-                "that has the focus (click it first), and replace: true clears the field first. A subgoal "
-                'refers to it as "the JSON in the goal". A reply that repeats the text runs past its length '
-                "limit and is thrown away. "
-                "Give every action an expect: what the screen shows once it has worked, as one short statement a "
-                'yes/no question can check against a fresh screenshot ("the File menu is open", "the Name field reads '
-                'Ada", "a Save dialog is showing"). The operator checks it after the action and stops the list, and '
-                "asks again, at the first expectation that does not hold or target it cannot see. "
-                "Prefer subgoal over direct_action. "
+                + PIXEL_ACTIONS_HELP
+                + "Prefer subgoal over direct_action. "
                 + WAIT_HELP
             )
         system = (

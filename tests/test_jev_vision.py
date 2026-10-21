@@ -430,3 +430,41 @@ def test_a_planner_reply_cut_off_by_its_token_limit_is_reported(tmp_path, monkey
     res = asyncio.run(op.run())
     assert res.status == "blocked"
     assert "ran past 4096 tokens" in res.summary and "copied from the goal" in res.summary
+
+
+def test_the_planner_is_offered_pointer_actions_only_on_a_page_that_draws_its_own_controls():
+    """The DOM planner prompt names pixel clicks when the page has no
+    controls or an embedded frame and a screenshot is attached; a normal page
+    keeps the page-only schema."""
+    from bridge.tools.jev_operator.handoff import LLMHelper
+
+    seen: list[str] = []
+
+    async def planner(messages, system_prompt, max_tokens):
+        seen.append(system_prompt)
+        return json.dumps({"status": "give_up", "subgoal": None, "direct_action": None, "note": ""})
+
+    helper = LLMHelper(planner, max_calls=6)
+    common = dict(goal="g", subgoal=None, reason="r", history=[], elements_table="", screen_text="",
+                  screenshot_size=(1280, 900), surface="dom")
+    asyncio.run(helper.replan(screenshot=png(40, 30), pixels=True, **common))
+    asyncio.run(helper.replan(screenshot=png(40, 30), pixels=False, **common))
+    asyncio.run(helper.replan(screenshot=None, pixels=True, **common))
+    assert '"kind": "click", "x": int, "y": int' in seen[0] and "draws its own" in seen[0]
+    assert '"kind": "click"' not in seen[1] and '"kind": "click"' not in seen[2]
+
+
+def test_a_page_draws_its_own_controls_when_it_lists_none_or_has_an_embedded_frame():
+    from bridge.tools.jev_operator.loop import Operator
+
+    class Obs:
+        def __init__(self, elements, text):
+            self.elements, self.screen_text = elements, text
+
+    op = Operator.__new__(Operator)
+    op.surface = type("S", (), {"name": "dom"})()
+    assert op._draws_its_own_controls(Obs([], ""))
+    assert op._draws_its_own_controls(Obs([object()], "[embedded frame from pay.example, 400x300 at (10, 10)]"))
+    assert not op._draws_its_own_controls(Obs([object()], "Orders"))
+    op.surface = type("S", (), {"name": "ax"})()
+    assert not op._draws_its_own_controls(Obs([], ""))

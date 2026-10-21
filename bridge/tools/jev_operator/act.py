@@ -501,10 +501,12 @@ class Actuator:
             if part:
                 await asyncio.to_thread(self.native.type_text, part)
 
-    async def type_raw(self, text: str, *, replace: bool = False, focused: Any = None) -> ActionRecord:
+    async def type_raw(
+        self, text: str, *, replace: bool = False, focused: Any = None, pixels: bool = False
+    ) -> ActionRecord:
         """Type into whatever has the keyboard; `replace` selects the field's
-        contents first (the planner's "replace all of it"). `focused` is for
-        the DOM surface, which fills the page field instead."""
+        contents first (the planner's "replace all of it"). `focused` and
+        `pixels` are for the DOM surface, which fills the page field instead."""
         await self._planned("type_text", f"Type {text!r}")
         t0 = time.perf_counter()
         await self._guard("type_text", t0)
