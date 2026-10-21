@@ -201,7 +201,9 @@ export const WorkStretch = memo(function WorkStretch({
         </span>
         <span ref={tipRef} className="wk-seam-tip" role="tooltip" />
       </button>
-      <div className="wk-stretch-fold">
+      {/* Folded steps stay mounted for the motion, but out of reach: no
+          tab stops or screen-reader text behind the seam. */}
+      <div className="wk-stretch-fold" {...(mode === 'folded' ? { inert: '', 'aria-hidden': true } : {})}>
         <div className="wk-stretch-fold-in">
           <div className="wk-stretch-list">
             {items.map((it, i) => (
