@@ -154,7 +154,10 @@ export function Widget({
             height: ready ? `${iframeHeight}px` : '64px',
             border: 'none',
             background: 'transparent',
-            colorScheme: 'dark',
+            // Must match the document inside: when the frame element and
+            // the embedded page disagree on colour scheme, Chromium paints
+            // the frame opaque (a white slab under the light shell).
+            colorScheme: theme,
             transition: 'height 200ms cubic-bezier(0.16, 1, 0.3, 1)',
           }}
         />

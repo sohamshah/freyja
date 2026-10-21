@@ -69,6 +69,12 @@ export function buildWidgetHtml(opts: WidgetBuildOptions): string {
     `<title>${safeTitle}</title>`,
     '<meta name="viewport" content="width=device-width, initial-scale=1" />',
     `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.44.0/dist/tabler-icons.min.css">`,
+    // The shell's two faces. The sandboxed frame has an opaque origin, so
+    // it cannot read the app's bundled fonts; the CDN copies have the same
+    // metrics, and the stacks fall back to ui-monospace / Georgia offline.
+    `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/geist-mono@5.2.5/index.css">`,
+    `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/geist-mono@5.2.5/500.css">`,
+    `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/fraunces@5.2.5/index.css">`,
     mathHead,
     `<style>${RUNTIME_CSS}</style>`,
     '</head>',
@@ -152,6 +158,14 @@ const RUNTIME_CSS = String.raw`
   --color-border-warning: rgba(184, 160, 120, 0.32);
   --color-accent: var(--accent);
 
+  /* Surfaces. A widget floats on the transcript, so the only fills are
+     washes: a breath of ink on paper, a breath of light on the dark
+     material. Edges are hairlines. */
+  --wash: rgba(255, 255, 255, 0.035);
+  --wash-2: rgba(255, 255, 255, 0.07);
+  --hair: 0.5px solid var(--color-border-secondary);
+  --hair-soft: 0.5px solid var(--color-border-tertiary);
+
   /* Short aliases used inside SVG. */
   --p: var(--color-text-primary);
   --s: var(--color-text-secondary);
@@ -159,9 +173,12 @@ const RUNTIME_CSS = String.raw`
   --bg2: var(--color-background-secondary);
   --b: var(--color-border-secondary);
 
+  /* Geist Mono carries every label and figure, Fraunces the titles —
+     the same two faces as the shell around the widget. Both load from
+     the CDN; the fallbacks keep the metrics close when offline. */
   --font-sans: 'Geist Mono', ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Monaco, monospace;
   --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Monaco, monospace;
-  --font-serif: 'Fraunces', Georgia, serif;
+  --font-serif: 'Fraunces Variable', 'Fraunces', Georgia, serif;
   --border-radius-sm: 4px;
   --border-radius-md: 8px;
   --border-radius-lg: 12px;
@@ -197,6 +214,8 @@ html[data-theme="light"] {
   --color-border-danger: rgba(172, 66, 62, 0.35);
   --color-border-success: rgba(66, 118, 84, 0.35);
   --color-border-warning: rgba(146, 102, 30, 0.35);
+  --wash: rgba(34, 30, 24, 0.035);
+  --wash-2: rgba(34, 30, 24, 0.07);
 }
 
 * { box-sizing: border-box; }
@@ -206,8 +225,8 @@ html, body {
   background: transparent !important;
   color: var(--color-text-primary);
   font-family: var(--font-sans);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  line-height: 1.55;
   /* No nested scroll. The parent iframe height adjusts to content. */
   overflow: visible;
   /* color-scheme also declared here as a belt-and-suspenders defense
@@ -215,39 +234,273 @@ html, body {
      set in the wrapper. Without the right scheme, transparent surfaces
      render against the other scheme's user-agent default. */
   color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
 }
 html[data-theme="light"], html[data-theme="light"] body {
   color-scheme: light;
 }
 
+/* The root sits flush left with the prose around it and never wider
+   than a comfortable measure; SVG keeps its 680 design width. */
 #freyja-widget-root {
   display: block;
   width: 100%;
-  max-width: 680px;
-  margin: 0 auto;
-  padding: 0;
+  max-width: 760px;
+  margin: 0;
+  padding: 2px 0;
   background: transparent;
+  /* break-word, not anywhere: a word only breaks when it cannot fit a
+     line on its own, so table columns still size to whole words. */
+  overflow-wrap: break-word;
 }
 
-/* Generic text */
-h1, h2, h3, h4 { margin: 0 0 8px; font-weight: 500; color: var(--color-text-primary); }
-h1 { font-size: 18px; }
-h2 { font-size: 15px; }
-h3 { font-size: 13px; }
-p { margin: 0 0 8px; color: var(--color-text-secondary); }
+/* ============== Resilience ==============
+   Agent markup is written blind. These rules keep it inside the frame:
+   grid and flex children may shrink, long words break, media and tables
+   never exceed the root, SVG keeps its aspect ratio, nothing refuses to
+   wrap, and preformatted text folds instead of scrolling. */
+#freyja-widget-root *, #freyja-widget-root *::before, #freyja-widget-root *::after { min-width: 0; }
+#freyja-widget-root img, #freyja-widget-root canvas, #freyja-widget-root video,
+#freyja-widget-root table, #freyja-widget-root pre, #freyja-widget-root iframe { max-width: 100%; }
+#freyja-widget-root svg[viewBox] { max-width: 680px; height: auto; display: block; }
+#freyja-widget-root [style*="nowrap"] { white-space: normal !important; }
+#freyja-widget-root [style*="position: fixed"], #freyja-widget-root [style*="position:fixed"] { position: relative !important; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+#freyja-widget-root [style*="nowrap"].tag, #freyja-widget-root th { white-space: nowrap !important; }
+
+/* ============== Type ============== */
+h1, h2, h3 {
+  margin: 0 0 8px;
+  font-family: var(--font-serif);
+  font-weight: 400;
+  letter-spacing: -0.005em;
+  line-height: 1.25;
+  color: var(--color-text-primary);
+}
+h1 { font-size: 24px; }
+h2 { font-size: 19px; }
+h3 { font-size: 16px; }
+h4 { margin: 0 0 6px; font-size: 13px; font-weight: 500; color: var(--color-text-primary); }
+h2:not(:first-child), h3:not(:first-child) { margin-top: 20px; }
+p { margin: 0 0 10px; color: var(--color-text-secondary); font-size: 12.5px; line-height: 1.6; }
+p:last-child { margin-bottom: 0; }
 small { color: var(--color-text-tertiary); font-size: 11px; }
+strong, b { font-weight: 500; color: var(--color-text-primary); }
+code { font-family: var(--font-mono); font-size: 0.95em; color: var(--color-text-info); }
+ul, ol { margin: 0 0 10px; padding-left: 20px; color: var(--color-text-secondary); }
+li { margin: 2px 0; }
+hr { border: 0; border-top: var(--hair); margin: 14px 0; }
+.kicker { font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-text-tertiary); margin: 0 0 6px; }
+.muted { color: var(--color-text-tertiary); }
+.num { font-variant-numeric: tabular-nums; text-align: right; }
+
+/* ============== Surfaces ============== */
+.card {
+  background: var(--wash);
+  border: var(--hair);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.card > :last-child { margin-bottom: 0; }
+.card-grid, .grid-2, .grid-3 { display: grid; gap: 12px; margin: 12px 0; }
+.card-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.grid-2 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.grid-3 { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+
+.callout, .note {
+  border-left: 2px solid var(--color-border-primary);
+  padding: 8px 14px;
+  margin: 12px 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+  border-radius: 0 6px 6px 0;
+}
+.callout.tone-info, .note.tone-info { border-color: var(--color-border-info); background: var(--color-background-info); }
+.callout.tone-success, .note.tone-success { border-color: var(--color-border-success); background: var(--color-background-success); }
+.callout.tone-warning, .note.tone-warning { border-color: var(--color-border-warning); background: var(--color-background-warning); }
+.callout.tone-danger, .note.tone-danger { border-color: var(--color-border-danger); background: var(--color-background-danger); }
+
+.tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border: var(--hair);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+.tag.tone-info { color: var(--color-text-info); border-color: var(--color-border-info); background: var(--color-background-info); }
+.tag.tone-success { color: var(--color-text-success); border-color: var(--color-border-success); background: var(--color-background-success); }
+.tag.tone-warning { color: var(--color-text-warning); border-color: var(--color-border-warning); background: var(--color-background-warning); }
+.tag.tone-danger { color: var(--color-text-danger); border-color: var(--color-border-danger); background: var(--color-background-danger); }
+
+/* Key → value pairs. */
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 18px; margin: 10px 0; font-size: 12.5px; }
+.kv dt { color: var(--color-text-tertiary); }
+.kv dd { margin: 0; color: var(--color-text-primary); }
+
+/* Numbered steps. */
+.steps { list-style: none; margin: 10px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; counter-reset: step; }
+.steps > li { position: relative; padding-left: 32px; margin: 0; color: var(--color-text-secondary); }
+.steps > li::before {
+  counter-increment: step;
+  content: counter(step);
+  position: absolute; left: 0; top: 0;
+  width: 20px; height: 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: var(--hair); border-radius: 50%;
+  font-size: 10.5px; color: var(--color-text-tertiary);
+}
+.steps > li > b, .steps > li > strong { display: block; }
+
+/* Horizontal bars: label · bar · value. Width goes on the inner <i>. */
+.bars { display: grid; grid-template-columns: minmax(70px, max-content) minmax(0, 1fr) max-content; gap: 7px 12px; align-items: center; margin: 10px 0; font-size: 12px; }
+.bars .bar { height: 8px; border-radius: 2px; background: var(--wash-2); overflow: hidden; }
+.bars .bar > i { display: block; height: 100%; background: var(--color-accent); border-radius: inherit; }
+.bars .bar.tone-success > i { background: var(--color-text-success); }
+.bars .bar.tone-warning > i { background: var(--color-text-warning); }
+.bars .bar.tone-danger > i { background: var(--color-text-danger); }
+.bars .val { font-variant-numeric: tabular-nums; color: var(--color-text-primary); }
+.bars .lab { color: var(--color-text-secondary); }
+
+/* ============== Tables ============== */
+table { width: 100%; border-collapse: collapse; margin: 10px 0 14px; font-size: 12.5px; line-height: 1.45; }
+th {
+  text-align: left; font-weight: 500; white-space: nowrap;
+  font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--color-text-tertiary);
+  padding: 4px 10px 8px;
+  border-bottom: 1px solid var(--color-border-primary);
+}
+td { padding: 8px 10px; border-bottom: var(--hair-soft); vertical-align: top; color: var(--color-text-primary); }
+th:first-child, td:first-child { padding-left: 0; }
+th:last-child, td:last-child { padding-right: 0; }
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.tone-success { color: var(--color-text-success); }
+.tone-warning { color: var(--color-text-warning); }
+.tone-danger { color: var(--color-text-danger); }
+.tone-info { color: var(--color-text-info); }
+
+/* ============== Metrics ============== */
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px 22px;
+  margin: 12px 0;
+}
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 9px;
+  border-top: var(--hair);
+}
+.metric-label {
+  font-size: 10.5px;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.metric-value {
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.metric-note { font-size: 11.5px; color: var(--color-text-secondary); }
+.delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  margin-top: 2px;
+}
+.delta-up { color: var(--color-text-success); }
+.delta-down { color: var(--color-text-danger); }
+.delta-flat { color: var(--color-text-tertiary); }
+.delta i { font-size: 13px; }
+
+.compare-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.compare-card {
+  background: var(--wash);
+  border: var(--hair);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.compare-card.recommended {
+  border-color: var(--color-border-info);
+  box-shadow: inset 0 0 0 1px var(--color-border-info);
+  background: var(--color-background-info);
+}
+
+/* ============== Flow (HTML flowchart) ==============
+   Nodes size to their text and wrap; the arrows are drawn by the
+   runtime. A row is one left-to-right stage, a .flow-edge between rows
+   is the transition and its label. */
+.flow { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
+.flow-row { display: flex; flex-wrap: wrap; align-items: stretch; gap: 10px 30px; }
+.flow-node {
+  position: relative;
+  flex: 1 1 150px;
+  max-width: 100%;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--wash);
+  border: var(--hair);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-text-secondary);
+}
+.flow-node > b, .flow-node > strong { display: block; font-weight: 500; color: var(--color-text-primary); margin-bottom: 2px; }
+.flow-node > span, .flow-node > small { display: block; font-size: 11.5px; color: var(--color-text-secondary); }
+.flow-node + .flow-node::before {
+  content: '→';
+  position: absolute;
+  left: -22px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+  pointer-events: none;
+}
+.flow-node.tone-info { background: var(--color-background-info); border-color: var(--color-border-info); }
+.flow-node.tone-success { background: var(--color-background-success); border-color: var(--color-border-success); }
+.flow-node.tone-warning { background: var(--color-background-warning); border-color: var(--color-border-warning); }
+.flow-node.tone-danger { background: var(--color-background-danger); border-color: var(--color-border-danger); }
+.flow-node[data-prompt] { cursor: pointer; }
+.flow-node[data-prompt]:hover { border-color: var(--color-border-primary); }
+.flow-edge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 0 12px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--color-text-tertiary);
+}
+.flow-edge::before { content: '↓'; font-size: 13px; }
 
 /* ============== HTML form elements ============== */
 input[type="text"], input[type="date"], input[type="number"], input[type="email"],
 input[type="search"], textarea, select {
   width: 100%;
   padding: 8px 10px;
-  background: var(--color-background-secondary);
+  background: var(--wash);
   color: var(--color-text-primary);
   border: 1px solid var(--color-border-secondary);
   border-radius: var(--border-radius-md);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 12.5px;
   outline: none;
   transition: border-color 120ms ease;
 }
@@ -278,10 +531,10 @@ input[type="range"]::-webkit-slider-thumb {
 
 button {
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
-  padding: 8px 14px;
-  background: var(--color-background-tertiary);
+  padding: 7px 14px;
+  background: var(--wash);
   color: var(--color-text-primary);
   border: 1px solid var(--color-border-secondary);
   border-radius: var(--border-radius-md);
@@ -289,77 +542,23 @@ button {
   transition: background 120ms ease, border-color 120ms ease;
 }
 button:hover {
-  background: var(--bg-4);
+  background: var(--wash-2);
   border-color: var(--color-border-primary);
 }
-
-/* ============== Card / metric layouts ============== */
-.card {
-  background: var(--color-background-secondary);
-  border: 1px solid var(--color-border-secondary);
-  border-radius: var(--border-radius-lg);
-  padding: 16px 20px;
+.btn-accent, button.primary {
+  background: var(--color-accent);
+  color: var(--color-text-inverse);
+  border-color: var(--color-accent);
 }
-.metric-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px;
-}
-.metric {
-  background: var(--color-background-secondary);
-  border: 1px solid var(--color-border-tertiary);
-  border-radius: var(--border-radius-md);
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.metric-label {
-  font-size: 11px;
-  color: var(--color-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-.metric-value {
-  font-size: 22px;
-  font-weight: 500;
-  color: var(--color-text-primary);
-  font-variant-numeric: tabular-nums;
-}
-.delta {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  margin-top: 2px;
-}
-.delta-up { color: var(--color-text-success); }
-.delta-down { color: var(--color-text-danger); }
-.delta-flat { color: var(--color-text-tertiary); }
-.delta i { font-size: 14px; }
-
-.compare-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-.compare-card {
-  background: var(--color-background-secondary);
-  border: 1px solid var(--color-border-secondary);
-  border-radius: var(--border-radius-lg);
-  padding: 14px 16px;
-}
-.compare-card.recommended {
-  border: 2px solid var(--color-border-info);
-}
+.btn-accent:hover, button.primary:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
 
 /* ============== Equation card (.eqn) ============== */
 /* A framed display equation with optional annotated term breakdown —
  * the showcase counterpart to inline prose math. KaTeX is auto-rendered
  * by the runtime; author writes $$…$$ / $…$ directly in the markup. */
 .eqn {
-  background: var(--color-background-secondary);
-  border: 1px solid var(--color-border-secondary);
+  background: var(--wash);
+  border: var(--hair);
   border-radius: var(--border-radius-lg);
   overflow: hidden;
 }
@@ -368,12 +567,12 @@ button:hover {
   align-items: center;
   gap: 8px;
   padding: 10px 16px;
-  border-bottom: 1px solid var(--color-border-tertiary);
-  background: var(--color-background-tertiary);
-  font-size: 12px;
+  border-bottom: var(--hair-soft);
+  font-size: 11px;
   font-weight: 500;
-  letter-spacing: 0.04em;
-  color: var(--color-text-secondary);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
 }
 .eqn-title i { font-size: 14px; color: var(--color-text-info); }
 .eqn-main {
@@ -396,9 +595,7 @@ button:hover {
 .eqn-terms {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  border-top: 1px solid var(--color-border-tertiary);
-  background: var(--color-border-tertiary);
+  border-top: var(--hair-soft);
 }
 .eqn-term {
   display: grid;
@@ -406,8 +603,9 @@ button:hover {
   gap: 14px;
   align-items: baseline;
   padding: 10px 16px;
-  background: var(--color-background-secondary);
+  border-top: var(--hair-soft);
 }
+.eqn-term:first-child { border-top: 0; }
 .eqn-term-sym {
   font-size: 1.02em;
   color: var(--color-text-primary);
@@ -427,19 +625,22 @@ button:hover {
   color: var(--color-text-info);
 }
 /* ============== SVG classes ============== */
-text.t  { font: 14px var(--font-sans); fill: var(--color-text-primary); }
-text.ts { font: 12px var(--font-sans); fill: var(--color-text-secondary); }
-text.th { font: 500 14px var(--font-sans); fill: var(--color-text-primary); }
+/* Monospace, so one character is 0.6 × the font size: a 13px label
+ * runs 7.8px per character. The runtime also squeezes any <text>
+ * that would overrun the <rect> it sits in. */
+text.t  { font: 13px var(--font-sans); fill: var(--color-text-primary); }
+text.ts { font: 11.5px var(--font-sans); fill: var(--color-text-secondary); }
+text.th { font: 500 13px var(--font-sans); fill: var(--color-text-primary); }
 rect.box, .box rect {
-  fill: var(--color-background-secondary);
+  fill: var(--wash);
   stroke: var(--color-border-secondary);
-  stroke-width: 0.5;
+  stroke-width: 0.75;
 }
 .node { cursor: pointer; }
-.node:hover rect.box, .node:hover > rect { fill: var(--bg-3); }
+.node:hover rect.box, .node:hover > rect { fill: var(--wash-2); }
 .arr, line.arr, path.arr {
   stroke: var(--color-border-primary);
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   fill: none;
   color: var(--color-border-primary);
 }
@@ -457,10 +658,9 @@ ${buildColorRamps()}
 
 /* ============== Elicitation form ============== */
 .elicit {
-  background: var(--color-background-secondary);
-  border: 1px solid var(--color-border-secondary);
+  background: var(--wash);
+  border: var(--hair);
   border-radius: var(--border-radius-lg);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   overflow: hidden;
 }
 .elicit-header {
@@ -468,12 +668,12 @@ ${buildColorRamps()}
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  border-bottom: 1px solid var(--color-border-tertiary);
-  background: var(--color-background-tertiary);
-  font-size: 12px;
+  border-bottom: var(--hair-soft);
+  font-size: 11px;
   font-weight: 500;
-  letter-spacing: 0.04em;
-  color: var(--color-text-secondary);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
 }
 .elicit-header i { font-size: 14px; color: var(--color-text-info); }
 .elicit-body {
@@ -484,7 +684,7 @@ ${buildColorRamps()}
 }
 .elicit-group { display: flex; flex-direction: column; gap: 6px; }
 .elicit-question {
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 500;
   color: var(--color-text-primary);
 }
@@ -494,16 +694,17 @@ ${buildColorRamps()}
   gap: 6px;
 }
 .elicit-pill {
-  padding: 6px 12px;
-  background: var(--color-background-tertiary);
+  padding: 5px 12px;
+  background: transparent;
   border: 1px solid var(--color-border-secondary);
   border-radius: 999px;
   font-size: 12px;
+  font-weight: 400;
   color: var(--color-text-secondary);
   cursor: pointer;
   transition: background 120ms, border-color 120ms, color 120ms;
 }
-.elicit-pill:hover { color: var(--color-text-primary); border-color: var(--color-border-primary); }
+.elicit-pill:hover { color: var(--color-text-primary); border-color: var(--color-border-primary); background: var(--wash); }
 .elicit-pill.is-selected {
   background: var(--color-background-info);
   border-color: var(--color-accent);
@@ -515,10 +716,11 @@ ${buildColorRamps()}
   align-items: flex-start;
   gap: 4px;
   padding: 10px 12px;
-  background: var(--color-background-tertiary);
+  background: var(--wash);
   border: 1px solid var(--color-border-secondary);
   border-radius: var(--border-radius-md);
   font-size: 12px;
+  font-weight: 400;
   color: var(--color-text-primary);
   cursor: pointer;
   text-align: left;
@@ -542,10 +744,11 @@ ${buildColorRamps()}
   align-items: center;
   gap: 6px;
   padding: 10px;
-  background: var(--color-background-tertiary);
+  background: var(--wash);
   border: 1px solid var(--color-border-secondary);
   border-radius: var(--border-radius-md);
   font-size: 12px;
+  font-weight: 400;
   color: var(--color-text-primary);
   cursor: pointer;
   min-width: 90px;
@@ -567,8 +770,7 @@ ${buildColorRamps()}
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  border-top: 1px solid var(--color-border-tertiary);
-  background: var(--color-background-tertiary);
+  border-top: var(--hair-soft);
 }
 .elicit-skip {
   background: transparent;
@@ -817,13 +1019,25 @@ const RUNTIME_JS = String.raw`
     requestAnimationFrame(function(){
       resizePending = false;
       var root = document.getElementById('freyja-widget-root');
-      var h = (root ? root.scrollHeight : document.documentElement.scrollHeight) || 0;
+      var h = Math.max(
+        root ? root.scrollHeight : 0,
+        root ? root.getBoundingClientRect().bottom : 0,
+        document.body ? document.body.scrollHeight : 0,
+        document.documentElement.scrollHeight || 0
+      );
       post('ui/resize', { height: Math.max(40, Math.ceil(h) + 8) });
     });
   }
   var ro = new ResizeObserver(reportHeight);
   ro.observe(document.documentElement);
   ro.observe(document.body);
+  var rootEl = document.getElementById('freyja-widget-root');
+  if (rootEl) ro.observe(rootEl);
+  // Late layout: webfonts, icons, images and CDN scripts all land after
+  // boot, so measure again when they do and once more on a timer.
+  window.addEventListener('load', reportHeight);
+  setTimeout(reportHeight, 400);
+  setTimeout(reportHeight, 1500);
   var mo = new MutationObserver(reportHeight);
   mo.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
 
@@ -850,11 +1064,61 @@ const RUNTIME_JS = String.raw`
     reportHeight();
   };
 
+  // SVG labels cannot wrap. For every <text> that starts inside a <rect>
+  // drawn before it (the box pattern every diagram uses), measure the
+  // run against the room left in that box and, when it overruns, shrink
+  // the type a little and squeeze the glyphs the rest of the way. Runs
+  // at boot and again once the webfonts land, since they change widths.
+  function fitSvgText(){
+    document.querySelectorAll('svg').forEach(function(svg){
+      var rects = Array.prototype.slice.call(svg.querySelectorAll('rect'));
+      if (!rects.length) return;
+      svg.querySelectorAll('text').forEach(function(t){
+        var x = parseFloat(t.getAttribute('x')), y = parseFloat(t.getAttribute('y'));
+        if (!isFinite(x) || !isFinite(y)) return;
+        var box = null;
+        for (var i = rects.length - 1; i >= 0; i--) {
+          var r = rects[i];
+          if (!(r.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+          var rx = parseFloat(r.getAttribute('x')) || 0, ry = parseFloat(r.getAttribute('y')) || 0;
+          var rw = parseFloat(r.getAttribute('width')) || 0, rh = parseFloat(r.getAttribute('height')) || 0;
+          if (x >= rx && x <= rx + rw && y >= ry && y <= ry + rh) { box = { x: rx, w: rw }; break; }
+        }
+        if (!box) return;
+        var anchorMode = t.getAttribute('text-anchor') || getComputedStyle(t).textAnchor || 'start';
+        var pad = 6;
+        var avail = anchorMode === 'middle'
+          ? 2 * Math.min(x - box.x, box.x + box.w - x) - pad
+          : anchorMode === 'end' ? x - box.x - pad : box.x + box.w - x - pad;
+        if (!(avail > 0)) return;
+        if (t.dataset.freyjaFit === '1') { t.style.fontSize = ''; t.removeAttribute('textLength'); t.removeAttribute('lengthAdjust'); }
+        var len;
+        try { len = t.getComputedTextLength(); } catch (e) { return; }
+        if (!(len > avail)) return;
+        t.dataset.freyjaFit = '1';
+        var fs = parseFloat(getComputedStyle(t).fontSize) || 13;
+        var scale = avail / len;
+        if (scale < 0.85) {
+          t.style.fontSize = Math.max(10, fs * Math.max(scale, 0.78)).toFixed(2) + 'px';
+          try { len = t.getComputedTextLength(); } catch (e) { return; }
+        }
+        if (len > avail) {
+          t.setAttribute('textLength', avail.toFixed(1));
+          t.setAttribute('lengthAdjust', 'spacingAndGlyphs');
+        }
+      });
+    });
+  }
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(function(){ fitSvgText(); reportHeight(); });
+  }
+
   // Initial pass — wire any elicit forms that streamed in pre-load,
   // attach range readouts, render math, and signal ready.
   function boot(){
     document.querySelectorAll('.elicit').forEach(attachElicit);
     attachRangeReadouts();
+    fitSvgText();
     window.__freyjaRenderMath();
     reportHeight();
     post('ui/ready', {});

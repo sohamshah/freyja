@@ -1,5 +1,5 @@
 """
-Generative widget tools — `show_widget` + `read_me`.
+Generative widget tools — `show_widget` + `widget_spec`.
 
 Lets agents render interactive HTML/SVG fragments inline in the
 conversation. Modeled after Claude Desktop's "Imagine" MCP and the
@@ -20,12 +20,13 @@ Two tools:
       `loading_messages` (1-4 short strings) play during streaming /
       mount.
 
-  read_me(modules=None)
+  widget_spec(modules=None)
       Returns the widget design-system spec. Agents call this once
       before their first show_widget so they know which CSS classes,
-      icons, form patterns, and constraints apply. `modules` filters
-      to a subset (diagram | mockup | interactive | chart | art |
-      elicitation). Omit to get the consolidated spec.
+      icons, form patterns, layout rules and constraints apply.
+      `modules` filters to a subset (mockup | flow | table | diagram |
+      interactive | chart | art | elicitation | equation). Omit to get
+      the consolidated spec.
 
 The bridge supplies `session_id` + `emit_event`. The renderer keys
 widgets by `tool_call_id` so they appear inline at the exact spot
@@ -54,7 +55,7 @@ _SPEC_HEADER = """\
 
 This document is the reference for `show_widget`. Read it once at the
 start of a session before emitting your first widget. Re-read selected
-modules with `read_me(modules=[…])` if you forget the rules.
+modules with `widget_spec(modules=[…])` if you forget the rules.
 
 ## What `show_widget` does
 
@@ -77,11 +78,21 @@ shown while the widget mounts. Optional — omit for a generic shimmer.
 
 ## Container
 
-The widget iframe is `display: block; width: 100%` and 680px wide on
-desktop, ~380px on mobile. Background is transparent on the outer
-container — don't paint a backdrop or your widget will look stranded
-on the chat surface. Height auto-grows to content; you do not need to
-report or compute it.
+The widget sits flush left in the message, like a paragraph, and is
+never wider than 760px; SVG keeps a 680px design width. There is no
+background: the transcript is the ground, in the dark shell and on the
+light paper shell alike. Do not paint one, and do not wrap the whole
+widget in a `.card`. Height grows to the content; you never compute it.
+
+## Type
+
+Everything is set in Geist Mono (the chat's own face) at 12.5px, and
+`h1`–`h3` switch to the Fraunces serif automatically. Do not override
+the fonts; do not use hex colours; do not go below 11px.
+
+Monospace has one consequence you must plan for: **every character is
+0.6 × the font size wide**. At 13px that is 7.8px per character, so a
+24-character label is 187px. See "Layout that survives real text".
 
 ## Hard constraints
 
@@ -91,7 +102,7 @@ You MUST obey these — violations cause silent visual breakage:
 - **No** `<script>` tags inside elicitation forms; the shell auto-wires
   selections and submit
 - **No** `localStorage`, `sessionStorage`, or any persistent storage
-- **No** `position: fixed` — the iframe collapses to 100px
+- **No** `position: fixed` — the runtime turns it into `relative`
 - **No** comments in markup or JS (`<!-- … -->` / `/* … */`) — they
   waste tokens and may break streaming
 - **No** font-size under 11px
@@ -100,7 +111,38 @@ You MUST obey these — violations cause silent visual breakage:
   per illustrative diagram, one drop-shadow inside elicitation forms
 - **No** tabs, carousels, or `display: none` during streaming
 - **No** nested scrollers
+- **No** fixed pixel widths or heights on anything that holds text
+- **No** `white-space: nowrap` — the runtime undoes it
 - Background of the outer container MUST be transparent
+
+## Layout that survives real text
+
+The runtime lets grid and flex children shrink, breaks long words,
+caps media and tables at the frame, keeps SVG at its aspect ratio and
+squeezes an SVG label that overruns its box. It cannot rescue a layout
+whose numbers were wrong to begin with, so:
+
+1. **Reach for the runtime classes first** (catalogue below) and write
+   a `<style>` block only for what they do not cover. Keep it short.
+   Never restyle `h1`–`h3`, the body font, or colours.
+2. **Flowcharts and process diagrams are HTML** (`.flow`), not SVG,
+   unless the drawing needs real geometry (a scatter, a map, overlapping
+   shapes). HTML nodes size to their words and wrap; SVG text cannot.
+3. **In SVG, size every box from its text**: width ≥ characters × 0.6 ×
+   font-size + 24. Keep labels under 20 characters and move anything
+   longer into prose under the diagram. Put edge labels in the gap
+   between boxes, never over a box. A label the runtime had to squeeze
+   reads worse than a short one.
+4. **Tables are plain `<table>` markup** with a `<thead>`: headers stay
+   on one line and cells wrap. Put `class="num"` on numeric columns.
+5. **Grids are the runtime's** (`.metric-grid`, `.card-grid`, `.grid-2`,
+   `.grid-3`, `.compare-grid`): they collapse to one column when narrow.
+   Hand-written `grid-template-columns: 300px 300px` does not.
+6. **One idea per widget.** A widget longer than one screen should be
+   two widgets or a widget plus prose. Under ~2,000 characters is right.
+7. **Prefer prose when a widget adds nothing.** Two rows of two cells is
+   a sentence; a single number is a sentence. Widgets earn their place
+   with structure the reader scans: comparisons, flows, ledgers, forms.
 
 ## Theme
 
@@ -110,12 +152,14 @@ instead of hardcoding colors:
 
   Backgrounds:  --color-background-primary, -secondary, -tertiary
                 --color-background-info, -danger, -success, -warning
+  Washes:       --wash (a breath of ink on the ground), --wash-2
+  Edges:        --hair (0.5px hairline), --hair-soft
   Text:         --color-text-primary, -secondary, -tertiary
                 --color-text-info, -danger, -success, -warning, -inverse
   Borders:      --color-border-primary, -secondary, -tertiary
                 --color-border-info, -danger, -success, -warning
-  Accent:       --color-accent (steel blue — Freyja's signature)
-  Fonts:        --font-sans, --font-serif, --font-mono
+  Accent:       --color-accent (steel blue on dark, deep blue on paper)
+  Fonts:        --font-sans (Geist Mono), --font-serif (Fraunces), --font-mono
   Radii:        --border-radius-sm 4px, -md 8px, -lg 12px, -xl 16px
 
 For SVG, prefer the short aliases: `var(--p)` text-primary,
@@ -131,23 +175,65 @@ The Tabler outline webfont (5,800+ icons) is preloaded. Use it like:
     <i class="ti ti-chevron-right"></i>
 
 Icons inherit `color` and `font-size` from their parent — that's how
-the dashboard mockup makes a delta arrow green/red just by recoloring
-the wrapping `<span>`. Filled variants ship in the same font as
+the metric card makes a delta arrow green/red just by recoloring the
+wrapping `<span>`. Filled variants ship in the same font as
 `ti ti-home-filled`. Icon-only buttons need `aria-label`; decorative
 icons take `aria-hidden="true"`.
 
+## HTML class catalogue
+
+Type
+  .kicker        small uppercase line above a title ("Release · week 42")
+  h1 h2 h3       Fraunces serif, 24 / 19 / 16px; h4 is a 13px mono label
+  p small code   body, aside, inline code (accent)
+  .muted .num    tertiary text; tabular right-aligned numbers
+  .tone-info .tone-success .tone-warning .tone-danger   text colour,
+                 and the variant for .callout, .tag, .flow-node, .bars .bar
+
+Surfaces
+  .card          a wash with a hairline, 10px radius; for one record or
+                 for peers inside .card-grid — never around the whole widget
+  .card-grid     auto-fit cards, 220px minimum each
+  .grid-2 .grid-3   auto-fit columns (240px / 170px minimum)
+  .callout       left rule + wash; add a tone for info/success/warning/danger
+  .tag           small pill; add a tone
+
+Data
+  .metric-grid > .metric > .metric-label .metric-value .metric-note
+                 editorial figures with a hairline above each; .delta
+                 .delta-up / .delta-down / .delta-flat for the change line
+  table thead th td   ledger table: uppercase headers, hairlines, wrapping
+                 cells; th.num / td.num right-align numbers
+  .bars          label · bar · value rows:
+                 <span class="lab">…</span><div class="bar"><i style="width:62%"></i></div><span class="val">62%</span>
+  .kv            <dl class="kv"><dt>key</dt><dd>value</dd>…</dl>
+  .steps         <ol class="steps"><li><b>Title</b> detail…</li></ol>, numbered
+
+Flow
+  .flow > .flow-row > .flow-node     nodes wrap and size to their text;
+                 the runtime draws the → between nodes in a row
+  .flow-node > b + span              title line and detail line
+  .flow-edge                         a ↓ transition between rows, with its label
+  .flow-node[data-prompt]            clickable, sends a follow-up
+
+Compare
+  .compare-grid > .compare-card(.recommended)
+
+Actions
+  button, button.primary, [data-prompt="…"]
+
 ## SVG pre-built classes (use on SVG elements)
 
-Text:
-  .t   sans-serif 14px, color text-primary
-  .ts  sans-serif 12px, color text-secondary
-  .th  sans-serif 14px, weight 500, color text-primary
+Text (monospace — 0.6 × size per character):
+  .t   13px, color text-primary
+  .ts  11.5px, color text-secondary
+  .th  500 13px, color text-primary
 
 Shape:
-  .box     neutral fill background-secondary, stroke border-secondary
+  .box     neutral fill (wash), stroke border-secondary
   .node    clickable group — hover bg shift; pair with onclick or
            data-prompt to send a follow-up
-  .arr     1.5px arrow line, color border-primary, requires
+  .arr     1.25px arrow line, color border-primary, requires
            marker-end="url(#arr)" — the shell injects the def
   .leader  dashed 0.5px hairline, color border-tertiary
 
@@ -158,7 +244,8 @@ never `<path>`):
 
 Each ramp exposes 7 stops as nested classes: `c-blue-50`, `-100`,
 `-200`, `-400`, `-600`, `-800`, `-900`. Use `-400` for fills and
-`-600` for accents.
+`-600` for accents. The ramps flip with the shell, so a `-50` wash
+stays a wash on paper and a `-900` stays the strongest ink.
 
 ## Form elements (HTML)
 
@@ -174,7 +261,7 @@ on form widgets is always blue regardless of any accent.
 Wire these from `onclick`, not `addEventListener` in a `<script>`, so
 they survive partial streaming. Both also work via attribute:
 
-    <button data-prompt="Show me Q4 numbers" class="btn">Q4</button>
+    <button data-prompt="Show me Q4 numbers">Q4</button>
     <a href="https://example.com">Example</a>   (intercepted by shell)
 """
 
@@ -292,74 +379,134 @@ and you should fall back to a prose follow-up.
 
 
 _SPEC_PATTERNS = """\
-## Module: mockup (UI components, dashboards, metric cards)
+## Module: mockup (figures, ledgers, flows, cards)
 
-Use editorial layout (no wrapper, prose flows) for casual content.
-Use a single raised card for self-contained data records. Use a
-metric-card grid for KPI dashboards.
+Editorial by default: the widget flows like a paragraph, with a kicker
+and a serif title, and structure comes from the classes below rather
+than from boxes. Wrap peers in cards; never the whole widget.
 
-### Metric card
+### Figures
 
-    <div class="metric">
-      <div class="metric-label">Revenue (MRR)</div>
-      <div class="metric-value">$42,118</div>
-      <div class="delta delta-up">
-        <i class="ti ti-trending-up"></i>
-        <span>+12% MoM</span>
+    <p class="kicker">Release readiness · week 42</p>
+    <h2>Where the launch stands</h2>
+    <div class="metric-grid">
+      <div class="metric">
+        <div class="metric-label">Revenue (MRR)</div>
+        <div class="metric-value">$42,118</div>
+        <div class="delta delta-up"><i class="ti ti-trending-up"></i><span>+12% MoM</span></div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Rollout</div>
+        <div class="metric-value">12%</div>
+        <div class="metric-note">canary cohort</div>
       </div>
     </div>
 
-`.delta-up` is green, `.delta-down` is red. The trending-up/-down icon
-inherits the color from its `.delta` parent — same icon, two colors.
+### Ledger table
 
-Grid:
+    <table>
+      <thead><tr><th>Gate</th><th>Status</th><th class="num">Days late</th></tr></thead>
+      <tbody>
+        <tr><td>Performance budget</td><td class="tone-success">passed · p95 under 180 ms</td><td class="num">0</td></tr>
+        <tr><td>Data migration</td><td class="tone-warning">blocked on schema review</td><td class="num">3</td></tr>
+      </tbody>
+    </table>
 
-    <div class="metric-grid">
-      <div class="metric">…</div>
-      <div class="metric">…</div>
+Cells wrap; headers do not. Keep a table to five columns or fewer.
+
+### Share of something
+
+    <div class="bars">
+      <span class="lab">LLM fallback</span><div class="bar tone-warning"><i style="width:87%"></i></div><span class="val">165 s · 87%</span>
+      <span class="lab">everything else</span><div class="bar"><i style="width:13%"></i></div><span class="val">24 s</span>
     </div>
 
-### Card
+The width on the inner `<i>` is the only inline style you need.
 
-    <div class="card">
-      <h3>Section title</h3>
-      <p>Body text…</p>
+### Facts, steps, callouts, tags
+
+    <dl class="kv"><dt>Owner</dt><dd>Priya N.</dd><dt>Target</dt><dd>Thu 30 Oct</dd></dl>
+
+    <ol class="steps">
+      <li><b>Hold the canary at 12%</b> until the dry run passes twice.</li>
+      <li><b>Widen to 50%</b> on Monday if error rates stay flat.</li>
+    </ol>
+
+    <div class="callout tone-warning">Turning the LLM off also skips its completion check.</div>
+
+    <span class="tag tone-success">on track</span> <span class="tag">infra</span>
+
+### Cards and compare
+
+    <div class="card-grid">
+      <div class="card"><h4>Separate payload from instructions</h4><p>Give exact text an ID…</p></div>
+      <div class="card"><h4>Keep the default loop LLM-free</h4><p>Return a specific blocker…</p></div>
     </div>
-
-White-bg raised cards with 1rem 1.25rem padding,
-`var(--border-radius-lg)` corners.
-
-### Compare options
-
-Side-by-side cards with a 2px `border-info` accent on the recommended
-one — the only place 2px borders are allowed (everything else is 0.5px
-hairline):
 
     <div class="compare-grid">
-      <div class="compare-card">…</div>
-      <div class="compare-card recommended">…</div>
+      <div class="compare-card"><h4>Ship Thursday</h4><p>…</p></div>
+      <div class="compare-card recommended"><h4>Ship Monday</h4><p>…</p></div>
     </div>
 
+`.recommended` is the only place a 1px accent ring is allowed;
+everything else is a 0.5px hairline.
 
-## Module: diagram
 
-Reference diagrams use viewBox width 680 (load-bearing — fixed unit
-ratio with the iframe width). Every `<text>` needs a class (`.t`,
-`.ts`, or `.th`). Use only 14px and 12px text. Arrows require
+## Module: flow (HTML flowcharts)
+
+Use `.flow` for any "how does it work" diagram: a pipeline, a decision
+loop, a request path. Nodes size to their words and wrap; the runtime
+draws the arrows. One `.flow-row` is one left-to-right stage, and a
+`.flow-edge` between rows carries the transition and its label.
+
+    <div class="flow">
+      <div class="flow-row">
+        <div class="flow-node"><b>Your goal + current page</b><span>Arc DOM; native apps use AX</span></div>
+        <div class="flow-node"><b>Read and label controls</b><span>[38] button · [43] text field</span></div>
+        <div class="flow-node tone-info"><b>Jev selects an action</b><span>click / type / key / done / help</span></div>
+      </div>
+      <div class="flow-edge">passes the confidence, target and permission checks</div>
+      <div class="flow-row">
+        <div class="flow-node"><b>Execute through code</b><span>Click, fill or press a key</span></div>
+        <div class="flow-node"><b>Read again; compare changes</b></div>
+      </div>
+      <div class="flow-edge">fails a check</div>
+      <div class="flow-row">
+        <div class="flow-node tone-warning"><b>Optional LLM assistance</b><span>Replan, compose text, verify</span></div>
+        <div class="flow-node"><b>Or stop immediately</b></div>
+      </div>
+    </div>
+
+Rules: three or four nodes per row at most; a node is a title line plus
+one short detail line; branches are separate rows with a `.flow-edge`
+each; a node with `data-prompt="…"` opens a follow-up when clicked.
+
+
+## Module: diagram (SVG)
+
+SVG is for geometry: scatter plots, maps, nested shapes, anything a
+flow cannot express. Reference diagrams use viewBox width 680
+(load-bearing — fixed unit ratio with the frame width). Every `<text>`
+needs a class (`.t`, `.ts`, or `.th`). Arrows require
 `marker-end="url(#arr)"`; the shell already injects the `<marker
 id="arr">` def — don't redeclare it.
 
-Flowchart:
+Text is monospace and cannot wrap, so size boxes from their labels:
+width ≥ characters × 7.8 + 24 for `.t`/`.th` (13px), characters × 6.9
++ 24 for `.ts` (11.5px). Keep labels under 20 characters; longer
+copy goes into prose below the drawing. Edge labels sit in the gap
+between boxes. The runtime shrinks and squeezes a label that still
+overruns its box, but plan so it never has to.
 
-    <svg viewBox="0 0 680 240" width="100%">
+    <svg viewBox="0 0 680 160" width="100%">
       <g class="node" data-prompt="Tell me about Step A">
-        <rect class="box" x="20" y="80" width="120" height="60" rx="6"/>
-        <text class="th" x="80" y="115" text-anchor="middle">Step A</text>
+        <rect class="box" x="20" y="50" width="150" height="60" rx="6"/>
+        <text class="th" x="95" y="85" text-anchor="middle">Step A</text>
       </g>
-      <line class="arr" x1="140" y1="110" x2="220" y2="110" marker-end="url(#arr)"/>
+      <line class="arr" x1="170" y1="80" x2="250" y2="80" marker-end="url(#arr)"/>
       <g class="node">
-        <rect class="box" x="220" y="80" width="120" height="60" rx="6"/>
-        <text class="th" x="280" y="115" text-anchor="middle">Step B</text>
+        <rect class="box" x="250" y="50" width="150" height="60" rx="6"/>
+        <text class="th" x="325" y="85" text-anchor="middle">Step B</text>
       </g>
     </svg>
 
@@ -386,12 +533,16 @@ and viewBox safety. Use `prefers-color-scheme` for dark/light variants.
 
 ## When to use which
 
-  "What is X?"               → editorial mockup with one card
-  "How does X work?"         → illustrative diagram
-  "What's the architecture?" → structural flowchart diagram
-  "Show me the numbers"      → metric grid
+  "What is X?"               → editorial: kicker, title, prose, maybe one card
+  "How does X work?"         → .flow
+  "What's the architecture?" → .flow, or SVG when the geometry matters
+  "Show me the numbers"      → .metric-grid
+  "Where did the time go?"   → .bars
+  "What happened, per item?" → table
+  "What are the facts?"      → .kv
+  "What are the steps?"      → .steps
   "I need to gather inputs"  → elicitation form
-  "Compare A vs B"           → compare-options pattern
+  "Compare A vs B"           → .compare-grid
   "Plot this data"           → chart
 
 
@@ -485,24 +636,27 @@ _SPEC_FOOTER = """\
 
 Before your first widget, call:
 
-    read_me(modules=["mockup", "elicitation"])
+    widget_spec(modules=["mockup", "flow"])
 
 Then emit:
 
     show_widget(
-      title="kpi_dash",
-      widget_code="<div class='metric-grid'>…</div>",
+      title="launch_status",
+      widget_code="<p class='kicker'>Release · week 42</p><h2>Where the launch stands</h2><div class='metric-grid'>…</div>",
       loading_messages=["Crunching numbers…", "Stacking deltas…"],
     )
 
-Keep the widget tight (under ~2,000 chars when you can). If the data
-flow needs more than one widget, post several `show_widget` calls in
+Keep the widget tight (under ~2,000 chars when you can) and let it
+flow: no outer card, no fixed widths, no nowrap, flows in HTML. If the
+data needs more than one widget, post several `show_widget` calls in
 sequence — each is independent.
 """
 
 
 _MODULE_SECTIONS: dict[str, str] = {
     "mockup": _SPEC_PATTERNS,
+    "flow": _SPEC_PATTERNS,
+    "table": _SPEC_PATTERNS,
     "interactive": _SPEC_PATTERNS,
     "diagram": _SPEC_PATTERNS,
     "chart": _SPEC_PATTERNS,
@@ -567,6 +721,8 @@ class ReadWidgetSpecTool:
                             "enum": [
                                 "diagram",
                                 "mockup",
+                                "flow",
+                                "table",
                                 "interactive",
                                 "chart",
                                 "art",
@@ -627,10 +783,14 @@ class ShowWidgetTool:
                 "Call `widget_spec` first so your fragment respects the runtime "
                 "contract.\n\n"
                 "`widget_code` is a FRAGMENT — no <!doctype>, <html>, <head>, or "
-                "<body>. The shell wraps it. Hard constraints: no localStorage, no "
+                "<body>. The shell wraps it. The widget floats on the transcript: "
+                "no background, no outer card. Hard constraints: no localStorage, no "
                 "position:fixed, no <script> in elicit forms, no font-size <11px, "
                 "no font-weight other than 400/500, no gradients/shadows/blur except "
-                "documented exceptions, transparent outer background."
+                "documented exceptions, no fixed pixel widths on anything holding "
+                "text, no white-space:nowrap. Flowcharts are HTML (`.flow`), not "
+                "SVG; SVG text is monospace (0.6em per character) and cannot wrap, "
+                "so size every box from its label."
             ),
             parameters={
                 "type": "object",

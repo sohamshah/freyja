@@ -86,6 +86,8 @@ Lines become edges: `.ring-hairline` is a half-pixel edge plus a contact shadow,
 - To attach an alpha to a token that is already a colour, use `color-mix(in srgb, var(--x) 33%, transparent)`. Hex suffixes (`${color}55`) no longer work because the value is a `var()`.
 - Raster painters read `cssTokenRgb('--accent-rgb', fallback)` inside the draw path and re-run it when `useEffectiveTheme()` changes.
 
+Widgets have their own runtime inside a sandboxed frame and their own document, [WIDGETS.md](WIDGETS.md); the frame element's `color-scheme` must match the shell or Chromium paints it opaque.
+
 ## Checking it
 
 `test-theme.mjs` at the repo root exercises the resolution, the toggle, the document attribute and the browser-mode persistence under jsdom. Run it from the repo root with `npx tsx test-theme.mjs` (or `node --experimental-strip-types test-theme.mjs`) after `npm i --no-save jsdom`.
