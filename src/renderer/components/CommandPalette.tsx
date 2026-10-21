@@ -4,13 +4,29 @@ import { getEffectiveTheme, oppositeTheme } from '../lib/theme'
 import { useSchedulerStore } from '../state/scheduler-store'
 import { SLASH_COMMANDS } from '../lib/slash'
 import { scrollToReveal, stepSelection } from '../lib/listNavigation'
-import { JevWidgetRenderer, type JevWidgetSpec } from './JevGenerativeWidgets'
+import { JevWidget } from './JevGenerativeWidgets'
+import { chooseWidget, parseSlots, type PaletteWidgetType } from '../lib/paletteIntent'
+import type { JevPaletteDecision } from '../../shared/events'
 interface PaletteItem {
   id: string
   title: string
   subtitle?: string
   group: 'Command' | 'Skill' | 'Subagent' | 'Session'
   action: () => void
+}
+
+/** Jev answers domain and sub-target independently, so a sub-target is only
+ *  worth showing when it belongs to the domain that won. */
+const SUB_OF: Record<string, RegExp> = {
+  calendar: /^calendar_/,
+  quick_control: /_toggle$|^timer_set$/,
+  model_picker: /^model_/,
+  token_usage: /^usage_/,
+  artifact_explorer: /artifact/,
+  diagnostics: /^log_errors$|^key_status$/,
+}
+function subTargetOf(d: JevPaletteDecision): boolean {
+  return !!SUB_OF[d.domain]?.test(d.subTarget)
 }
 
 /** Breathing room kept between the selected row and the scroll viewport edge. */
@@ -34,10 +50,17 @@ export function CommandPalette() {
 
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(0)
-  const [genUiWidget, setGenUiWidget] = useState<JevWidgetSpec | null>(null)
-  const [jevStatus, setJevStatus] = useState<{ isInferring: boolean; latencyMs?: number; choice?: string }>({ isInferring: false })
-  const [toastMsg, setToastMsg] = useState<string | null>(null)
-  const debounceTimer = useRef<NodeJS.Timeout | null>(null)
+  // ── Jev generative mode ──────────────────────────────────────────
+  // Two clocks. Slots (who / when / which) are parsed synchronously on
+  // every keystroke, so a widget fills in as the sentence grows. Jev only
+  // decides the domain, debounced, and a stale answer never overrides a
+  // newer query. A widget stays mounted while the typing continues inside
+  // its domain; it only yields to the list when Jev is sure the text is a
+  // plain command, or when a palette row matches the text outright.
+  const [decision, setDecision] = useState<JevPaletteDecision | null>(null)
+  const [inferring, setInferring] = useState(false)
+  const jevSeq = useRef(0)
+  const widgetRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   // Keyboard scrolling slides rows underneath a stationary cursor, which fires
@@ -45,54 +68,18 @@ export function CommandPalette() {
   // actually moves again.
   const suppressHover = useRef(false)
 
+  // Widget actions usually close the palette, so their confirmation goes
+  // through the app-level toast rather than one that unmounts with us.
   const showToast = useCallback((msg: string) => {
-    setToastMsg(msg)
-    setTimeout(() => setToastMsg(null), 2500)
+    useHarness.getState().showToast(msg, 'ok')
   }, [])
 
   useEffect(() => {
     inputRef.current?.focus()
   }, [])
 
-  useEffect(() => {
-    if (debounceTimer.current) clearTimeout(debounceTimer.current)
-    const trimmed = query.trim()
-    if (!trimmed || trimmed.startsWith('/') || trimmed.length < 3) {
-      setGenUiWidget(null)
-      setJevStatus({ isInferring: false })
-      return
-    }
-
-    setJevStatus({ isInferring: true })
-    debounceTimer.current = setTimeout(async () => {
-      try {
-        const resp = await fetch('http://127.0.0.1:9500/api/jev/classify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: trimmed })
-        })
-        if (!resp.ok) {
-          setJevStatus({ isInferring: false })
-          return
-        }
-        const data = await resp.json()
-        if (data.widget && data.widget !== 'palette_command' && (data.confidence >= 0.5 || data.readiness >= 1.0)) {
-          setGenUiWidget(data.widget_spec)
-          setJevStatus({ isInferring: false, latencyMs: data.latency_ms, choice: data.widget })
-        } else {
-          setGenUiWidget(null)
-          setJevStatus({ isInferring: false, latencyMs: data.latency_ms, choice: 'standard' })
-        }
-      } catch {
-        setGenUiWidget(null)
-        setJevStatus({ isInferring: false })
-      }
-    }, 150)
-
-    return () => {
-      if (debounceTimer.current) clearTimeout(debounceTimer.current)
-    }
-  }, [query])
+  const trimmedQuery = query.trim()
+  const slots = useMemo(() => parseSlots(trimmedQuery), [trimmedQuery])
   const items: PaletteItem[] = useMemo(() => {
     const out: PaletteItem[] = []
     out.push(
@@ -318,6 +305,67 @@ export function CommandPalette() {
     return out
   }, [filtered])
 
+  // A row whose title starts with the text is what the person is reaching
+  // for ("swarm", "morning", "/goal"): no Jev call, no widget.
+  const rowMatch = useMemo(() => {
+    const q = trimmedQuery.toLowerCase()
+    if (!q || q.length > 28) return false
+    return items.some((i) => i.title.toLowerCase().startsWith(q))
+  }, [items, trimmedQuery])
+
+  useEffect(() => {
+    const q = trimmedQuery
+    if (q.length < 3 || q.startsWith('/') || rowMatch) {
+      jevSeq.current += 1
+      setDecision(null)
+      setInferring(false)
+      return
+    }
+    const api = window.harness as { jevClassify?: (q: string) => Promise<JevPaletteDecision> } | undefined
+    if (!api?.jevClassify) return
+    const seq = ++jevSeq.current
+    setInferring(true)
+    const timer = window.setTimeout(() => {
+      api
+        .jevClassify!(q)
+        .then((d: JevPaletteDecision) => {
+          if (seq !== jevSeq.current) return
+          setDecision(d.ok ? d : null)
+          setInferring(false)
+        })
+        .catch(() => {
+          if (seq !== jevSeq.current) return
+          setInferring(false)
+        })
+    }, 160)
+    return () => window.clearTimeout(timer)
+  }, [trimmedQuery, rowMatch])
+
+  // Hysteresis: while Jev is still deciding on a longer version of the same
+  // sentence, keep the widget it already chose, so the card fills in rather
+  // than flickering back to the list between keystrokes.
+  const lastWidget = useRef<{ type: PaletteWidgetType; query: string }>({ type: null, query: '' })
+  const widgetType: PaletteWidgetType = useMemo(() => {
+    if (trimmedQuery.length < 3 || rowMatch) return null
+    if (decision) {
+      const chosen = chooseWidget(decision.domain, decision.subTarget, decision.confidence, decision.readiness, trimmedQuery, slots)
+      const stale = decision.query !== trimmedQuery
+      if (chosen) return chosen
+      // Jev said "plain command" for an older prefix of what is being typed:
+      // the newer text may still belong to the widget already showing.
+      if (stale && lastWidget.current.type && trimmedQuery.startsWith(lastWidget.current.query)) return lastWidget.current.type
+      if (!stale && decision.confidence >= 0.6) return null
+      return lastWidget.current.type && trimmedQuery.startsWith(lastWidget.current.query) ? lastWidget.current.type : null
+    }
+    if (lastWidget.current.type && trimmedQuery.startsWith(lastWidget.current.query)) return lastWidget.current.type
+    return null
+  }, [decision, trimmedQuery, slots, rowMatch])
+
+  useEffect(() => {
+    if (widgetType) lastWidget.current = { type: widgetType, query: decision?.query ?? trimmedQuery }
+    else if (trimmedQuery.length < 3) lastWidget.current = { type: null, query: '' }
+  }, [widgetType, decision, trimmedQuery])
+
   // A new query starts over at the top. A list that merely grew or shrank
   // underneath us (live sessions, subagents) keeps the selection, clamped.
   useEffect(() => {
@@ -370,16 +418,29 @@ export function CommandPalette() {
     }
     if (e.key === 'Enter') {
       e.preventDefault()
-      filtered[selected]?.action()
+      if (widgetType) {
+        const primary = widgetRef.current?.querySelector<HTMLButtonElement>('[data-primary]:not(:disabled)')
+        primary?.click()
+        return
+      }
+      if (filtered[selected]) filtered[selected].action()
+      else if (trimmedQuery.length >= 3) askFreyja()
     } else if (e.key === 'Escape') {
-      if (genUiWidget) {
-        setGenUiWidget(null)
-        setQuery('')
+      if (widgetType) {
+        // App.tsx closes the palette on a bubbled Esc; inside a widget the
+        // first Esc only steps back to the list.
         e.preventDefault()
+        e.stopPropagation()
+        setQuery('')
         return
       }
       close(false)
     }
+  }
+
+  const askFreyja = () => {
+    setDraft(trimmedQuery)
+    close(false)
   }
 
   const onHoverRow = useCallback((index: number) => {
@@ -414,19 +475,24 @@ export function CommandPalette() {
             placeholder="Search commands, skills, subagents, sessions…"
             className="flex-1 bg-transparent text-[12.5px] text-fg-0 placeholder:text-fg-3 focus:outline-none"
           />
-          <div className="flex items-center gap-1.5 font-mono text-[10px]">
-            {jevStatus.isInferring ? (
-              <span className="kbd text-[9.5px] text-accent animate-pulse">jev…</span>
-            ) : jevStatus.choice && jevStatus.choice !== 'standard' ? (
-              <span className="kbd text-[9.5px] text-fg-2">{jevStatus.choice} · {jevStatus.latencyMs}ms</span>
-            ) : null}
-          </div>
+          {(inferring || decision) && !rowMatch && (
+            <span className={`kbd text-[9.5px] ${inferring ? 'text-accent' : 'text-fg-3'}`}>
+              {inferring ? 'jev…' : `${decision!.domain}${subTargetOf(decision!) ? `/${decision!.subTarget}` : ''} · ${decision!.latencyMs}ms`}
+            </span>
+          )}
           <kbd className="kbd">esc</kbd>
         </div>
 
-        {genUiWidget ? (
-          <div className="relative overflow-hidden">
-            <JevWidgetRenderer spec={genUiWidget} onClose={() => close(false)} onToast={showToast} />
+        {widgetType ? (
+          <div ref={widgetRef} key={widgetType}>
+            <JevWidget
+              type={widgetType}
+              query={trimmedQuery}
+              decision={decision ?? { ok: true, query: trimmedQuery, domain: '', subTarget: 'none', confidence: 0, readiness: 0, latencyMs: 0 }}
+              slots={slots}
+              onClose={() => close(false)}
+              onToast={showToast}
+            />
           </div>
         ) : (
           <div
@@ -434,8 +500,23 @@ export function CommandPalette() {
             onMouseMove={onPointerMove}
             className="relative max-h-[360px] overflow-y-auto p-1"
           >
-            {filtered.length === 0 && (
+            {filtered.length === 0 && trimmedQuery.length < 3 && (
               <div className="py-8 text-center text-[12px] italic text-fg-3">No results</div>
+            )}
+            {filtered.length === 0 && trimmedQuery.length >= 3 && (
+              <button
+                type="button"
+                onClick={askFreyja}
+                className="flex w-full items-start gap-3 rounded-md bg-accent/15 px-3 py-2 text-left text-[12.5px] text-fg-0"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">Ask Freyja: “{trimmedQuery}”</span>
+                  <span className="block truncate text-[11px] text-fg-2">
+                    {inferring ? 'reading the request…' : 'puts it in the composer'}
+                  </span>
+                </span>
+                <kbd className="kbd">↵</kbd>
+              </button>
             )}
             {groups.map(({ group, rows }) => (
               <div key={group}>
@@ -457,30 +538,41 @@ export function CommandPalette() {
           </div>
         )}
 
-        {toastMsg && (
-          <div className="absolute bottom-12 left-1/2 -translate-x-1/2 bg-zinc-900 border border-emerald-500/50 text-emerald-400 px-3.5 py-1.5 rounded-lg text-[11.5px] font-medium shadow-xl flex items-center gap-2 z-50 animate-in fade-in slide-in-from-bottom-2">
-            <span>✓</span>
-            <span>{toastMsg}</span>
-          </div>
-        )}
         <div className="hairline-t flex items-center justify-between bg-black/35 px-4 py-2 text-[10px] text-fg-2">
           <div className="flex items-center gap-2">
-            <kbd className="kbd">↑</kbd>
-            <kbd className="kbd">↓</kbd>
-            <span>navigate</span>
-            <kbd className="kbd ml-2">⇞</kbd>
-            <kbd className="kbd">⇟</kbd>
-            <span>page</span>
-            <kbd className="kbd ml-2">↵</kbd>
-            <span>select</span>
+            {widgetType ? (
+              <>
+                <kbd className="kbd">↵</kbd>
+                <span>primary action</span>
+                <kbd className="kbd ml-2">esc</kbd>
+                <span>back to list</span>
+              </>
+            ) : (
+              <>
+                <kbd className="kbd">↑</kbd>
+                <kbd className="kbd">↓</kbd>
+                <span>navigate</span>
+                <kbd className="kbd ml-2">⇞</kbd>
+                <kbd className="kbd">⇟</kbd>
+                <span>page</span>
+                <kbd className="kbd ml-2">↵</kbd>
+                <span>select</span>
+              </>
+            )}
           </div>
           <span>
-            {filtered.length > 0 && (
-              <span className="mr-2 text-fg-3">
-                {selected + 1}/{filtered.length}
-              </span>
+            {widgetType ? (
+              <span className="text-fg-3">{widgetType.replace('_', ' ')}</span>
+            ) : (
+              <>
+                {filtered.length > 0 && (
+                  <span className="mr-2 text-fg-3">
+                    {selected + 1}/{filtered.length}
+                  </span>
+                )}
+                {filtered.length} results
+              </>
             )}
-            {filtered.length} results
           </span>
         </div>
       </div>

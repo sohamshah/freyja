@@ -9,7 +9,7 @@ import { scrollToReveal, stepSelection } from '../lib/listNavigation'
 // AVAILABLE_MODELS hasn't loaded yet (first paint, gateway disconnect,
 // etc.). Same shape as bridge/freyja_bridge.py:AVAILABLE_MODELS — see
 // docs/ADDING-A-MODEL.md for the full per-model checklist.
-const FALLBACK_MODELS: ModelChoice[] = [
+export const FALLBACK_MODELS: ModelChoice[] = [
   // Anthropic
   { id: 'claude-fable-5-1', family: 'anthropic', label: 'Claude Fable 5.1', tier: 'max', contextWindow: 1_000_000, thinking: true, reasoningMode: 'required', reasoningLevels: ['low', 'medium', 'high', 'xhigh', 'max'], reasoningDefault: 'high', envVar: 'ANTHROPIC_API_KEY', description: 'Newest Mythos-class Claude (Sep 2026). Most capable model for demanding reasoning and long-horizon agentic work. Adaptive thinking (always on), 128k output. $10/$50 per MTok, cache reads 4x cheaper than Fable 5.' },
   { id: 'claude-fable-5', family: 'anthropic', label: 'Claude Fable 5', tier: 'max', contextWindow: 1_000_000, thinking: true, reasoningMode: 'required', reasoningLevels: ['low', 'medium', 'high', 'xhigh', 'max'], reasoningDefault: 'high', envVar: 'ANTHROPIC_API_KEY', description: 'Mythos-class model made safe for general use. Most capable widely-released Claude. Adaptive thinking (always on), 128k output. Premium $10/$50 per MTok.' },

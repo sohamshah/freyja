@@ -1698,6 +1698,27 @@ export type BridgeEvent =
       } | null
     }
 
+// --- ⌘K palette intent (Jev) ---
+
+/** One Jev pass over a palette query. `domain` picks the widget family,
+ *  `subTarget` the granular view inside it, `readiness` (0..2) how complete
+ *  the instruction is. Slot values (who, when, which model) are parsed in
+ *  the renderer, not here. */
+export interface JevPaletteDecision {
+  ok: boolean
+  query: string
+  domain: string
+  subTarget: string
+  /** Confidence of the domain choice, 0..1. */
+  confidence: number
+  subTargetConfidence?: number
+  /** 0 fragment · 1 clear but missing a detail · 2 complete. */
+  readiness: number
+  probabilities?: Record<string, number>
+  latencyMs: number
+  error?: string
+}
+
 // --- Channel names ---
 
 export const IPC = {
@@ -1763,6 +1784,8 @@ export const IPC = {
   llmKeysProbe: 'llm:keys:probe',
   // Voice: main-process ⌥Space globalShortcut → renderer toggleVoice().
   voiceToggle: 'voice:toggle',
+  /** ⌘K palette: classify a natural-language query through Jev (System One). */
+  jevClassify: 'jev:classify',
 } as const
 
 // ── Gateway IPC result types ────────────────────────────────────

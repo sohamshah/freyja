@@ -297,6 +297,10 @@ const api = {
   async fsCompletePath(prefix: string): Promise<import('../shared/events').PathCompletionResult> {
     return ipcRenderer.invoke(IPC.fsCompletePath, prefix)
   },
+  // ── ⌘K palette intent (Jev) ───────────────────────────────
+  async jevClassify(query: string): Promise<import('../shared/events').JevPaletteDecision> {
+    return ipcRenderer.invoke(IPC.jevClassify, query)
+  },
   // ── Voice (Galdr) ─────────────────────────────────────────
   // Main-process ⌥Space globalShortcut → renderer. Voice commands
   // themselves flow through the generic sendCommand path; this is the

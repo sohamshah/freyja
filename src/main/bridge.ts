@@ -13,7 +13,7 @@ import { DemoBridge } from './demo.js'
  * Parse a .env file into a plain object. Supports KEY=value and KEY="value"
  * formats, ignores comments and blank lines. Values are trimmed.
  */
-function readDotEnv(filePath: string): Record<string, string> {
+export function readDotEnv(filePath: string): Record<string, string> {
   const out: Record<string, string> = {}
   try {
     const text = fs.readFileSync(filePath, 'utf8')

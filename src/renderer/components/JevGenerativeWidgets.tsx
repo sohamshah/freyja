@@ -1,1264 +1,1202 @@
-import React, { useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { useHarness } from '../state/store'
-import { getEffectiveTheme, oppositeTheme } from '../lib/theme'
+import { useVoiceStore } from '../state/voice-store'
+import { useSchedulerStore } from '../state/scheduler-store'
+import { FALLBACK_MODELS } from './ModelPicker'
+import type { JevPaletteDecision, ArtifactIndexRow } from '../../shared/events'
+import {
+  type PaletteSlots,
+  type PaletteWidgetType,
+  requiredSlots,
+  slotFilled,
+  TOOL_NAMES,
+} from '../lib/paletteIntent'
 
-export interface JevWidgetSpec {
-  type: string
-  version: string
-  meta: {
-    title: string
-    badge: string
-    ready: boolean
-  }
-  data: any
-}
-
-export function JevWidgetRenderer({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
+/**
+ * Generative widgets for the ⌘K palette.
+ *
+ * Every widget receives the same three things: the raw query, Jev's
+ * decision, and the slots parsed from the query. A widget stays mounted
+ * while the person keeps typing inside its domain, so it fills in one
+ * field at a time instead of re-appearing. Empty slots render as quiet
+ * placeholders; the primary action turns on once the required ones are in.
+ */
+export interface WidgetProps {
+  type: Exclude<PaletteWidgetType, null>
+  query: string
+  decision: JevPaletteDecision
+  slots: PaletteSlots
   onClose: () => void
   onToast: (msg: string) => void
-}) {
-  switch (spec.type) {
-    case 'CalendarAgendaWidget':
-      return <CalendarAgendaView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'CalendarWidget':
-      return <CalendarView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'ToolDetailWidget':
-      return <ToolDetailView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'DiagnosticLogsWidget':
-      return <DiagnosticLogsView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'SwarmStatusWidget':
-      return <SwarmStatusView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'AppearanceControlWidget':
-      return <AppearanceControlView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'MicControlWidget':
-      return <MicControlView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'MorningBriefingWidget':
-      return <MorningBriefingView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'TokenUsageWidget':
-      return <TokenUsageView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'ModelPickerWidget':
-      return <ModelPickerView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'ArtifactExplorerWidget':
-      return <ArtifactExplorerView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'VoiceLauncherWidget':
-      return <VoiceLauncherView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'MemoryWidget':
-      return <MemoryView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'FinanceWidget':
-      return <FinanceView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'AgentTaskWidget':
-      return <AgentTaskView spec={spec} onClose={onClose} onToast={onToast} />
-    case 'QuickControlWidget':
-      return <QuickControlView spec={spec} onClose={onClose} onToast={onToast} />
-    default:
-      return null
+}
+
+export function JevWidget(p: WidgetProps) {
+  switch (p.type) {
+    case 'calendar_create':
+      return <CalendarCreate {...p} />
+    case 'calendar_view':
+      return <CalendarView {...p} />
+    case 'memory':
+      return <MemoryRecall {...p} />
+    case 'agent_task':
+      return <AgentTask {...p} />
+    case 'model_picker':
+      return <ModelPicker {...p} />
+    case 'token_usage':
+      return <TokenUsage {...p} />
+    case 'artifact_explorer':
+      return <ArtifactExplorer {...p} />
+    case 'briefing':
+      return <Briefing {...p} />
+    case 'swarm':
+      return <Swarm {...p} />
+    case 'tool_inspect':
+      return <ToolInspect {...p} />
+    case 'diagnostics':
+      return <Diagnostics {...p} />
+    case 'voice':
+      return <Voice {...p} />
+    case 'appearance':
+      return <Appearance {...p} />
+    case 'mic':
+      return <Mic {...p} />
+    case 'quick_controls':
+      return <QuickControls {...p} />
+    case 'finance':
+      return <Finance {...p} />
   }
 }
 
-/** 1. Tool Inspector / Details Widget */
-function ToolDetailView({
-  spec,
-  onClose,
-  onToast,
+// ─── shared chrome ────────────────────────────────────────────────────────
+
+function Frame({
+  kicker,
+  title,
+  badge,
+  children,
+  footer,
 }: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
+  kicker: string
+  title: React.ReactNode
+  badge?: React.ReactNode
+  children: React.ReactNode
+  footer?: React.ReactNode
 }) {
-  const d = spec.data
   return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">TOOL</span>
-          <span className="text-fg-1">·</span>
-          <span>{d.name}</span>
+    <div className="animate-fade-in space-y-3 p-3.5 font-mono">
+      <div className="hairline-b flex items-center justify-between pb-2">
+        <div className="flex min-w-0 items-center gap-2 text-[12px] text-fg-0">
+          <span className="shrink-0 text-[9.5px] uppercase tracking-[0.16em] text-fg-3">{kicker}</span>
+          <span className="text-fg-3">·</span>
+          <span className="truncate">{title}</span>
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className="kbd text-[9.5px]">risk: {d.risk || 'LOW'}</span>
-          <span className="kbd text-[9.5px]">{d.category}</span>
-        </div>
+        {badge && <span className="kbd shrink-0 text-[9.5px]">{badge}</span>}
       </div>
-
-      <div className="rounded-lg border border-ink/[0.08] bg-ink/[0.025] p-3 space-y-2">
-        <div className="text-[12px] text-fg-1 font-sans leading-relaxed">
-          {d.description}
-        </div>
-        {d.example && (
-          <div className="bg-ink/[0.03] p-2 rounded text-[10.5px] text-fg-2 font-mono border-l-2 border-accent">
-            <code>{d.example}</code>
-          </div>
-        )}
-      </div>
-
-      <div className="space-y-1.5">
-        <div className="text-[9.5px] uppercase tracking-[0.16em] text-fg-3">PARAMETER SCHEMA</div>
-        <div className="border border-ink/[0.08] rounded-lg overflow-hidden bg-ink/[0.02] max-h-[160px] overflow-y-auto">
-          <table className="w-full text-[11px] border-collapse">
-            <thead>
-              <tr className="border-b border-ink/[0.08] bg-ink/[0.03] text-fg-3 text-[10px] text-left">
-                <th className="py-1.5 px-2.5 font-medium">NAME</th>
-                <th className="py-1.5 px-2.5 font-medium">TYPE</th>
-                <th className="py-1.5 px-2.5 font-medium">REQ</th>
-                <th className="py-1.5 px-2.5 font-medium">DESCRIPTION</th>
-              </tr>
-            </thead>
-            <tbody>
-              {d.parameters?.map((p: any) => (
-                <tr key={p.name} className="border-b border-ink/[0.04] last:border-none">
-                  <td className="py-1.5 px-2.5 font-medium text-fg-0">{p.name}</td>
-                  <td className="py-1.5 px-2.5 text-fg-3 text-[10px]">{p.type}</td>
-                  <td className="py-1.5 px-2.5 text-[10px]">{p.required ? <span className="text-accent">yes</span> : 'no'}</td>
-                  <td className="py-1.5 px-2.5 text-fg-2 font-sans text-[11px]">{p.description}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={() => {
-            void navigator.clipboard.writeText(d.name)
-            onToast(`Copied tool name "${d.name}" to clipboard`)
-          }}
-          className="px-2.5 py-1 rounded text-[11px] bg-ink/[0.04] hover:bg-ink/[0.08] text-fg-2 hover:text-fg-0 border border-ink/[0.08] transition-colors"
-        >
-          Copy Tool Name
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            onToast(`Navigating to tool documentation for ${d.name}`)
-            onClose()
-          }}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 transition-all shadow-sm"
-        >
-          View Full Docs
-        </button>
-      </div>
+      {children}
+      {footer && <div className="hairline-t flex items-center justify-end gap-2 pt-2">{footer}</div>}
     </div>
   )
 }
 
-/** 2. Diagnostic Logs / System Health Widget */
-function DiagnosticLogsView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-  const [filter, setFilter] = useState<'ALL' | 'ERROR' | 'WARN' | 'INFO'>('ALL')
+function Well({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return <div className={`rounded-lg bg-black/[0.18] p-3 ring-hairline ${className}`}>{children}</div>
+}
 
-  const filteredLogs = (d.logs || []).filter((l: any) => {
-    if (filter === 'ALL') return true
-    return l.level === filter
-  })
+function Label({ children }: { children: React.ReactNode }) {
+  return <div className="text-[9.5px] uppercase tracking-[0.16em] text-fg-3">{children}</div>
+}
+
+function Btn({
+  primary,
+  disabled,
+  onClick,
+  children,
+}: {
+  primary?: boolean
+  disabled?: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      data-primary={primary ? '' : undefined}
+      className={
+        primary
+          ? 'rounded-md bg-accent/20 px-3 py-1 text-[11px] text-fg-0 ring-1 ring-accent/40 transition-colors hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40'
+          : 'rounded-md px-2.5 py-1 text-[11px] text-fg-2 ring-hairline transition-colors hover:bg-white/[0.05] hover:text-fg-0'
+      }
+    >
+      {children}
+    </button>
+  )
+}
+
+/** A slot value, or a placeholder the next words will fill. */
+function Slot({ label, value, hint }: { label: string; value?: React.ReactNode; hint: string }) {
+  const filled = value !== undefined && value !== null && value !== ''
+  return (
+    <div className="flex items-baseline gap-2 text-[11.5px]">
+      <span className="w-16 shrink-0 text-[10px] uppercase tracking-wider text-fg-3">{label}</span>
+      {filled ? (
+        <span className="text-fg-0">{value}</span>
+      ) : (
+        <span className="text-fg-3">
+          <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full ring-1 ring-fg-3/60 align-middle" />
+          {hint}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function Progress({ filled, total }: { filled: number; total: number }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      {Array.from({ length: total }).map((_, i) => (
+        <span key={i} className={`h-1 w-4 rounded-full ${i < filled ? 'bg-accent' : 'bg-fg-4'}`} />
+      ))}
+      <span className="ml-1 text-[9.5px] text-fg-3">
+        {filled}/{total}
+      </span>
+    </div>
+  )
+}
+
+function useRequired(type: PaletteWidgetType, slots: PaletteSlots) {
+  const req = requiredSlots(type)
+  const filled = req.filter((k) => slotFilled(slots, k)).length
+  return { req, filled, total: req.length, ready: filled === req.length }
+}
+
+function timeRange(t: PaletteSlots['time'], dur: number) {
+  if (!t) return undefined
+  const end = new Date(2000, 0, 1, t.hour, t.minute + dur)
+  const h12 = end.getHours() % 12 === 0 ? 12 : end.getHours() % 12
+  const endLabel = `${h12}:${String(end.getMinutes()).padStart(2, '0')} ${end.getHours() >= 12 ? 'PM' : 'AM'}`
+  return `${t.label} – ${endLabel}`
+}
+
+// ─── calendar ─────────────────────────────────────────────────────────────
+
+function CalendarCreate({ type, slots, onClose, onToast }: WidgetProps) {
+  const sendMessage = useHarness((s) => s.sendMessage)
+  const { filled, total, ready } = useRequired(type, slots)
+  const dur = slots.durationMin ?? 30
+  const who = slots.attendees.join(', ')
+  const title = slots.topic ? slots.topic : who ? `Sync with ${who}` : undefined
+
+  const instruction = () => {
+    const parts = ['Create a Google Calendar event']
+    if (title) parts.push(`titled "${title}"`)
+    if (who) parts.push(`with ${who}`)
+    if (slots.day) parts.push(`on ${slots.day.weekday} ${slots.day.iso}`)
+    if (slots.time) parts.push(`at ${slots.time.label}`)
+    parts.push(`for ${dur} minutes`)
+    return parts.join(' ') + '. Send the invite and confirm the event link.'
+  }
 
   return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">DIAGNOSTICS</span>
-          <span className="text-fg-1">·</span>
-          <span>System & Subsystem Logs</span>
+    <Frame
+      kicker="Calendar"
+      title={title ?? 'New event'}
+      badge={<Progress filled={filled} total={total} />}
+      footer={
+        <>
+          <Btn
+            onClick={() => {
+              useHarness.getState().setInputDraft(instruction())
+              onClose()
+            }}
+          >
+            Edit as prompt
+          </Btn>
+          <Btn
+            primary
+            disabled={!ready}
+            onClick={() => {
+              void sendMessage(instruction())
+              onToast(`Creating event with ${who} · ${slots.day?.label} ${slots.time?.label}`)
+              onClose()
+            }}
+          >
+            Create event
+          </Btn>
+        </>
+      }
+    >
+      <Well className="space-y-1.5">
+        <Slot label="With" value={who || undefined} hint="who? add “with nari”" />
+        <Slot
+          label="When"
+          value={slots.day ? `${slots.day.label} · ${slots.day.weekday} ${slots.day.iso}` : undefined}
+          hint="which day? “tomorrow”, “next tuesday”"
+        />
+        <Slot label="Time" value={timeRange(slots.time, dur)} hint="what time? “at 1pm”" />
+        <Slot label="Length" value={`${dur} min${slots.durationMin ? '' : ' (default)'}`} hint="" />
+        {slots.topic && <Slot label="About" value={slots.topic} hint="" />}
+      </Well>
+      {slots.day && (
+        <div className="space-y-1.5">
+          <Label>{slots.day.weekday} · pick a slot</Label>
+          <div className="grid grid-cols-8 gap-1">
+            {[9, 10, 11, 12, 13, 14, 15, 16].map((h) => {
+              const active = slots.time?.hour === h
+              const label = `${h % 12 === 0 ? 12 : h % 12}${h >= 12 ? 'p' : 'a'}`
+              return (
+                <span
+                  key={h}
+                  className={`rounded py-1 text-center text-[10.5px] ${
+                    active ? 'bg-accent/20 text-fg-0 ring-1 ring-accent/40' : 'text-fg-2 ring-hairline'
+                  }`}
+                >
+                  {label}
+                </span>
+              )
+            })}
+          </div>
+          <div className="text-[10px] text-fg-3">Free/busy comes from Google Calendar when the event is created.</div>
         </div>
-        <div className="flex items-center gap-1">
-          {(['ALL', 'ERROR', 'WARN', 'INFO'] as const).map((lvl) => (
+      )}
+    </Frame>
+  )
+}
+
+function CalendarView({ slots, onClose, onToast }: WidgetProps) {
+  const sendMessage = useHarness((s) => s.sendMessage)
+  const when = slots.range === 'week' ? 'this week' : slots.range === 'next_week' ? 'next week' : slots.day ? `${slots.day.label} (${slots.day.weekday} ${slots.day.iso})` : 'today'
+  const who = slots.attendees[0] ?? slots.person
+  const instruction = `List my Google Calendar events for ${when}${who ? ` that involve ${who}` : ''}${
+    slots.time ? `, and say whether I am free around ${slots.time.label}` : ''
+  }. Show time, title, attendees, and the meeting link.`
+
+  return (
+    <Frame
+      kicker="Calendar"
+      title={`Agenda · ${when}`}
+      badge="Google Calendar"
+      footer={
+        <>
+          <Btn
+            onClick={() => {
+              useHarness.getState().setInputDraft(instruction)
+              onClose()
+            }}
+          >
+            Edit as prompt
+          </Btn>
+          <Btn
+            primary
+            onClick={() => {
+              void sendMessage(instruction)
+              onToast(`Fetching agenda for ${when}`)
+              onClose()
+            }}
+          >
+            Fetch agenda
+          </Btn>
+        </>
+      }
+    >
+      <Well className="space-y-1.5">
+        <Slot label="Day" value={when} hint="" />
+        <Slot label="With" value={who} hint="anyone in particular? “with nari”" />
+        <Slot label="Around" value={slots.time?.label} hint="a time to check? “at 3pm”" />
+      </Well>
+      <div className="text-[10.5px] text-fg-3">Runs through the Google Calendar MCP in this session; the agenda lands in the conversation.</div>
+    </Frame>
+  )
+}
+
+// ─── memory ───────────────────────────────────────────────────────────────
+
+function MemoryRecall({ query, slots, onClose, onToast }: WidgetProps) {
+  const sendMessage = useHarness((s) => s.sendMessage)
+  const sessions = useHarness((s) => s.sessions)
+  const needle = (slots.keyword ?? slots.topic ?? slots.person ?? '').toLowerCase()
+  const related = useMemo(() => {
+    if (!needle) return []
+    return sessions.filter((s) => s.title.toLowerCase().includes(needle)).slice(0, 4)
+  }, [sessions, needle])
+  const instruction = `Recall from memory and past sessions: ${query}. Quote the exact lines, name the session or source, and give the date.`
+
+  return (
+    <Frame
+      kicker="Memory"
+      title={slots.person ? `What ${slots.person} said` : 'Recall'}
+      badge={related.length ? `${related.length} related sessions` : 'memory + transcripts'}
+      footer={
+        <>
+          <Btn
+            onClick={() => {
+              useHarness.getState().setInputDraft(instruction)
+              onClose()
+            }}
+          >
+            Edit as prompt
+          </Btn>
+          <Btn
+            primary
+            onClick={() => {
+              void sendMessage(instruction)
+              onToast('Recalling…')
+              onClose()
+            }}
+          >
+            Recall
+          </Btn>
+        </>
+      }
+    >
+      <Well className="space-y-1.5">
+        <Slot label="Who" value={slots.person} hint="a person? “what did nari say”" />
+        <Slot label="About" value={slots.topic ?? slots.keyword} hint="a topic? “about lisbon”" />
+        <Slot label="When" value={slots.periodLabel ?? slots.day?.label} hint="a timeframe? “last week”" />
+      </Well>
+      {related.length > 0 && (
+        <div className="space-y-1">
+          <Label>Sessions mentioning “{needle}”</Label>
+          {related.map((s) => (
             <button
-              key={lvl}
-              onClick={() => setFilter(lvl)}
-              className={`px-1.5 py-0.5 rounded text-[9px] font-mono transition-colors ${
-                filter === lvl
-                  ? 'bg-accent/25 text-fg-0 border border-accent/40'
-                  : 'text-fg-3 hover:text-fg-1'
-              }`}
+              key={s.id}
+              type="button"
+              onClick={() => {
+                useHarness.getState().openSessionPane(s.id)
+                onClose()
+              }}
+              className="flex w-full items-center justify-between rounded px-2 py-1 text-left text-[11px] text-fg-1 ring-hairline hover:bg-white/[0.04] hover:text-fg-0"
             >
-              {lvl}
+              <span className="truncate">{s.title}</span>
+              <span className="ml-2 shrink-0 text-[9.5px] text-fg-3">{new Date(s.updatedAt).toLocaleDateString()}</span>
             </button>
           ))}
         </div>
-      </div>
-
-      <div className="rounded-lg border border-ink/[0.08] bg-ink/[0.025] p-2 space-y-1 font-mono text-[10.5px] max-h-[220px] overflow-y-auto">
-        {filteredLogs.map((l: any, idx: number) => {
-          const lvlColor =
-            l.level === 'ERROR' ? 'text-red-400' : l.level === 'WARN' ? 'text-amber-400' : 'text-fg-3'
-          return (
-            <div key={idx} className="flex items-start gap-2 py-0.5 border-b border-ink/[0.03] last:border-none">
-              <span className="text-fg-4 select-none">{l.time}</span>
-              <span className={`text-[9px] px-1 rounded bg-ink/[0.04] ${lvlColor}`}>{l.subsystem}</span>
-              <span className="text-fg-1 flex-1 break-words">{l.message}</span>
-            </div>
-          )
-        })}
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={() => {
-            const raw = filteredLogs.map((l: any) => `[${l.time}] [${l.subsystem}] ${l.message}`).join('\n')
-            void navigator.clipboard.writeText(raw)
-            onToast('Diagnostic log stream copied to clipboard')
-          }}
-          className="px-2.5 py-1 rounded text-[11px] bg-ink/[0.04] hover:bg-ink/[0.08] text-fg-2 hover:text-fg-0 border border-ink/[0.08] transition-colors"
-        >
-          Copy Logs
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            onToast('Opening full session action ledger')
-            useHarness.getState().toggleMissionDashboard(true, 'logs')
-            onClose()
-          }}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 transition-all shadow-sm"
-        >
-          Open Log Viewer
-        </button>
-      </div>
-    </div>
+      )}
+    </Frame>
   )
 }
 
-/** 3. Swarm Status / Multi-agent Activity Widget */
-function SwarmStatusView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-  return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">SWARM</span>
-          <span className="text-fg-1">·</span>
-          <span>Active Worker Lanes</span>
-        </div>
-        <span className="kbd text-[9.5px]">{d.running_count || 0} active workers</span>
-      </div>
+// ─── agent task ───────────────────────────────────────────────────────────
 
-      <div className="space-y-1.5">
-        {d.lanes?.map((w: any) => (
-          <div key={w.label} className="p-2.5 rounded-lg border border-ink/[0.08] bg-ink/[0.025] space-y-1">
-            <div className="flex items-center justify-between text-[11.5px]">
-              <div className="flex items-center gap-1.5">
-                <span className={`w-1.5 h-1.5 rounded-full ${w.status === 'running' ? 'bg-accent animate-pulse' : 'bg-fg-3'}`} />
-                <span className="font-medium text-fg-0">{w.label}</span>
-              </div>
-              <span className="kbd text-[9px]">profile: {w.profile}</span>
-            </div>
-            <div className="text-[10.5px] text-fg-2 flex justify-between">
-              <span>Tool executing: <code className="text-fg-1">{w.current_tool}</code></span>
-              <span>Elapsed: {w.elapsed}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={() => {
-            onToast('Opening Swarm Dashboard (⌘O)')
-            useHarness.getState().toggleMissionDashboard(true, 'swarm')
-            onClose()
-          }}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 transition-all shadow-sm"
-        >
-          Open Swarm Dashboard (⌘O)
-        </button>
-      </div>
-    </div>
-  )
+const PROFILE_MODEL: Record<string, string> = {
+  review: 'gpt-5.5 (independent model)',
+  explore: 'claude-sonnet-5-5',
+  test: 'parent model',
+  code: 'parent model · high thinking',
+  verify: 'gpt-5.5 (independent model)',
 }
 
-/** 4. Google Calendar Agenda View (MCP style) */
-function CalendarAgendaView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-  return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">CALENDAR</span>
-          <span className="text-fg-1">·</span>
-          <span>{d.date_full || spec.meta.title}</span>
-        </div>
-        <span className="kbd text-[9.5px]">{spec.meta.badge}</span>
-      </div>
-
-      <div className="text-[11px] text-fg-2 pb-0.5">{d.summary}</div>
-
-      <div className="space-y-2">
-        {d.events?.map((ev: any, idx: number) => (
-          <div key={idx} className="rounded-lg border border-ink/[0.08] bg-ink/[0.025] p-2.5 space-y-1">
-            <div className="flex items-center justify-between text-[11px]">
-              <span className="font-semibold text-fg-0">{ev.time}</span>
-              <span className="text-[10px] text-fg-3">{ev.link}</span>
-            </div>
-            <div className="text-[12.5px] text-fg-1 font-medium font-sans">{ev.title}</div>
-            <div className="text-[10.5px] text-fg-2">
-              With: {ev.attendees?.join(', ')}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={() => {
-            onToast('Opening Google Calendar')
-            onClose()
-          }}
-          className="px-2.5 py-1 rounded text-[11px] bg-ink/[0.04] hover:bg-ink/[0.08] text-fg-2 hover:text-fg-0 border border-ink/[0.08] transition-colors"
-        >
-          Open Google Calendar
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            onToast('Joining Google Meet: 09:30 Autopilot Architecture Sync')
-            onClose()
-          }}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 flex items-center gap-1.5 transition-all shadow-sm"
-        >
-          <svg className="w-3 h-3 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polygon points="5 3 19 12 5 21 5 3"/>
-          </svg>
-          Join Next Meeting
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/** 5. Focused Appearance Control */
-function AppearanceControlView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-  const setAppearance = useHarness((s) => s.setAppearanceTheme)
-  const [selectedTheme, setSelectedTheme] = useState(d.active_theme || 'dark')
-
-  const handleApply = (themeId: string) => {
-    setSelectedTheme(themeId)
-    void setAppearance(themeId === 'system' ? 'system' : themeId === 'dark' ? 'dark' : 'light')
-    onToast(`Appearance switched to ${themeId}`)
-    setTimeout(onClose, 600)
-  }
+function AgentTask({ type, query, slots, onClose, onToast }: WidgetProps) {
+  const sendMessage = useHarness((s) => s.sendMessage)
+  const { filled, total, ready } = useRequired(type, slots)
+  const profile = slots.profile
+  const target = slots.prNumber ? `PR #${slots.prNumber}${slots.repo ? ` on ${slots.repo}` : ''}` : slots.repo
+  const instruction = `Spawn a ${profile ?? 'general'} sub-agent for: ${query}.${
+    slots.focus ? ` Focus on ${slots.focus}.` : ''
+  } Report back with findings, file:line references, and a short summary.`
 
   return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">APPEARANCE</span>
-          <span className="text-fg-1">·</span>
-          <span>Theme Selector</span>
-        </div>
-        <span className="kbd text-[9.5px]">{spec.meta.badge}</span>
-      </div>
-
-      <div className="space-y-1.5">
-        {d.options?.map((opt: any) => {
-          const isSelected = opt.id === selectedTheme
-          return (
-            <div
-              key={opt.id}
-              onClick={() => handleApply(opt.id)}
-              className={`p-2.5 rounded-lg border cursor-pointer transition-all flex items-center justify-between ${
-                isSelected
-                  ? 'bg-accent/15 border-accent/40 text-fg-0'
-                  : 'bg-ink/[0.025] border-ink/[0.08] text-fg-1 hover:bg-ink/[0.05]'
-              }`}
-            >
-              <div>
-                <div className="text-[12px] font-medium text-fg-0">{opt.label}</div>
-                <div className="text-[10.5px] text-fg-3">{opt.description}</div>
-              </div>
-              {isSelected ? (
-                <span className="text-accent text-[12px]">● Active</span>
-              ) : (
-                <span className="text-[10.5px] text-fg-3">Select</span>
-              )}
-            </div>
-          )
-        })}
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={() => handleApply(selectedTheme)}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 transition-all shadow-sm"
-        >
-          Done
-        </button>
-      </div>
-    </div>
+    <Frame
+      kicker="Delegate"
+      title={target ?? 'Sub-agent task'}
+      badge={<Progress filled={filled} total={total} />}
+      footer={
+        <>
+          <Btn
+            onClick={() => {
+              useHarness.getState().setInputDraft(instruction)
+              onClose()
+            }}
+          >
+            Edit as prompt
+          </Btn>
+          <Btn
+            primary
+            disabled={!ready}
+            onClick={() => {
+              void sendMessage(instruction)
+              onToast(`Spawning ${profile} sub-agent`)
+              onClose()
+            }}
+          >
+            Spawn {profile ?? 'sub-agent'}
+          </Btn>
+        </>
+      }
+    >
+      <Well className="space-y-1.5">
+        <Slot label="Profile" value={profile} hint="what kind? “review”, “explore”, “test”, “implement”" />
+        <Slot label="Model" value={profile ? PROFILE_MODEL[profile] : undefined} hint="" />
+        <Slot label="Target" value={target} hint="which PR or repo? “pr 1321 on agent-harness”" />
+        <Slot label="Focus" value={slots.focus} hint="a lens? “for security”, “for performance”" />
+      </Well>
+      <div className="text-[10.5px] text-fg-3">Runs in the background; a memo lands in this conversation when it finishes.</div>
+    </Frame>
   )
 }
 
-/** 6. Focused Microphone Control */
-function MicControlView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-  const [muted, setMuted] = useState(d.muted)
+// ─── models ───────────────────────────────────────────────────────────────
 
-  const toggle = () => {
-    const next = !muted
-    setMuted(next)
-    onToast(`Microphone ${next ? 'Muted' : 'Unmuted'}`)
-  }
+function ModelPicker({ slots, onClose, onToast }: WidgetProps) {
+  const reported = useHarness((s) => s.availableModels)
+  const models = reported.length > 0 ? reported : FALLBACK_MODELS
+  const current = useHarness((s) => s.model)
+  const reasoningLevel = useHarness((s) => s.reasoningLevel)
+  const setModel = useHarness((s) => s.setModel)
+  const q = slots.modelQuery?.toLowerCase().replace(/[\s-]/g, '')
+  const ranked = useMemo(() => {
+    const score = (m: { id: string; label: string; family: string }) => {
+      if (!q) return 0
+      const hay = `${m.id} ${m.label} ${m.family}`.toLowerCase().replace(/[\s-]/g, '')
+      return hay.includes(q) ? 2 : 0
+    }
+    return [...models].sort((a, b) => score(b) - score(a) || (a.id === current ? -1 : b.id === current ? 1 : 0))
+  }, [models, q, current])
+  const best = q ? ranked.find((m) => `${m.id} ${m.label} ${m.family}`.toLowerCase().replace(/[\s-]/g, '').includes(q)) : undefined
+  const level = slots.reasoning
 
-  return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">AUDIO</span>
-          <span className="text-fg-1">·</span>
-          <span>Input Control</span>
-        </div>
-        <span className="kbd text-[9.5px]">{spec.meta.badge}</span>
-      </div>
-
-      <div className="rounded-lg border border-ink/[0.08] bg-ink/[0.025] p-3 flex items-center justify-between">
-        <div>
-          <div className="text-[12.5px] font-medium text-fg-0">{d.device}</div>
-          <div className="text-[10.5px] text-fg-3">Status: {muted ? 'Muted' : 'Active (Input level: 42%)'}</div>
-        </div>
-        <button
-          type="button"
-          onClick={toggle}
-          className={`px-3 py-1.5 rounded text-[11px] font-medium border transition-colors ${
-            muted ? 'bg-ink/[0.05] border-ink/[0.1] text-fg-3' : 'bg-accent/20 border-accent/40 text-fg-0'
-          }`}
-        >
-          {muted ? 'Unmute Mic' : 'Mute Mic'}
-        </button>
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={onClose}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 transition-all shadow-sm"
-        >
-          Done
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/** 7. Morning Room / Daily Briefing Widget */
-function MorningBriefingView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-  const toggleMorningRoom = useHarness((s) => s.toggleMorningRoom)
-
-  return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">BRIEFING</span>
-          <span className="text-fg-1">·</span>
-          <span>{d.date}</span>
-        </div>
-        <span className="kbd text-[9.5px]">{spec.meta.badge}</span>
-      </div>
-
-      <div className="space-y-1">
-        <div className="text-[9.5px] uppercase tracking-[0.16em] text-fg-3">STAGED PLAN TODAY</div>
-        <div className="space-y-1.5">
-          {d.staged_plan?.map((p: any) => (
-            <div key={p.step} className="rounded border border-ink/[0.06] bg-ink/[0.02] p-2 flex items-center justify-between text-[11.5px]">
-              <div className="flex items-center gap-2">
-                <span className="kbd text-[9.5px]">{p.step}</span>
-                <span className="text-fg-0">{p.task}</span>
-              </div>
-              <span className={`text-[10px] ${p.status === 'active' ? 'text-accent' : 'text-fg-3'}`}>
-                {p.status}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="space-y-1">
-        <div className="text-[9.5px] uppercase tracking-[0.16em] text-fg-3">CRITICAL DECISIONS & INVARIANTS</div>
-        <div className="space-y-1">
-          {d.decisions?.map((dec: any, idx: number) => (
-            <div key={idx} className="text-[11px] text-fg-2 bg-ink/[0.02] p-2 rounded border-l-2 border-accent/40 font-sans">
-              <strong className="text-fg-1 font-mono text-[10.5px]">{dec.title}:</strong> {dec.note}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={() => {
-            onToast('Opening full Morning Room briefing')
-            toggleMorningRoom(true)
-            onClose()
-          }}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 flex items-center gap-1.5 transition-all shadow-sm"
-        >
-          Open Morning Room (⌘⇧B)
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/** 8. Token Usage & Spend Widget */
-function TokenUsageView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-
-  return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">TELEMETRY</span>
-          <span className="text-fg-1">·</span>
-          <span>{spec.meta.title}</span>
-        </div>
-        <span className="kbd text-[9.5px]">{spec.meta.badge}</span>
-      </div>
-
-      <div className="flex items-baseline justify-between">
-        <div>
-          <div className="text-[9.5px] uppercase tracking-[0.16em] text-fg-3">TOTAL USAGE (7 DAYS)</div>
-          <div className="text-[24px] font-medium text-fg-0">{d.total_spend} · <span className="text-[13px] text-fg-2">{d.total_tokens}</span></div>
-        </div>
-        <div className="text-[11px] text-ok">Cache Savings: {d.cache_savings} ({d.cache_read_rate})</div>
-      </div>
-
-      <div className="space-y-1.5">
-        {d.models?.map((m: any) => (
-          <div key={m.name} className="flex items-center justify-between text-[11px] p-1.5 rounded bg-ink/[0.02] border border-ink/[0.05]">
-            <span className="text-fg-1 font-medium">{m.name}</span>
-            <div className="flex items-center gap-3">
-              <span className="text-fg-3">{m.tokens}</span>
-              <span className="text-fg-0 font-medium w-14 text-right">{m.spend}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={() => {
-            onToast('Token usage CSV exported')
-            onClose()
-          }}
-          className="px-2.5 py-1 rounded text-[11px] bg-ink/[0.04] hover:bg-ink/[0.08] text-fg-2 hover:text-fg-0 border border-ink/[0.08] transition-colors"
-        >
-          Export CSV
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            onToast('Opening Metrics Dashboard')
-            useHarness.getState().toggleMissionDashboard(true, 'telemetry')
-            onClose()
-          }}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 transition-all shadow-sm"
-        >
-          View Full Dashboard
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/** 9. Model Picker Widget */
-function ModelPickerView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-  const [selectedModel, setSelectedModel] = useState<string>(
-    d.models?.find((m: any) => m.selected)?.id || 'claude-sonnet-5-5'
-  )
-
-  const handleSwitch = (modelId: string, modelName: string) => {
-    setSelectedModel(modelId)
-    onToast(`Switched active session model to ${modelName}`)
-    setTimeout(onClose, 600)
-  }
-
-  return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">MODELS</span>
-          <span className="text-fg-1">·</span>
-          <span>Routing & Switching</span>
-        </div>
-        <span className="kbd text-[9.5px]">Active: {d.active_model}</span>
-      </div>
-
-      <div className="space-y-1.5 max-h-[260px] overflow-y-auto">
-        {d.models?.map((m: any) => {
-          const isSelected = m.id === selectedModel
-          return (
-            <div
-              key={m.id}
-              onClick={() => handleSwitch(m.id, m.name)}
-              className={`p-2 rounded-lg border cursor-pointer transition-all flex items-center justify-between ${
-                isSelected
-                  ? 'bg-accent/15 border-accent/40 text-fg-0'
-                  : 'bg-ink/[0.025] border-ink/[0.08] text-fg-1 hover:bg-ink/[0.05]'
-              }`}
-            >
-              <div>
-                <div className="text-[12px] font-medium text-fg-0 flex items-center gap-1.5">
-                  <span>{m.name}</span>
-                  {isSelected && <span className="kbd text-[8.5px]">current</span>}
-                </div>
-                <div className="text-[10px] text-fg-3 font-sans">{m.recommended}</div>
-              </div>
-              <div className="text-right text-[10.5px]">
-                <div className="text-fg-0">{m.cost}</div>
-                <div className="text-fg-3">{m.latency}</div>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={onClose}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 transition-all shadow-sm"
-        >
-          Done
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/** 10. Artifact Explorer Widget */
-function ArtifactExplorerView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-  const toggleArtifacts = useHarness((s) => s.toggleArtifactsBrowser)
-
-  return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">ARTIFACTS</span>
-          <span className="text-fg-1">·</span>
-          <span>Recent Deliverables</span>
-        </div>
-        <span className="kbd text-[9.5px]">{spec.meta.badge}</span>
-      </div>
-
-      <div className="space-y-1.5">
-        {d.artifacts?.map((art: any) => (
-          <div key={art.name} className="p-2 rounded border border-ink/[0.06] bg-ink/[0.02] flex items-center justify-between">
-            <div>
-              <div className="text-[12px] font-medium text-fg-0">{art.name}</div>
-              <div className="text-[10px] text-fg-3">{art.session} · {art.type} · {art.age}</div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] text-fg-3">{art.size}</span>
-              <button
-                type="button"
-                onClick={() => onToast(`Copied path to ${art.name}`)}
-                className="kbd text-[9.5px] hover:text-fg-0"
-              >
-                copy path
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={() => {
-            onToast('Opening Artifacts Browser')
-            toggleArtifacts(true)
-            onClose()
-          }}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 transition-all shadow-sm"
-        >
-          Browse All Artifacts (⌘⇧A)
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/** 11. Real-time Voice Launcher Widget */
-function VoiceLauncherView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-
-  return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">VOICE</span>
-          <span className="text-fg-1">·</span>
-          <span>{d.persona}</span>
-        </div>
-        <span className="kbd text-[9.5px]">{spec.meta.badge}</span>
-      </div>
-
-      <div className="rounded-lg border border-ink/[0.08] bg-ink/[0.025] p-3 text-center space-y-2">
-        <div className="flex justify-center items-center gap-1.5 py-2">
-          {[4, 12, 18, 24, 16, 20, 10, 6].map((h, i) => (
-            <div key={i} style={{ height: `${h}px` }} className="w-1 rounded-full bg-accent animate-pulse" />
-          ))}
-        </div>
-        <div className="text-[12px] text-fg-0 font-medium">{d.status}</div>
-        <div className="text-[10.5px] text-fg-3">Device: {d.input_device} · {d.latency}</div>
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={() => {
-            onToast('Voice channel initiated')
-            onClose()
-          }}
-          className="px-3.5 py-1.5 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 flex items-center gap-1.5 transition-all shadow-sm"
-        >
-          <svg className="w-3.5 h-3.5 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-            <line x1="12" y1="19" x2="12" y2="23"/>
-            <line x1="8" y1="23" x2="16" y2="23"/>
-          </svg>
-          Connect Voice Channel
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/** 12. Calendar Create / Scheduling */
-function CalendarView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-  const [selectedSlot, setSelectedSlot] = useState<string>(
-    d.availability?.find((s: any) => s.selected)?.time || '16:00'
-  )
-
-  const handleSendInvite = () => {
-    onToast(`Meeting invite sent to ${d.attendee} for ${d.date} at ${selectedSlot}`)
-    setTimeout(onClose, 800)
-  }
-
-  return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">EVENT</span>
-          <span className="text-fg-1">·</span>
-          <span>{spec.meta.title}</span>
-        </div>
-        <span className="kbd text-[9.5px]">{spec.meta.badge}</span>
-      </div>
-
-      <div className="rounded-lg border border-ink/[0.08] bg-ink/[0.025] p-3 space-y-2.5">
-        <div className="flex items-center justify-between">
-          <div className="text-[13px] font-medium text-fg-0">{d.title}</div>
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">SLOT PARSED</span>
-        </div>
-
-        <div className="flex items-center gap-2 text-[11.5px] text-fg-1">
-          <svg className="w-3.5 h-3.5 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <circle cx="12" cy="12" r="10"/>
-            <polyline points="12 6 12 12 16 14"/>
-          </svg>
-          <span>{d.date} · <strong>{selectedSlot} – {selectedSlot === '16:00' ? '16:30' : 'End'} PDT</strong></span>
-        </div>
-
-        <div className="flex items-center gap-2 text-[11px] text-fg-2">
-          <div className="w-4 h-4 rounded-full bg-accent/20 text-accent flex items-center justify-center font-medium text-[9.5px]">
-            {d.attendee?.charAt(0) || 'K'}
-          </div>
-          <span>{d.attendee} ({d.attendee_email})</span>
-          <span className="text-ok text-[10.5px] ml-1">● Free at {selectedSlot}</span>
-        </div>
-      </div>
-
-      <div className="space-y-1.5">
-        <div className="text-[9.5px] uppercase tracking-[0.16em] text-fg-3">
-          {d.attendee}'S SCHEDULE (TUESDAY)
-        </div>
-        <div className="grid grid-cols-7 gap-1.5">
-          {d.availability?.map((slot: any) => {
-            const isSelected = slot.time === selectedSlot
-            const isFree = slot.status === 'free'
-            return (
-              <button
-                key={slot.time}
-                type="button"
-                disabled={!isFree}
-                onClick={() => setSelectedSlot(slot.time)}
-                className={`py-1.5 px-1 rounded text-[10.5px] font-mono text-center transition-all ${
-                  isSelected
-                    ? 'bg-accent/20 text-fg-0 font-medium border border-accent/40 shadow-sm'
-                    : isFree
-                    ? 'bg-ink/[0.03] text-fg-1 hover:bg-accent/10 hover:text-fg-0 border border-ink/[0.08]'
-                    : 'bg-ink/[0.01] text-fg-4 cursor-not-allowed border border-ink/[0.04]'
-                }`}
-              >
-                {slot.time}
-              </button>
-            )
-          })}
-        </div>
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={() => {
-            onToast('Opening full calendar in browser')
-            onClose()
-          }}
-          className="px-2.5 py-1 rounded text-[11px] bg-ink/[0.04] hover:bg-ink/[0.08] text-fg-2 hover:text-fg-0 border border-ink/[0.08] transition-colors"
-        >
-          Edit in Calendar
-        </button>
-        <button
-          type="button"
-          onClick={handleSendInvite}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 flex items-center gap-1.5 transition-all shadow-sm"
-        >
-          <svg className="w-3 h-3 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <line x1="22" y1="2" x2="11" y2="13"/>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-          </svg>
-          Send Invite
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/** 13. Memory Recall */
-function MemoryView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-
-  const handleCopy = (snippet: string) => {
-    void navigator.clipboard.writeText(snippet)
-    onToast('Recommendation copied to clipboard')
-  }
-
-  return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">MEMORY</span>
-          <span className="text-fg-1">·</span>
-          <span>{spec.meta.title}</span>
-        </div>
-        <span className="kbd text-[9.5px]">{spec.meta.badge}</span>
-      </div>
-
-      <div className="space-y-2 max-h-[260px] overflow-y-auto">
-        {d.matches?.map((m: any) => (
-          <div key={m.id} className="rounded-lg border border-ink/[0.08] bg-ink/[0.025] p-3 space-y-2">
-            <div className="flex items-center justify-between text-[11px] text-fg-3">
-              <span className="font-medium text-fg-1">{m.title}</span>
-              <span>{m.source} · {m.date}</span>
-            </div>
-            <div className="text-[12px] text-fg-0 bg-ink/[0.03] p-2.5 rounded border-l-2 border-accent/60 leading-relaxed font-sans">
-              "{m.snippet}"
-            </div>
-            <div className="flex items-center justify-between pt-0.5">
-              <div className="flex gap-1.5">
-                {m.tags?.map((t: string) => (
-                  <span key={t} className="text-[9.5px] px-1.5 py-0.5 rounded bg-ink/[0.04] text-fg-3 border border-ink/[0.06]">
-                    #{t}
-                  </span>
-                ))}
-              </div>
-              <span className="text-[9.5px] text-fg-3">timestamp [{m.timestamp}]</span>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={() => {
-            onToast('Transcript opened')
-            onClose()
-          }}
-          className="px-2.5 py-1 rounded text-[11px] bg-ink/[0.04] hover:bg-ink/[0.08] text-fg-2 hover:text-fg-0 border border-ink/[0.08] transition-colors"
-        >
-          Open Transcript
-        </button>
-        <button
-          type="button"
-          onClick={() => handleCopy(d.matches?.[0]?.snippet || '')}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 flex items-center gap-1.5 transition-all shadow-sm"
-        >
-          <svg className="w-3 h-3 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-          </svg>
-          Copy Recommendation
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/** 14. Finance Widget */
-function FinanceView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-
-  return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">FINANCE</span>
-          <span className="text-fg-1">·</span>
-          <span>{spec.meta.title}</span>
-        </div>
-        <span className="kbd text-[9.5px]">{spec.meta.badge}</span>
-      </div>
-
-      <div className="flex items-baseline justify-between">
-        <div>
-          <div className="text-[9.5px] uppercase tracking-[0.16em] text-fg-3">TOTAL SPEND ({d.period})</div>
-          <div className="text-[24px] font-medium tracking-tight text-fg-0">{d.total}</div>
-        </div>
-        <div className="text-[11px] text-ok">{d.trend}</div>
-      </div>
-
-      <div className="flex h-1.5 rounded-full overflow-hidden bg-ink/[0.08]">
-        {d.categories?.map((c: any, idx: number) => {
-          const colors = ['bg-accent/80', 'bg-accent/40', 'bg-accent/20']
-          return (
-            <div
-              key={c.name}
-              style={{ width: `${c.share}%` }}
-              className={colors[idx % colors.length]}
-              title={`${c.name}: ${c.amount}`}
-            />
-          )
-        })}
-      </div>
-
-      <div className="flex gap-4">
-        {d.categories?.map((c: any, idx: number) => {
-          const dots = ['bg-accent', 'bg-accent/60', 'bg-accent/30']
-          return (
-            <div key={c.name} className="flex items-center gap-1.5 text-[10.5px] text-fg-2">
-              <span className={`w-1.5 h-1.5 rounded-sm ${dots[idx % dots.length]}`} />
-              <span>{c.name} (<strong>{c.amount}</strong>)</span>
-            </div>
-          )
-        })}
-      </div>
-
-      <div className="border border-ink/[0.08] rounded-lg overflow-hidden bg-ink/[0.02]">
-        <table className="w-full text-[11px] border-collapse">
-          <tbody>
-            {d.transactions?.slice(0, 4).map((tx: any, idx: number) => (
-              <tr key={idx} className="border-b border-ink/[0.05] last:border-none">
-                <td className="py-1.5 px-2.5 text-fg-3 w-16">{tx.date}</td>
-                <td className="py-1.5 px-2.5 font-medium text-fg-1">{tx.merchant}</td>
-                <td className="py-1.5 px-2.5 text-fg-3">{tx.category}</td>
-                <td className="py-1.5 px-2.5 text-right font-mono text-fg-0">{tx.amount}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={() => {
-            onToast('CSV exported to Downloads')
-            onClose()
-          }}
-          className="px-2.5 py-1 rounded text-[11px] bg-ink/[0.04] hover:bg-ink/[0.08] text-fg-2 hover:text-fg-0 border border-ink/[0.08] transition-colors"
-        >
-          Export CSV
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            onToast('Expense report filed to Expensify')
-            onClose()
-          }}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 transition-all shadow-sm"
-        >
-          File Expense Report
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/** 15. Agent Task Delegation */
-function AgentTaskView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-  const setDraft = useHarness((s) => s.setInputDraft)
-
-  const handleSpawn = () => {
-    setDraft(`Please delegate this task to sub-agent profile "${d.suggested_profile}": ${d.task_title}. Context: ${d.objective}`)
-    onToast(`Sub-agent task drafted: ${d.task_title}`)
+  const apply = (id: string) => {
+    const m = models.find((x) => x.id === id)
+    const lvl = level && m?.reasoningLevels?.includes(level) ? level : undefined
+    void setModel(id, lvl)
+    onToast(`Model → ${m?.label ?? id}${lvl ? ` · ${lvl} thinking` : ''}`)
     onClose()
   }
 
   return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">AGENT TASK</span>
-          <span className="text-fg-1">·</span>
-          <span>{spec.meta.title}</span>
-        </div>
-        <span className="kbd text-[9.5px]">{spec.meta.badge}</span>
+    <Frame
+      kicker="Model"
+      title={best ? `Switch to ${best.label}` : 'Available models'}
+      badge={`now: ${models.find((m) => m.id === current)?.label ?? current}${reasoningLevel ? ` · ${reasoningLevel}` : ''}`}
+      footer={
+        best ? (
+          <Btn primary onClick={() => apply(best.id)}>
+            Switch to {best.label}
+            {level ? ` · ${level}` : ''}
+          </Btn>
+        ) : (
+          <Btn onClick={onClose}>Close</Btn>
+        )
+      }
+    >
+      <div className="max-h-[260px] space-y-1 overflow-y-auto">
+        {ranked.slice(0, 8).map((m) => {
+          const isCurrent = m.id === current
+          const isBest = best?.id === m.id
+          return (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => apply(m.id)}
+              className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left transition-colors ${
+                isBest ? 'bg-accent/15 ring-1 ring-accent/40' : 'ring-hairline hover:bg-white/[0.04]'
+              }`}
+            >
+              <span className="min-w-0">
+                <span className="flex items-center gap-1.5 text-[11.5px] text-fg-0">
+                  {m.label}
+                  {isCurrent && <span className="kbd text-[8.5px]">current</span>}
+                </span>
+                <span className="block truncate text-[10px] text-fg-3">{m.description}</span>
+              </span>
+              <span className="ml-3 shrink-0 text-right text-[10px] text-fg-3">
+                <span className="block">{m.tier}</span>
+                <span className="block">{Math.round(m.contextWindow / 1000)}k ctx</span>
+              </span>
+            </button>
+          )
+        })}
       </div>
-
-      <div className="rounded-lg border border-ink/[0.08] bg-ink/[0.025] p-3 space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-[12.5px] font-medium text-fg-0">{d.task_title}</span>
-          <span className="kbd text-[9.5px]">profile: {d.suggested_profile}</span>
-        </div>
-        <div className="text-[10.5px] text-fg-3">Model: {d.model}</div>
-        <div className="text-[11.5px] text-fg-1 leading-relaxed font-sans">{d.objective}</div>
-        <div className="flex gap-1.5 pt-0.5">
-          {d.flags?.map((f: string) => (
-            <span key={f} className="text-[9.5px] px-1.5 py-0.5 rounded bg-ink/[0.04] text-fg-3 border border-ink/[0.06]">
-              flag: {f}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
-          onClick={() => {
-            onToast('Opening GitHub pull request')
-            onClose()
-          }}
-          className="px-2.5 py-1 rounded text-[11px] bg-ink/[0.04] hover:bg-ink/[0.08] text-fg-2 hover:text-fg-0 border border-ink/[0.08] transition-colors"
-        >
-          View on GitHub
-        </button>
-        <button
-          type="button"
-          onClick={handleSpawn}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 flex items-center gap-1.5 transition-all shadow-sm"
-        >
-          <svg className="w-3 h-3 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polygon points="5 3 19 12 5 21 5 3"/>
-          </svg>
-          Spawn Sub-agent
-        </button>
-      </div>
-    </div>
+    </Frame>
   )
 }
 
-/** 16. General Quick Controls Grid */
-function QuickControlView({
-  spec,
-  onClose,
-  onToast,
-}: {
-  spec: JevWidgetSpec
-  onClose: () => void
-  onToast: (msg: string) => void
-}) {
-  const d = spec.data
-  const [controls, setControls] = useState(d.controls || [])
-  const setAppearance = useHarness((s) => s.setAppearanceTheme)
+// ─── token usage ──────────────────────────────────────────────────────────
 
-  const toggleControl = (id: string) => {
-    setControls((prev: any[]) =>
-      prev.map((c) => {
-        if (c.id === id) {
-          const nextVal = !c.value
-          if (id === 'dark_mode') {
-            void setAppearance(nextVal ? 'dark' : oppositeTheme(getEffectiveTheme()))
-          }
-          onToast(`${c.label} toggled ${nextVal ? 'ON' : 'OFF'}`)
-          return { ...c, value: nextVal }
-        }
-        return c
-      })
-    )
-  }
+function fmtTokens(n: number) {
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)}k` : String(n)
+}
+
+function TokenUsage({ slots, onClose }: WidgetProps) {
+  const sessions = useHarness((s) => s.sessions)
+  const live = useHarness((s) => s.usage)
+  const days = slots.periodDays ?? 7
+  const label = slots.periodLabel ?? 'Last 7 days'
+  const modelQ = slots.modelQuery?.toLowerCase()
+  const stats = useMemo(() => {
+    const since = Date.now() - days * 86_400_000
+    const rows = sessions.filter((s) => s.updatedAt >= since && (!modelQ || s.model.toLowerCase().includes(modelQ)))
+    const byModel = new Map<string, { cost: number; tokens: number; n: number }>()
+    let cost = 0
+    let input = 0
+    let output = 0
+    let cached = 0
+    for (const s of rows) {
+      cost += s.totalCost ?? 0
+      input += s.totalInputTokens
+      output += s.totalOutputTokens
+      cached += s.cacheReadTokens
+      const b = byModel.get(s.model) ?? { cost: 0, tokens: 0, n: 0 }
+      b.cost += s.totalCost ?? 0
+      b.tokens += s.totalInputTokens + s.totalOutputTokens
+      b.n += 1
+      byModel.set(s.model, b)
+    }
+    const models = [...byModel.entries()].sort((a, b) => b[1].cost - a[1].cost).slice(0, 5)
+    return { n: rows.length, cost, input, output, cached, models }
+  }, [sessions, days, modelQ])
+  const cacheRate = stats.input + stats.cached > 0 ? Math.round((stats.cached / (stats.input + stats.cached)) * 100) : 0
 
   return (
-    <div className="p-3.5 space-y-3 font-mono animate-in fade-in duration-150">
-      <div className="flex items-center justify-between pb-2 hairline-b">
-        <div className="flex items-center gap-2 text-[12px] font-medium text-fg-0">
-          <span className="text-[10px] text-fg-3 uppercase tracking-wider">CONTROLS</span>
-          <span className="text-fg-1">·</span>
-          <span>{spec.meta.title}</span>
+    <Frame
+      kicker="Usage"
+      title={`${label}${modelQ ? ` · ${modelQ}` : ''}`}
+      badge={`${stats.n} sessions`}
+      footer={
+        <>
+          <Btn onClick={onClose}>Close</Btn>
+          <Btn
+            primary
+            onClick={() => {
+              useHarness.getState().toggleMissionDashboard(true, 'telemetry')
+              onClose()
+            }}
+          >
+            Open telemetry
+          </Btn>
+        </>
+      }
+    >
+      <div className="flex items-baseline justify-between">
+        <div>
+          <Label>Spend</Label>
+          <div className="text-[24px] text-fg-0">
+            ${stats.cost.toFixed(2)}
+            <span className="ml-2 text-[12px] text-fg-2">
+              {fmtTokens(stats.input + stats.output)} tok · {fmtTokens(stats.cached)} cached
+            </span>
+          </div>
         </div>
-        <span className="kbd text-[9.5px]">{spec.meta.badge}</span>
+        <div className="text-right text-[10.5px] text-fg-2">
+          <div>cache read {cacheRate}%</div>
+          <div className="text-fg-3">this session ${live.totalCost.toFixed(2)}</div>
+        </div>
       </div>
-
-      <div className="grid grid-cols-2 gap-2">
-        {controls.map((c: any) => (
-          <div key={c.id} className="rounded-lg border border-ink/[0.08] bg-ink/[0.025] p-2.5 flex items-center justify-between">
-            <div className="space-y-0.5">
-              <div className="text-[11.5px] font-medium text-fg-0">{c.label}</div>
-              <div className="text-[10px] text-fg-3">{c.description}</div>
-            </div>
-            {c.type === 'toggle' ? (
-              <button
-                type="button"
-                onClick={() => toggleControl(c.id)}
-                className={`w-8 h-4 rounded-full p-0.5 transition-colors border ${
-                  c.value ? 'bg-accent/30 border-accent/50' : 'bg-ink/[0.06] border-ink/[0.1]'
-                }`}
-              >
-                <div
-                  className={`w-3 h-3 rounded-full bg-fg-0 transition-transform ${
-                    c.value ? 'translate-x-4' : 'translate-x-0'
-                  }`}
-                />
-              </button>
-            ) : (
-              <span className="kbd text-[10px] text-fg-1">{c.value}</span>
-            )}
+      <div className="space-y-1">
+        {stats.models.map(([model, b]) => (
+          <div key={model} className="flex items-center justify-between rounded px-2 py-1 text-[11px] ring-hairline">
+            <span className="truncate text-fg-1">{model}</span>
+            <span className="ml-2 shrink-0 text-fg-3">
+              {b.n} · {fmtTokens(b.tokens)} · <span className="text-fg-0">${b.cost.toFixed(2)}</span>
+            </span>
           </div>
         ))}
+        {stats.models.length === 0 && <div className="py-3 text-center text-[11px] text-fg-3">No sessions in this window.</div>}
       </div>
+    </Frame>
+  )
+}
 
-      <div className="flex items-center justify-end gap-2 pt-2 hairline-t">
-        <button
-          type="button"
+// ─── artifacts ────────────────────────────────────────────────────────────
+
+function ArtifactExplorer({ slots, onClose, onToast }: WidgetProps) {
+  const [rows, setRows] = useState<ArtifactIndexRow[]>([])
+  const [total, setTotal] = useState(0)
+  const text = slots.keyword ?? slots.topic ?? ''
+  const types = slots.fileTypes
+  useEffect(() => {
+    let alive = true
+    if (!window.harness?.artifactIndexQuery) return
+    void window.harness
+      .artifactIndexQuery({ text: text || undefined, types: types.length ? types : undefined, onlyExisting: true, sort: 'newest', limit: 6 })
+      .then((r: { ok: boolean; rows: ArtifactIndexRow[]; total: number }) => {
+        if (!alive || !r?.ok) return
+        setRows(r.rows)
+        setTotal(r.total)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [text, types.join(',')])
+
+  return (
+    <Frame
+      kicker="Artifacts"
+      title={text ? `“${text}”` : types.length ? `${types.join('/')} files` : 'Recent'}
+      badge={`${total} match${total === 1 ? '' : 'es'}`}
+      footer={
+        <Btn
+          primary
           onClick={() => {
-            onToast('Settings applied')
+            useHarness.getState().toggleArtifactsBrowser(true, rows[0]?.path ?? null)
             onClose()
           }}
-          className="px-3 py-1 rounded text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-fg-0 border border-accent/40 transition-all shadow-sm"
         >
-          Done
-        </button>
+          Open browser (⌘⇧A)
+        </Btn>
+      }
+    >
+      <Well className="space-y-1.5">
+        <Slot label="Type" value={types.length ? types.join(', ') : undefined} hint="a kind? “html reports”, “png”" />
+        <Slot label="About" value={text || undefined} hint="a topic? “about jev”" />
+      </Well>
+      <div className="space-y-1">
+        {rows.map((r) => (
+          <button
+            key={r.id}
+            type="button"
+            onClick={() => {
+              useHarness.getState().toggleArtifactsBrowser(true, r.path)
+              onClose()
+            }}
+            className="flex w-full items-center justify-between rounded px-2 py-1 text-left ring-hairline hover:bg-white/[0.04]"
+          >
+            <span className="min-w-0">
+              <span className="block truncate text-[11.5px] text-fg-0">{r.filename}</span>
+              <span className="block truncate text-[10px] text-fg-3">{r.sessionTitle ?? r.sessionId}</span>
+            </span>
+            <span className="ml-2 flex shrink-0 items-center gap-2 text-[9.5px] text-fg-3">
+              <span>{(r.bytes / 1024).toFixed(0)} KB</span>
+              <span
+                className="kbd text-[8.5px]"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void navigator.clipboard.writeText(r.path)
+                  onToast('Path copied')
+                }}
+              >
+                copy path
+              </span>
+            </span>
+          </button>
+        ))}
+        {rows.length === 0 && <div className="py-3 text-center text-[11px] text-fg-3">Nothing indexed for that yet.</div>}
       </div>
-    </div>
+    </Frame>
+  )
+}
+
+// ─── briefing ─────────────────────────────────────────────────────────────
+
+function Briefing({ onClose }: WidgetProps) {
+  const sessions = useHarness((s) => s.sessions)
+  const subagents = useHarness((s) => s.subagents)
+  const jobs = useSchedulerStore((s) => s.jobs)
+  const today = new Date()
+  const since = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
+  const todays = sessions.filter((s) => s.updatedAt >= since)
+  const running = Object.values(subagents).filter((a) => a.state === 'running')
+  const upcoming = jobs
+    .filter((j) => j.enabled && j.next_fire_at)
+    .sort((a, b) => (a.next_fire_at ?? 0) - (b.next_fire_at ?? 0))
+    .slice(0, 3)
+
+  return (
+    <Frame
+      kicker="Briefing"
+      title={today.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
+      badge="Morning Room"
+      footer={
+        <Btn
+          primary
+          onClick={() => {
+            useHarness.getState().toggleMorningRoom(true)
+            onClose()
+          }}
+        >
+          Open Morning Room (⌘⇧B)
+        </Btn>
+      }
+    >
+      <div className="grid grid-cols-3 gap-2">
+        {[
+          ['Sessions today', todays.length],
+          ['Agents running', running.length],
+          ['Scheduled', upcoming.length],
+        ].map(([k, v]) => (
+          <Well key={String(k)} className="!p-2.5">
+            <div className="text-[18px] text-fg-0">{v}</div>
+            <Label>{k}</Label>
+          </Well>
+        ))}
+      </div>
+      {todays.length > 0 && (
+        <div className="space-y-1">
+          <Label>Worked on today</Label>
+          {todays.slice(0, 4).map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => {
+                useHarness.getState().openSessionPane(s.id)
+                onClose()
+              }}
+              className="flex w-full items-center justify-between rounded px-2 py-1 text-left text-[11px] text-fg-1 ring-hairline hover:bg-white/[0.04] hover:text-fg-0"
+            >
+              <span className="truncate">{s.title}</span>
+              <span className="ml-2 shrink-0 text-[9.5px] text-fg-3">{s.model}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {upcoming.length > 0 && (
+        <div className="space-y-1">
+          <Label>Next scheduled</Label>
+          {upcoming.map((j) => (
+            <div key={j.id} className="flex items-center justify-between rounded px-2 py-1 text-[11px] ring-hairline">
+              <span className="truncate text-fg-1">{j.name}</span>
+              <span className="ml-2 shrink-0 text-[9.5px] text-fg-3">{j.next_fire_at ? new Date(j.next_fire_at * (j.next_fire_at < 1e12 ? 1000 : 1)).toLocaleString() : ''}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Frame>
+  )
+}
+
+// ─── swarm ────────────────────────────────────────────────────────────────
+
+function Swarm({ slots, onClose }: WidgetProps) {
+  const subagents = useHarness((s) => s.subagents)
+  const order = useHarness((s) => s.subagentOrder)
+  const list = order
+    .map((id) => subagents[id])
+    .filter(Boolean)
+    .filter((a) => (slots.swarmStatus ? a.state === slots.swarmStatus : true))
+    .filter((a) => (slots.profile ? a.agentType === slots.profile : true))
+    .slice(-8)
+    .reverse()
+  const running = Object.values(subagents).filter((a) => a.state === 'running').length
+
+  return (
+    <Frame
+      kicker="Swarm"
+      title={slots.swarmStatus ? `${slots.swarmStatus} workers` : 'Workers'}
+      badge={`${running} running`}
+      footer={
+        <Btn
+          primary
+          onClick={() => {
+            useHarness.getState().toggleMissionDashboard(true, 'swarm')
+            onClose()
+          }}
+        >
+          Open swarm (⌘O)
+        </Btn>
+      }
+    >
+      <div className="max-h-[260px] space-y-1 overflow-y-auto">
+        {list.map((a) => (
+          <button
+            key={a.id}
+            type="button"
+            onClick={() => {
+              useHarness.getState().openSubagent(a.id)
+              onClose()
+            }}
+            className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left ring-hairline hover:bg-white/[0.04]"
+          >
+            <span className="min-w-0">
+              <span className="flex items-center gap-1.5 text-[11.5px] text-fg-0">
+                <span className={`h-1.5 w-1.5 rounded-full ${a.state === 'running' ? 'bg-accent' : a.state === 'failed' ? 'bg-danger' : 'bg-fg-3'}`} />
+                <span className="truncate">{a.label}</span>
+              </span>
+              <span className="block truncate text-[10px] text-fg-3">{a.task}</span>
+            </span>
+            <span className="ml-2 shrink-0 text-right text-[9.5px] text-fg-3">
+              <span className="block">{a.agentType ?? 'general'}</span>
+              <span className="block">{a.toolsCalled} tools</span>
+            </span>
+          </button>
+        ))}
+        {list.length === 0 && <div className="py-3 text-center text-[11px] text-fg-3">No workers match.</div>}
+      </div>
+    </Frame>
+  )
+}
+
+// ─── tool inspect ─────────────────────────────────────────────────────────
+
+const TOOL_DOCS: Record<string, { category: string; risk: string; summary: string; params: Array<[string, string, boolean, string]> }> = {
+  bash: {
+    category: 'shell',
+    risk: 'varies by command',
+    summary: 'Run a shell command. Classified LOW / MEDIUM / HIGH / DANGEROUS before it runs; non-trivial ones prompt for approval.',
+    params: [
+      ['command', 'string', true, 'the command'],
+      ['summary', 'string', true, 'one line shown in the approval prompt'],
+      ['timeout', 'number', false, 'seconds, default 120'],
+      ['working_dir', 'string', false, 'cwd for the command'],
+    ],
+  },
+  read_file: { category: 'filesystem', risk: 'read-only', summary: 'Read a text file with line numbers; optional line range.', params: [['path', 'string', true, 'file path'], ['start_line', 'int', false, '1-indexed'], ['end_line', 'int', false, 'inclusive']] },
+  write_file: { category: 'filesystem', risk: 'overwrites', summary: 'Create or replace a whole file.', params: [['path', 'string', true, 'file path'], ['content', 'string', true, 'full contents'], ['base', 'enum', false, 'workspace | project']] },
+  edit_file: { category: 'filesystem', risk: 'modifies', summary: 'Targeted edit: line range, anchors, insert, or exact string replace.', params: [['path', 'string', true, 'file path'], ['start_line / end_line', 'int', false, 'line mode'], ['old_string / new_string', 'string', false, 'replace mode']] },
+  grep: { category: 'filesystem', risk: 'read-only', summary: 'Regex search across files with context lines.', params: [['pattern', 'regex', true, ''], ['path', 'string', false, 'dir or file'], ['file_pattern', 'glob', false, 'filter']] },
+  glob: { category: 'filesystem', risk: 'read-only', summary: 'Find files by glob pattern.', params: [['pattern', 'glob', true, ''], ['path', 'string', false, 'base dir']] },
+  web_search: { category: 'web', risk: 'read-only', summary: 'AI-optimized web search returning URLs with long excerpts.', params: [['objective', 'string', true, 'what you are looking for'], ['queries', 'string[]', false, 'keyword queries']] },
+  web_fetch: { category: 'web', risk: 'read-only', summary: 'Fetch a URL as clean markdown.', params: [['url', 'string', true, ''], ['objective', 'string', false, 'focus the extraction']] },
+  twitter_search: { category: 'web', risk: 'read-only', summary: 'Search X through Grok; can analyze images and video in posts.', params: [['query', 'string', true, 'natural-language question or tweet URL'], ['include_images', 'bool', false, ''], ['include_videos', 'bool', false, '']] },
+  sub_agent: { category: 'swarm', risk: 'spawns work', summary: 'Spawn a background worker with a specialized profile; a memo arrives when it finishes.', params: [['label', 'string', true, '< 40 chars'], ['task', 'string', true, 'self-contained prompt'], ['agent_type', 'enum', false, 'general · code · review · explore · test · verify …']] },
+  jev_computer_use: { category: 'computer', risk: 'drives the UI', summary: 'Drive a macOS app or Arc/Chrome page with Jev deciding each step in ~200 ms; irreversible controls stop for confirmation.', params: [['goal', 'string', true, 'app-scoped goal'], ['app', 'string', false, 'bundle id or name'], ['max_steps', 'int', false, 'default 40'], ['allow_irreversible', 'bool', false, 'default false']] },
+  computer_use: { category: 'computer', risk: 'drives the UI', summary: 'Screenshot-based sub-agent for canvas or custom-drawn UIs.', params: [['goal', 'string', true, ''], ['target_app', 'string', false, ''], ['max_steps', 'int', false, 'default 60']] },
+  show_widget: { category: 'ui', risk: 'none', summary: 'Mount a generative UI fragment (dashboard, form, diagram) in the conversation.', params: [['title', 'string', true, 'snake_case'], ['widget_code', 'html', true, 'fragment, no <html>']] },
+  tasks: { category: 'planning', risk: 'none', summary: 'Session task ledger the operator sees live.', params: [['action', 'enum', true, 'list · create · claim · complete · block …'], ['task_id', 'string', false, '']] },
+  memory: { category: 'knowledge', risk: 'durable', summary: 'Cross-session durable notes about the user, project, feedback, references.', params: [['action', 'enum', true, ''], ['content', 'string', false, '']] },
+  schedule: { category: 'automation', risk: 'durable', summary: 'Create and manage scheduled agent turns (cron).', params: [['action', 'enum', true, '']] },
+  talk: { category: 'swarm', risk: 'messages agents', summary: 'Message another agent session; wakes idle recipients.', params: [['to', 'string', true, 'parent · main · label · id'], ['content', 'string', true, '']] },
+}
+
+function ToolInspect({ slots, onClose, onToast }: WidgetProps) {
+  const name = slots.toolName
+  const doc = name ? TOOL_DOCS[name] : undefined
+  const suggestions = name ? [] : TOOL_NAMES.slice(0, 12)
+  return (
+    <Frame
+      kicker="Tool"
+      title={name ?? 'Which tool?'}
+      badge={doc ? `${doc.category} · ${doc.risk}` : undefined}
+      footer={
+        name ? (
+          <Btn
+            primary
+            onClick={() => {
+              void navigator.clipboard.writeText(name)
+              onToast(`Copied “${name}”`)
+              onClose()
+            }}
+          >
+            Copy name
+          </Btn>
+        ) : (
+          <Btn onClick={onClose}>Close</Btn>
+        )
+      }
+    >
+      {!name && (
+        <Well>
+          <Slot label="Tool" value={undefined} hint="name one: “tool details for bash”" />
+          <div className="mt-2 flex flex-wrap gap-1">
+            {suggestions.map((t) => (
+              <span key={t} className="kbd text-[9.5px]">
+                {t}
+              </span>
+            ))}
+          </div>
+        </Well>
+      )}
+      {name && !doc && <Well className="text-[11px] text-fg-2">Known tool, no local doc card yet. Ask Freyja: “describe the {name} tool”.</Well>}
+      {doc && (
+        <>
+          <Well className="text-[11.5px] leading-relaxed text-fg-1">{doc.summary}</Well>
+          <div className="overflow-hidden rounded-lg ring-hairline">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="bg-black/[0.18] text-left text-[9.5px] uppercase tracking-wider text-fg-3">
+                  <th className="px-2.5 py-1.5 font-normal">param</th>
+                  <th className="px-2.5 py-1.5 font-normal">type</th>
+                  <th className="px-2.5 py-1.5 font-normal">req</th>
+                  <th className="px-2.5 py-1.5 font-normal">note</th>
+                </tr>
+              </thead>
+              <tbody>
+                {doc.params.map(([p, t, r, n]) => (
+                  <tr key={p} className="hairline-t">
+                    <td className="px-2.5 py-1.5 text-fg-0">{p}</td>
+                    <td className="px-2.5 py-1.5 text-fg-3">{t}</td>
+                    <td className="px-2.5 py-1.5">{r ? <span className="text-accent">yes</span> : <span className="text-fg-3">no</span>}</td>
+                    <td className="px-2.5 py-1.5 text-fg-2">{n}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </Frame>
+  )
+}
+
+// ─── diagnostics ──────────────────────────────────────────────────────────
+
+function Diagnostics({ slots, onClose, onToast }: WidgetProps) {
+  const mode = useHarness((s) => s.mode)
+  const subagents = useHarness((s) => s.subagents)
+  const usage = useHarness((s) => s.usage)
+  const [gateway, setGateway] = useState<{ pid: number | null; slackConfigured: boolean; plistInstalled: boolean } | null>(null)
+  const [keys, setKeys] = useState<Record<string, boolean> | null>(null)
+  useEffect(() => {
+    let alive = true
+    void window.harness.gatewayStatus?.().then((g: any) => alive && setGateway(g)).catch(() => {})
+    void window.harness.llmKeysProbe?.().then((k: any) => alive && setKeys(k?.keys ?? k?.present ?? null)).catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
+  const failed = Object.values(subagents).filter((a) => a.state === 'failed')
+  const rows: Array<[string, string, 'ok' | 'warn' | 'bad']> = [
+    ['bridge', mode === 'live' ? 'live' : mode === 'demo' ? 'demo mode' : 'error', mode === 'live' ? 'ok' : mode === 'demo' ? 'warn' : 'bad'],
+    ['gateway', gateway ? (gateway.pid ? `running · pid ${gateway.pid}` : gateway.plistInstalled ? 'installed, not running' : 'not installed') : '…', gateway?.pid ? 'ok' : 'warn'],
+    ['slack', gateway ? (gateway.slackConfigured ? 'tokens present' : 'not configured') : '…', gateway?.slackConfigured ? 'ok' : 'warn'],
+    ['context', `${Math.round((usage.currentContextTokens / Math.max(1, usage.contextWindow)) * 100)}% of ${fmtTokens(usage.contextWindow)}`, usage.currentContextTokens / Math.max(1, usage.contextWindow) > 0.7 ? 'warn' : 'ok'],
+    ['workers', failed.length ? `${failed.length} failed` : 'none failed', failed.length ? 'bad' : 'ok'],
+  ]
+  const filtered = slots.logLevel ? rows.filter((r) => r[2] !== 'ok') : slots.subsystem ? rows.filter((r) => r[0].includes(slots.subsystem!)) : rows
+  const keyRows = keys ? Object.entries(keys) : []
+
+  return (
+    <Frame
+      kicker="Diagnostics"
+      title={slots.logLevel ? 'Problems only' : slots.subsystem ? slots.subsystem : 'System health'}
+      badge={filtered.some((r) => r[2] === 'bad') ? 'attention' : filtered.some((r) => r[2] === 'warn') ? 'warnings' : 'healthy'}
+      footer={
+        <>
+          <Btn
+            onClick={() => {
+              void navigator.clipboard.writeText(filtered.map((r) => `${r[0]}: ${r[1]}`).join('\n'))
+              onToast('Copied')
+            }}
+          >
+            Copy
+          </Btn>
+          <Btn
+            primary
+            onClick={() => {
+              useHarness.getState().toggleMissionDashboard(true, 'activity')
+              onClose()
+            }}
+          >
+            Open activity
+          </Btn>
+        </>
+      }
+    >
+      <div className="space-y-1">
+        {filtered.map(([k, v, tone]) => (
+          <div key={k} className="flex items-center justify-between rounded px-2 py-1 text-[11px] ring-hairline">
+            <span className="flex items-center gap-1.5 text-fg-1">
+              <span className={`h-1.5 w-1.5 rounded-full ${tone === 'ok' ? 'bg-ok' : tone === 'warn' ? 'bg-warn' : 'bg-danger'}`} />
+              {k}
+            </span>
+            <span className="text-fg-2">{v}</span>
+          </div>
+        ))}
+        {filtered.length === 0 && <div className="py-3 text-center text-[11px] text-fg-3">Nothing to report.</div>}
+      </div>
+      {keyRows.length > 0 && (slots.subsystem === undefined || /key|provider/.test(slots.subsystem)) && (
+        <div className="space-y-1">
+          <Label>Provider keys</Label>
+          <div className="flex flex-wrap gap-1">
+            {keyRows.map(([k, present]) => (
+              <span key={k} className={`kbd text-[9px] ${present ? '' : 'opacity-50 line-through'}`}>
+                {k.replace(/_API_KEY$/, '').toLowerCase()}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {failed.length > 0 && (
+        <div className="space-y-1">
+          <Label>Failed workers</Label>
+          {failed.slice(0, 3).map((a) => (
+            <button
+              key={a.id}
+              type="button"
+              onClick={() => {
+                useHarness.getState().openSubagent(a.id)
+                onClose()
+              }}
+              className="flex w-full items-center justify-between rounded px-2 py-1 text-left text-[11px] text-fg-1 ring-hairline hover:bg-white/[0.04]"
+            >
+              <span className="truncate">{a.label}</span>
+              <span className="ml-2 shrink-0 truncate text-[9.5px] text-danger">{(a.result ?? '').slice(0, 48)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </Frame>
+  )
+}
+
+// ─── voice ────────────────────────────────────────────────────────────────
+
+function Voice({ onClose, onToast }: WidgetProps) {
+  const toggleVoice = useVoiceStore((s) => s.toggleVoice)
+  return (
+    <Frame
+      kicker="Voice"
+      title="Talk instead of typing"
+      badge="⌥Space"
+      footer={
+        <Btn
+          primary
+          onClick={() => {
+            toggleVoice()
+            onToast('Voice on')
+            onClose()
+          }}
+        >
+          Start voice
+        </Btn>
+      }
+    >
+      <Well className="flex items-center justify-between">
+        <div className="flex items-end gap-1">
+          {[4, 10, 16, 22, 14, 18, 8, 5].map((h, i) => (
+            <span key={i} style={{ height: h }} className="w-1 rounded-full bg-accent/70" />
+          ))}
+        </div>
+        <div className="text-right text-[10.5px] text-fg-2">
+          <div>Push-to-talk with ⌥Space anywhere.</div>
+          <div className="text-fg-3">Replies stream back as speech and text.</div>
+        </div>
+      </Well>
+    </Frame>
+  )
+}
+
+// ─── quick controls ───────────────────────────────────────────────────────
+
+function Appearance({ slots, onClose, onToast }: WidgetProps) {
+  const setAppearanceTheme = useHarness((s) => s.setAppearanceTheme)
+  const want = slots.theme
+  const options: Array<['dark' | 'light' | 'system', string, string]> = [
+    ['dark', 'Dark', 'near-black shell, sky accent'],
+    ['light', 'Light', 'paper shell, steel-blue accent'],
+    ['system', 'Follow system', 'macOS decides, sunset included'],
+  ]
+  const apply = (t: 'dark' | 'light' | 'system') => {
+    void setAppearanceTheme(t)
+    onToast(`Appearance → ${t}`)
+    onClose()
+  }
+  return (
+    <Frame
+      kicker="Appearance"
+      title={want ? `Switch to ${want}` : 'Theme'}
+      footer={want ? <Btn primary onClick={() => apply(want)}>Apply {want}</Btn> : <Btn onClick={onClose}>Close</Btn>}
+    >
+      <div className="space-y-1">
+        {options.map(([id, label, note]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => apply(id)}
+            className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left ${
+              want === id ? 'bg-accent/15 ring-1 ring-accent/40' : 'ring-hairline hover:bg-white/[0.04]'
+            }`}
+          >
+            <span>
+              <span className="block text-[11.5px] text-fg-0">{label}</span>
+              <span className="block text-[10px] text-fg-3">{note}</span>
+            </span>
+            {want === id && <span className="text-[10px] text-accent">selected</span>}
+          </button>
+        ))}
+      </div>
+    </Frame>
+  )
+}
+
+function Mic({ slots, onClose, onToast }: WidgetProps) {
+  const toggleVoice = useVoiceStore((s) => s.toggleVoice)
+  const want = slots.mute
+  return (
+    <Frame
+      kicker="Microphone"
+      title={want === undefined ? 'Voice input' : want ? 'Mute' : 'Unmute'}
+      badge="⌥Space"
+      footer={
+        <Btn
+          primary
+          onClick={() => {
+            toggleVoice()
+            onToast(want ? 'Voice off' : 'Voice on')
+            onClose()
+          }}
+        >
+          {want ? 'Stop listening' : 'Start listening'}
+        </Btn>
+      }
+    >
+      <Well className="text-[11px] text-fg-2">Freyja only listens during a voice turn. {want ? 'Stopping ends the current turn.' : 'Starting opens a voice turn in this session.'}</Well>
+    </Frame>
+  )
+}
+
+function QuickControls({ onClose, onToast }: WidgetProps) {
+  const setAppearanceTheme = useHarness((s) => s.setAppearanceTheme)
+  const toggleVoice = useVoiceStore((s) => s.toggleVoice)
+  const items: Array<[string, string, () => void]> = [
+    ['Appearance', 'dark · light · system', () => void setAppearanceTheme('system')],
+    ['Voice', 'start a voice turn', () => toggleVoice()],
+    ['Scheduled jobs', 'cron, daemon status', () => useSchedulerStore.getState().openDashboard()],
+    ['Artifacts', 'every file every session made', () => useHarness.getState().toggleArtifactsBrowser(true)],
+  ]
+  return (
+    <Frame kicker="Controls" title="Quick actions" footer={<Btn onClick={onClose}>Close</Btn>}>
+      <div className="grid grid-cols-2 gap-2">
+        {items.map(([k, v, fn]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => {
+              fn()
+              onToast(k)
+              onClose()
+            }}
+            className="rounded-lg bg-black/[0.18] p-2.5 text-left ring-hairline hover:bg-white/[0.04]"
+          >
+            <span className="block text-[11.5px] text-fg-0">{k}</span>
+            <span className="block text-[10px] text-fg-3">{v}</span>
+          </button>
+        ))}
+      </div>
+    </Frame>
+  )
+}
+
+// ─── finance (no local data source; hands off to the agent) ───────────────
+
+function Finance({ query, slots, onClose, onToast }: WidgetProps) {
+  const sendMessage = useHarness((s) => s.sendMessage)
+  const instruction = `${query}. Pull the transactions from my connected finance tools, total them, and break them down by merchant.`
+  return (
+    <Frame
+      kicker="Spend"
+      title={slots.category ?? 'Expenses'}
+      badge={slots.periodLabel ?? 'period?'}
+      footer={
+        <>
+          <Btn
+            onClick={() => {
+              useHarness.getState().setInputDraft(instruction)
+              onClose()
+            }}
+          >
+            Edit as prompt
+          </Btn>
+          <Btn
+            primary
+            onClick={() => {
+              void sendMessage(instruction)
+              onToast('Pulling spend…')
+              onClose()
+            }}
+          >
+            Pull spend
+          </Btn>
+        </>
+      }
+    >
+      <Well className="space-y-1.5">
+        <Slot label="Category" value={slots.category} hint="a category? “on travel”" />
+        <Slot label="Period" value={slots.periodLabel} hint="a window? “last month”" />
+      </Well>
+      <div className="text-[10.5px] text-fg-3">No ledger lives in Freyja; this asks the agent to use whatever finance tool is connected.</div>
+    </Frame>
   )
 }

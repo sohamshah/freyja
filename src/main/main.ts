@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, shell, nativeTheme } from 'electron'
+import { classifyPaletteQuery } from './jevRouter.js'
 import {
   configureGatewayBridge,
   syncProviderKeysToDaemonEnv,
@@ -1229,6 +1230,7 @@ function setupIpc() {
       handleSlackSetAllowlist(teamId, userIds, enforce),
   )
   ipcMain.handle(IPC.slackGetConfig, async () => handleSlackGetConfig())
+  ipcMain.handle(IPC.jevClassify, async (_e, query: string) => classifyPaletteQuery(String(query ?? '')))
   ipcMain.handle(IPC.llmKeysProbe, async () => handleLlmKeysProbe())
 
   // ── Skill-learning surface ───────────────────────────────────────
