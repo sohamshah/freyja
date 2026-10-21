@@ -6,7 +6,7 @@
 // the text the run wrote (see lib/jevLog.ts), so runs saved before this
 // view existed render the same way.
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   parseJevLog,
   parseJevResult,
@@ -489,6 +489,15 @@ export function JevRunView({
 }) {
   const log = useMemo(() => parseJevLog(text), [text])
   const [showMetrics, setShowMetrics] = useState(false)
+  const settled = Boolean(log.result ?? fallbackResult)
+  const [waitSeconds, setWaitSeconds] = useState(0)
+  useEffect(() => {
+    setWaitSeconds(0)
+    if (!live || settled) return
+    const t0 = Date.now()
+    const id = window.setInterval(() => setWaitSeconds(Math.floor((Date.now() - t0) / 1000)), 1000)
+    return () => window.clearInterval(id)
+  }, [log.entries.length, live, settled])
   if (searchQuery) {
     const html = highlightHtml(escapeHtml(text), searchQuery)
     return (
@@ -507,6 +516,16 @@ export function JevRunView({
   // The last step still waiting for its outcome shows "acting" on its row.
   const tail = log.entries[log.entries.length - 1]
   const actingStep = tail?.type === 'step' && !tail.outcome && tail.op !== 'need_help' && tail.op !== 'done'
+  // What the run is waiting on: a screen read (a second), or a door call
+  // (seconds to minutes), named so a long wait is not mistaken for a hang.
+  const waitingOn =
+    tail?.type === 'llm'
+      ? tail.what === 'replan'
+        ? 'asking the planner…'
+        : tail.what === 'compose'
+          ? 'composing the field text…'
+          : 'checking the end state…'
+      : 'reading the screen…'
   let prevStep: JevStep | undefined
   return (
     <div className="font-mono text-[11.5px] leading-[1.55]">
@@ -549,7 +568,8 @@ export function JevRunView({
         {live && !result && !actingStep && (
           <div className="flex items-center gap-1.5 py-1 pl-[2.75rem] text-[10.5px] text-fg-3">
             <span className="h-1 w-1 animate-pulse rounded-full bg-accent" />
-            reading the screen…
+            {waitingOn}
+            {waitSeconds >= 5 && <span className="text-fg-4">{waitSeconds}s</span>}
           </div>
         )}
       </div>

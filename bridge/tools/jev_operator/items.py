@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 MAX_ITEMS = 50
-MAX_ITEM_CHARS = 300
+MAX_ITEM_CHARS = 2000
 SAME_FAILURE_LIMIT = 3
 EVIDENCE_SCREEN_CHARS = 200
 ITEM_PLACEHOLDER = "(the item described under ITEM below)"

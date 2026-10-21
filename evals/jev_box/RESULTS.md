@@ -223,6 +223,43 @@ count read that as no progress although each click had moved the run. The
 stuck count now resets on any real change of the window; only the plan stops
 at a failed expectation.
 
+## 8. Jev as the end-state check (verify = llm | auto | jev)
+
+Question: can Jev's own reading of the end state replace the LLM verify door, the
+4 to 8 s call behind every "done"? Setup: `OperatorConfig.verify="auto"` asks Jev two
+Nouls in one call on the goal, the last eight actions and the screen text (goal met?
+values to report?); a "met" at or above the threshold with no report asked ends the
+run; anything else goes to the LLM check as before. Envs basics, hotel, canvas, desk
+(34 tasks, one rep), both arms on the same commit, threshold 0.9 during the runs.
+Logs: `evals/computer_use/results/20261021-000110-verify_llm`,
+`20261021-001029-verify_auto2`; `data/logs/verify_{llm,auto,auto2}.log`.
+
+| arm | pass | same pass/fail as llm | runs with no LLM call | note |
+|---|---|---|---|---|
+| verify=llm | 27/34 | | 3 (the confirmation gates) | desk fails 6/8 in both arms (budget) |
+| verify=auto (first cut: Jev's "not met" also final) | 28/34 | 31/34 | 9 | desk multi-item goals stalled at the third rejected claim: a Noul names nothing left to do |
+| verify=auto (only "met" final) | 28/34 | 32/34 | 9 | rows_one 4.6 to 2.4 s, rows_two 5.7 to 3.0 s, long_export 4.6 to 2.6 s, dropdown_region 5.5 to 3.6 s, slow_download 6.1 to 4.1 s |
+
+Agreement of Jev's `met` with the LLM check, over the 56 checks both answered (auto arms):
+
+| met | n | LLM: met | LLM: not met |
+|---|---|---|---|
+| ≥ 0.9 | 3 | 3 | 0 |
+| 0.8 to 0.9 | 6 | 6 | 0 |
+| 0.5 to 0.8 | 12 | 10 | 2 |
+| 0.2 to 0.5 | 16 | 11 | 5 |
+| < 0.2 | 19 | 6 | 13 |
+
+The Noul runs cold, as the calibration audits found for Nouls in general (T ≈ 0.66):
+most claims the LLM accepted drew 0.2 to 0.8 from Jev. Threshold set to 0.8 (9 of 9
+agreed; n is small, so the check keeps the LLM for everything under it). Jev's "not
+met" is not final in `auto` because a Noul cannot say what is left; the LLM check's
+sub-goal is what moves a multi-item goal on. Reading goals (report ≥ 0.5, 10 of 41)
+keep the LLM check, which writes the report. Net: no accuracy change on these envs, a
+2 s saving on the runs Jev is sure of, and the LLM check remains on roughly 85 % of
+done-claims at this threshold. A Jev Score question or a screenshot asset in the
+state might raise that share; not tried.
+
 ## What this justifies
 
 - Planner coordinates stay primary on the screenshot the planner read.

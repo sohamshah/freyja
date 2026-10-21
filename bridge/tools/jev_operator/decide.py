@@ -88,6 +88,23 @@ class Decision:
     url: str | None = None
 
 
+LITERAL_FULL_CHARS = 160
+
+
+def _literal_option(s: str) -> str:
+    """A literal as a text_source option: in full when short, by its size and
+    ends when long (a manifest in every decision's state would cost more than
+    the decision). The operator types the whole text either way."""
+    flat = s.replace("\n", "\\n")
+    if len(flat) <= LITERAL_FULL_CHARS:
+        return "type exactly: " + flat
+    lines = s.count("\n") + 1
+    return (
+        f"type exactly the {len(s)}-character text of {lines} lines given in the goal, "
+        f"which begins {flat[:60]!r} and ends {flat[-30:]!r}"
+    )
+
+
 def build_questions(
     obs: Observation,
     *,
@@ -144,7 +161,7 @@ def build_questions(
             instructions=f"{goal_line}\nIf the next operation is type, which text field receives the text? Choose none otherwise.",
             options=type_opts,
         )
-        text_opts = {f"lit{i}": "type exactly: " + s.replace("\n", "\\n") for i, s in enumerate(literals)}
+        text_opts = {f"lit{i}": _literal_option(s) for i, s in enumerate(literals)}
         text_opts["needs_llm"] = (
             "the text to type is not given verbatim in the goal and must be composed"
         )

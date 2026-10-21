@@ -25,6 +25,10 @@ DEFAULT_LLM_MODEL = "claude-opus-5-5"
 # Output caps, not targets. At the old 300/600/400 Opus 5.5 ran out of room and
 # returned truncated JSON; measured replies now use 130-550 tokens. The check's
 # report can list a few hundred rows read across pages.
+# A door call that has not answered by then is given up: the run reports the
+# wait instead of sitting on it (165 s on one replan, the UI saying "reading
+# the screen" throughout).
+DOOR_TIMEOUT_S = 90.0
 TEXT_MAX_TOKENS = 2048
 REPLAN_MAX_TOKENS = 4096
 VERIFY_MAX_TOKENS = 6144
@@ -129,6 +133,7 @@ class LLMHelper:
         # The last reply was cut off by its token limit and did not parse: a
         # door that copied a long text instead of naming it.
         self.last_overflow = False
+        self.last_error: str | None = None
 
     @property
     def budget_left(self) -> int:
@@ -141,9 +146,18 @@ class LLMHelper:
             return None
         t0 = time.perf_counter()
         self.stats.calls += 1
+        self.last_error = None
         try:
-            text = await self._complete([user], system_prompt, max_tokens)
+            text = await asyncio.wait_for(
+                self._complete([user], system_prompt, max_tokens), timeout=DOOR_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            self.last_error = f"the {door} call did not answer within {DOOR_TIMEOUT_S:.0f} s"
+            self.stats.log.append({"door": door, "error": self.last_error, "ms": int(DOOR_TIMEOUT_S * 1000)})
+            self.stats.total_ms += int(DOOR_TIMEOUT_S * 1000)
+            return None
         except Exception as exc:  # noqa: BLE001
+            self.last_error = f"the {door} call failed: {str(exc)[:200]}"
             self.stats.log.append({"door": door, "error": str(exc)})
             return None
         ms = int((time.perf_counter() - t0) * 1000)

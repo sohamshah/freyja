@@ -150,10 +150,10 @@ def test_validation():
     ok, skip, err = it.validate_items(["a", "b"], [1])
     assert err is None and skip == {1}
     assert it.validate_items(["x"] * 51, [])[2]
-    assert it.validate_items(["x" * 301], [])[2]
+    assert it.validate_items(["x" * 2001], [])[2]
     assert it.validate_items([], [])[2] and it.validate_items(["a", 3], [])[2]
     assert it.validate_items(["a"], [5])[2] and it.validate_items(["a"], ["0"])[2]
-    assert it.validate_items(["x" * 300] * 50, [])[2] is None
+    assert it.validate_items(["x" * 2000] * 50, [])[2] is None
 
 
 def test_table_format_footer_handoff_and_next():
@@ -219,7 +219,7 @@ def _tool(monkeypatch, tmp_path, script):
 
 def test_tool_rejects_bad_items(tmp_path, monkeypatch):
     tool, *_ = _tool(monkeypatch, tmp_path, [])
-    for bad in (["x"] * 51, ["x" * 301], "abc"):
+    for bad in (["x"] * 51, ["x" * 2001], "abc"):
         out = asyncio.run(tool.execute("c", {"goal": "g", "items": bad, "wait": True, "use_llm": False}))
         assert out.is_error and "items" in out.content
 

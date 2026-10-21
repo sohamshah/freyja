@@ -16,6 +16,7 @@ up in the swarm UI exactly like a `computer_use` run.
 from __future__ import annotations
 
 import asyncio
+import os
 import logging
 import re
 import time
@@ -153,10 +154,27 @@ will not find them.
 
 Write the goal well. Put the person's exact wording and every literal value
 (names, numbers, URLs, text to type) in the goal, quoting text that must be
-typed verbatim (e.g. type "hello world"). Merge consecutive micro-steps into
-one goal ("open Notes, create a note titled "Plan" with the body ...") instead
-of making one call per click. State what must not happen ("do not submit"). For a read, say which values are
-needed and which are wanted only "if shown".
+typed verbatim (e.g. type "hello world"). Jev picks the text to type from the
+goal's own quoted values, so a quoted value reaches the field with no LLM
+call; a value the goal only describes ("today's date", "a polite reply") is
+composed by an LLM, which is slower. A long text (a manifest, a message, code,
+anything with quotes inside it) goes in a fenced block:
+
+    replace the editor's contents with the manifest below and save:
+    ```
+    {"display_information": ...}
+    ```
+
+Such a block is one literal of any length, typed as written, with the same
+no-LLM path as a quoted value; a long text given bare in the goal is no
+literal at all, and the planner has to retype it, which a 2,000-token reply
+cannot (a 161-line manifest stalled a run for 165 s that way). Merge
+consecutive micro-steps into one goal ("open Notes, create a note titled
+"Plan" with the body ...") instead of making one call per click. State what
+must not happen ("do not submit"). For a read, say which values are needed
+and which are wanted only "if shown". Name a control the way its page shows
+it; a field with no label of its own (a code editor, a bare text area) is
+listed by the heading above it, e.g. "code editor (App Manifest)".
 Give a multi-page flow one goal when the goal holds every value its pages ask
 for, with `max_steps` of about 12 per page (a six-page booking: 80): the run's
 end-state check then sees the whole flow, and a page goal tends to click on
@@ -193,8 +211,19 @@ Parameters:
     submit that way or whose page may send on Return, stop the run with
     status=needs_confirmation; re-run with true after the person confirms. True
     permits every such control for that whole run, not only the one reported.
-  * `use_llm`: default true. Set false for a pure Jev run (no field text
-    composition, no replanning, no end-state check, template summary).
+  * `verify`: who checks a "done" before the run ends. `llm` (default): the
+    verify door, 4 to 8 s, reads the screen and writes the `Read:` report.
+    `auto`: Jev answers first (one Noul on the screen text, under a second)
+    and the LLM is asked only when Jev is unsure or the goal asks for values
+    to be reported. `jev`: Jev only, no report. For a goal that only acts
+    (toggle, save, open), `auto` ends the run seconds sooner.
+  * `use_llm`: default true. Set false for a pure Jev run: no field text
+    composition, no replanning, no end-state check, template summary. Such a
+    run is fast (a decision every 200 to 500 ms) and stops, with a handoff,
+    at the first step Jev is unsure of or text the goal does not give; with
+    the LLM on, that step goes to a planner call of several seconds (up to
+    90, after which the run gives up on it). Every run's footer shows the
+    split: jev_median_ms, llm_calls, llm_ms.
   * `surface`: `auto` (default) uses the page DOM for Arc and Chrome (Chrome
     needs "Allow JavaScript from Apple Events"; Arc needs the Automation prompt
     accepted once) and the accessibility tree for other apps; `dom` or `ax`
@@ -237,11 +266,16 @@ the run stops with status=blocked instead of clicking into the other app.
                         "type": "boolean",
                         "description": "Allow LLM handoff doors (default true)",
                     },
+                    "verify": {
+                        "type": "string",
+                        "enum": ["llm", "auto", "jev"],
+                        "description": "Who checks a done: llm (default; writes the report), auto (Jev first, the LLM only when Jev is unsure or values are to be reported), jev (Jev only, under a second, no report)",
+                    },
                     "items": {
                         "type": "array",
-                        "items": {"type": "string", "maxLength": 300},
+                        "items": {"type": "string", "maxLength": 2000},
                         "maxItems": 50,
-                        "description": "Run the goal once per item (text data only, max 50, 300 chars each); `{item}` in the goal stands for the current item",
+                        "description": "Run the goal once per item (text data only, max 50, 2000 chars each); `{item}` in the goal stands for the current item",
                     },
                     "skip_items": {
                         "type": "array",
@@ -300,6 +334,9 @@ the run stops with status=blocked instead of clicking into the other app.
         max_steps = max(1, min(max_steps, 120))
         allow_irreversible = bool(arguments.get("allow_irreversible", False))
         use_llm = bool(arguments.get("use_llm", True))
+        verify = str(arguments.get("verify") or os.environ.get("FREYJA_JEV_VERIFY") or "llm")
+        if verify not in ("llm", "auto", "jev"):
+            verify = "llm"
         surface = str(arguments.get("surface") or "auto").lower()
         if surface not in ("auto", "ax", "dom"):
             return ToolResult(
@@ -369,6 +406,7 @@ the run stops with status=blocked instead of clicking into the other app.
             max_steps=max_steps,
             allow_irreversible=allow_irreversible,
             use_llm=use_llm,
+            verify=verify,
             surface=surface,
             provider=provider,
             native=native,
@@ -482,6 +520,7 @@ the run stops with status=blocked instead of clicking into the other app.
         max_steps: int,
         allow_irreversible: bool,
         use_llm: bool,
+        verify: str = "llm",
         surface: str = "auto",
         provider: Any,
         native: Any,
@@ -535,6 +574,7 @@ the run stops with status=blocked instead of clicking into the other app.
                 allow_irreversible=allow_irreversible,
                 surface=surface,
                 use_llm=llm is not None,
+                verify=verify,
                 notes_workspace=self._sub_spec.parent_workspace or None,
                 extra_literals=literals,
                 **extra,

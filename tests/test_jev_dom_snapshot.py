@@ -571,3 +571,33 @@ def test_days_only_one_month_has_still_name_their_month(calendar):
     assert [a["context"] for a in _by_label(s, "28")] == ["January", "February"]
     for d in ("29", "30", "31"):
         assert [a["context"] for a in _by_label(s, d)] == ["January"], d
+
+
+def test_unlabeled_editors_are_named_by_their_heading_and_filled_through_their_keymap(page):
+    """Slack's manifest editor was listed as "(no name fill)" and Jev gave
+    typing into it 0.40 confidence. A code editor is named as such, by the
+    heading above it; its own cmd+a selects all before the text goes in."""
+    page.eval("""(function(){
+      var sec = document.createElement('section');
+      sec.innerHTML = '<h2>App Manifest</h2><p>Edit it here.</p>'
+        + '<div class="cm-editor"><div class="cm-content" contenteditable="true" role="textbox">{"old": true}</div></div>'
+        + '<h3>Notes</h3><textarea></textarea>';
+      document.body.insertBefore(sec, document.body.firstChild);
+      var content = sec.querySelector('.cm-content');
+      content.cmView = { view: { state: { doc: { toString: function () { return content.textContent; } } } } };
+      content.addEventListener('keydown', function (e) {
+        if (e.key === 'a' && e.metaKey) {
+          var r = document.createRange(); r.selectNodeContents(content);
+          var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+          window.__selectedAll = true;
+        }
+      });
+      return true;
+    })()""")
+    s = page.snap()
+    editor = _by_label(s, "code editor (App Manifest)")
+    assert editor and editor[0]["kind"] == "fill"
+    assert _by_label(s, "Notes")[0]["kind"] == "fill"
+    r = page.act(editor[0]["id"], "fill", {"text": '{"new": 1}', "mode": "replace"}, editor[0]["guard"])
+    assert r["ok"] and r["readback"] == '{"new": 1}', r
+    assert page.eval("window.__selectedAll === true")

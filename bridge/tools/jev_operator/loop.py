@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
 from bridge.decisions.provider import DecisionError, DecisionProvider
+from bridge.decisions.types import Noul
 from bridge.tools.computer_tools import ComputerToolSpec
 from bridge.tools.jev_operator.act import Actuator, Cancelled, Refused
 from bridge.tools.jev_operator.decide import (
@@ -29,7 +30,7 @@ from bridge.tools.jev_operator.decide import (
     decide,
     describe,
 )
-from bridge.tools.jev_operator.handoff import MAX_WAIT_S, REPLAN_MAX_TOKENS, LLMHelper
+from bridge.tools.jev_operator.handoff import MAX_WAIT_S, REPLAN_MAX_TOKENS, VERIFY_TEXT_CHARS, LLMHelper
 from bridge.tools.jev_operator.observe import (
     STATE_ROLES,
     WINDOW_CHROME,
@@ -129,6 +130,11 @@ PIXEL_CHANGE_MIN = 0.00008
 # A replan may return this many actions in order; past the first, each click is
 # found by Jev on a fresh capture, so each step is a step the planner did not
 # see. Measured on blind runs, see evals/jev_box/RESULTS.md.
+# Jev's end-state Noul: at or above this, the goal counts as met (verify="jev"
+# or "auto"); below it, verify="auto" asks the LLM check. The Noul runs cold
+# (56 checks on the harness envs: every answer at 0.8 or more agreed with the
+# LLM check, 9 of 9; at 0.5 to 0.8, 10 of 12; under 0.2, 6 of 19 were met).
+JEV_DONE_MIN = 0.8
 MAX_DIRECT_ACTIONS = 4
 MAX_PLAN_WAIT_S = 5.0
 # A second look at an expectation that did not hold, for a screen that is
@@ -320,6 +326,11 @@ class OperatorConfig:
     surface: str = "auto"
     use_llm: bool = True
     verify_with_llm: bool = True
+    # Who checks a "done": "llm" (the verify door, 4 to 8 s, writes the
+    # report), "jev" (one Noul on the screen text, under a second, no
+    # report), or "auto" (Jev first; the LLM only when Jev is unsure or the
+    # goal asks for values to be reported). FREYJA_JEV_VERIFY sets the default.
+    verify: str = field(default_factory=lambda: os.environ.get("FREYJA_JEV_VERIFY", "llm"))
     thresholds: Thresholds = field(default_factory=Thresholds)
     dry_run: bool = False
     jev_model: str | None = None
@@ -1364,9 +1375,11 @@ class Operator:
                             {
                                 "step": step,
                                 "kind": "type",
-                                "action": describe(d),
+                                "action": f"type into {d.target.label!r} not done",
+                                "ok": False,
                                 "changed": False,
-                                "diff": "no text available for this field",
+                                "diff": "no text to type: the goal gives none verbatim"
+                                + ("" if self.llm is not None else " and no LLM composes one"),
                             }
                         )
                         out = await self._replan(
@@ -1983,6 +1996,9 @@ class Operator:
                     "thrown away (a long text copied from the goal instead of named)"
                 )
                 await self._say(f"  → planner reply overflowed {REPLAN_MAX_TOKENS} tokens")
+            elif self.llm.last_error:
+                reason += f"; {self.llm.last_error}"
+                await self._say(f"  → {self.llm.last_error}")
             return self._finish_blocked(obs, reason)
         status = out.get("status")
         if status == "done":
@@ -2525,7 +2541,55 @@ class Operator:
             self.history[-1]["diff"] += f"; expected {expect!r}: {'holds' if chk.holds else 'does not hold'} (p={chk.p:.2f})"
         return chk.holds, after
 
+    async def _jev_end_state(self, obs: Observation) -> tuple[float, float] | None:
+        """Jev's own reading of the end state: P(the goal is met, judging by
+        the screen) and P(the goal asks for values to be reported back), in
+        one call. None when Jev could not answer."""
+        state = {
+            "goal": self.cfg.goal,
+            "window": obs.focused_window,
+            "recent_actions": [str(h.get("action")) for h in self.history[-8:]],
+            "screen_text": obs.full_text[:VERIFY_TEXT_CHARS],
+        }
+        qs = {
+            "met": Noul(
+                "Judging by screen_text and recent_actions alone, is the goal fully achieved: "
+                "every step it asks for taken, and every value it asks to change showing its new "
+                "value on the screen?"
+            ),
+            "report": Noul(
+                "Does the goal ask for values, names or findings to be reported back (read, "
+                "report, list, tell, check whether, how many), beyond performing actions?"
+            ),
+        }
+        try:
+            a = await self.provider.decide(state, qs)
+        except DecisionError as exc:
+            self._log({"event": "jev_verify", "error": str(exc)[:200]})
+            return None
+        return a.noul("met"), a.noul("report")
+
     async def _verify(self, obs: Observation) -> dict[str, Any] | None:
+        if self.cfg.verify in ("jev", "auto") and not self.cfg.dry_run:
+            js = await self._jev_end_state(obs)
+            if js is not None:
+                met, report = js
+                self._log({"event": "jev_verify", "met": round(met, 3), "report": round(report, 3)})
+                await self._say(f"  → Jev: goal met p={met:.2f}, values to report p={report:.2f}")
+                # Jev's "met" ends the run on its own; its "not met" still goes
+                # to the LLM, whose check names what is left (a sub-goal), which
+                # a Noul cannot: without one, a multi-item goal stalled at the
+                # third rejected claim.
+                sure_done = met >= JEV_DONE_MIN and report < 0.5
+                if self.cfg.verify == "jev" or sure_done or self.llm is None:
+                    return {
+                        "satisfied": met >= JEV_DONE_MIN,
+                        "summary": f"Jev's end-state check: P(goal met)={met:.2f}. "
+                        + self._template_summary(obs),
+                        "subgoal": None,
+                        "report": "",
+                        "by": "jev",
+                    }
         if self.llm is None or not self.cfg.verify_with_llm or self.llm.budget_left <= 0:
             return None
         # An app that exposes no text leaves the check nothing to judge from
@@ -2577,7 +2641,10 @@ class Operator:
         return (summary if met else f"{head} {summary}"), self._report(check), met
 
     def _template_summary(self, obs: Observation) -> str:
-        acts = [h["action"] for h in self.history if h.get("kind") not in ("wait",)]
+        # A refused, skipped or failed entry is in the history for the record;
+        # it was not performed ("Performed 1 actions: type (text from LLM)"
+        # described a run that typed nothing).
+        acts = [h["action"] for h in self.history if h.get("kind") != "wait" and h.get("ok") is not False]
         head = (
             f"Performed {len(acts)} actions in {obs.app_name}: " + "; ".join(acts[-6:])
             if acts

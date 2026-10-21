@@ -72,6 +72,23 @@ Scrolling. A page scroll is progress only when it brings text the run had not re
 
 Waiting on the world. Jev's own `wait` is under a second, for a page that is still loading. A goal that waits for something to happen on its own (a dashboard value to cross a line, a job to finish, a code to arrive) needs more. After four waits in a row Jev hands over, and the planner can return `direct_action` `{"kind": "wait", "seconds": n}`, up to 60 s and never past the run's time limit less 20 s, with a sub-goal for what to check after it ("click Refresh, read the backlog"). A planner wait needs no screenshot. A wait during which the screen changed counts as progress, because watching is the work, and Jev's own waits count from zero again after it. Before this, a watch run replanned every few seconds and ended "stuck" 35 s in.
 
+Jev's end-state check. `OperatorConfig.verify` (the tool's `verify` parameter;
+`FREYJA_JEV_VERIFY` sets the default, `llm`) chooses who checks a "done". `llm` is the
+verify door above. `jev` asks Jev two Nouls in one call, on the goal, the last eight
+actions and the screen text: whether the goal is met, and whether the goal asks for
+values to be reported back; a "met" at `JEV_DONE_MIN` (0.8) or more ends the run with
+the template summary and no report, under a second. `auto` takes Jev's "met" the same
+way when no values are to be reported, and otherwise asks the verify door, which can name
+what is left: a Noul cannot, and an early version that also took Jev's "not met" as final
+stalled the multi-item desk goals at the third rejected claim. On basics, hotel, canvas
+and desk (34 tasks, one rep each, threshold 0.9 at the time), `auto` matched `llm` on 32
+of 34 (the two differences were desk tasks passing under `auto`, an env at its limit
+either way) and took the check off six basics runs whose only LLM call it had been
+(rows_one 4.6 s to 2.4 s, rows_two 5.7 s to 3.0 s, long_export 4.6 s to 2.6 s). The Noul
+runs cold: of 56 checks the LLM also judged, every one at 0.8 or more agreed with it (9 of
+9), 10 of 12 between 0.5 and 0.8, and 6 of 19 under 0.2 were met after all; the threshold
+is 0.8 on that evidence. See `evals/jev_box/RESULTS.md` section 8.
+
 The end-state check can wait too. When the goal waits for something that has not happened yet, the check returns `wait_seconds` with its sub-goal, and the loop waits before going on. Such a check does not count as a disagreement, because Jev's done-claim was early, not wrong about the screen: two checks in a row ended a watch run "blocked" a minute into its two minutes. The LLM budget and the run's time limit still bound the run. Neither door puts the wait in the sub-goal: "after the wait, click Refresh" made Jev wait again, under a second at a time.
 
 The planner's memory. Each replan sees only the last 10 actions, and a diff shows only text that is new. So the planner also gets its own earlier notes (the last 12, oldest first), the run's first screen, and the run time. Without its notes, a watch run's planner wrote "the starting backlog is 385, page at 424", then "treat 422 as the baseline", then "the starting value was not recorded". Jev never sees the notes, because a note goes stale one action later: given them, Jev saved an order unchanged right after opening it, under a note saying the previous order "needs saving". Instead, the planner and the check put any fact the next step depends on into the sub-goal, which they write anew each time. The sub-goal starts with the action and adds the fact briefly ("Click Page on-call [7]: the backlog is 428, at least 10% above the starting 385"). An example that put the fact first made the planner open every sub-goal with a recap of what was done; the action came last, Jev waited instead of clicking, and the rescues, which look for a sub-goal that starts with its action, stopped matching. Shown only the current backlog, Jev had answered "no click target" for Page on-call five times, because the goal said not to page before a rise it could not check. Every action in the history carries `at_s`, the run seconds when it ran, and both doors get the run time. A goal with a time limit ("if it has not happened within 2 minutes, stop and tell me so") is met only by a reading taken at or after the limit: one run refreshed at 100 s and reported "no rise within 2 minutes" at 130 s.
@@ -139,6 +156,22 @@ event.
 When the goal contains a quoted string or a number, Jev can pick it as the text to type
 (`text_source` options are the literals extracted from the goal plus `needs_llm`), so
 "type \"hello\" into the search field" needs no LLM call.
+
+Long text. A quoted span counts up to 1,000 characters, and a fenced block (three
+backticks on their own lines) is one literal of any length up to 32,000 characters, with
+the quotes inside it left alone. Jev is offered a long literal by its size and its two
+ends ("the 3,412-character text of 161 lines given in the goal, which begins ... and ends
+..."), not in full, and the operator types the whole text. Before this, a quoted span
+over 200 characters was no literal, and a manifest pasted bare into a goal was not one
+either: a 208-character string in a goal stopped a no-LLM run with "no text could be
+determined", and the same manifest given to the planner stalled a run for 165 s while
+the planner tried to copy all of it into a 2,048-token reply. `items` entries count up to
+2,000 characters.
+
+Door deadlines. A door call that has not answered after `DOOR_TIMEOUT_S` (90 s) is given
+up, and the run's reason says so ("the replan call did not answer within 90 s"). The run
+view names what the run is waiting on (the planner, the field text, the end-state check)
+with a seconds counter after five seconds, instead of "reading the screen" for every wait.
 
 Calling agents rarely quote values: none of 25 goals in a real booking session did ("first name Ada, last name Lovelace"). Each such field took a text-door call, and on the booking pages those calls were a third of all door calls, every one copying a word of the goal. The text door now also returns the goal's other values to type, one per field. The words of the goal among them become typing options for the rest of the run, so a passenger form takes one call instead of one per field. A value that is not a word of the goal is dropped, so the model cannot add a typing option of its own.
 
@@ -220,6 +253,15 @@ How the DOM surface behaves:
 
 - **One tab.** A run is pinned to a tab by id: the tab active when it started, or the tab it opened. Tab ids are matched with one bulk `id of every tab` per window, since a window can hold a thousand tabs. A click that opens another tab (`target=_blank`, `window.open`) moves the run there, but only to a tab that did not exist when the run started: if the person brought one of their own tabs to the front meanwhile, the run stays where it was. A tab can also open after the click has returned: a file viewer's Download asks its server first and opens the virus-scan warning in a new tab about a second later. So for 15 seconds after a click, each read checks the front tab, and a new tab on the same site (the last two parts of the host name) moves the run there. A late tab on another site may be the person's own, so the run stays put and says so in the log. The person can switch tabs meanwhile.
 - **Which tab a run may start in.** The process keeps the ids of the tabs runs have opened or worked in. A run whose goal gives no address starts only in one of those; otherwise it stops `blocked` (code `foreign_tab`) and names the front tab, so the caller can put the address in the goal. The front tab can be anything the person has open: a test run once attached to a live video call that had come to the front, and clicked in it.
+- **Editors.** A text area or editor with no name of its own is listed by the heading,
+  legend or label before it in its section, and a code editor (CodeMirror 5 and 6, Monaco,
+  Ace) as "code editor (heading)". Slack's manifest editor was `(no name fill)` and Jev
+  gave typing into it 0.40 confidence. A fill into a code editor dispatches the editor's
+  own cmd+a before `insertText`, since selecting its hidden textarea or contenteditable
+  selects nothing a person would call all, and reads the value back from the editor's
+  model (CodeMirror 5's `getValue`, CodeMirror 6's `cmView`, Monaco's single model, Ace's
+  `env.editor`) because the editor draws only the lines in view; with no model reachable
+  the fill is not checked rather than failed.
 - **URLs.** When the goal names a URL and the tab is not on it, code opens it in a new tab before the first decision, so a run never starts by acting on an unrelated tab. An address the goal gives only as a fallback, in a clause that starts with a condition ("If the owned tab is unavailable, open https://…", "otherwise open …"), is not opened when the run can continue in a tab a run already used on the same site: one continuation found the first run's results tab, then opened the entry page anyway and searched again from the start. A quoted address is text to type (a form's website field), not a page to open, unless the goal says to open it. Jev can also choose `open_url` later (the goal's URLs are its options). A tab the run opened itself is reused for later addresses; the person's own tabs are never navigated.
 - **No pointer, no focus.** Page runs send no OS input and do not bring the browser forward, so they keep working behind other windows and while the screen is locked. Native-app runs cannot.
 - **Snapshot.** Up to 250 controls, including those inside open shadow roots (web components; MDN's whole search lives in them), nearest to the visible area first (controls far down a long page are targets; using one scrolls it into view), with a stable id per element, accessible names, values, states, and the page's text: what is in view, then text below the fold, then up to 8,000 characters above it, up to 24,000 in all. Text a clipping ancestor hides (a panel collapsed to no height, which keeps its text in the page) and text faded to opacity 0 (a carousel's other slides) is not page text: a closed room panel's rate read as the open room's. A `<select>` lists each option as a clickable row. Password, file and hidden inputs are never listed.

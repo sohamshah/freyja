@@ -69,7 +69,7 @@ class TypeSafeProvider:
         base_url: str | None = None,
         model: str = DEFAULT_MODEL,
         name: str = "typesafe",
-        timeout: float = 30.0,
+        timeout: float = 12.0,
     ) -> None:
         self.name = name
         self.model = model
@@ -112,8 +112,10 @@ class TypeSafeProvider:
         assets: list[ImageAsset] | None = None,
     ) -> Answers:
         url, headers, body = self._request(state, questions, model, assets)
+        # Latency is the caller's wait, a failed first attempt included: a
+        # decision logged at 165 ms had taken 29 s with the stall unrecorded.
+        t0 = time.perf_counter()
         for retry in (True, False):
-            t0 = time.perf_counter()
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     resp = await client.post(url, headers=headers, json=body)

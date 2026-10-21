@@ -742,12 +742,33 @@ def _selection(o: Observation) -> set[tuple[str, str, str]]:
 
 # Double quotes pair with their own kind; a single quote only opens or closes a
 # literal when it is not inside a word, so apostrophes ("Don't") never split one.
+# A quote holds a value or a sentence; a long text (a manifest, a message, code,
+# anything with quotes of its own) goes in a fenced block, which has no length
+# a goal would reach. A 161-line manifest given in a goal without a fence was
+# no literal at all, and only an LLM could have retyped it.
 _QUOTED = re.compile(
-    r"\"([^\"]{1,200})\""
-    r"|“([^”]{1,200})”"
-    r"|(?<!\w)'(.{1,200}?)'(?!\w)"
-    r"|(?<!\w)‘(.{1,200}?)’(?!\w)"
+    r"\"([^\"]{1,1000})\""
+    r"|“([^”]{1,1000})”"
+    r"|(?<!\w)'(.{1,1000}?)'(?!\w)"
+    r"|(?<!\w)‘(.{1,1000}?)’(?!\w)"
 )
+_FENCED = re.compile(r"```[^\n`]*\n(.*?)\n?```", re.S)
+MAX_FENCED_CHARS = 32_000
+
+
+def fenced_literals(text: str) -> list[str]:
+    """The contents of ```fenced``` blocks, as written (the fence's own language
+    tag and the newline after it left out)."""
+    out: list[str] = []
+    for m in _FENCED.finditer(text or ""):
+        s = m.group(1).strip("\n")
+        if s.strip() and s not in out:
+            out.append(s[:MAX_FENCED_CHARS])
+    return out
+
+
+def _unfenced(text: str) -> str:
+    return _FENCED.sub(" ", text or "")
 # A number in the goal, with thousands commas inside it but not the sentence's
 # own punctuation after it: "mobile number 5550100, ZIP code 80202." gave
 # "5550100," (typed into a phone field) and no ZIP at all.
@@ -760,8 +781,8 @@ def quoted_literals(text: str) -> list[str]:
     """Quoted spans only, with \\n and \\t read as a line break and a tab: the
     planner writes a subgoal like 'Type "\\nBread 1" into the text area'. Bare
     numbers are left out; in a subgoal they are mostly element indexes."""
-    out: list[str] = []
-    for m in _QUOTED.finditer(text or ""):
+    out: list[str] = fenced_literals(text)
+    for m in _QUOTED.finditer(_unfenced(text)):
         s = next(g for g in m.groups() if g is not None).replace("\\n", "\n").replace("\\t", "\t")
         if s.strip() and s not in out:
             out.append(s)
@@ -793,7 +814,8 @@ def literals_from_goal(goal: str) -> list[str]:
     """Strings the goal itself supplies as typing candidates: quoted spans
     first, then bare numbers. Jev chooses among these so simple goals need
     no LLM call to fill a field."""
-    out: list[str] = []
+    out: list[str] = fenced_literals(goal)
+    goal = _unfenced(goal)
     for m in _QUOTED.finditer(goal):
         s = next(g for g in m.groups() if g is not None).strip()
         if s and s not in out:

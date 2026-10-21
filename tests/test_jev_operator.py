@@ -526,10 +526,11 @@ class FakeCalculator:
 class ScriptedProvider:
     """Answers each step from a script of (operation, target_label) pairs."""
 
-    def __init__(self, script: list[tuple[str, str | None]]) -> None:
+    def __init__(self, script: list[tuple[str, str | None]], nouls: dict[str, float] | None = None) -> None:
         self.script = list(script)
         self.calls: list[dict[str, Any]] = []
         self.name = "scripted"
+        self.nouls = dict(nouls or {})
 
     async def decide(self, state, questions, *, model=None) -> Answers:
         self.calls.append({"state": state, "questions": questions})
@@ -544,10 +545,14 @@ class ScriptedProvider:
                     pick = next((k for k, v in q.options.items() if v.split(" (out of view")[0].endswith(" " + label)), "none")
                 elif name == "key_target" and op == "key" and label:
                     pick = label
+                elif name == "type_target" and op == "type" and label:
+                    pick = next((k for k, v in q.options.items() if v.endswith(" " + label)), "none")
+                elif name == "text_source" and op == "type":
+                    pick = "needs_llm"
                 probs = {k: (0.92 if k == pick else 0.08 / max(1, len(q.options) - 1)) for k in q.options}
                 out[name] = ChoiceAnswer(choice=pick, probabilities=probs, confidence=0.92)
             else:
-                out[name] = NoulAnswer(p=0.05)
+                out[name] = NoulAnswer(p=self.nouls.get(name, 0.05))
         return Answers(answers=out, model="fake", provider="scripted", latency_ms=3)
 
     def decide_sync(self, *a, **k):  # pragma: no cover
@@ -2082,3 +2087,104 @@ def test_ax_surface_satisfies_protocol():
 def test_loop_uses_ax_surface():
     op, _ = make_operator(object(), None)
     assert op.surface.name == "ax"
+
+
+# ─── long text, unperformed actions, Jev's end-state check ───────────
+
+
+def test_a_fenced_block_is_one_literal_and_its_inner_quotes_are_not():
+    """A 161-line manifest given bare in a goal was no literal at all, and a
+    quoted span over 200 chars was dropped: only an LLM could retype them."""
+    block = '{\n  "display_information": {"name": "Freyja"},\n  "scopes": ["chat:write", "im:read"]\n}'
+    goal = f"replace the editor's contents with the manifest below and save:\n```json\n{block}\n```\nthen click \"Save Changes\""
+    lits = literals_from_goal(goal)
+    assert lits[0] == block
+    assert "Freyja" not in lits and "chat:write" not in lits, "quotes inside the block are part of it"
+    assert "Save Changes" in lits
+    long = "x" * 600
+    assert literals_from_goal(f'type "{long}" into the filter') == [long]
+
+
+def test_a_long_literal_is_offered_by_its_size_and_ends():
+    from bridge.tools.jev_operator.decide import _literal_option
+
+    short = _literal_option("hello world")
+    assert short == "type exactly: hello world"
+    text = "\n".join(f"line {i} of a long block" for i in range(60))
+    opt = _literal_option(text)
+    assert f"{len(text)}-character text of 60 lines" in opt
+    assert "line 1 of" in opt and "line 59 of a long block" in opt
+    assert len(opt) < 250, "the state carries a preview, not the text"
+
+
+def test_a_type_with_no_text_is_not_a_performed_action(tmp_path, monkeypatch):
+    """'Performed 1 actions: type (text from LLM)' summed up a run that typed
+    nothing: the goal gave no text and no LLM was there to compose one."""
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+
+    class FormNative(FakeCalculator):
+        def list_windows(self, *, include_helpers=False):
+            return [FakeWindow(1, 100, "com.apple.calculator", "Sign in", FakeBounds(0, 40, 400, 300))]
+
+        def read_ax_tree(self, pid, max_depth=8):
+            return json.dumps(form_tree())
+
+    op, _ = make_operator(FormNative(), ScriptedProvider([("type", "Username"), ("done", None)]), goal="fill in the username field")
+    res = asyncio.run(op.run())
+    assert res.status == "blocked", res.summary
+    assert "Performed" not in res.summary and "No actions were taken" in res.summary, res.summary
+    entry = next(h for h in res.history if h["kind"] == "type")
+    assert entry["ok"] is False and "no text to type" in entry["diff"]
+
+
+def test_jev_checks_the_end_state_of_an_acting_goal_without_the_llm(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    doors: list[str] = []
+
+    async def fake_complete(messages, system_prompt, max_tokens):
+        doors.append(system_prompt[:12])
+        return json.dumps({"satisfied": True, "summary": "The LLM looked.", "subgoal": None})
+
+    script = [("click", "1"), ("done", None)]
+    # Jev sure the goal is met, no values to report: the run ends on Jev's word.
+    llm = LLMHelper(fake_complete, max_calls=4)
+    op, _ = make_operator(FakeCalculator(), ScriptedProvider(list(script), nouls={"met": 0.97, "report": 0.03}), goal="press 1", llm=llm, verify="auto")
+    res = asyncio.run(op.run())
+    assert res.status == "done" and res.summary.startswith("Jev's end-state check: P(goal met)=0.97")
+    assert doors == [] and res.llm_calls == 0
+    # The goal asks for a value back: the LLM writes the report.
+    llm = LLMHelper(fake_complete, max_calls=4)
+    op, _ = make_operator(FakeCalculator(), ScriptedProvider(list(script), nouls={"met": 0.97, "report": 0.9}), goal="press 1 and tell me the display", llm=llm, verify="auto")
+    res = asyncio.run(op.run())
+    assert res.status == "done" and res.summary == "The LLM looked." and doors == ["You judge wh"]
+    # Jev unsure: the LLM decides.
+    doors.clear()
+    llm = LLMHelper(fake_complete, max_calls=4)
+    op, _ = make_operator(FakeCalculator(), ScriptedProvider(list(script), nouls={"met": 0.5, "report": 0.03}), goal="press 1", llm=llm, verify="auto")
+    res = asyncio.run(op.run())
+    assert res.status == "done" and res.summary == "The LLM looked." and len(doors) == 1
+    # verify="jev": no LLM check at all, and a run Jev will not vouch for does not end as done.
+    doors.clear()
+    llm = LLMHelper(fake_complete, max_calls=4)
+    op, _ = make_operator(FakeCalculator(), ScriptedProvider([("click", "1"), ("done", None), ("done", None), ("done", None), ("done", None)], nouls={"met": 0.1, "report": 0.03}), goal="press 1", llm=llm, verify="jev")
+    res = asyncio.run(op.run())
+    assert res.status != "done" and doors == []
+
+
+def test_a_door_that_does_not_answer_in_time_is_given_up(tmp_path, monkeypatch):
+    """One replan sat 165 s on a reply that then overflowed; the UI said
+    "reading the screen" the whole time. A door call now has a deadline, and
+    the run's reason says so."""
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    monkeypatch.setattr("bridge.tools.jev_operator.handoff.DOOR_TIMEOUT_S", 0.05)
+
+    async def slow_complete(messages, system_prompt, max_tokens):
+        await asyncio.sleep(1.0)
+        return "{}"
+
+    llm = LLMHelper(slow_complete, max_calls=3)
+    op, _ = make_operator(FakeCalculator(), ScriptedProvider([("need_help", None)]), goal="show 7", llm=llm, verify="jev")
+    t0 = time.perf_counter()
+    res = asyncio.run(op.run())
+    assert time.perf_counter() - t0 < 5
+    assert res.status == "blocked" and "did not answer within 0 s" in res.summary, res.summary

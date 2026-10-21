@@ -304,6 +304,7 @@
   }
 
   function nameOf(el) {
+    var role = (attr(el, 'role') || '').toLowerCase();
     var v = norm(attr(el, 'aria-label'));
     if (v) return clip(v, MAX_LABEL);
     v = labelledBy(el);
@@ -324,7 +325,9 @@
     var alt = norm(attr(el, 'alt'));
     if (alt) return clip(alt, MAX_LABEL);
     var tag = el.tagName;
-    if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
+    // What an editable element holds is its value, not its name.
+    var host = editorHost(el);
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT' && !host && !el.isContentEditable) {
       v = textOf(el);
       if (v) return clip(v, MAX_LABEL);
       var img = el.querySelector && el.querySelector('img[alt],[aria-label],svg title');
@@ -338,7 +341,36 @@
       v = norm(attr(el, keys[k]));
       if (v) return clip(v, MAX_LABEL);
     }
+    // An editor or text area with no name of its own is named the way a
+    // person sees it: by the heading above it. Slack's manifest editor was
+    // "(no name fill)" and Jev gave typing into it 0.40 confidence.
+    if (host || tag === 'TEXTAREA' || el.isContentEditable || role === 'textbox') {
+      var near = headingBefore(host || el);
+      if (host) return clip('code editor' + (near ? ' (' + near + ')' : ''), MAX_LABEL);
+      if (near) return clip(near, MAX_LABEL);
+    }
     return '';
+  }
+
+  var EDITOR_HOSTS = '.cm-editor,.CodeMirror,.monaco-editor,.ace_editor';
+  function editorHost(el) {
+    return el.closest ? el.closest(EDITOR_HOSTS) : null;
+  }
+
+  // The nearest visible heading, legend or label before `el` in the same
+  // section, the way a person reads which field this is.
+  function headingBefore(el) {
+    var scope = (el.closest && el.closest('section,form,fieldset,[role=tabpanel],[role=region],article,main')) || document.body;
+    var hs = scope.querySelectorAll('h1,h2,h3,h4,h5,h6,[role=heading],legend,label,dt');
+    var best = '';
+    for (var i = 0; i < hs.length; i++) {
+      var h = hs[i];
+      if (!(h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
+      if (h.contains(el) || !isVisible(h)) continue;
+      var t = norm(h.textContent);
+      if (t && t.length <= 80) best = t;
+    }
+    return best;
   }
 
   // A control with no accessible name, named the way a person reads an icon:
@@ -1241,7 +1273,46 @@
 
   // Type the way a person does (select, then insert), so frameworks and rich
   // editors see a real input; fall back to setting the value directly.
+  // A code editor keeps its text in a model and draws only the lines in view:
+  // selecting its hidden textarea or contenteditable selects nothing a person
+  // would call "all", and innerText is a slice. Its own keymap handles cmd+a
+  // (CodeMirror 5 and 6, Monaco and Ace all bind it), and insertText into the
+  // focused input replaces the selection as a person's paste would.
+  function editorValue(host) {
+    try {
+      if (host.CodeMirror) return host.CodeMirror.getValue();
+      var content = host.querySelector('.cm-content');
+      if (content && content.cmView && content.cmView.view) return content.cmView.view.state.doc.toString();
+      if (host.classList.contains('monaco-editor') && window.monaco && window.monaco.editor) {
+        var models = window.monaco.editor.getModels();
+        if (models.length === 1) return models[0].getValue();
+      }
+      if (host.env && host.env.editor) return host.env.editor.getValue();
+    } catch (e) { /* no model reachable */ }
+    return null;
+  }
+
+  function editorSelectAll(el) {
+    var opts = { key: 'a', code: 'KeyA', keyCode: 65, which: 65, metaKey: true, bubbles: true, cancelable: true };
+    el.dispatchEvent(new KeyboardEvent('keydown', opts));
+    el.dispatchEvent(new KeyboardEvent('keyup', opts));
+  }
+
+  function fillEditor(host, el, text, append) {
+    var input = host.querySelector('textarea, [contenteditable=true], .cm-content') || el;
+    input.focus();
+    if (!append) editorSelectAll(input);
+    else {
+      var sel = window.getSelection();
+      if (sel && input.isContentEditable) { var r = document.createRange(); r.selectNodeContents(input); r.collapse(false); sel.removeAllRanges(); sel.addRange(r); }
+    }
+    document.execCommand('insertText', false, text);
+    return editorValue(host);
+  }
+
   function fillText(el, text, append) {
+    var host = editorHost(el);
+    if (host) return fillEditor(host, el, text, append);
     el.focus();
     var isField = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
     var want = append ? (isField ? (el.value || '') : (el.innerText || '')) + text : text;
