@@ -4,7 +4,7 @@ import { getEffectiveTheme, oppositeTheme } from '../lib/theme'
 import { useSchedulerStore } from '../state/scheduler-store'
 import { SLASH_COMMANDS } from '../lib/slash'
 import { scrollToReveal, stepSelection } from '../lib/listNavigation'
-
+import { JevWidgetRenderer, type JevWidgetSpec } from './JevGenerativeWidgets'
 interface PaletteItem {
   id: string
   title: string
@@ -34,6 +34,10 @@ export function CommandPalette() {
 
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(0)
+  const [genUiWidget, setGenUiWidget] = useState<JevWidgetSpec | null>(null)
+  const [jevStatus, setJevStatus] = useState<{ isInferring: boolean; latencyMs?: number; choice?: string }>({ isInferring: false })
+  const [toastMsg, setToastMsg] = useState<string | null>(null)
+  const debounceTimer = useRef<NodeJS.Timeout | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   // Keyboard scrolling slides rows underneath a stationary cursor, which fires
@@ -41,10 +45,54 @@ export function CommandPalette() {
   // actually moves again.
   const suppressHover = useRef(false)
 
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg)
+    setTimeout(() => setToastMsg(null), 2500)
+  }, [])
+
   useEffect(() => {
     inputRef.current?.focus()
   }, [])
 
+  useEffect(() => {
+    if (debounceTimer.current) clearTimeout(debounceTimer.current)
+    const trimmed = query.trim()
+    if (!trimmed || trimmed.startsWith('/') || trimmed.length < 3) {
+      setGenUiWidget(null)
+      setJevStatus({ isInferring: false })
+      return
+    }
+
+    setJevStatus({ isInferring: true })
+    debounceTimer.current = setTimeout(async () => {
+      try {
+        const resp = await fetch('http://127.0.0.1:9500/api/jev/classify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: trimmed })
+        })
+        if (!resp.ok) {
+          setJevStatus({ isInferring: false })
+          return
+        }
+        const data = await resp.json()
+        if (data.widget && data.widget !== 'palette_command' && (data.confidence >= 0.5 || data.readiness >= 1.0)) {
+          setGenUiWidget(data.widget_spec)
+          setJevStatus({ isInferring: false, latencyMs: data.latency_ms, choice: data.widget })
+        } else {
+          setGenUiWidget(null)
+          setJevStatus({ isInferring: false, latencyMs: data.latency_ms, choice: 'standard' })
+        }
+      } catch {
+        setGenUiWidget(null)
+        setJevStatus({ isInferring: false })
+      }
+    }, 150)
+
+    return () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current)
+    }
+  }, [query])
   const items: PaletteItem[] = useMemo(() => {
     const out: PaletteItem[] = []
     out.push(
@@ -324,6 +372,12 @@ export function CommandPalette() {
       e.preventDefault()
       filtered[selected]?.action()
     } else if (e.key === 'Escape') {
+      if (genUiWidget) {
+        setGenUiWidget(null)
+        setQuery('')
+        e.preventDefault()
+        return
+      }
       close(false)
     }
   }
@@ -346,7 +400,7 @@ export function CommandPalette() {
         className="absolute inset-0 bg-black/40 backdrop-blur-[1px]"
         onClick={() => close(false)}
       />
-      <div className="relative w-[620px] overflow-hidden rounded-2xl glass-strong shadow-2xl ring-hairline-strong">
+      <div className="relative w-[620px] overflow-hidden rounded-2xl glass-strong shadow-2xl ring-hairline-strong transition-all duration-150">
         <div className="flex items-center gap-3 px-4 py-3 hairline-b">
           <svg width="14" height="14" viewBox="0 0 14 14">
             <circle cx="6" cy="6" r="4" stroke="var(--accent)" strokeWidth="1.2" fill="none" />
@@ -360,34 +414,55 @@ export function CommandPalette() {
             placeholder="Search commands, skills, subagents, sessions…"
             className="flex-1 bg-transparent text-[12.5px] text-fg-0 placeholder:text-fg-3 focus:outline-none"
           />
+          <div className="flex items-center gap-1.5 font-mono text-[10px]">
+            {jevStatus.isInferring ? (
+              <span className="kbd text-[9.5px] text-accent animate-pulse">jev…</span>
+            ) : jevStatus.choice && jevStatus.choice !== 'standard' ? (
+              <span className="kbd text-[9.5px] text-fg-2">{jevStatus.choice} · {jevStatus.latencyMs}ms</span>
+            ) : null}
+          </div>
           <kbd className="kbd">esc</kbd>
         </div>
-        <div
-          ref={listRef}
-          onMouseMove={onPointerMove}
-          className="relative max-h-[360px] overflow-y-auto p-1"
-        >
-          {filtered.length === 0 && (
-            <div className="py-8 text-center text-[12px] italic text-fg-3">No results</div>
-          )}
-          {groups.map(({ group, rows }) => (
-            <div key={group}>
-              <div className="px-3 pb-1 pt-3 text-[9.5px] uppercase tracking-[0.16em] text-fg-3">
-                {group}
+
+        {genUiWidget ? (
+          <div className="relative overflow-hidden">
+            <JevWidgetRenderer spec={genUiWidget} onClose={() => close(false)} onToast={showToast} />
+          </div>
+        ) : (
+          <div
+            ref={listRef}
+            onMouseMove={onPointerMove}
+            className="relative max-h-[360px] overflow-y-auto p-1"
+          >
+            {filtered.length === 0 && (
+              <div className="py-8 text-center text-[12px] italic text-fg-3">No results</div>
+            )}
+            {groups.map(({ group, rows }) => (
+              <div key={group}>
+                <div className="px-3 pb-1 pt-3 text-[9.5px] uppercase tracking-[0.16em] text-fg-3">
+                  {group}
+                </div>
+                {rows.map(({ item, index }, positionInGroup) => (
+                  <PaletteRow
+                    key={item.id}
+                    item={item}
+                    index={index}
+                    firstInGroup={positionInGroup === 0}
+                    active={index === selected}
+                    onHover={onHoverRow}
+                  />
+                ))}
               </div>
-              {rows.map(({ item, index }, positionInGroup) => (
-                <PaletteRow
-                  key={item.id}
-                  item={item}
-                  index={index}
-                  firstInGroup={positionInGroup === 0}
-                  active={index === selected}
-                  onHover={onHoverRow}
-                />
-              ))}
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
+
+        {toastMsg && (
+          <div className="absolute bottom-12 left-1/2 -translate-x-1/2 bg-zinc-900 border border-emerald-500/50 text-emerald-400 px-3.5 py-1.5 rounded-lg text-[11.5px] font-medium shadow-xl flex items-center gap-2 z-50 animate-in fade-in slide-in-from-bottom-2">
+            <span>✓</span>
+            <span>{toastMsg}</span>
+          </div>
+        )}
         <div className="hairline-t flex items-center justify-between bg-black/35 px-4 py-2 text-[10px] text-fg-2">
           <div className="flex items-center gap-2">
             <kbd className="kbd">↑</kbd>

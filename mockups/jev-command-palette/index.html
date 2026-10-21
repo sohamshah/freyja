@@ -1,0 +1,1520 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Freyja · Command Palette</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* ─── Freyja Design System Tokens (globals.css exact mirror) ─── */
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --paper: 10 10 10;
+      --bg-0: #0a0a0a;
+      --bg-1: #121212;
+      --bg-2: #181818;
+      --fg-0: #e8e8e8;
+      --fg-1: #a8a8a8;
+      --fg-2: #6e6e6e;
+      --fg-3: #4a4a4a;
+      --fg-4: #303030;
+      --accent-rgb: 168 212 252;
+      --accent: rgb(var(--accent-rgb));
+      --ink-rgb: 255 255 255;
+      --shadow-rgb: 0 0 0;
+      --modal-bg: rgba(16, 16, 16, 0.92);
+      --modal-border: rgba(255, 255, 255, 0.08);
+      --card-bg: rgba(255, 255, 255, 0.03);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --active-row-bg: rgba(168, 212, 252, 0.15);
+      --active-row-fg: #f3f4f6;
+      --kbd-bg: rgba(255, 255, 255, 0.06);
+      --kbd-border: rgba(255, 255, 255, 0.12);
+      --hairline: rgba(255, 255, 255, 0.07);
+      --canvas-bg: #0d0f12;
+    }
+
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --paper: 248 245 239;
+      --bg-0: #f8f5ef;
+      --bg-1: #f3efe8;
+      --bg-2: #ece7df;
+      --fg-0: #24201b;
+      --fg-1: #4c463e;
+      --fg-2: #605950;
+      --fg-3: #766f65;
+      --fg-4: #a69f95;
+      --accent-rgb: 40 100 180;
+      --accent: rgb(var(--accent-rgb));
+      --ink-rgb: 34 30 24;
+      --shadow-rgb: 62 50 32;
+      --modal-bg: rgba(249, 246, 240, 0.94);
+      --modal-border: rgba(34, 30, 24, 0.1);
+      --card-bg: rgba(72, 60, 42, 0.035);
+      --card-border: rgba(34, 30, 24, 0.08);
+      --active-row-bg: rgba(40, 100, 180, 0.14);
+      --active-row-fg: #24201b;
+      --kbd-bg: rgba(252, 250, 246, 0.92);
+      --kbd-border: rgba(34, 30, 24, 0.14);
+      --hairline: rgba(34, 30, 24, 0.08);
+      --canvas-bg: #f4f0e8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--canvas-bg);
+      color: var(--fg-0);
+      font-family: 'Geist Mono', ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      user-select: none;
+      -webkit-font-smoothing: antialiased;
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+
+    .ambient-grid {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.4;
+      background: 
+        radial-gradient(circle at 50% 15%, rgba(var(--accent-rgb), 0.08), transparent 45%),
+        linear-gradient(rgba(var(--ink-rgb), 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(var(--ink-rgb), 0.03) 1px, transparent 1px);
+      background-size: 100% 100%, 32px 32px, 32px 32px;
+    }
+
+    header {
+      position: relative;
+      z-index: 10;
+      height: 44px;
+      border-bottom: 1px solid var(--hairline);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      font-size: 11px;
+      color: var(--fg-2);
+      background: rgba(var(--paper), 0.85);
+      backdrop-filter: blur(16px);
+    }
+
+    .brand-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-mark {
+      font-weight: 600;
+      color: var(--fg-0);
+      letter-spacing: -0.02em;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .theme-toggle-btn {
+      background: transparent;
+      border: 1px solid var(--hairline);
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-family: inherit;
+      font-size: 10px;
+      color: var(--fg-2);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s ease;
+    }
+
+    .theme-toggle-btn:hover {
+      background: var(--card-bg);
+      color: var(--fg-0);
+    }
+
+    main {
+      position: relative;
+      z-index: 10;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 40px;
+    }
+
+    .presets-wrap {
+      margin-bottom: 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      max-width: 760px;
+    }
+
+    .presets-title {
+      font-size: 9.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: var(--fg-3);
+    }
+
+    .presets-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .preset-pill {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 5px;
+      padding: 4px 8px;
+      font-size: 10.5px;
+      color: var(--fg-1);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.12s ease;
+    }
+
+    .preset-pill:hover {
+      background: rgba(var(--accent-rgb), 0.1);
+      border-color: rgba(var(--accent-rgb), 0.25);
+      color: var(--fg-0);
+    }
+
+    .palette-container {
+      width: 620px;
+      border-radius: 16px;
+      background: var(--modal-bg);
+      border: 0.5px solid var(--modal-border);
+      box-shadow: 
+        0 0 0 0.5px var(--hairline),
+        0 2px 4px rgba(var(--shadow-rgb), 0.06),
+        0 24px 64px -16px rgba(var(--shadow-rgb), 0.32);
+      backdrop-filter: blur(40px) saturate(140%);
+      -webkit-backdrop-filter: blur(40px) saturate(140%);
+      overflow: hidden;
+      transition: all 0.15s ease;
+    }
+
+    .input-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--hairline);
+    }
+
+    .search-icon {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+    }
+
+    .search-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      font-family: inherit;
+      font-size: 13.5px;
+      color: var(--fg-0);
+      caret-color: var(--accent);
+    }
+
+    .search-input::placeholder {
+      color: var(--fg-3);
+    }
+
+    .kbd {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      font-family: inherit;
+      font-size: 10px;
+      font-weight: 400;
+      color: var(--fg-1);
+      background: var(--kbd-bg);
+      border: 0.5px solid var(--kbd-border);
+      box-shadow: 0 1px 0 rgba(var(--shadow-rgb), 0.1);
+      border-radius: 4px;
+    }
+
+    .jev-status-badge {
+      font-size: 9.5px;
+      font-family: inherit;
+      padding: 1px 6px;
+      border-radius: 4px;
+      color: var(--fg-2);
+      display: none;
+    }
+
+    .jev-status-badge.active {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--accent);
+      background: rgba(var(--accent-rgb), 0.1);
+      border: 0.5px solid rgba(var(--accent-rgb), 0.25);
+    }
+
+    .palette-body {
+      position: relative;
+      overflow-y: auto;
+      max-height: 400px;
+    }
+
+    .palette-group-label {
+      padding: 10px 12px 4px 12px;
+      font-size: 9.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: var(--fg-3);
+    }
+
+    .palette-item-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 8px 12px;
+      margin: 0 4px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12.5px;
+      transition: background 0.08s ease;
+    }
+
+    .palette-item-row.active {
+      background: var(--active-row-bg);
+      color: var(--active-row-fg);
+    }
+
+    .palette-item-row:not(.active):hover {
+      background: rgba(var(--ink-rgb), 0.03);
+    }
+
+    .palette-item-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .palette-item-title {
+      display: block;
+      color: var(--fg-0);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .palette-item-sub {
+      display: block;
+      font-size: 11px;
+      color: var(--fg-2);
+      margin-top: 1px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .palette-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      border-top: 1px solid var(--hairline);
+      background: rgba(var(--ink-rgb), 0.02);
+      font-size: 10px;
+      color: var(--fg-2);
+    }
+
+    .footer-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .footer-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* ─── Generative UI Widgets ─── */
+    .gen-widget-wrap {
+      padding: 14px 16px;
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .widget-top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--hairline);
+    }
+
+    .widget-title-area {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 500;
+      color: var(--fg-0);
+    }
+
+    .widget-category-tag {
+      font-size: 9.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: var(--fg-3);
+    }
+
+    .card-well {
+      border: 0.5px solid var(--card-border);
+      background: var(--card-bg);
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .time-slot-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 5px;
+      margin-top: 6px;
+    }
+
+    .time-slot-btn {
+      padding: 6px 2px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 10.5px;
+      text-align: center;
+      border: 0.5px solid var(--hairline);
+      background: var(--card-bg);
+      color: var(--fg-1);
+      cursor: pointer;
+      transition: all 0.1s ease;
+    }
+
+    .time-slot-btn.selected {
+      background: rgba(var(--accent-rgb), 0.2);
+      border-color: var(--accent);
+      color: var(--fg-0);
+      font-weight: 500;
+    }
+
+    .time-slot-btn.busy {
+      opacity: 0.4;
+      cursor: not-allowed;
+      border-color: transparent;
+    }
+
+    .memory-quote {
+      font-family: 'Inter', -apple-system, sans-serif;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--fg-0);
+      border-left: 2px solid var(--accent);
+      padding: 6px 10px;
+      background: rgba(var(--ink-rgb), 0.02);
+      border-radius: 0 4px 4px 0;
+    }
+
+    .finance-hero-number {
+      font-size: 24px;
+      font-weight: 500;
+      letter-spacing: -0.02em;
+      color: var(--fg-0);
+    }
+
+    .finance-bar-strip {
+      display: flex;
+      height: 6px;
+      border-radius: 9999px;
+      overflow: hidden;
+      background: rgba(var(--ink-rgb), 0.06);
+    }
+
+    .finance-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+
+    .finance-table td {
+      padding: 6px 4px;
+      border-bottom: 0.5px solid var(--hairline);
+    }
+
+    .finance-table td:last-child {
+      text-align: right;
+      color: var(--fg-0);
+      font-weight: 500;
+    }
+
+    .controls-panel {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .control-card {
+      border: 0.5px solid var(--card-border);
+      background: var(--card-bg);
+      border-radius: 6px;
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .control-switch {
+      width: 32px;
+      height: 17px;
+      border-radius: 9999px;
+      border: 0.5px solid var(--hairline);
+      background: rgba(var(--ink-rgb), 0.08);
+      position: relative;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    .control-switch.on {
+      background: rgba(var(--accent-rgb), 0.3);
+      border-color: var(--accent);
+    }
+
+    .control-switch-knob {
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: var(--fg-0);
+      position: absolute;
+      top: 1.5px;
+      left: 1.5px;
+      transition: transform 0.15s ease;
+    }
+
+    .control-switch.on .control-switch-knob {
+      transform: translateX(15px);
+    }
+
+    .widget-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--hairline);
+    }
+
+    .btn {
+      font-family: inherit;
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.1s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .btn-secondary {
+      background: var(--card-bg);
+      border: 0.5px solid var(--card-border);
+      color: var(--fg-1);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(var(--ink-rgb), 0.06);
+      color: var(--fg-0);
+    }
+
+    .btn-primary {
+      background: rgba(var(--accent-rgb), 0.18);
+      border: 0.5px solid rgba(var(--accent-rgb), 0.4);
+      color: var(--fg-0);
+      font-weight: 500;
+    }
+
+    .btn-primary:hover {
+      background: rgba(var(--accent-rgb), 0.28);
+    }
+
+    .toast-box {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(30px);
+      background: var(--modal-bg);
+      border: 0.5px solid var(--accent);
+      color: var(--fg-0);
+      padding: 7px 14px;
+      border-radius: 6px;
+      font-size: 11.5px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 12px 30px rgba(var(--shadow-rgb), 0.2);
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 100;
+    }
+
+    .toast-box.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <div class="ambient-grid"></div>
+
+  <header>
+    <div class="brand-group">
+      <span class="brand-mark">Freyja</span>
+      <span style="opacity: 0.3;">/</span>
+      <span>Generative UI Command Center</span>
+    </div>
+    <div class="header-actions">
+      <span class="kbd">⌘K</span>
+      <button class="theme-toggle-btn" onclick="toggleTheme()">
+        <span id="themeBtnText">Theme: Light (Paper)</span>
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <div class="presets-wrap">
+      <div class="presets-title">Supercharged Command Center Presets (Click to test):</div>
+      <div class="presets-row">
+        <div class="preset-pill" onclick="simulateType('what meetings do i have tomorrow')">
+          <span>📅</span> "agenda tomorrow (view)"
+        </div>
+        <div class="preset-pill" onclick="simulateType('set up a meeting next tuesday 4pm with konstantin')">
+          <span>➕</span> "create meeting"
+        </div>
+        <div class="preset-pill" onclick="simulateType('change appearance to dark mode')">
+          <span>🌓</span> "appearance only"
+        </div>
+        <div class="preset-pill" onclick="simulateType('mute microphone')">
+          <span>🎙️</span> "mic mute only"
+        </div>
+        <div class="preset-pill" onclick="simulateType('briefing for today')">
+          <span>📋</span> "today briefing"
+        </div>
+        <div class="preset-pill" onclick="simulateType('token usage in the last 7 days')">
+          <span>📊</span> "token usage / spend"
+        </div>
+        <div class="preset-pill" onclick="simulateType('what are the latest models in freyja')">
+          <span>🤖</span> "model picker"
+        </div>
+        <div class="preset-pill" onclick="simulateType('find recent artifacts')">
+          <span>📁</span> "recent artifacts"
+        </div>
+        <div class="preset-pill" onclick="simulateType('start a voice conversation')">
+          <span>🗣️</span> "voice channel"
+        </div>
+        <div class="preset-pill" onclick="simulateType('what did konstantin recommend for dinner in lisbon')">
+          <span>🍽️</span> "dinner in lisbon"
+        </div>
+        <div class="preset-pill" onclick="simulateType('tool details for bash')">
+          <span>🛠️</span> "tool details"
+        </div>
+        <div class="preset-pill" onclick="simulateType('view diagnostic logs')">
+          <span>📟</span> "diagnostic logs"
+        </div>
+        <div class="preset-pill" onclick="simulateType('swarm status')">
+          <span>🐝</span> "swarm status"
+        </div>
+        <div class="preset-pill" onclick="simulateType('swarm')">
+          <span>⌨️</span> "swarm (classic)"
+        </div>
+      </div>
+    </div>
+
+    <!-- Freyja Command Palette Window -->
+    <div class="palette-container" id="paletteBox">
+      <div class="input-row">
+        <svg class="search-icon" viewBox="0 0 14 14">
+          <circle cx="6" cy="6" r="4" stroke="var(--accent)" stroke-width="1.2" fill="none" />
+          <line x1="9" y1="9" x2="12" y2="12" stroke="var(--accent)" stroke-width="1.2" stroke-linecap="round" />
+        </svg>
+        <input 
+          id="cmdInput" 
+          type="text" 
+          class="search-input" 
+          placeholder="Search commands, skills, subagents, sessions…" 
+          autocomplete="off" 
+          spellcheck="false"
+        />
+        <div class="jev-status-badge" id="jevBadge">
+          <span id="jevBadgeText">jev…</span>
+        </div>
+        <kbd class="kbd">esc</kbd>
+      </div>
+
+      <div class="palette-body" id="paletteBody">
+        <!-- Rendered dynamically -->
+      </div>
+
+      <div class="palette-footer">
+        <div class="footer-left">
+          <kbd class="kbd">↑</kbd>
+          <kbd class="kbd">↓</kbd>
+          <span>navigate</span>
+          <kbd class="kbd" style="margin-left: 6px;">⇞</kbd>
+          <kbd class="kbd">⇟</kbd>
+          <span>page</span>
+          <kbd class="kbd" style="margin-left: 6px;">↵</kbd>
+          <span>select</span>
+        </div>
+        <div class="footer-right">
+          <span id="resultsCount">1/3  3 results</span>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div class="toast-box" id="toast">
+    <span>✓</span>
+    <span id="toastMsg">Action executed</span>
+  </div>
+
+  <script>
+    let debounceTimer = null;
+    let isTyping = false;
+    let activeIndex = 0;
+
+    const input = document.getElementById('cmdInput');
+    const paletteBody = document.getElementById('paletteBody');
+    const jevBadge = document.getElementById('jevBadge');
+    const jevBadgeText = document.getElementById('jevBadgeText');
+    const resultsCount = document.getElementById('resultsCount');
+    const toast = document.getElementById('toast');
+    const toastMsg = document.getElementById('toastMsg');
+    const themeBtnText = document.getElementById('themeBtnText');
+
+    const SAMPLE_ITEMS = [
+      { id: 'swarm', title: 'Swarm Monitor', sub: 'Agent lanes, collaboration state, and live multi-agent activity', group: 'COMMAND' },
+      { id: 'subagents', title: '/subagents', sub: 'Open the swarm dashboard', group: 'COMMAND' },
+      { id: 'session-02', title: '02 swarm convergence [code]', sub: 'claude-fable-5 · /Users/sohamshah/personal/freyja', group: 'SESSION' },
+      { id: 'morning-room', title: 'Morning Room', sub: "Today's briefing, decisions, and staged plan (⌘⇧B)", group: 'COMMAND' },
+      { id: 'mission-dash', title: 'Mission Dashboard', sub: 'Overview of session health and telemetry', group: 'COMMAND' },
+      { id: 'artifacts', title: 'Artifacts', sub: 'Every file every session ever produced (⌘⇧A)', group: 'COMMAND' }
+    ];
+
+    renderStandardList('swarm');
+    input.value = 'swarm';
+
+    input.addEventListener('input', (e) => {
+      if (isTyping) return;
+      onQueryChanged(e.target.value);
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        input.value = '';
+        onQueryChanged('');
+      }
+    });
+
+    function onQueryChanged(q) {
+      clearTimeout(debounceTimer);
+      const trimmed = q.trim();
+
+      if (!trimmed) {
+        renderStandardList('');
+        hideJevBadge();
+        return;
+      }
+
+      if (trimmed.startsWith('/') || ['swarm', 'git', 'session', 'command'].includes(trimmed.toLowerCase())) {
+        renderStandardList(trimmed);
+        hideJevBadge();
+        return;
+      }
+
+      jevBadge.classList.add('active');
+      jevBadgeText.innerText = 'jev…';
+
+      debounceTimer = setTimeout(() => {
+        classifyQuery(trimmed);
+      }, 140);
+    }
+
+    async function classifyQuery(q) {
+      try {
+        const res = await fetch('/api/jev/classify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: q })
+        });
+        const data = await res.json();
+
+        if (data.widget && data.widget !== 'palette_command' && (data.confidence >= 0.5 || data.readiness >= 1.0)) {
+          jevBadge.classList.add('active');
+          const label = data.sub_target !== 'none' ? `${data.domain} / ${data.sub_target}` : data.domain;
+          jevBadgeText.innerText = `${label} · ${data.latency_ms}ms`;
+          renderGenWidget(data.widget_spec, data.latency_ms);
+          resultsCount.innerText = `Jev Routed (${data.latency_ms}ms)`;
+        } else {
+          hideJevBadge();
+          renderStandardList(q);
+        }
+      } catch (err) {
+        hideJevBadge();
+        renderStandardList(q);
+      }
+    }
+
+    function hideJevBadge() {
+      jevBadge.classList.remove('active');
+    }
+
+    function renderStandardList(q) {
+      const filtered = SAMPLE_ITEMS.filter(it => 
+        it.title.toLowerCase().includes(q.toLowerCase()) || 
+        it.sub.toLowerCase().includes(q.toLowerCase()) ||
+        it.group.toLowerCase().includes(q.toLowerCase())
+      );
+
+      const byGroup = {};
+      filtered.forEach((it, idx) => {
+        if (!byGroup[it.group]) byGroup[it.group] = [];
+        byGroup[it.group].push({ ...it, originalIndex: idx });
+      });
+
+      let html = '';
+      if (filtered.length === 0) {
+        html = `<div style="padding: 24px; text-align: center; color: var(--fg-3); font-size: 11px;">No results</div>`;
+      } else {
+        for (const [group, rows] of Object.entries(byGroup)) {
+          html += `<div class="palette-group-label">${group}</div>`;
+          rows.forEach((r, rowIdx) => {
+            const isActive = r.originalIndex === activeIndex;
+            html += `
+              <div class="palette-item-row ${isActive ? 'active' : ''}" onclick="selectRow(${r.originalIndex}, '${r.title}')">
+                <div class="palette-item-content">
+                  <span class="palette-item-title">${r.title}</span>
+                  <span class="palette-item-sub">${r.sub}</span>
+                </div>
+              </div>
+            `;
+          });
+        }
+      }
+
+      paletteBody.innerHTML = html;
+      resultsCount.innerText = filtered.length > 0 ? `1/${filtered.length}  ${filtered.length} results` : '0 results';
+    }
+
+    function selectRow(idx, title) {
+      activeIndex = idx;
+      showToast(`Selected: ${title}`);
+    }
+
+    // ─── Generative UI Widget Renderers ───
+    function renderGenWidget(spec, latencyMs) {
+      switch (spec.type) {
+        case 'CalendarAgendaWidget':
+          renderCalendarAgendaWidget(spec.data);
+          break;
+        case 'CalendarWidget':
+          renderCalendarWidget(spec.data);
+          break;
+        case 'ToolDetailWidget':
+          renderToolDetailWidget(spec.data);
+          break;
+        case 'DiagnosticLogsWidget':
+          renderDiagnosticLogsWidget(spec.data);
+          break;
+        case 'SwarmStatusWidget':
+          renderSwarmStatusWidget(spec.data);
+          break;
+          renderAppearanceControlWidget(spec.data);
+          break;
+        case 'MicControlWidget':
+          renderMicControlWidget(spec.data);
+          break;
+        case 'MorningBriefingWidget':
+          renderMorningBriefingWidget(spec.data);
+          break;
+        case 'TokenUsageWidget':
+          renderTokenUsageWidget(spec.data);
+          break;
+        case 'ModelPickerWidget':
+          renderModelPickerWidget(spec.data);
+          break;
+        case 'ArtifactExplorerWidget':
+          renderArtifactExplorerWidget(spec.data);
+          break;
+        case 'VoiceLauncherWidget':
+          renderVoiceLauncherWidget(spec.data);
+          break;
+        case 'MemoryWidget':
+          renderMemoryWidget(spec.data);
+          break;
+        case 'FinanceWidget':
+          renderFinanceWidget(spec.data);
+          break;
+        case 'AgentTaskWidget':
+          renderAgentTaskWidget(spec.data);
+          break;
+        case 'QuickControlWidget':
+          renderQuickControlWidget(spec.data);
+          break;
+        default:
+          renderStandardList(input.value);
+      }
+    }
+
+    function renderCalendarAgendaWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">CALENDAR</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>${d.date_full}</span>
+            </div>
+            <span class="kbd">Google Calendar MCP</span>
+          </div>
+
+          <div style="font-size: 11px; color: var(--fg-2);">${d.summary}</div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            ${d.events.map(ev => `
+              <div class="card-well" style="padding: 10px; gap: 4px;">
+                <div style="display: flex; justify-content: space-between; font-size: 11px;">
+                  <strong style="color: var(--fg-0);">${ev.time}</strong>
+                  <span style="color: var(--fg-3); font-size: 10px;">${ev.link}</span>
+                </div>
+                <div style="color: var(--fg-1); font-size: 12px; font-weight: 500; font-family: 'Inter', sans-serif;">${ev.title}</div>
+                <div style="font-size: 10.5px; color: var(--fg-2);">With: ${ev.attendees.join(', ')}</div>
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-secondary" onclick="showToast('Opened Google Calendar')">Open Google Calendar</button>
+            <button class="btn btn-primary" onclick="showToast('Joining 09:30 Autopilot Architecture Sync')">Join Next Meeting</button>
+          </div>
+        </div>
+      `;
+    }
+    function renderToolDetailWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">TOOL</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>${d.name}</span>
+            </div>
+            <div style="display: flex; gap: 4px;">
+              <span class="kbd">risk: ${d.risk}</span>
+              <span class="kbd">${d.category}</span>
+            </div>
+          </div>
+
+          <div class="card-well">
+            <div style="font-size: 11.5px; color: var(--fg-1); line-height: 1.45; font-family: 'Inter', sans-serif;">
+              ${d.description}
+            </div>
+            ${d.example ? `
+              <div style="background: rgba(var(--ink-rgb), 0.03); padding: 6px 8px; border-radius: 4px; font-size: 10px; color: var(--fg-2); border-left: 2px solid var(--accent);">
+                <code>${d.example}</code>
+              </div>
+            ` : ''}
+          </div>
+
+          <div>
+            <div class="widget-category-tag" style="margin-bottom: 4px;">PARAMETER SCHEMA</div>
+            <div style="border: 0.5px solid var(--card-border); border-radius: 6px; overflow: hidden; max-height: 140px; overflow-y: auto;">
+              <table class="finance-table">
+                <thead>
+                  <tr style="background: var(--card-bg); font-size: 9.5px; color: var(--fg-3); text-align: left;">
+                    <th style="padding: 4px 6px;">NAME</th>
+                    <th style="padding: 4px 6px;">TYPE</th>
+                    <th style="padding: 4px 6px;">REQ</th>
+                    <th style="padding: 4px 6px;">DESCRIPTION</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${d.parameters.map(p => `
+                    <tr>
+                      <td style="color: var(--fg-0); font-weight: 500;">${p.name}</td>
+                      <td style="color: var(--fg-3); font-size: 9.5px;">${p.type}</td>
+                      <td style="font-size: 9.5px; color: ${p.required ? 'var(--accent)' : 'var(--fg-3)'};">${p.required ? 'yes' : 'no'}</td>
+                      <td style="color: var(--fg-2); font-family: 'Inter', sans-serif;">${p.description}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-secondary" onclick="showToast('Copied tool name: ${d.name}')">Copy Name</button>
+            <button class="btn btn-primary" onclick="showToast('Opened schema documentation')">View Schema</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderDiagnosticLogsWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">DIAGNOSTICS</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>Subsystem Event Stream</span>
+            </div>
+            <span class="kbd">Status: Healthy</span>
+          </div>
+
+          <div style="border: 0.5px solid var(--card-border); background: var(--card-bg); border-radius: 6px; padding: 8px; font-size: 10px; max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;">
+            ${d.logs.map(l => `
+              <div style="display: flex; gap: 6px; padding: 2px 0; border-bottom: 0.5px solid var(--hairline);">
+                <span style="color: var(--fg-3);">${l.time}</span>
+                <span class="kbd" style="font-size: 8.5px;">${l.subsystem}</span>
+                <span style="color: var(--fg-1); flex: 1;">${l.message}</span>
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-secondary" onclick="showToast('Logs copied to clipboard')">Copy Logs</button>
+            <button class="btn btn-primary" onclick="showToast('Opening Mission Dashboard Logs')">Open Log Viewer</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderSwarmStatusWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">SWARM</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>Worker Activity</span>
+            </div>
+            <span class="kbd">${d.running_count} active workers</span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            ${d.lanes.map(l => `
+              <div class="card-well" style="padding: 8px 10px; gap: 3px;">
+                <div style="display: flex; justify-content: space-between; font-size: 11px;">
+                  <span style="color: var(--fg-0); font-weight: 500;">● ${l.label}</span>
+                  <span class="kbd" style="font-size: 8.5px;">profile: ${l.profile}</span>
+                </div>
+                <div style="font-size: 10px; color: var(--fg-2);">Executing: <code style="color: var(--fg-0);">${l.current_tool}</code></div>
+                <div style="font-size: 9.5px; color: var(--fg-3);">Model: ${l.model} · Elapsed: ${l.elapsed}</div>
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-primary" onclick="showToast('Opening Swarm Dashboard (⌘O)')">Open Swarm (⌘O)</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderAppearanceControlWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">APPEARANCE</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>Theme Selector</span>
+            </div>
+            <span class="kbd">Hierarchy: SubTarget</span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            ${d.options.map(opt => `
+              <div class="card-well" style="padding: 10px; flex-direction: row; justify-content: space-between; align-items: center; cursor: pointer; ${opt.selected ? 'border-color: var(--accent); background: rgba(var(--accent-rgb), 0.12);' : ''}" onclick="applyThemeDirect('${opt.id}')">
+                <div>
+                  <div style="font-size: 12px; font-weight: 500; color: var(--fg-0);">${opt.label}</div>
+                  <div style="font-size: 10px; color: var(--fg-3);">${opt.description}</div>
+                </div>
+                ${opt.selected ? '<span style="color: var(--accent); font-size: 11px;">● Active</span>' : '<span style="color: var(--fg-3); font-size: 10px;">Select</span>'}
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-primary" onclick="showToast('Theme preferences updated')">Done</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function applyThemeDirect(themeId) {
+      const root = document.documentElement;
+      root.setAttribute('data-theme', themeId === 'system' ? 'light' : themeId);
+      themeBtnText.innerText = themeId === 'dark' ? 'Theme: Dark (Obsidian)' : 'Theme: Light (Paper)';
+      showToast(`Appearance switched to ${themeId}`);
+    }
+
+    function renderMicControlWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">AUDIO INPUT</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>${d.device}</span>
+            </div>
+            <span class="kbd">Hardware Control</span>
+          </div>
+
+          <div class="card-well" style="flex-direction: row; justify-content: space-between; align-items: center;">
+            <div>
+              <div style="color: var(--fg-0); font-weight: 500;">Microphone Status</div>
+              <div style="font-size: 10.5px; color: var(--fg-3);">${d.muted ? 'Muted' : 'Unmuted · Active Input (42%)'}</div>
+            </div>
+            <button class="btn btn-primary" onclick="showToast('Microphone toggled');">${d.muted ? 'Unmute Mic' : 'Mute Mic'}</button>
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-secondary" onclick="showToast('Audio preferences opened')">Audio Settings</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderMorningBriefingWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">BRIEFING</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>${d.date}</span>
+            </div>
+            <span class="kbd">Morning Room</span>
+          </div>
+
+          <div>
+            <div class="widget-category-tag" style="margin-bottom: 4px;">STAGED PLAN TODAY</div>
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              ${d.staged_plan.map(p => `
+                <div style="display: flex; justify-content: space-between; padding: 6px 8px; border-radius: 4px; background: var(--card-bg); border: 0.5px solid var(--hairline); font-size: 11px;">
+                  <span><span class="kbd" style="margin-right: 6px;">${p.step}</span>${p.task}</span>
+                  <span style="color: ${p.status === 'active' ? 'var(--accent)' : 'var(--fg-3)'}; font-size: 10px;">${p.status}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <div>
+            <div class="widget-category-tag" style="margin-bottom: 4px;">DECISIONS & INVARIANTS</div>
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              ${d.decisions.map(dec => `
+                <div class="memory-quote" style="font-size: 11px; padding: 5px 8px;">
+                  <strong>${dec.title}:</strong> ${dec.note}
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-primary" onclick="showToast('Opened Morning Room (⌘⇧B)')">Open Morning Room (⌘⇧B)</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderTokenUsageWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">TELEMETRY</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>Usage & Spend</span>
+            </div>
+            <span class="kbd">Last 7 Days</span>
+          </div>
+
+          <div style="display: flex; justify-content: space-between; align-items: baseline;">
+            <div class="finance-hero-number">${d.total_spend} · <span style="font-size: 13px; color: var(--fg-2);">${d.total_tokens}</span></div>
+            <div style="font-size: 10.5px; color: var(--accent);">Cache Read: ${d.cache_read_rate} (${d.cache_savings} saved)</div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            ${d.models.map(m => `
+              <div style="display: flex; justify-content: space-between; font-size: 11px; padding: 5px 8px; border-radius: 4px; background: var(--card-bg); border: 0.5px solid var(--hairline);">
+                <span style="color: var(--fg-1); font-medium">${m.name}</span>
+                <span><span style="color: var(--fg-3); margin-right: 10px;">${m.tokens}</span><strong style="color: var(--fg-0);">${m.spend}</strong></span>
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-secondary" onclick="showToast('Exported spend CSV')">Export CSV</button>
+            <button class="btn btn-primary" onclick="showToast('Opening Mission Dashboard')">View Metrics</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderModelPickerWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">MODELS</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>Model Routing</span>
+            </div>
+            <span class="kbd">Active: ${d.active_model}</span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 5px;">
+            ${d.models.map(m => `
+              <div class="card-well" style="padding: 8px 10px; flex-direction: row; justify-content: space-between; align-items: center; cursor: pointer; ${m.selected ? 'border-color: var(--accent); background: rgba(var(--accent-rgb), 0.12);' : ''}" onclick="showToast('Switched model to ${m.name}')">
+                <div>
+                  <div style="color: var(--fg-0); font-weight: 500; font-size: 11.5px;">${m.name} ${m.selected ? '<span class="kbd" style="font-size: 8px; margin-left: 4px;">active</span>' : ''}</div>
+                  <div style="font-size: 9.5px; color: var(--fg-3); font-family: 'Inter', sans-serif;">${m.recommended}</div>
+                </div>
+                <div style="text-align: right; font-size: 10px;">
+                  <div style="color: var(--fg-0);">${m.cost}</div>
+                  <div style="color: var(--fg-3);">${m.latency}</div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-primary" onclick="showToast('Model preferences saved')">Done</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderArtifactExplorerWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">ARTIFACTS</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>Recent Deliverables</span>
+            </div>
+            <span class="kbd">Verified Manifest</span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 5px;">
+            ${d.artifacts.map(art => `
+              <div style="display: flex; justify-content: space-between; align-items: center; padding: 7px 10px; border-radius: 5px; background: var(--card-bg); border: 0.5px solid var(--hairline); font-size: 11px;">
+                <div>
+                  <div style="color: var(--fg-0); font-weight: 500;">${art.name}</div>
+                  <div style="font-size: 9.5px; color: var(--fg-3);">${art.session} · ${art.type} · ${art.age}</div>
+                </div>
+                <button class="kbd" onclick="showToast('Copied path: ${art.name}')">copy path</button>
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-primary" onclick="showToast('Opening Artifacts Browser (⌘⇧A)')">Browse All Artifacts (⌘⇧A)</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderVoiceLauncherWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">VOICE</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>${d.persona}</span>
+            </div>
+            <span class="kbd">Real-time Audio</span>
+          </div>
+
+          <div class="card-well" style="text-align: center; padding: 16px; align-items: center;">
+            <div style="display: flex; gap: 3px; height: 20px; align-items: center; margin-bottom: 8px;">
+              ${[4, 12, 20, 16, 24, 18, 10, 6].map(h => `<div style="height: ${h}px; width: 3px; background: var(--accent); border-radius: 9999px;"></div>`).join('')}
+            </div>
+            <div style="color: var(--fg-0); font-weight: 500; font-size: 12px;">${d.status}</div>
+            <div style="font-size: 10px; color: var(--fg-3); margin-top: 2px;">Input: ${d.input_device} · ${d.latency}</div>
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-primary" onclick="showToast('Connecting Voice Channel...')">Connect Voice Channel</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderCalendarWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">CALENDAR</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>${d.title}</span>
+            </div>
+            <span class="kbd">auto-parsed</span>
+          </div>
+
+          <div class="card-well">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="color: var(--fg-0); font-weight: 500;">${d.date} · 16:00 – 16:30 PDT</span>
+              <span class="kbd">${d.attendee}</span>
+            </div>
+            <div style="font-size: 11px; color: var(--fg-2);">
+              Attendee: <strong style="color: var(--fg-0);">${d.attendee}</strong> (${d.attendee_email}) · <span style="color: var(--accent);">Free</span>
+            </div>
+          </div>
+
+          <div>
+            <div class="widget-category-tag" style="margin-bottom: 4px;">FREE / BUSY SLOTS (TUESDAY)</div>
+            <div class="time-slot-grid">
+              ${d.availability.map(s => `
+                <div class="time-slot-btn ${s.selected ? 'selected' : ''} ${s.status === 'busy' ? 'busy' : ''}" onclick="pickSlot(this, '${s.time}')">
+                  ${s.time}
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-secondary" onclick="showToast('Opened calendar')">Edit</button>
+            <button class="btn btn-primary" onclick="showToast('Invite sent to ${d.attendee}')">Send Invite</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderMemoryWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">MEMORY</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>Recall & Transcripts</span>
+            </div>
+            <span class="kbd">${d.matches.length} matches</span>
+          </div>
+
+          ${d.matches.map(m => `
+            <div class="card-well">
+              <div style="display: flex; justify-content: space-between; font-size: 10.5px; color: var(--fg-2);">
+                <strong style="color: var(--fg-0);">${m.title}</strong>
+                <span>${m.source}</span>
+              </div>
+              <div class="memory-quote">
+                "${m.snippet}"
+              </div>
+              <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--fg-3);">
+                <span>${m.tags.map(t => `#${t}`).join(' ')}</span>
+                <span>timestamp [${m.timestamp}]</span>
+              </div>
+            </div>
+          `).join('')}
+
+          <div class="widget-actions">
+            <button class="btn btn-secondary" onclick="showToast('Opening transcript')">View Source</button>
+            <button class="btn btn-primary" onclick="showToast('Recommendation copied')">Copy Quote</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderFinanceWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">FINANCE</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>Spend Breakdown (${d.period})</span>
+            </div>
+            <span class="kbd">${d.trend}</span>
+          </div>
+
+          <div style="display: flex; justify-content: space-between; align-items: baseline;">
+            <div class="finance-hero-number">${d.total}</div>
+            <div style="font-size: 11px; color: var(--fg-2);">Total Verified Receipts</div>
+          </div>
+
+          <div class="finance-bar-strip">
+            <div style="width: 40%; background: var(--accent);"></div>
+            <div style="width: 34%; background: rgba(var(--accent-rgb), 0.5);"></div>
+            <div style="width: 26%; background: rgba(var(--accent-rgb), 0.25);"></div>
+          </div>
+
+          <div style="display: flex; gap: 12px; font-size: 10.5px; color: var(--fg-2);">
+            ${d.categories.map(c => `
+              <span>${c.name}: <strong style="color: var(--fg-0);">${c.amount}</strong></span>
+            `).join('')}
+          </div>
+
+          <table class="finance-table">
+            <tbody>
+              ${d.transactions.slice(0, 3).map(tx => `
+                <tr>
+                  <td style="color: var(--fg-3); width: 60px;">${tx.date}</td>
+                  <td>${tx.merchant}</td>
+                  <td style="color: var(--fg-2);">${tx.category}</td>
+                  <td>${tx.amount}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+
+          <div class="widget-actions">
+            <button class="btn btn-secondary" onclick="showToast('Exported CSV')">Export CSV</button>
+            <button class="btn btn-primary" onclick="showToast('Report filed')">File Expense</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderAgentTaskWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">AGENT TASK</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>${d.task_title}</span>
+            </div>
+            <span class="kbd">profile: ${d.suggested_profile}</span>
+          </div>
+
+          <div class="card-well">
+            <div style="color: var(--fg-0); font-weight: 500;">${d.task_title}</div>
+            <div style="font-size: 10.5px; color: var(--fg-2);">Model: ${d.model}</div>
+            <div style="font-size: 11.5px; color: var(--fg-1); line-height: 1.45; font-family: 'Inter', sans-serif;">
+              ${d.objective}
+            </div>
+            <div style="display: flex; gap: 6px; font-size: 9.5px; color: var(--fg-3);">
+              ${d.flags.map(f => `<span class="kbd">${f}</span>`).join('')}
+            </div>
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-secondary" onclick="showToast('Opening GitHub')">View PR</button>
+            <button class="btn btn-primary" onclick="showToast('Sub-agent spawned')">Spawn Sub-agent</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderQuickControlWidget(d) {
+      paletteBody.innerHTML = `
+        <div class="gen-widget-wrap">
+          <div class="widget-top-bar">
+            <div class="widget-title-area">
+              <span class="widget-category-tag">SYSTEM</span>
+              <span style="opacity: 0.3;">·</span>
+              <span>Environment Controls</span>
+            </div>
+            <span class="kbd">instant</span>
+          </div>
+
+          <div class="controls-panel">
+            ${d.controls.map(c => `
+              <div class="control-card">
+                <div>
+                  <div style="font-size: 11px; font-weight: 500; color: var(--fg-0);">${c.label}</div>
+                  <div style="font-size: 9.5px; color: var(--fg-3);">${c.description}</div>
+                </div>
+                ${c.type === 'toggle' ? `
+                  <div class="control-switch ${c.value ? 'on' : ''}" onclick="this.classList.toggle('on'); showToast('${c.label} toggled');">
+                    <div class="control-switch-knob"></div>
+                  </div>
+                ` : `
+                  <span class="kbd">${c.value}</span>
+                `}
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="widget-actions">
+            <button class="btn btn-primary" onclick="showToast('Settings saved')">Done</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function pickSlot(el, time) {
+      document.querySelectorAll('.time-slot-btn').forEach(s => s.classList.remove('selected'));
+      el.classList.add('selected');
+      showToast(`Slot selected: ${time}`);
+    }
+
+    function showToast(msg) {
+      toastMsg.innerText = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+
+    function toggleTheme() {
+      const root = document.documentElement;
+      const current = root.getAttribute('data-theme') || 'light';
+      const next = current === 'light' ? 'dark' : 'light';
+      root.setAttribute('data-theme', next);
+      themeBtnText.innerText = next === 'light' ? 'Theme: Light (Paper)' : 'Theme: Dark (Obsidian)';
+    }
+
+    function simulateType(text) {
+      isTyping = true;
+      input.value = '';
+      input.focus();
+      let idx = 0;
+      const timer = setInterval(() => {
+        input.value = text.slice(0, idx + 1);
+        idx++;
+        if (idx >= text.length) {
+          clearInterval(timer);
+          isTyping = false;
+          onQueryChanged(text);
+        }
+      }, 16);
+    }
+  </script>
+</body>
+</html>
