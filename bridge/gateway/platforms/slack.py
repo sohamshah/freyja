@@ -253,6 +253,19 @@ def _safe_token_preview(token: str) -> str:
     return f"{token[:6]}…{token[-4:]}"
 
 
+def _slack_error(exc: BaseException) -> str:
+    """The Slack error code when the exception carries one, else the
+    exception text. Logging the code (``msg_too_long``) instead of the
+    SDK's multi-line message and a traceback keeps one failed append to
+    one log line, and lets callers match on it exactly."""
+    resp = getattr(exc, "response", None)
+    try:
+        code = resp.get("error") if resp is not None else None
+    except Exception:  # noqa: BLE001
+        code = None
+    return str(code or exc)
+
+
 class SlackAdapter:
     """Slack platform adapter. Owns one ``slack-bolt`` AsyncApp +
     Socket Mode handler + N AsyncWebClient instances (one per
@@ -324,6 +337,10 @@ class SlackAdapter:
         # make the bot ignore replies in threads it already joined.
         # Also holds code channels Freyja opened and session titles.
         self.bindings = ThreadBindings()
+        # None until the first agents.sessions.setStatus answers; False
+        # when Slack warns that the Stop event is not subscribed.
+        self.stop_button_available: bool | None = None
+        self._session_warnings_seen: set[str] = set()
         # Threads checked against Slack and found not to be ours; bounded
         # so a busy channel cannot make us refetch the same parent.
         self._not_our_threads: dict[str, float] = {}
@@ -1547,8 +1564,9 @@ class SlackAdapter:
                     self.bindings.add_message_ts(str(thread_id))
             return SendResult(ok=bool(res.get("ok")), message_id=ts, raw=getattr(res, "data", None) or {})
         except Exception as exc:  # noqa: BLE001
-            logger.exception("[slack] chat.startStream failed: %s", exc)
-            return SendResult(ok=False, error=str(exc))
+            code = _slack_error(exc)
+            logger.warning("[slack] chat.startStream failed: %s", code, exc_info=code == str(exc))
+            return SendResult(ok=False, error=code)
 
     async def append_stream(
         self,
@@ -1580,8 +1598,9 @@ class SlackAdapter:
             res = await client.chat_appendStream(**kwargs)
             return SendResult(ok=bool(res.get("ok")), message_id=stream_id, raw=getattr(res, "data", None) or {})
         except Exception as exc:  # noqa: BLE001
-            logger.exception("[slack] chat.appendStream failed: %s", exc)
-            return SendResult(ok=False, error=str(exc))
+            code = _slack_error(exc)
+            logger.warning("[slack] chat.appendStream failed: %s", code, exc_info=code == str(exc))
+            return SendResult(ok=False, error=code)
 
     async def stop_stream(
         self,
@@ -1624,8 +1643,9 @@ class SlackAdapter:
             res = await client.chat_stopStream(**kwargs)
             return SendResult(ok=bool(res.get("ok")), message_id=stream_id, raw=getattr(res, "data", None) or {})
         except Exception as exc:  # noqa: BLE001
-            logger.exception("[slack] chat.stopStream failed: %s", exc)
-            return SendResult(ok=False, error=str(exc))
+            code = _slack_error(exc)
+            logger.warning("[slack] chat.stopStream failed: %s", code, exc_info=code == str(exc))
+            return SendResult(ok=False, error=code)
 
     async def upload_file(
         self,
@@ -1911,11 +1931,47 @@ class SlackAdapter:
         if username:
             kwargs["username"] = username[:80]
         try:
-            await client.agents_sessions_setStatus(**kwargs)
+            res = await client.agents_sessions_setStatus(**kwargs)
+            self._note_session_warnings(res)
             return SendResult(ok=True)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[slack] setStatus(%s) skipped: %s", status, exc)
             return SendResult(ok=False, error=str(exc))
+
+    def _note_session_warnings(self, res: Any) -> None:
+        """Log each ``agents.sessions.setStatus`` warning once per process.
+
+        The one that matters: ``missing_agent_session_stopped_event_subscription``
+        means the app config does not carry the ``agent_session_stopped``
+        event, so Slack shows no Stop button and tells the operator that
+        stopping is not available. The fix is a manifest re-paste, not a
+        code change, and the log is where that shows up.
+        """
+        try:
+            meta = res.get("response_metadata") or {}
+            warnings = list(meta.get("warnings") or [])
+        except Exception:  # noqa: BLE001
+            return
+        seen = getattr(self, "_session_warnings_seen", None)
+        if seen is None:
+            seen = set()
+            self._session_warnings_seen = seen
+        for warning in warnings:
+            if warning in seen:
+                continue
+            seen.add(warning)
+            if warning == "missing_agent_session_stopped_event_subscription":
+                self.stop_button_available = False
+                logger.warning(
+                    "[slack] the app is not subscribed to agent_session_stopped, so Slack "
+                    "shows no Stop button and says stopping is not available for this "
+                    "agent. Paste ~/.freyja/slack-manifest.json into the app's manifest "
+                    "at api.slack.com/apps and save it."
+                )
+            else:
+                logger.warning("[slack] agents.sessions.setStatus warns: %s", warning)
+        if warnings == [] and getattr(self, "stop_button_available", None) is None:
+            self.stop_button_available = True
 
     async def send_typing(
         self,

@@ -20,9 +20,13 @@ class StreamingFakeAdapter:
         self.sent: list[str] = []
         self.streamed: list[str] = []
         self.cards: list[tuple[str, str, str]] = []
+        # (card id, output) for every task chunk that carried one.
+        self.card_outputs: list[tuple[str, str]] = []
         self.plans: list[str] = []
         self.block_chunks: list[list[dict[str, Any]]] = []
         self.stop_calls: list[dict[str, Any]] = []
+        # Kind of every chunk in the order it reached the stream.
+        self.order: list[str] = []
         self.statuses: list[str] = []
         self.streams_started = 0
         self.streams_stopped: list[str] = []
@@ -38,12 +42,17 @@ class StreamingFakeAdapter:
     def _record(self, chunks: list[Any] | None) -> None:
         for chunk in chunks or []:
             if hasattr(chunk, "status"):
+                self.order.append("card")
                 self.cards.append((chunk.id, chunk.title, chunk.status))
+                if getattr(chunk, "output", None):
+                    self.card_outputs.append((chunk.id, str(chunk.output)))
             elif hasattr(chunk, "blocks"):
+                self.order.append("blocks")
                 self.block_chunks.append(list(chunk.blocks))
             elif hasattr(chunk, "title"):
                 self.plans.append(chunk.title)
             elif hasattr(chunk, "text"):
+                self.order.append("text")
                 self.streamed.append(chunk.text)
 
     async def send(self, chat_id: str, content: str, **kwargs: Any) -> SendResult:

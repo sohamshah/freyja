@@ -123,7 +123,8 @@ async def test_stream_failure_falls_back_to_one_post():
 async def test_long_prose_rolls_over_into_a_continuation_stream(monkeypatch):
     from bridge.gateway import stream_consumer as sc
 
-    monkeypatch.setattr(sc, "_STREAM_TEXT_CAP", 20)
+    monkeypatch.setattr(sc, "_STREAM_BUDGET", 20)
+    monkeypatch.setattr(sc, "_CHUNK_OVERHEAD", 0)
     monkeypatch.setattr(sc, "_TEXT_PIECE_CAP", 10)
     adapter = StreamingFakeAdapter()
     consumer = _consumer(adapter, verbosity="off")

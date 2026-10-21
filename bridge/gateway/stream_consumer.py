@@ -23,6 +23,22 @@ chunks, blocks, metadata and session_status together. The June
 mixed with ``chunks``, never two chunk types. The consumer never passes
 ``markdown_text`` as a parameter.
 
+Events are handled strictly in order by one worker task. Each handler
+takes the lock several times on its way through, so with one task per
+event two deltas could swap places around a slow append, a tool card's
+paragraph break could land between two words of the next sentence, and
+finalize could seal the message before the last deltas were in the
+buffer (the tail then went out as a second message). One worker, one
+event at a time, removes all of that.
+
+Slack caps a streamed message at 12,000 characters of content (prose,
+and once any prose exists the task card titles and outputs too). The
+consumer keeps a running estimate and rolls over to a continuation
+stream in the same thread before the cap; when Slack still answers
+``msg_too_long`` it rolls over then and sends the piece again. The old
+message is sealed with the session still ``processing``; the feedback
+buttons go on the last one only.
+
 Session lifecycle (Slack Agent Sessions API):
   · first event of the turn → ``processing``
   · finalize / abort / turn failure → ``active``
@@ -54,6 +70,7 @@ import logging
 import re
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -61,6 +78,7 @@ from typing import Any
 from bridge.gateway.platforms.base import (
     MessageSource,
     PlatformAdapter,
+    SendResult,
     UploadItem,
 )
 
@@ -77,18 +95,31 @@ logger = logging.getLogger(__name__)
 DEFAULT_TEXT_FLUSH_INTERVAL_MS = 500
 DEFAULT_THINKING_FLUSH_INTERVAL_MS = 800
 
-# Slack's chat.appendStream rejects payloads >~4000 chars with
-# ``msg_too_long``. Cap thinking-card deltas below that with a
-# safety margin; oversized deltas are split into multiple successive
-# TaskUpdateChunks against the same card id (Slack appends them).
-_THINKING_DELTA_CAP = 3500
-# Same cap for a prose piece. A longer delta goes out as several
-# consecutive MarkdownTextChunk appends.
-_TEXT_PIECE_CAP = 3500
-# Prose per streaming message before the consumer seals it and opens a
-# continuation stream in the same thread. Slack's per-message text cap
-# is around 40k; stay well under it so cards and blocks fit too.
-_STREAM_TEXT_CAP = 30_000
+# Slack caps one streamed message at 12,000 characters of content and
+# answers ``msg_too_long`` to every append after that. Measured in the
+# operator's DM on 2026-10-20: prose alone fails at the fifth
+# 3,000-character append; once any prose exists every task card chunk
+# counts too (its title and output, plus some overhead per chunk), so
+# 1,000 characters of prose and five 2,000-character tool outputs fill
+# a message. Cards alone do not count. The consumer keeps a running
+# estimate and rolls over to a continuation stream before the cap.
+_STREAM_CHAR_CAP = 12_000
+_STREAM_BUDGET = 10_000
+_CHUNK_OVERHEAD = 40
+# One prose or thinking append. The cap is on the total, not the call,
+# but small pieces keep the rollover point close to the budget.
+_TEXT_PIECE_CAP = 3000
+_THINKING_DELTA_CAP = 3000
+# Card content is collapsed in Slack and shown in full in the desktop
+# app, and it is paid for out of the same 12k as the prose, so it gets
+# the short version here.
+_THINKING_CARD_CAP = 600
+_TOOL_OUTPUT_CAP = 300
+_TOOL_ERROR_OUTPUT_CAP = 800
+_TOOL_TITLE_CAP = 120
+# Output of a tool card that was still running when its message filled
+# up; the card is reopened in the next message.
+_CONTINUED_NOTE = "Still running. The result is in the next message."
 # Note appended when a provider retry happens after part of the failed
 # attempt was already streamed.
 _RETRY_NOTE = "_(the model call failed mid-reply; retrying)_"
@@ -313,9 +344,17 @@ class _StreamState:
     body_sent: int = 0
     last_text_flush_ms: float = 0.0
     text_flush_task: Any = None
-    # Prose streamed into the CURRENT message (reset on rollover).
-    stream_text_chars: int = 0
+    # Characters Slack counts against the current message's 12k cap:
+    # prose plus card titles and outputs (reset on rollover).
+    stream_chars: int = 0
     stream_count: int = 0
+    # A rollover is in progress; appends made while sealing the old
+    # message and opening the new one must not start another.
+    rolling_over: bool = False
+    # Tool cards opened in the current message and not yet resolved
+    # (id -> title). A rollover closes them in the old message and
+    # reopens them in the new one.
+    inflight_cards: dict[str, str] = field(default_factory=dict)
     # Set by abort(stopped_by_user=True): Slack sealed the streams and
     # asked for no further calls.
     stopped_by_user: bool = False
@@ -331,6 +370,8 @@ class _StreamState:
     thinking_card_id: str | None = None
     thinking_buffer: str = ""
     thinking_sent: str = ""
+    # The card reached _THINKING_CARD_CAP and carries its marker.
+    thinking_capped: bool = False
     last_thinking_flush_ms: float = 0.0
 
     # Lifecycle gates.
@@ -437,6 +478,10 @@ class SlackStreamConsumer:
 
         self._state = _StreamState()
         self._lock = asyncio.Lock()
+        # Events wait here for the one worker task that handles them in
+        # order (see _drain).
+        self._queue: deque[dict[str, Any]] = deque()
+        self._worker: asyncio.Task | None = None
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -477,10 +522,11 @@ class SlackStreamConsumer:
     # ── public event ingress (sync callback fired by emit()) ──
 
     def on_event(self, event: dict[str, Any]) -> None:
-        """Sync entry point — schedules async handling on the loop.
+        """Sync entry point: queues the event for the ordered worker.
 
-        Called synchronously by ``emit()`` so it must NOT block. We
-        forward to an async task to do the actual Slack API work.
+        Called synchronously by ``emit()`` from the engine thread, so it
+        must NOT block. The loop thread appends it to the queue and the
+        worker handles it after everything queued before it.
         """
         if self._state.finalized:
             return
@@ -504,12 +550,37 @@ class SlackStreamConsumer:
         if etype == "system_event" and event.get("subtype") != "verification_nudge":
             return
         try:
-            asyncio.run_coroutine_threadsafe(
-                self._handle_event_async(event), self._loop
-            )
+            self._loop.call_soon_threadsafe(self._enqueue, event)
         except RuntimeError:
             # The loop is no longer running — silently drop.
             pass
+
+    def _enqueue(self, event: dict[str, Any]) -> None:
+        """Loop-thread half of on_event: queue the event and make sure a
+        worker is draining the queue."""
+        if self._state.finalized:
+            return
+        self._queue.append(event)
+        if self._worker is None or self._worker.done():
+            self._worker = self._loop.create_task(self._drain())
+
+    async def _drain(self) -> None:
+        """Handle queued events one at a time, in the order they came.
+
+        A handler takes the lock several times on its way through, so
+        one task per event let deltas overtake each other around a slow
+        append and let finalize run before the last deltas were in the
+        buffer. One worker keeps the prose, the cards and the seal in
+        the order the agent produced them.
+        """
+        while self._queue:
+            event = self._queue.popleft()
+            if self._state.finalized:
+                continue
+            try:
+                await self._handle_event_async(event)
+            except Exception:  # noqa: BLE001
+                logger.exception("[slack] stream event %s failed", event.get("type"))
 
     async def _handle_event_async(self, event: dict[str, Any]) -> None:
         etype = event.get("type")
@@ -803,9 +874,10 @@ class SlackStreamConsumer:
 
         ``keep_tail`` leaves that many trailing characters unsent so the
         caller can ship them on stopStream instead. Pieces are capped at
-        ``_TEXT_PIECE_CAP``; a ``msg_too_long`` answer halves the piece
-        once. A dead stream flips ``cards_disabled`` and the rest of the
-        prose falls back to one post at finalize.
+        ``_TEXT_PIECE_CAP`` and go through ``_stream_append_locked``,
+        which rolls the message over when a piece would not fit. A dead
+        stream flips ``cards_disabled`` and the rest of the prose falls
+        back to one post at finalize.
         """
         st = self._state
         if st.cards_disabled or not st.stream_ts:
@@ -817,59 +889,129 @@ class SlackStreamConsumer:
             return
         end = len(st.body_buffer) - keep_tail
         while st.body_sent < end:
-            if st.stream_text_chars >= _STREAM_TEXT_CAP:
-                await self._rollover_locked()
-                if st.cards_disabled or not st.stream_ts:
-                    return
             piece = st.body_buffer[st.body_sent : min(end, st.body_sent + _TEXT_PIECE_CAP)]
             if not piece:
                 break
-            result = await self.adapter.append_stream(
-                self.source.chat_id, st.stream_ts, chunks=[MarkdownTextChunk(text=piece)],
+            result = await self._stream_append_locked(
+                [MarkdownTextChunk(text=piece)], chars=len(piece), prose_first=False,
             )
             if not result.ok:
-                err = (result.error or "").lower()
-                if "msg_too_long" in err and len(piece) > 400:
-                    piece = piece[: len(piece) // 2]
-                    result = await self.adapter.append_stream(
-                        self.source.chat_id, st.stream_ts, chunks=[MarkdownTextChunk(text=piece)],
-                    )
-                if not result.ok:
-                    logger.debug("[slack] prose appendStream failed: %s", result.error)
-                    if _stream_is_dead(result.error) or "stopped_by_user" in err:
-                        st.cards_disabled = True
-                    return
+                logger.debug("[slack] prose appendStream failed: %s", result.error)
+                return
             st.body_sent += len(piece)
-            st.stream_text_chars += len(piece)
         st.last_text_flush_ms = time.monotonic() * 1000
 
-    async def _rollover_locked(self) -> None:
-        """Seal the current message and continue in a fresh stream."""
+    async def _stream_append_locked(
+        self, chunks: list[Any], *, chars: int, prose_first: bool = True,
+    ) -> SendResult:
+        """One ``chat.appendStream`` against the live message, with the
+        12k cap in mind. Caller holds the lock.
+
+        ``chars`` is what Slack will count for these chunks. When the
+        running total would pass the budget, the message is sealed and a
+        continuation stream opened first. When Slack still answers
+        ``msg_too_long`` (the estimate was short), the same happens once
+        and the chunks are sent again. A dead stream flips
+        ``cards_disabled``; after the Stop button nothing is sent.
+
+        With ``prose_first`` (every chunk but prose itself), the prose
+        still waiting on the flush timer goes out before the chunk, so a
+        card or widget lands after the words the agent wrote before it
+        and not one card ahead of them.
+        """
         st = self._state
-        await self._close_thinking_card_locked()
-        try:
-            await self.adapter.stop_stream(
-                self.source.chat_id, st.stream_ts, metadata=self._metadata(),
+        if st.cards_disabled or not st.stream_ts or st.stopped_by_user:
+            return SendResult(ok=False, error="no live stream")
+        if prose_first and st.body_sent < len(st.body_buffer):
+            await self._flush_text_locked()
+            if st.cards_disabled or not st.stream_ts:
+                return SendResult(ok=False, error="no live stream")
+        may_roll = st.stream_chars > 0 and not st.rolling_over
+        if may_roll and st.stream_chars + chars + _CHUNK_OVERHEAD > _STREAM_BUDGET:
+            await self._rollover_locked()
+            if st.cards_disabled or not st.stream_ts:
+                return SendResult(ok=False, error="no live stream")
+        result = await self.adapter.append_stream(self.source.chat_id, st.stream_ts, chunks=chunks)
+        err = (result.error or "").lower()
+        if not result.ok and "msg_too_long" in err and may_roll:
+            await self._rollover_locked()
+            if st.cards_disabled or not st.stream_ts:
+                return result
+            result = await self.adapter.append_stream(
+                self.source.chat_id, st.stream_ts, chunks=chunks,
             )
-        except Exception:  # noqa: BLE001
-            logger.debug("[slack] rollover stop_stream failed", exc_info=True)
-        result = await self.adapter.start_stream(
-            self.source.chat_id,
-            thread_id=self._reply_thread_id or None,
-            task_display_mode=self.display_mode,
-            recipient_team_id=self.source.workspace_id or None,
-            recipient_user_id=self.source.user_id or None,
-        )
-        if result.ok and result.message_id:
-            st.stream_ts = result.message_id
-            st.stream_count += 1
-            st.stream_text_chars = 0
-            st.phase_open = False
-            st.phase_title = None
-            st.cards_emitted_this_phase = 0
-        else:
-            logger.warning("[slack] continuation startStream failed: %s", result.error)
+            err = (result.error or "").lower()
+        if result.ok:
+            st.stream_chars += chars + _CHUNK_OVERHEAD
+        elif _stream_is_dead(err) or "stopped_by_user" in err:
             st.cards_disabled = True
+        return result
+
+    async def _rollover_locked(self) -> None:
+        """Seal the current message and continue in a fresh stream.
+
+        The old message keeps the session ``processing`` (the turn is
+        still running) and closes its open cards: the thinking card
+        completes, and a tool still running gets a note that its result
+        is in the next message, where the card is reopened. Without
+        that, Slack shows a warning icon on any card left in progress
+        when a stream is sealed.
+        """
+        st = self._state
+        if st.rolling_over:
+            return
+        st.rolling_over = True
+        try:
+            await self._close_thinking_card_locked()
+            inflight = dict(st.inflight_cards)
+            st.inflight_cards.clear()
+            try:
+                from slack_sdk.models.messages.chunk import TaskUpdateChunk
+            except ImportError:
+                TaskUpdateChunk = None  # type: ignore[assignment]
+            if TaskUpdateChunk is not None and not st.cards_disabled and st.stream_ts:
+                for card_id, title in inflight.items():
+                    chunk = TaskUpdateChunk(
+                        id=card_id, title=title, status="complete", output=_CONTINUED_NOTE,
+                    )
+                    await self.adapter.append_stream(
+                        self.source.chat_id, st.stream_ts, chunks=[chunk],
+                    )
+            try:
+                await self.adapter.stop_stream(
+                    self.source.chat_id, st.stream_ts,
+                    metadata=self._metadata(), session_status="processing",
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("[slack] rollover stop_stream failed", exc_info=True)
+            result = await self.adapter.start_stream(
+                self.source.chat_id,
+                thread_id=self._reply_thread_id or None,
+                task_display_mode=self.display_mode,
+                recipient_team_id=self.source.workspace_id or None,
+                recipient_user_id=self.source.user_id or None,
+            )
+            if result.ok and result.message_id:
+                st.stream_ts = result.message_id
+                st.stream_count += 1
+                st.stream_chars = 0
+                st.phase_open = False
+                st.phase_title = None
+                st.cards_emitted_this_phase = 0
+                if TaskUpdateChunk is not None:
+                    for card_id, title in inflight.items():
+                        chunk = TaskUpdateChunk(id=card_id, title=title, status="in_progress")
+                        res = await self.adapter.append_stream(
+                            self.source.chat_id, st.stream_ts, chunks=[chunk],
+                        )
+                        if res.ok:
+                            st.stream_chars += len(title) + _CHUNK_OVERHEAD
+                            st.inflight_cards[card_id] = title
+            else:
+                logger.warning("[slack] continuation startStream failed: %s", result.error)
+                st.cards_disabled = True
+        finally:
+            st.rolling_over = False
 
     async def append_blocks(self, blocks: list[dict[str, Any]], *, label: str = "") -> bool:
         """Put Block Kit widgets into the live message, in order.
@@ -887,16 +1029,11 @@ class SlackStreamConsumer:
                 from slack_sdk.models.messages.chunk import BlocksChunk
             except ImportError:
                 return False
-            await self._flush_text_locked()
-            if st.cards_disabled or not st.stream_ts:
-                return False
-            result = await self.adapter.append_stream(
-                self.source.chat_id, st.stream_ts, chunks=[BlocksChunk(blocks=blocks)],
+            result = await self._stream_append_locked(
+                [BlocksChunk(blocks=blocks)], chars=_text_chars_in(blocks),
             )
             if not result.ok:
                 logger.debug("[slack] blocks chunk append failed: %s", result.error)
-                if _stream_is_dead(result.error):
-                    st.cards_disabled = True
                 return False
             st.widgets_emitted += len(blocks)
             # The next prose is a new paragraph under the widget.
@@ -955,12 +1092,13 @@ class SlackStreamConsumer:
         consecutive updates with the same card id, so we send only
         the unsent suffix on each flush.
 
-        Per-call size: Slack's appendStream rejects payloads >~4000
-        chars with ``msg_too_long``. We cap the delta at
-        ``_THINKING_DELTA_CAP`` and emit multiple successive
-        TaskUpdateChunks (Slack appends them) when the delta is
-        larger. The final ``status="complete"`` flush always fires
-        so the card resolves visually.
+        The card holds at most ``_THINKING_CARD_CAP`` characters: it is
+        collapsed in Slack, counted against the message cap, and the
+        desktop app has the full text. Past the cap the rest is dropped
+        and the card ends in a marker. Larger deltas go out as several
+        TaskUpdateChunks (Slack appends them). The final
+        ``status="complete"`` flush always fires so the card resolves
+        visually.
         """
         if self._state.cards_disabled or not self._state.stream_ts:
             return
@@ -970,7 +1108,14 @@ class SlackStreamConsumer:
             from slack_sdk.models.messages.chunk import TaskUpdateChunk
         except ImportError:
             return
-        delta = self._state.thinking_buffer[len(self._state.thinking_sent):]
+        st = self._state
+        delta = st.thinking_buffer[len(st.thinking_sent):]
+        room = _THINKING_CARD_CAP - len(st.thinking_sent)
+        if st.thinking_capped:
+            delta = ""
+        elif len(delta) > room:
+            delta = delta[: max(0, room)].rstrip() + " …"
+            st.thinking_capped = True
         # Skip pure status-mutations only when there's no content AND
         # we're still in_progress — they'd be no-op churn. Always
         # send the final "complete" status so the card resolves.
@@ -994,27 +1139,12 @@ class SlackStreamConsumer:
                 status=status if is_last else "in_progress",
                 output=piece or None,
             )
-            result = await self.adapter.append_stream(
-                self.source.chat_id,
-                self._state.stream_ts,
-                chunks=[chunk],
+            result = await self._stream_append_locked(
+                [chunk], chars=len("Thinking") + len(piece),
             )
             if not result.ok:
-                err = (result.error or "").lower()
                 logger.debug("[slack] thinking appendStream failed: %s", result.error)
-                if "msg_too_long" in err:
-                    # Server-side cap is tighter than we expected. Skip
-                    # the rest of the delta rather than retry — we'd
-                    # just hit the same error. Advancing thinking_sent
-                    # past the failed piece preserves invariants for
-                    # the next delta.
-                    logger.warning(
-                        "[slack] thinking delta exceeds Slack cap (%d chars) — dropped",
-                        len(piece),
-                    )
-                if _stream_is_dead(err):
-                    self._state.cards_disabled = True
-                    break
+                break
         self._state.thinking_sent = self._state.thinking_buffer
         self._state.last_thinking_flush_ms = time.monotonic() * 1000
 
@@ -1031,6 +1161,7 @@ class SlackStreamConsumer:
         self._state.thinking_card_id = None
         self._state.thinking_buffer = ""
         self._state.thinking_sent = ""
+        self._state.thinking_capped = False
 
     # ── tool cards ──
 
@@ -1125,9 +1256,11 @@ class SlackStreamConsumer:
         # complete, error}. NOT "completed" — that string is silently
         # ignored and the card never resolves to a finished state.
         status = "error" if is_error else "complete"
-        # Tool output displayed inside the expanded card. Trim to a
-        # reasonable size — Slack truncates long task outputs anyway.
-        output_text = _short(preview, 2000) if preview else None
+        # Tool output displayed inside the expanded card. Short: it is
+        # paid for out of the message's 12k cap, and the desktop app has
+        # the whole thing. An error gets more room than a success.
+        cap = _TOOL_ERROR_OUTPUT_CAP if is_error else _TOOL_OUTPUT_CAP
+        output_text = _short(preview, cap) if preview else None
         title = self._format_tool_title(tool_name, args)
         # URL citations for web / browser tools.
         sources = _build_sources_for_tool(tool_name, args, preview)
@@ -1189,10 +1322,8 @@ class SlackStreamConsumer:
             if sources:
                 kwargs["sources"] = sources
             chunk = TaskUpdateChunk(**kwargs)
-            result = await self.adapter.append_stream(
-                self.source.chat_id,
-                self._state.stream_ts,
-                chunks=[chunk],
+            result = await self._stream_append_locked(
+                [chunk], chars=len(title) + len(output or ""),
             )
             # Count only the FIRST time a card opens (in_progress) so
             # the in_progress → complete transition on the same card
@@ -1200,15 +1331,12 @@ class SlackStreamConsumer:
             # detection on the next text_delta.
             if status == "in_progress":
                 self._state.cards_emitted_this_phase += 1
+                if result.ok:
+                    self._state.inflight_cards[card_id] = title
+            else:
+                self._state.inflight_cards.pop(card_id, None)
             if not result.ok:
                 logger.debug("[slack] task chunk append failed: %s", result.error)
-                # If the stream went out of streaming state (idle
-                # timeout during a long tool wait), mark it failed so
-                # subsequent body-text flushes route through the
-                # chat.postMessage fallback path and the user still
-                # sees the agent's prose response.
-                if _stream_is_dead(result.error):
-                    self._state.cards_disabled = True
 
     def _format_tool_title(self, name: str, args: dict[str, Any]) -> str:
         """Build a Task Card title: ``name`` plus a short arg preview
@@ -1220,8 +1348,9 @@ class SlackStreamConsumer:
         if not preview:
             return name
         # The card already shows status (spinner/check), so don't pad
-        # with extra glyphs. A simple "name: preview" reads cleanly.
-        return f"{name}: {preview}"
+        # with extra glyphs. A simple "name: preview" reads cleanly, and
+        # one line is all Slack shows of it.
+        return _short(f"{name}: {preview}", _TOOL_TITLE_CAP)
 
     def _is_heartbeat(self, tool_name: str, args: dict[str, Any]) -> bool:
         if tool_name != "tasks" or self.verbosity == "verbose":
@@ -1400,9 +1529,17 @@ class SlackStreamConsumer:
             async with self._lock:
                 # Everything but the last piece goes out as appends; the
                 # last piece rides on stopStream so the seal and the tail
-                # are one call.
+                # are one call. The tail has to fit the message too.
                 tail_len = min(len(st.body_buffer) - st.body_sent, _TEXT_PIECE_CAP)
                 await self._flush_text_locked(keep_tail=max(0, tail_len))
+                tail_len = len(st.body_buffer) - st.body_sent
+                if (
+                    tail_len > 0
+                    and st.stream_chars > 0
+                    and not st.cards_disabled
+                    and st.stream_chars + tail_len + _CHUNK_OVERHEAD > _STREAM_BUDGET
+                ):
+                    await self._rollover_locked()
             tail = st.body_buffer[st.body_sent :] if not st.cards_disabled else ""
             chunks: list[Any] | None = None
             if tail and not st.cards_disabled:
@@ -1431,13 +1568,29 @@ class SlackStreamConsumer:
                         st.body_sent = len(st.body_buffer)
                 else:
                     logger.warning("[slack] chat.stopStream failed: %s", stop_result.error)
-                    # A malformed block can trip stopStream — retry with
-                    # the tail only; images fall through to files_upload.
-                    retry = await self.adapter.stop_stream(
-                        self.source.chat_id, st.stream_ts, chunks=chunks,
-                        metadata=self._metadata(), session_status="active",
-                    )
-                    inline_blocks = []
+                    too_long = "msg_too_long" in (stop_result.error or "").lower()
+                    if too_long and st.stream_chars > 0:
+                        # The estimate was short. Continue in a fresh
+                        # message and seal that one with the tail.
+                        async with self._lock:
+                            await self._rollover_locked()
+                        if st.stream_ts and not st.cards_disabled:
+                            retry = await self.adapter.stop_stream(
+                                self.source.chat_id, st.stream_ts, chunks=chunks,
+                                blocks=blocks or None, metadata=self._metadata(),
+                                session_status="active",
+                            )
+                        else:
+                            retry = stop_result
+                    else:
+                        # A malformed block can trip stopStream — retry
+                        # with the tail only; images fall through to
+                        # files_upload.
+                        retry = await self.adapter.stop_stream(
+                            self.source.chat_id, st.stream_ts, chunks=chunks,
+                            metadata=self._metadata(), session_status="active",
+                        )
+                        inline_blocks = []
                     if retry.ok:
                         sealed = True
                         if chunks:
@@ -1661,6 +1814,19 @@ def _summarize_tool_args(name: str, args: dict[str, Any]) -> str:
 def _short(s: str, n: int) -> str:
     s = s.replace("\n", " ").strip()
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _text_chars_in(value: Any) -> int:
+    """Characters of text inside a Block Kit structure: every string value
+    counts. An estimate on the high side of what Slack counts a blocks
+    chunk for against the message cap."""
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, dict):
+        return sum(_text_chars_in(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_text_chars_in(v) for v in value)
+    return 0
 
 
 def _mime_to_ext(mime: str) -> str:
