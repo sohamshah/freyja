@@ -1,0 +1,285 @@
+/* ── Work: tool calls as quiet lines that fold into a seam ───────────────
+   Direction A while the agent works: each step is one quiet line in the
+   same voice as the thinking line. Direction B once the agent starts its
+   next paragraph: the stretch folds into a seam, one drawn line beside a
+   short summary (components/seam/). No boxes, no glows, no pulses. */
+
+:root {
+  --seam-p: 46%;
+  --seam-ink: color-mix(in srgb, rgb(var(--ink)) var(--seam-p), rgb(var(--paper)));
+  --seam-think: color-mix(in srgb, var(--accent) 76%, rgb(var(--paper)));
+  --seam-blue: color-mix(in srgb, var(--accent) 66%, rgb(var(--paper)));
+  --wk-mark: 0.26;
+}
+:root[data-theme='light'] {
+  --seam-p: 54%;
+  --wk-mark: 0.3;
+}
+
+/* Shared words */
+.wk-dim { color: rgb(var(--fg-3)); }
+.wk-bad { color: var(--danger); }
+.wk-sep { margin: 0 0.5ch; color: rgb(var(--fg-4)); }
+.wk-diff { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wk-diff b { font-weight: 400; color: var(--ok); }
+.wk-diff i { font-style: normal; color: var(--danger); }
+.wk-caret { flex: none; color: rgb(var(--fg-3)); opacity: 0; transition: transform 260ms var(--ease-out-expo), opacity 160ms ease; }
+@keyframes wk-shimmer { from { background-position: 100% 0; } to { background-position: 0% 0; } }
+@keyframes wk-turn { to { transform: rotate(1turn); } }
+@keyframes wk-rise { from { opacity: 0; transform: translateY(4px); } }
+@keyframes wk-wipe { from { clip-path: inset(-3px 100% -3px 0); opacity: 0.2; } to { clip-path: inset(-3px 0 -3px 0); opacity: 1; } }
+@keyframes wk-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+.wk-step[data-state='live'] .wk-step-text,
+.wk-crowd[data-state='live'] .wk-crowd-head .wk-step-text,
+.wk-crowd-word[data-state='running'] {
+  background: linear-gradient(90deg, rgb(var(--fg-2)) 0%, rgb(var(--fg-2)) 38%, var(--accent-hi) 50%, rgb(var(--fg-2)) 62%, rgb(var(--fg-2)) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: wk-shimmer 2.4s linear infinite;
+}
+
+/* ── A · one step ── */
+.wk-step-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 0;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 16px;
+  letter-spacing: 0.02em;
+  color: rgb(var(--fg-1));
+}
+button.wk-step-head:focus-visible {
+  outline: 1px solid rgb(var(--accent-rgb) / 0.45);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+/* A small ring: hollow once done, turning while live, red when failed. */
+.wk-step-mark {
+  flex: none;
+  position: relative;
+  width: 7px;
+  height: 7px;
+  margin: 0 0.5px;
+  border-radius: 50%;
+  border: 1px solid rgb(var(--ink) / var(--wk-mark));
+  transition: border-color 300ms ease, background-color 300ms ease;
+}
+.wk-step-mark::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  opacity: 0;
+  transition: opacity 240ms ease;
+}
+.wk-step[data-state='live'] .wk-step-mark { border-color: rgb(var(--accent-rgb) / 0.25); }
+.wk-step[data-state='live'] .wk-step-mark::after {
+  opacity: 1;
+  border-top-color: var(--accent);
+  border-right-color: rgb(var(--accent-rgb) / 0.45);
+  animation: wk-turn 0.9s linear infinite;
+}
+.wk-step[data-state='error'] .wk-step-mark { border-color: rgb(var(--danger-rgb) / 0.85); background: rgb(var(--danger-rgb) / 0.2); }
+.wk-step-text { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; letter-spacing: 0; transition: color 200ms ease; }
+.wk-step-head:hover .wk-step-text { color: rgb(var(--fg-0)); }
+.wk-step-meta { flex: none; margin-left: auto; display: flex; align-items: center; gap: 10px; color: rgb(var(--fg-3)); font-variant-numeric: tabular-nums; }
+.wk-time--short { display: none; }
+.wk-step-head:hover .wk-time--short { display: inline; }
+.wk-together { color: rgb(var(--fg-3) / 0.85); }
+.wk-fail { color: var(--danger); }
+.wk-step-head:hover .wk-caret,
+.wk-step[data-open='true'] > .wk-step-head .wk-caret { opacity: 1; }
+.wk-step[data-open='true'] > .wk-step-head .wk-caret { transform: rotate(90deg); }
+.wk-step[data-focus='true'] > .wk-step-head .wk-step-text { color: var(--accent-hi); }
+.wk-step-cmd {
+  margin: 0 0 2px 17px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 16px;
+  color: rgb(var(--fg-3));
+  animation: wk-rise 300ms var(--ease-out-expo);
+}
+.wk-step-cmd span { color: rgb(var(--fg-4)); }
+.wk-step-media { margin: 4px 0 6px 17px; max-width: 76%; }
+.wk-frame { display: block; overflow: hidden; border-radius: 6px; background: #000; cursor: zoom-in; }
+.wk-frame img { display: block; width: 100%; max-height: 200px; object-fit: contain; }
+.wk-frame img.wk-frame--big { max-height: 540px; }
+.wk-images { padding: 0; margin-top: 6px; }
+
+/* The detail, under the same hairline rule a thought uses. */
+.wk-rule {
+  margin: 6px 0 8px 3px;
+  padding: 1px 0 2px 15px;
+  border-left: 1px solid transparent;
+  border-image: linear-gradient(to bottom, rgb(var(--accent-rgb) / 0.32), rgb(var(--ink) / 0.05)) 1;
+}
+.wk-detail { font-family: var(--font-mono); font-size: 11px; line-height: 1.6; color: rgb(var(--fg-2)); }
+.wk-detail > * + * { margin-top: 8px; }
+.wk-cmd { color: rgb(var(--fg-1)); white-space: pre-wrap; word-break: break-word; }
+.wk-ps { margin-right: 1ch; color: rgb(var(--fg-4)); user-select: none; }
+.wk-out { margin: 0; padding: 0; font: inherit; color: rgb(var(--fg-2)); white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; }
+.wk-out[data-clip='true'] { max-height: calc(1.6em * 7); overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 50%, transparent); mask-image: linear-gradient(to bottom, #000 50%, transparent); }
+.wk-more { margin-top: 2px; padding: 4px 0; font-family: var(--font-mono); font-size: 10px; color: rgb(var(--fg-3)); }
+.wk-more:hover { color: rgb(var(--fg-0)); }
+.wk-wait { color: rgb(var(--fg-3)); }
+.wk-foot { display: flex; flex-wrap: wrap; gap: 10px; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: rgb(var(--fg-3)); }
+
+/* ── A · a few calls at once ── */
+.wk-group { position: relative; display: flex; flex-direction: column; gap: 2px; }
+.wk-group::before { content: ''; position: absolute; left: 4px; top: 10px; bottom: 10px; width: 1px; background: rgb(var(--ink) / 0.16); }
+
+/* ── A · many calls at once ── */
+.wk-crowd-head { cursor: default; }
+.wk-fanmark { flex: none; position: relative; width: 8px; height: 13px; }
+.wk-fan { position: absolute; left: -4px; top: 0; overflow: visible; }
+.wk-fan path { fill: none; stroke-width: 0.7; stroke-linecap: round; transition: d 700ms var(--ease-out-expo), stroke 320ms ease; }
+.wk-fan-run { stroke: rgb(var(--accent-rgb) / 0.8); }
+.wk-fan-ok { stroke: var(--seam-ink); }
+.wk-fan-err { stroke: var(--danger); }
+.wk-crowd-words { margin: 1px 0 1px 17px; font-family: var(--font-mono); font-size: 10.5px; line-height: 19px; color: rgb(var(--fg-3)); }
+.wk-crowd-words[data-clamp='true'] { max-height: 76px; overflow: hidden; }
+.wk-crowd-word { color: rgb(var(--fg-2)); border-radius: 3px; transition: color 420ms ease; }
+.wk-crowd-word:hover,
+.wk-crowd-word[aria-expanded='true'] { color: rgb(var(--fg-0)); text-decoration: underline 1px rgb(var(--accent-rgb) / 0.6); text-underline-offset: 3px; }
+.wk-crowd-word[data-state='error'] { color: var(--danger); text-decoration: underline wavy rgb(var(--danger-rgb) / 0.5); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.wk-crowd-sep { margin: 0 0.55ch; color: rgb(var(--fg-4)); }
+.wk-crowd-more { margin-left: 17px; }
+
+/* ── B · the stretch and its seam ── */
+.wk-stretch { position: relative; }
+.wk-stretch[data-mode='folded'] { min-height: 26px; }
+.wk-stretch-fold { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; transition: grid-template-rows 560ms cubic-bezier(0.62, 0, 0.24, 1) 50ms; }
+.wk-stretch[data-mode='folded'] .wk-stretch-fold { grid-template-rows: 0fr; }
+.wk-stretch-fold-in { min-height: 0; min-width: 0; overflow: clip; overflow-clip-margin: 10px; }
+.wk-stretch[data-mode='folded'] .wk-stretch-fold-in { overflow: hidden; }
+.wk-stretch-list { display: flex; flex-direction: column; gap: 3px; transition: padding-top 380ms var(--ease-out-expo); }
+.wk-stretch[data-mode='open'] .wk-stretch-list { padding-top: 32px; }
+.wk-stretch:not([data-mode='plain']) .wk-stretch-list > .wk-item {
+  animation: wk-rise 440ms var(--ease-out-expo);
+  transition: opacity 300ms ease, transform 420ms var(--ease-out-expo), filter 300ms ease;
+  transition-delay: calc(90ms + var(--i, 0) * 34ms);
+}
+.wk-stretch[data-mode='folded'] .wk-stretch-list > .wk-item {
+  opacity: 0;
+  transform: translateY(-4px);
+  filter: blur(1.5px);
+  transition-duration: 200ms;
+  transition-delay: calc(var(--i, 0) * 10ms);
+}
+.wk-stretch-list > .wk-item.wk-hl .wk-step-text,
+.wk-stretch-list > .wk-item.wk-hl .thought-topic { color: var(--accent-hi); }
+
+.wk-seam-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 26px;
+  min-width: 0;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 16px;
+  letter-spacing: 0.02em;
+  color: rgb(var(--fg-2));
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 240ms ease;
+}
+.wk-stretch[data-mode='folded'] .wk-seam-row,
+.wk-stretch[data-mode='open'] .wk-seam-row,
+.wk-stretch.wk-gathering .wk-seam-row { visibility: visible; opacity: 1; }
+.wk-seam-row:focus-visible { outline: 1px solid rgb(var(--accent-rgb) / 0.45); outline-offset: 3px; border-radius: 4px; }
+.wk-seam-txt { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 9px; white-space: nowrap; }
+.wk-seam-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: rgb(var(--fg-2)); transition: color 160ms ease; }
+.wk-seam-row:hover .wk-seam-what { color: rgb(var(--fg-0)); }
+.wk-seam-trouble { flex: none; color: rgb(var(--fg-2)); }
+.wk-seam-time { flex: none; color: rgb(var(--fg-3)); font-variant-numeric: tabular-nums; }
+.wk-seam-diff { flex: none; margin-left: auto; }
+.wk-seam-caret { flex: none; margin-left: auto; display: flex; }
+.wk-seam-diff + .wk-seam-caret { margin-left: 0; }
+.wk-seam-row:hover .wk-caret,
+.wk-stretch[data-mode='open'] .wk-seam-caret .wk-caret { opacity: 1; }
+.wk-stretch[data-mode='open'] .wk-seam-caret .wk-caret { transform: rotate(90deg); }
+.wk-seam-tip {
+  position: absolute;
+  bottom: calc(100% + 5px);
+  left: 0;
+  z-index: 5;
+  max-width: 340px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  letter-spacing: 0.01em;
+  color: rgb(var(--fg-0));
+  background: rgb(var(--bg-2));
+  box-shadow: 0 0 0 0.5px rgb(var(--ink) / 0.14), 0 4px 10px -4px rgb(var(--shadow) / 0.3);
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 3px);
+  transition: opacity 140ms ease, transform 220ms var(--ease-out-expo);
+}
+.wk-seam-tip[data-show='true'] { opacity: 1; transform: translate(-50%, 0); }
+
+/* The line itself. Colours are opaque mixes, so strokes that cross never
+   darken each other. */
+.wk-seam-svg {
+  flex: none;
+  display: block;
+  overflow: visible;
+  color: var(--seam-ink);
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent calc(100% - 1px));
+  mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent calc(100% - 1px));
+  transition: opacity 320ms ease;
+}
+.wk-stretch[data-mode='open'] .wk-seam-row .wk-seam-svg { opacity: 0.5; }
+.wk-seam-row:hover .wk-seam-svg { opacity: 1; }
+.wk-seam-svg path { fill: none; stroke: currentColor; stroke-width: 1.15; stroke-linecap: round; stroke-linejoin: round; transition: stroke 200ms ease, stroke-width 200ms ease; }
+.wk-seam-svg .s-think { stroke: var(--seam-think); stroke-width: 1.05; }
+.wk-seam-svg .s-err { stroke: var(--danger); stroke-linejoin: miter; }
+.wk-seam-svg .s-str { stroke-width: var(--sw, 0.85); }
+.wk-seam-svg .s-helpers { stroke-width: var(--sw, 0.9); }
+.wk-seam-svg .s-err.s-str { stroke-width: 0.95; }
+.wk-seam-svg .s-brk { stroke-width: 0.8; }
+.wk-seam-svg .s-fray { stroke-width: 0.55; }
+.wk-seam-svg .s-out { stroke: var(--seam-blue); }
+.wk-seam-svg .s-back { stroke-dasharray: 1 2; animation: wk-draw 1.1s cubic-bezier(0.3, 0.6, 0.25, 1) backwards; }
+.wk-seam-svg .wk-seam-hit { fill: transparent; stroke: none; cursor: pointer; }
+.wk-seam-svg g.wk-hl path { stroke: var(--accent-hi); stroke-width: 1.5; }
+.wk-seam-svg g.wk-hl path.s-str { stroke-width: 1.05; }
+.wk-seam-svg .fresh path { stroke-dasharray: 1 2; animation: wk-draw 620ms cubic-bezier(0.3, 0.6, 0.25, 1) both; }
+
+/* The fold's overlay: marks in flight. */
+.wk-ghosts { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 6; pointer-events: none; }
+.wk-ghost { position: absolute; left: 0; top: 0; display: flex; align-items: center; justify-content: center; transform-origin: 50% 50%; will-change: transform, opacity; }
+.wk-ghost > * { position: relative !important; margin: 0 !important; flex: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wk-step[data-state='live'] .wk-step-mark::after,
+  .wk-step[data-state='live'] .wk-step-text,
+  .wk-crowd-word[data-state='running'],
+  .wk-stretch-list > .wk-item,
+  .wk-step-cmd { animation: none !important; }
+  .wk-step[data-state='live'] .wk-step-text,
+  .wk-crowd-word[data-state='running'] { color: rgb(var(--fg-1)); background: none; }
+  .wk-stretch-fold,
+  .wk-stretch-list > .wk-item { transition-duration: 1ms !important; transition-delay: 0s !important; }
+}

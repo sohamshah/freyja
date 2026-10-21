@@ -6,6 +6,7 @@ import { useHarness } from './state/store'
 import { initTheme } from './lib/theme'
 import 'katex/dist/katex.min.css'
 import './styles/globals.css'
+import './styles/work.css'
 
 // Resolve dark/light before the first paint — the tokens in globals.css
 // key off <html data-theme>, so this must land before React renders.

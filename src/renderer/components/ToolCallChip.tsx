@@ -278,7 +278,7 @@ export function describeCall(name: string, args?: Record<string, unknown>): stri
   return ''
 }
 
-function summarizeArgs(name: string, args?: Record<string, unknown>): string {
+export function summarizeArgs(name: string, args?: Record<string, unknown>): string {
   if (!args) return ''
   // Kanban gets its own summary path so each chip reads as the action it
   // is rather than a generic "kanban" pill. Otherwise twenty board moves

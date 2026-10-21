@@ -6,9 +6,9 @@ import { ThinkingStream } from './ThinkingStream'
 import { HeroWelcome } from './HeroWelcome'
 import { ToolCallChip, ToolResultImages } from './ToolCallChip'
 import { Widget } from './Widget'
-import { ParallelToolGroup } from './ParallelToolGroup'
 import { SubagentCard } from './SubagentCard'
-import { SubagentSwarmGrid } from './SubagentSwarmGrid'
+import { WorkStretch } from './seam/WorkStretch'
+import type { StretchItem } from './seam/stepWords'
 import { AppshotChip } from './AppshotCard'
 import { JevResultSummary, JevRunView, jevStatus } from './JevRun'
 import { looksLikeJevLog, parseJevResult } from '../lib/jevLog'
@@ -1447,10 +1447,12 @@ const MessageView = memo(function MessageView({ message }: { message: Message })
     )
   }
 
-  // Group consecutive `subagent` parts so the renderer can lay them out
-  // as a swarm grid when the assistant spawned multiple in parallel. A
-  // standalone subagent still renders as the classic stacked card.
-  const groups = useMemo(() => groupParts(message.parts), [message.parts])
+  // Paragraphs, and the stretches of work between them. A stretch shows
+  // its steps as quiet lines while the agent works, and folds into a seam
+  // once a later paragraph starts or the turn ends.
+  const blocks = useMemo(() => buildBlocks(message.parts), [message.parts])
+  const lastPart = message.parts.length - 1
+  const liveIndex = isStreamingMessage ? lastPart : -1
 
   return (
     // `group/msg` is deliberately named: a bare `group` would also drive
@@ -1467,13 +1469,20 @@ const MessageView = memo(function MessageView({ message }: { message: Message })
         <CopyMessageButton message={message} />
       </div>
       <div className="space-y-2.5 pl-0">
-        {groups.map((group, idx) => (
-          <PartGroupView
-            key={idx}
-            group={group}
-            isActiveTail={isStreamingMessage && idx === groups.length - 1}
-          />
-        ))}
+        {blocks.map((block, idx) => {
+          if (block.kind === 'stretch') {
+            return (
+              <WorkStretch
+                key={block.key}
+                items={block.items}
+                closed={idx < blocks.length - 1 || !isStreamingMessage}
+                liveIndex={liveIndex}
+              />
+            )
+          }
+          if (block.kind === 'widget') return <FloatingWidget key={`w${block.toolCallId}`} toolCallId={block.toolCallId} />
+          return <Part key={`p${block.index}`} part={block.part} isActiveTail={block.index === liveIndex} />
+        })}
       </div>
       <TurnMeter
         startedAt={message.createdAt}
@@ -1567,7 +1576,7 @@ function TurnMeter({
           in Departure Mono all but disappears. */}
       <span
         className={`inline-block h-1 w-1 rounded-full ${
-          live ? 'animate-pulse bg-accent' : 'bg-fg-2'
+          live ? 'bg-accent' : 'bg-fg-2'
         }`}
       />
       <span>{live ? 'crunching' : 'crunched for'}</span>
@@ -1584,78 +1593,88 @@ function TurnMeter({
   )
 }
 
-type PartGroup =
-  | { kind: 'subagents'; ids: string[] }
-  | { kind: 'parallel_tools'; ids: string[] }
+type Block =
+  | { kind: 'text' | 'other'; part: MessagePart; index: number }
+  | { kind: 'stretch'; key: string; items: StretchItem[] }
   | { kind: 'widget'; toolCallId: string }
-  | { kind: 'single'; part: MessagePart }
 
-function groupParts(parts: MessagePart[]): PartGroup[] {
-  const out: PartGroup[] = []
+/** Split a message into paragraphs and the stretches of work between them.
+ *  Thinking, tool calls and helpers join the open stretch; a paragraph, a
+ *  widget or a system note closes it. Calls that ran together (one
+ *  `groupId`) become one item. Spawn calls are dropped: the helper they
+ *  started stands for them. Reads the store without subscribing; the
+ *  caller memoizes on the parts, which change on every event that matters
+ *  here. */
+/** Calls issued in one response start streaming within a moment of each
+ *  other; a later response comes after a model round trip. */
+const TOGETHER_MS = 2500
+
+function buildBlocks(parts: MessagePart[]): Block[] {
   const state = useHarness.getState()
   const toolCalls = state.toolCalls
   const widgets = state.widgets
-  for (const part of parts) {
+  const out: Block[] = []
+  let stretch: { kind: 'stretch'; key: string; items: StretchItem[] } | null = null
+  const open = (index: number) => {
+    if (!stretch) {
+      stretch = { kind: 'stretch', key: `s${index}`, items: [] }
+      out.push(stretch)
+    }
+    return stretch
+  }
+  parts.forEach((part, index) => {
+    if (part.type === 'text') {
+      if (!(part.text ?? '').trim()) return
+      stretch = null
+      out.push({ kind: 'text', part, index })
+      return
+    }
+    if (part.type === 'thinking') {
+      open(index).items.push({ kind: 'thought', part, index })
+      return
+    }
     if (part.type === 'subagent' && part.subagentId) {
-      const last = out[out.length - 1]
-      if (last && last.kind === 'subagents') {
-        last.ids.push(part.subagentId)
-        continue
-      }
-      out.push({ kind: 'subagents', ids: [part.subagentId] })
-      continue
+      const items = open(index).items
+      const last = items[items.length - 1]
+      if (last?.kind === 'helpers') last.ids.push(part.subagentId)
+      else items.push({ kind: 'helpers', ids: [part.subagentId] })
+      return
     }
-    // Skip spawn tool_call parts — they sit between subagent parts
     if (part.type === 'tool_call' && part.toolCallId) {
-      const tc = toolCalls[part.toolCallId]
-      if (tc && SUBAGENT_SPAWN_TOOLS.has(tc.name)) {
-        continue
+      const id = part.toolCallId
+      const tc = toolCalls[id]
+      if (tc && SUBAGENT_SPAWN_TOOLS.has(tc.name)) return
+      // Generative-UI widgets are the artifact itself: they stand on their
+      // own between paragraphs. An errored call (no widget) is a step.
+      if (tc?.name === 'show_widget' && (widgets[id] || tc.status === 'running')) {
+        stretch = null
+        out.push({ kind: 'widget', toolCallId: id })
+        return
       }
-      // Generative-UI widgets — the tool chip + parallel-group chrome
-      // are dead weight; the widget IS the artifact. Pull these out of
-      // parallel grouping so each renders chromeless floating directly
-      // in the message stream. Errored calls (no widget, status=error)
-      // fall through to the normal chip so the operator sees what
-      // failed.
-      if (tc?.name === 'show_widget') {
-        const hasWidget = !!widgets[part.toolCallId]
-        const stillRunning = tc.status === 'running'
-        if (hasWidget || stillRunning) {
-          out.push({ kind: 'widget', toolCallId: part.toolCallId })
-          continue
-        }
+      const items = open(index).items
+      const last = items[items.length - 1]
+      // Calls that ran together share a groupId. Transcripts saved before
+      // the store kept sequential calls apart can share one across separate
+      // responses, so a call also has to start within moments of the one
+      // before it.
+      const prevId = last?.kind === 'call' ? last.id : last?.kind === 'calls' ? last.ids[last.ids.length - 1] : undefined
+      const prev = prevId ? toolCalls[prevId] : undefined
+      const together = !!tc?.groupId && !!prev && prev.groupId === tc.groupId && tc.startedAt - prev.startedAt <= TOGETHER_MS
+      if (together && last?.kind === 'calls') {
+        last.ids.push(id)
+        return
       }
-      // Group consecutive tool calls with the same groupId
-      if (tc?.groupId) {
-        const last = out[out.length - 1]
-        if (last && last.kind === 'parallel_tools') {
-          const prevTc = toolCalls[last.ids[0]]
-          if (prevTc?.groupId === tc.groupId) {
-            last.ids.push(part.toolCallId)
-            continue
-          }
-        }
-        out.push({ kind: 'parallel_tools', ids: [part.toolCallId] })
-        continue
+      if (together && last?.kind === 'call') {
+        items[items.length - 1] = { kind: 'calls', ids: [last.id, id], groupId: tc!.groupId }
+        return
       }
+      items.push({ kind: 'call', id })
+      return
     }
-    out.push({ kind: 'single', part })
-  }
+    stretch = null
+    out.push({ kind: 'other', part, index })
+  })
   return out
-}
-
-function PartGroupView({ group, isActiveTail }: { group: PartGroup; isActiveTail: boolean }) {
-  if (group.kind === 'subagents') {
-    if (group.ids.length === 1) return <SubagentCard id={group.ids[0]} />
-    return <SubagentSwarmGrid ids={group.ids} />
-  }
-  if (group.kind === 'parallel_tools') {
-    return <ParallelToolGroup ids={group.ids} />
-  }
-  if (group.kind === 'widget') {
-    return <FloatingWidget toolCallId={group.toolCallId} />
-  }
-  return <Part part={group.part} isActiveTail={isActiveTail} />
 }
 
 /** Chromeless widget wrapper used inline in the message stream.

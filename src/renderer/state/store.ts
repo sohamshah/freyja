@@ -2225,9 +2225,11 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
     }
 
     case 'tool_use_start': {
-      // Determine groupId: if the last part in the current message is
-      // also a tool_call (no text/thinking between them), they're parallel
-      // and share the same group. Otherwise start a new group.
+      // Determine groupId: calls issued together share one. A call joins
+      // the previous call's group when that call is the last part of the
+      // message and is still running, so it came in the same response.
+      // A finished previous call means this one came in a later response:
+      // it ran after it, not with it.
       let groupId = `tg_${Date.now().toString(36)}_${ev.id.slice(-4)}`
       if (slice.currentStreamingMessageId) {
         const curMsg = slice.messages.find((m) => m.id === slice.currentStreamingMessageId)
@@ -2235,7 +2237,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           const lastPart = curMsg.parts[curMsg.parts.length - 1]
           if (lastPart?.type === 'tool_call' && lastPart.toolCallId) {
             const prevTc = slice.toolCalls[lastPart.toolCallId]
-            if (prevTc?.groupId) {
+            if (prevTc?.groupId && prevTc.status === 'running') {
               groupId = prevTc.groupId
             }
           }
