@@ -156,7 +156,10 @@ export function TitleBar() {
         }
       >
         <span className="title-kicker">{activeHarness ? 'harness' : 'model'}</span>
-        <span className="ml-2 min-w-0 truncate font-mono text-fg-0">
+        {/* The picker is the header's one elastic control, but the name is
+            its point: it keeps at least ten characters and the session id
+            on the far right gives way first. */}
+        <span className="ml-2 min-w-[10ch] truncate font-mono text-fg-0">
           {activeHarness ? activeHarness.label : model}
         </span>
         {!activeHarness && reasoningLevel && reasoningLevel !== 'none' && (
@@ -206,7 +209,7 @@ export function TitleBar() {
       >
         <span className="font-mono uppercase">{focusMode ? 'restore' : 'focus'}</span>
       </TitleControl>
-      <TitleControl className="flex h-[30px] px-3">
+      <TitleControl className="flex h-[28px] px-3">
         <span className="text-fg-1">ctx</span>
         <span className="ml-1.5 font-mono text-fg-0">
           {contextKnown ? formatTokens(contextTokens) : 'n/a'}
@@ -214,11 +217,11 @@ export function TitleBar() {
         </span>
         <ProgressBar pct={ctxPct} className="ml-2 w-[56px]" />
       </TitleControl>
-      <TitleControl className="flex h-[30px] px-3">
+      <TitleControl className="flex h-[28px] px-3">
         <span className="text-fg-1">spend</span>
         <span className="ml-1.5 font-mono text-fg-0">{formatCost(aggregateCost)}</span>
       </TitleControl>
-      <div className="ml-auto flex shrink-0 items-center gap-2 text-fg-1">
+      <div className="ml-auto flex min-w-0 shrink items-center gap-2 text-fg-1">
         <SchedulerPill />
         <GatewayStatusPill />
         <TitleControl
@@ -235,7 +238,7 @@ export function TitleBar() {
             streaming
           </span>
         )}
-        <span className="hidden shrink-0 font-mono text-[10.5px] text-fg-1 xl:inline">
+        <span className="hidden min-w-0 truncate font-mono text-[10.5px] text-fg-1 2xl:inline" title={sessionId}>
           {sessionId.slice(0, 14)}
         </span>
       </div>
@@ -292,7 +295,7 @@ function BridgeStatus({ mode, modeDetail }: { mode: string; modeDetail: string }
 
   return (
     <div
-      className={`title-readout title-readout-status flex h-[30px] items-center gap-1.5 px-1 font-mono text-[10px] uppercase ${toneClass}`}
+      className={`title-readout title-readout-status flex h-[28px] items-center gap-1.5 px-1 font-mono text-[10px] uppercase ${toneClass}`}
       title={modeDetail}
     >
       <span className="title-status-dot inline-block h-[6px] w-[6px] rounded-full bg-current" />
@@ -482,7 +485,7 @@ function SchedulerPill() {
       type="button"
       onClick={() => open()}
       title={title}
-      className="no-drag hidden h-[28px] shrink-0 items-center gap-1.5 rounded border border-white/[0.12] bg-white/[0.05] px-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-1 transition hover:border-white/[0.22] hover:bg-white/[0.08] hover:text-fg-0 xl:inline-flex"
+      className="no-drag title-chip hidden h-[28px] shrink-0 items-center gap-1.5 rounded border border-white/[0.12] bg-white/[0.05] px-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-1 transition hover:border-white/[0.22] hover:bg-white/[0.08] hover:text-fg-0 xl:inline-flex"
     >
       <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
       <span>sched</span>
@@ -556,7 +559,7 @@ function GatewayStatusPill() {
       type="button"
       onClick={() => toggleSlackSetup(true)}
       title={title}
-      className="no-drag hidden h-[28px] shrink-0 items-center gap-1.5 rounded border border-white/[0.12] bg-white/[0.05] px-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-1 transition hover:border-white/[0.22] hover:bg-white/[0.08] hover:text-fg-0 2xl:inline-flex"
+      className="no-drag title-chip hidden h-[28px] shrink-0 items-center gap-1.5 rounded border border-white/[0.12] bg-white/[0.05] px-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-1 transition hover:border-white/[0.22] hover:bg-white/[0.08] hover:text-fg-0 2xl:inline-flex"
     >
       <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
       {label}

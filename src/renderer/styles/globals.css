@@ -470,6 +470,11 @@ select {
     inset 0 -0.5px 0 rgb(var(--ink) / 0.06);
   transform: translateY(0.5px);
 }
+.title-control-button:focus-visible,
+.title-chip:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(var(--accent-rgb) / 0.45);
+}
 .title-control-accent {
   color: rgb(var(--accent-hi-rgb) / 0.92);
 }
@@ -2080,9 +2085,10 @@ body.splash-active [data-splash-target='hero-icon'] {
   mix-blend-mode: multiply;
 }
 
-/* Tasks tab: each bucket is a sheet of paper and the agents rail a
-   deeper margin, so the page reads as a desk instead of a blank page.
-   The classes are no-ops in the dark shell (TasksListRailView.tsx). */
+/* Tasks tab: each bucket is a sheet of paper, the agents dock in the
+   bottom-left corner is a raised key like the title bar's, a selected
+   row lifts off its sheet, and the ticket's facts sit in a well. The
+   classes are no-ops in the dark shell (TasksListRailView.tsx). */
 :root[data-theme='light'] .task-section {
   background: rgb(250 248 243 / 0.58);
   border-radius: 14px;
@@ -2090,48 +2096,128 @@ body.splash-active [data-splash-target='hero-icon'] {
   box-shadow: inset 0 0.5px 0 0 rgb(255 253 248 / 0.9), var(--card-shadow);
 }
 :root[data-theme='light'] .task-section > div:first-child { margin-bottom: 10px; }
-:root[data-theme='light'] .task-rail {
-  border-color: transparent;
+:root[data-theme='light'] .task-row-selected {
+  background: rgb(253 251 247);
+  box-shadow:
+    inset 0 0.5px 0 0 rgb(255 255 255 / 1),
+    0 0 0 1px rgb(var(--accent-rgb) / 0.35),
+    0 1px 2px rgb(var(--shadow) / 0.06),
+    0 10px 24px -14px rgb(var(--shadow) / 0.3);
+}
+:root[data-theme='light'] .task-dock {
+  color: rgb(var(--fg-0));
+  background: linear-gradient(180deg, rgb(254 252 248 / 0.96), rgb(246 242 235 / 0.92));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.95),
+    inset 0 -1px 0 rgb(var(--ink) / 0.035),
+    0 0 0 0.5px rgb(var(--ink) / 0.16),
+    0 1px 1px rgb(var(--shadow) / 0.07),
+    0 6px 16px -6px rgb(var(--shadow) / 0.25);
+}
+:root[data-theme='light'] .task-dock:hover {
+  background: linear-gradient(180deg, rgb(255 254 251 / 0.98), rgb(248 245 238 / 0.94));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 1),
+    inset 0 -1px 0 rgb(var(--ink) / 0.035),
+    0 0 0 0.5px rgb(var(--ink) / 0.18),
+    0 1px 1px rgb(var(--shadow) / 0.08),
+    0 8px 20px -6px rgb(var(--shadow) / 0.3);
+}
+:root[data-theme='light'] .task-dock-open {
+  background: linear-gradient(180deg, rgb(230 225 216 / 0.96), rgb(238 233 225 / 0.96));
+  box-shadow:
+    inset 0 2px 3px rgb(var(--shadow) / 0.16),
+    inset 0 0 0 0.5px rgb(var(--ink) / 0.12),
+    0 0.5px 0 rgb(255 255 255 / 0.8);
+}
+:root[data-theme='light'] .ticket-facts {
+  --tw-ring-color: transparent;
   background: rgb(var(--well) / 0.05);
-  box-shadow: inset 1px 0 0 rgb(var(--ink) / 0.04), inset 10px 0 24px -18px rgb(var(--shadow) / 0.14);
+  box-shadow:
+    inset 0 1px 2px rgb(var(--shadow) / 0.08),
+    inset 0 0 0 0.5px rgb(var(--ink) / 0.07),
+    0 0.5px 0 rgb(255 255 255 / 0.8);
 }
 
-/* Title-bar controls: the pressed state is still a recess, just a
-   shallow one, and the glints go back to white. */
-:root[data-theme='light'] .title-control-button:hover {
-  background: rgb(var(--ink) / 0.05);
-  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.05);
+/* Title bar on paper: no band. The strip is the window wash itself and
+   every control carries its own depth: keys are raised paper caps, the
+   readouts sit in shallow wells, the strategy picker is a well holding
+   one raised key, and a selected key is pressed into the desk. The dark
+   shell keeps its tinted band and ghost tabs. */
+:root[data-theme='light'] .app-header {
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
-:root[data-theme='light'] .title-control-button:active {
-  background: rgb(var(--ink) / 0.1);
+:root[data-theme='light'] .app-header.hairline-b { box-shadow: none; }
+:root[data-theme='light'] .title-control-button,
+:root[data-theme='light'] .title-chip {
+  color: rgb(var(--fg-0));
+  border-color: transparent;
+  background: linear-gradient(180deg, rgb(254 252 248 / 0.94), rgb(246 242 235 / 0.88));
   box-shadow:
-    inset 0 2px 4px rgb(var(--shadow) / 0.16),
-    inset 0 -0.5px 0 rgb(255 253 248 / 0.6);
+    inset 0 1px 0 rgb(255 255 255 / 0.95),
+    inset 0 -1px 0 rgb(var(--ink) / 0.035),
+    0 0 0 0.5px rgb(var(--ink) / 0.16),
+    0 1px 1px rgb(var(--shadow) / 0.07),
+    0 2px 5px -1px rgb(var(--shadow) / 0.12);
+}
+:root[data-theme='light'] .title-control-button:hover,
+:root[data-theme='light'] .title-chip:hover {
+  color: rgb(var(--fg-0));
+  border-color: transparent;
+  background: linear-gradient(180deg, rgb(255 254 251 / 0.98), rgb(248 245 238 / 0.92));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 1),
+    inset 0 -1px 0 rgb(var(--ink) / 0.035),
+    0 0 0 0.5px rgb(var(--ink) / 0.18),
+    0 1px 1px rgb(var(--shadow) / 0.08),
+    0 3px 8px -2px rgb(var(--shadow) / 0.18);
+  transform: translateY(-0.5px);
+}
+:root[data-theme='light'] .title-control-button:active,
+:root[data-theme='light'] .title-chip:active {
+  background: linear-gradient(180deg, rgb(234 229 220 / 0.95), rgb(240 236 228 / 0.95));
+  box-shadow:
+    inset 0 2px 3px rgb(var(--shadow) / 0.16),
+    inset 0 0 0 0.5px rgb(var(--ink) / 0.12),
+    0 0.5px 0 rgb(255 255 255 / 0.7);
+  transform: translateY(0.5px);
 }
 :root[data-theme='light'] .title-control-active,
 :root[data-theme='light'] .title-control-button.title-control-active:hover {
-  background: linear-gradient(180deg, rgb(var(--ink) / 0.1), rgb(var(--ink) / 0.06));
+  color: rgb(var(--fg-0));
+  background: linear-gradient(180deg, rgb(228 223 214 / 0.96), rgb(237 232 224 / 0.96));
   box-shadow:
-    inset 0 2px 3px rgb(var(--shadow) / 0.16),
-    inset 0 1px 0 rgb(var(--shadow) / 0.1),
-    inset 0 -0.5px 0 rgb(255 253 248 / 0.7),
-    0 0.5px 0 rgb(255 253 248 / 0.6);
+    inset 0 2px 3px rgb(var(--shadow) / 0.18),
+    inset 0 1px 0 rgb(var(--shadow) / 0.08),
+    inset 0 0 0 0.5px rgb(var(--ink) / 0.12),
+    0 0.5px 0 rgb(255 255 255 / 0.8);
+  transform: translateY(0.5px);
+}
+:root[data-theme='light'] .title-readout:not(.title-readout-status) {
+  border-radius: 6px;
+  background: rgb(var(--well) / 0.055);
+  box-shadow:
+    inset 0 1px 2px rgb(var(--shadow) / 0.1),
+    inset 0 0 0 0.5px rgb(var(--ink) / 0.07),
+    0 0.5px 0 rgb(255 255 255 / 0.7);
 }
 :root[data-theme='light'] .title-strategy {
-  background: linear-gradient(180deg, rgb(250 248 243 / 0.7), rgb(250 248 243 / 0.4));
+  background: rgb(var(--well) / 0.06);
   box-shadow:
-    inset 0 0 0 1px rgb(var(--ink) / 0.08),
-    inset 0 1px 0 rgb(255 253 248 / 1),
-    0 4px 18px -14px rgb(var(--shadow) / 0.3);
+    inset 0 1px 2px rgb(var(--shadow) / 0.1),
+    inset 0 0 0 0.5px rgb(var(--ink) / 0.08),
+    0 0.5px 0 rgb(255 255 255 / 0.7);
 }
 :root[data-theme='light'] .title-strategy-option-active,
 :root[data-theme='light'] .title-strategy-option-active:hover:not(:disabled) {
   color: var(--accent-hi);
-  background: linear-gradient(180deg, rgb(var(--accent-rgb) / 0.16), rgb(var(--accent-rgb) / 0.1));
+  background: linear-gradient(180deg, rgb(254 252 248 / 0.98), rgb(246 242 235 / 0.94));
   box-shadow:
-    inset 0 0 0 1px rgb(var(--accent-rgb) / 0.3),
-    inset 0 1px 0 rgb(255 253 248 / 0.6),
-    0 0 14px rgb(var(--accent-rgb) / 0.08);
+    inset 0 1px 0 rgb(255 255 255 / 1),
+    0 0 0 0.5px rgb(var(--ink) / 0.14),
+    0 1px 2px rgb(var(--shadow) / 0.1);
 }
 :root[data-theme='light'] .title-progress {
   background: rgb(var(--ink) / 0.08);
