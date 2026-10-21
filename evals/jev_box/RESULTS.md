@@ -29,6 +29,14 @@ instruction phrased as "the element in `screen` to click in order to:
 | one Box question | 85.9% | 86.8% | 79.9% | 90.6% | 79.0% | 91.6% | 3,553 | 244 ms |
 | always a second look on a crop | 87.6% | 89.8% | 87.2% | 86.4% | 84.3% | 90.3% | 5,053 | 364 ms |
 | second look only when the first box is small (< 0.5% of the image) | **89.9%** | 89.8% | 88.1% | 91.4% | 86.1% | 92.8% | 4,295 | 306 ms |
+| three Box questions in parallel, median box | 86.3% | 85.9% | 80.5% | 91.6% | 79.2% | 91.3% | 10,658 | 406 ms |
+| three in parallel, then three on the crop | 88.2% | 90.4% | 87.4% | 87.4% | 84.1% | 91.7% | 15,158 | 572 ms |
+
+Box is not deterministic (389 of 1,272 repeats returned the same box), so
+self-consistency was tried: the edge-wise median of three parallel answers.
+It adds 0.4 points to a single question and 0.6 to the always-crop variant,
+at three times the tokens and 1.5 to 1.7 times the latency, and stays below
+the conditional second look. The operator keeps one question per stage.
 
 The second look crops 40% of each side around the first box and asks again at
 the capture's own resolution. It lifts targets under 0.2% of the image from
