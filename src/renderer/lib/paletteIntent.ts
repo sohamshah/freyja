@@ -54,6 +54,12 @@ export interface PaletteSlots {
   subsystem?: string
   swarmStatus?: 'running' | 'done' | 'failed'
   category?: string
+  /** Slack channel without the '#'. */
+  channel?: string
+  /** PR triage scope. */
+  prScope?: 'review-requested' | 'mine' | 'involves'
+  /** Free text left after stripping the "how do I" shell, for skill search. */
+  skillQuery?: string
 }
 
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
@@ -253,6 +259,13 @@ export function parseSlots(text: string, now = new Date()): PaletteSlots {
 
   const model = q.match(/\b(opus|sonnet|haiku|gpt[- ]?[\d.]*\s*(?:sol|luna)?|luna|sol|gemini|glm|kimi|deepseek|fable|o[1-9](?:-mini)?)\b/)
   if (model) slots.modelQuery = model[1].replace(/\s+/g, ' ').trim()
+  const channel = q.match(/#([a-z0-9][a-z0-9_.-]{1,60})/) ?? q.match(/\b(?:in|from|on)\s+(?:the\s+)?([a-z0-9][a-z0-9_.-]{2,60})\s+channel\b/) ?? q.match(/\bchannel\s+([a-z0-9][a-z0-9_.-]{2,60})\b/)
+  if (channel) slots.channel = channel[1]
+  if (/\b(?:my|i (?:opened|authored|made)|i'?ve opened|authored by me)\b.*\bprs?\b|\bprs?\b.*\b(?:i (?:opened|authored)|by me|of mine)\b/.test(q)) slots.prScope = 'mine'
+  else if (/\b(?:waiting|assigned|requested|pending|need(?:ing|s)?)\b.*\b(?:me|my)\b|\b(?:review|prs?|pull requests?)\b.*\b(?:for|on|from) me\b|\bto review\b|\breview queue\b/.test(q)) slots.prScope = 'review-requested'
+  else if (/\b(?:involv|mentioned|cc'?d)\w*\b/.test(q)) slots.prScope = 'involves'
+  const skill = q.match(/^(?:how (?:do|can|should|would) (?:i|we|you)|how to|is there a (?:skill|playbook|guide) (?:for|to|on)|skill (?:for|to|on|about)|find (?:a |the )?skill (?:for|to|on|about))\s+(.+?)\??$/)
+  if (skill) slots.skillQuery = skill[1].replace(/\b(?:a|an|the)\b\s*/g, '').trim()
   const LEVEL = 'x-?high|high|medium|med|low|max|minimal|min|no|none|off'
   const reasoning =
     q.match(new RegExp(`\\b(${LEVEL})\\s*(?:thinking|reasoning|effort)\\b`)) ??
@@ -319,6 +332,11 @@ export type PaletteWidgetType =
   | 'mic'
   | 'quick_controls'
   | 'finance'
+  | 'skill_lookup'
+  | 'pr_triage'
+  | 'slack_read'
+  | 'artifact_preview'
+  | 'context_budget'
   | null
 
 /** Pick the widget from Jev's decision, with local verb cues breaking
@@ -335,6 +353,9 @@ export function chooseWidget(
   if (domain === 'palette_command') return null
   // A bare keyword that Jev was unsure about stays a plain search.
   if (confidence < 0.45 && readiness < 0.8) return null
+  // "how do I …" with an unsure Jev is a question about method: the skill
+  // library answers that; the domain Jev leaned to stays offered as a strip.
+  if (slots.skillQuery && domain !== 'skill_lookup' && confidence < 0.6) return 'skill_lookup'
 
   switch (domain) {
     case 'calendar': {
@@ -366,6 +387,14 @@ export function chooseWidget(
       return 'voice'
     case 'finance':
       return 'finance'
+    case 'skill_lookup':
+      return 'skill_lookup'
+    case 'pr_triage':
+      return 'pr_triage'
+    case 'slack_read':
+      return 'slack_read'
+    case 'context_budget':
+      return 'context_budget'
     case 'quick_control': {
       if (subTarget === 'appearance_toggle' || slots.theme || /\b(?:appearance|theme|mode)\b/.test(q)) return 'appearance'
       if (subTarget === 'mic_toggle' || slots.mute !== undefined || /\bmic\b|\bmicrophone\b/.test(q)) return 'mic'
@@ -392,4 +421,31 @@ export function slotFilled(slots: PaletteSlots, key: keyof PaletteSlots): boolea
   const v = slots[key]
   if (Array.isArray(v)) return v.length > 0
   return v !== undefined && v !== null && v !== ''
+}
+
+/** Representative card for a domain when only the domain is known
+ *  (used for the secondary candidates while Jev is still unsure). */
+export function widgetForDomain(domain: string, query: string, slots: PaletteSlots): PaletteWidgetType {
+  return chooseWidget(domain, 'none', 1, 1, query, slots)
+}
+
+export const DOMAIN_LABEL: Record<string, string> = {
+  calendar: 'Calendar',
+  memory: 'Memory',
+  agent_task: 'Delegate',
+  model_picker: 'Model',
+  token_usage: 'Usage',
+  artifact_explorer: 'Artifacts',
+  briefing: 'Briefing',
+  swarm: 'Swarm',
+  tool_inspect: 'Tool',
+  diagnostics: 'Diagnostics',
+  voice_session: 'Voice',
+  quick_control: 'Controls',
+  finance: 'Spend',
+  skill_lookup: 'Skills',
+  pr_triage: 'Pull requests',
+  slack_read: 'Slack',
+  context_budget: 'Context',
+  palette_command: 'Commands',
 }

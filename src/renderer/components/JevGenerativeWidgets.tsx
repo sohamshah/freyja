@@ -11,6 +11,15 @@ import {
   slotFilled,
   TOOL_NAMES,
 } from '../lib/paletteIntent'
+import { Frame, Well, Label, Btn, Slot, Progress, type WidgetProps } from './palette/chrome'
+import { CalendarCreate, CalendarView } from './palette/cards/CalendarCards'
+import { SkillLookup } from './palette/cards/SkillLookup'
+import { PrTriage } from './palette/cards/PrTriage'
+import { SlackRead } from './palette/cards/SlackRead'
+import { ArtifactPreview } from './palette/cards/ArtifactPreview'
+import { ContextBudget } from './palette/cards/ContextBudget'
+
+export type { WidgetProps }
 
 /**
  * Generative widgets for the ⌘K palette.
@@ -21,14 +30,6 @@ import {
  * field at a time instead of re-appearing. Empty slots render as quiet
  * placeholders; the primary action turns on once the required ones are in.
  */
-export interface WidgetProps {
-  type: Exclude<PaletteWidgetType, null>
-  query: string
-  decision: JevPaletteDecision
-  slots: PaletteSlots
-  onClose: () => void
-  onToast: (msg: string) => void
-}
 
 export function JevWidget(p: WidgetProps) {
   switch (p.type) {
@@ -64,105 +65,17 @@ export function JevWidget(p: WidgetProps) {
       return <QuickControls {...p} />
     case 'finance':
       return <Finance {...p} />
+    case 'skill_lookup':
+      return <SkillLookup {...p} />
+    case 'pr_triage':
+      return <PrTriage {...p} />
+    case 'slack_read':
+      return <SlackRead {...p} />
+    case 'artifact_preview':
+      return <ArtifactPreview {...p} />
+    case 'context_budget':
+      return <ContextBudget {...p} />
   }
-}
-
-// ─── shared chrome ────────────────────────────────────────────────────────
-
-function Frame({
-  kicker,
-  title,
-  badge,
-  children,
-  footer,
-}: {
-  kicker: string
-  title: React.ReactNode
-  badge?: React.ReactNode
-  children: React.ReactNode
-  footer?: React.ReactNode
-}) {
-  return (
-    <div className="animate-fade-in space-y-3 p-3.5 font-mono">
-      <div className="hairline-b flex items-center justify-between pb-2">
-        <div className="flex min-w-0 items-center gap-2 text-[12px] text-fg-0">
-          <span className="shrink-0 text-[9.5px] uppercase tracking-[0.16em] text-fg-3">{kicker}</span>
-          <span className="text-fg-3">·</span>
-          <span className="truncate">{title}</span>
-        </div>
-        {badge && <span className="kbd shrink-0 text-[9.5px]">{badge}</span>}
-      </div>
-      {children}
-      {footer && <div className="hairline-t flex items-center justify-end gap-2 pt-2">{footer}</div>}
-    </div>
-  )
-}
-
-function Well({ children, className = '' }: { children: React.ReactNode; className?: string }) {
-  return <div className={`rounded-lg bg-black/[0.18] p-3 ring-hairline ${className}`}>{children}</div>
-}
-
-function Label({ children }: { children: React.ReactNode }) {
-  return <div className="text-[9.5px] uppercase tracking-[0.16em] text-fg-3">{children}</div>
-}
-
-function Btn({
-  primary,
-  disabled,
-  onClick,
-  children,
-}: {
-  primary?: boolean
-  disabled?: boolean
-  onClick: () => void
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      data-primary={primary ? '' : undefined}
-      className={
-        primary
-          ? 'rounded-md bg-accent/20 px-3 py-1 text-[11px] text-fg-0 ring-1 ring-accent/40 transition-colors hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40'
-          : 'rounded-md px-2.5 py-1 text-[11px] text-fg-2 ring-hairline transition-colors hover:bg-white/[0.05] hover:text-fg-0'
-      }
-    >
-      {children}
-    </button>
-  )
-}
-
-/** A slot value, or a placeholder the next words will fill. */
-function Slot({ label, value, hint }: { label: string; value?: React.ReactNode; hint: string }) {
-  const filled = value !== undefined && value !== null && value !== ''
-  return (
-    <div className="flex items-baseline gap-2 text-[11.5px]">
-      <span className="w-16 shrink-0 text-[10px] uppercase tracking-wider text-fg-3">{label}</span>
-      {filled ? (
-        <span className="text-fg-0">{value}</span>
-      ) : (
-        <span className="text-fg-3">
-          <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full ring-1 ring-fg-3/60 align-middle" />
-          {hint}
-        </span>
-      )}
-    </div>
-  )
-}
-
-function Progress({ filled, total }: { filled: number; total: number }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      {Array.from({ length: total }).map((_, i) => (
-        <span key={i} className={`h-1 w-4 rounded-full ${i < filled ? 'bg-accent' : 'bg-fg-4'}`} />
-      ))}
-      <span className="ml-1 text-[9.5px] text-fg-3">
-        {filled}/{total}
-      </span>
-    </div>
-  )
 }
 
 function useRequired(type: PaletteWidgetType, slots: PaletteSlots) {
@@ -179,140 +92,9 @@ function timeRange(t: PaletteSlots['time'], dur: number) {
   return `${t.label} – ${endLabel}`
 }
 
-// ─── calendar ─────────────────────────────────────────────────────────────
-
-function CalendarCreate({ type, slots, onClose, onToast }: WidgetProps) {
-  const sendMessage = useHarness((s) => s.sendMessage)
-  const { filled, total, ready } = useRequired(type, slots)
-  const dur = slots.durationMin ?? 30
-  const who = slots.attendees.join(', ')
-  const title = slots.topic ? slots.topic : who ? `Sync with ${who}` : undefined
-
-  const instruction = () => {
-    const parts = ['Create a Google Calendar event']
-    if (title) parts.push(`titled "${title}"`)
-    if (who) parts.push(`with ${who}`)
-    if (slots.day) parts.push(`on ${slots.day.weekday} ${slots.day.iso}`)
-    if (slots.time) parts.push(`at ${slots.time.label}`)
-    parts.push(`for ${dur} minutes`)
-    return parts.join(' ') + '. Send the invite and confirm the event link.'
-  }
-
-  return (
-    <Frame
-      kicker="Calendar"
-      title={title ?? 'New event'}
-      badge={<Progress filled={filled} total={total} />}
-      footer={
-        <>
-          <Btn
-            onClick={() => {
-              useHarness.getState().setInputDraft(instruction())
-              onClose()
-            }}
-          >
-            Edit as prompt
-          </Btn>
-          <Btn
-            primary
-            disabled={!ready}
-            onClick={() => {
-              void sendMessage(instruction())
-              onToast(`Creating event with ${who} · ${slots.day?.label} ${slots.time?.label}`)
-              onClose()
-            }}
-          >
-            Create event
-          </Btn>
-        </>
-      }
-    >
-      <Well className="space-y-1.5">
-        <Slot label="With" value={who || undefined} hint="who? add “with nari”" />
-        <Slot
-          label="When"
-          value={slots.day ? `${slots.day.label} · ${slots.day.weekday} ${slots.day.iso}` : undefined}
-          hint="which day? “tomorrow”, “next tuesday”"
-        />
-        <Slot label="Time" value={timeRange(slots.time, dur)} hint="what time? “at 1pm”" />
-        <Slot label="Length" value={`${dur} min${slots.durationMin ? '' : ' (default)'}`} hint="" />
-        {slots.topic && <Slot label="About" value={slots.topic} hint="" />}
-      </Well>
-      {slots.day && (
-        <div className="space-y-1.5">
-          <Label>{slots.day.weekday} · pick a slot</Label>
-          <div className="grid grid-cols-8 gap-1">
-            {[9, 10, 11, 12, 13, 14, 15, 16].map((h) => {
-              const active = slots.time?.hour === h
-              const label = `${h % 12 === 0 ? 12 : h % 12}${h >= 12 ? 'p' : 'a'}`
-              return (
-                <span
-                  key={h}
-                  className={`rounded py-1 text-center text-[10.5px] ${
-                    active ? 'bg-accent/20 text-fg-0 ring-1 ring-accent/40' : 'text-fg-2 ring-hairline'
-                  }`}
-                >
-                  {label}
-                </span>
-              )
-            })}
-          </div>
-          <div className="text-[10px] text-fg-3">Free/busy comes from Google Calendar when the event is created.</div>
-        </div>
-      )}
-    </Frame>
-  )
-}
-
-function CalendarView({ slots, onClose, onToast }: WidgetProps) {
-  const sendMessage = useHarness((s) => s.sendMessage)
-  const when = slots.range === 'week' ? 'this week' : slots.range === 'next_week' ? 'next week' : slots.day ? `${slots.day.label} (${slots.day.weekday} ${slots.day.iso})` : 'today'
-  const who = slots.attendees[0] ?? slots.person
-  const instruction = `List my Google Calendar events for ${when}${who ? ` that involve ${who}` : ''}${
-    slots.time ? `, and say whether I am free around ${slots.time.label}` : ''
-  }. Show time, title, attendees, and the meeting link.`
-
-  return (
-    <Frame
-      kicker="Calendar"
-      title={`Agenda · ${when}`}
-      badge="Google Calendar"
-      footer={
-        <>
-          <Btn
-            onClick={() => {
-              useHarness.getState().setInputDraft(instruction)
-              onClose()
-            }}
-          >
-            Edit as prompt
-          </Btn>
-          <Btn
-            primary
-            onClick={() => {
-              void sendMessage(instruction)
-              onToast(`Fetching agenda for ${when}`)
-              onClose()
-            }}
-          >
-            Fetch agenda
-          </Btn>
-        </>
-      }
-    >
-      <Well className="space-y-1.5">
-        <Slot label="Day" value={when} hint="" />
-        <Slot label="With" value={who} hint="anyone in particular? “with nari”" />
-        <Slot label="Around" value={slots.time?.label} hint="a time to check? “at 3pm”" />
-      </Well>
-      <div className="text-[10.5px] text-fg-3">Runs through the Google Calendar MCP in this session; the agenda lands in the conversation.</div>
-    </Frame>
-  )
-}
-
 // ─── memory ───────────────────────────────────────────────────────────────
 
-function MemoryRecall({ query, slots, onClose, onToast }: WidgetProps) {
+function MemoryRecall({ query, slots, onClose, onToast, crumbs }: WidgetProps) {
   const sendMessage = useHarness((s) => s.sendMessage)
   const sessions = useHarness((s) => s.sessions)
   const needle = (slots.keyword ?? slots.topic ?? slots.person ?? '').toLowerCase()
@@ -324,6 +106,7 @@ function MemoryRecall({ query, slots, onClose, onToast }: WidgetProps) {
 
   return (
     <Frame
+      crumbs={crumbs}
       kicker="Memory"
       title={slots.person ? `What ${slots.person} said` : 'Recall'}
       badge={related.length ? `${related.length} related sessions` : 'memory + transcripts'}
@@ -388,7 +171,7 @@ const PROFILE_MODEL: Record<string, string> = {
   verify: 'gpt-5.5 (independent model)',
 }
 
-function AgentTask({ type, query, slots, onClose, onToast }: WidgetProps) {
+function AgentTask({ type, query, slots, onClose, onToast, crumbs }: WidgetProps) {
   const sendMessage = useHarness((s) => s.sendMessage)
   const { filled, total, ready } = useRequired(type, slots)
   const profile = slots.profile
@@ -399,6 +182,7 @@ function AgentTask({ type, query, slots, onClose, onToast }: WidgetProps) {
 
   return (
     <Frame
+      crumbs={crumbs}
       kicker="Delegate"
       title={target ?? 'Sub-agent task'}
       badge={<Progress filled={filled} total={total} />}
@@ -441,7 +225,7 @@ function AgentTask({ type, query, slots, onClose, onToast }: WidgetProps) {
 
 const LEVEL_SHORT: Record<string, string> = { minimal: 'min', medium: 'med', xhigh: 'x-high' }
 
-function ModelPicker({ slots, onClose, onToast }: WidgetProps) {
+function ModelPicker({ slots, onClose, onToast, crumbs }: WidgetProps) {
   const reported = useHarness((s) => s.availableModels)
   const models = reported.length > 0 ? reported : FALLBACK_MODELS
   const current = useHarness((s) => s.model)
@@ -450,12 +234,30 @@ function ModelPicker({ slots, onClose, onToast }: WidgetProps) {
   const q = slots.modelQuery?.toLowerCase().replace(/[\s-]/g, '')
   const matches = (m: { id: string; label: string; family: string }) =>
     !!q && `${m.id} ${m.label} ${m.family}`.toLowerCase().replace(/[\s-]/g, '').includes(q)
+  // Provider keys arrive after the first paint; rows without one dim and
+  // drop out of the slot-driven pick, so the card settles on something usable.
+  const [keys, setKeys] = useState<Record<string, boolean> | null>(null)
+  useEffect(() => {
+    let alive = true
+    void window.harness?.llmKeysProbe?.().then((k: any) => alive && setKeys(k?.keys ?? k?.present ?? null)).catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
+  const hasKey = (m: { envVar?: string }) => !keys || !m.envVar || keys[m.envVar] !== false
   const ranked = useMemo(
-    () => [...models].sort((a, b) => Number(matches(b)) - Number(matches(a)) || (a.id === current ? -1 : b.id === current ? 1 : 0)),
+    () =>
+      [...models].sort(
+        (a, b) =>
+          Number(matches(b) && hasKey(b)) - Number(matches(a) && hasKey(a)) ||
+          Number(matches(b)) - Number(matches(a)) ||
+          Number(hasKey(b)) - Number(hasKey(a)) ||
+          (a.id === current ? -1 : b.id === current ? 1 : 0),
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [models, q, current],
+    [models, q, current, keys],
   )
-  const best = q ? ranked.find(matches) : undefined
+  const best = q ? (ranked.find((m) => matches(m) && hasKey(m)) ?? ranked.find(matches)) : undefined
 
   const [pickedOverride, setPickedOverride] = useState<string | null>(null)
   const [levelOverride, setLevelOverride] = useState<string | null>(null)
@@ -487,6 +289,7 @@ function ModelPicker({ slots, onClose, onToast }: WidgetProps) {
 
   return (
     <Frame
+      crumbs={crumbs}
       kicker="Model"
       title={modelChanged ? `Switch to ${picked?.label ?? pickedId}` : levelChanged ? `Set thinking to ${level}` : 'Available models'}
       badge={`now: ${nowLabel}${reasoningLevel ? ` · ${reasoningLevel}` : ''}`}
@@ -505,6 +308,7 @@ function ModelPicker({ slots, onClose, onToast }: WidgetProps) {
         {ranked.slice(0, 8).map((m) => {
           const isCurrent = m.id === current
           const isPicked = m.id === pickedId
+          const keyed = hasKey(m)
           return (
             <button
               key={m.id}
@@ -515,9 +319,10 @@ function ModelPicker({ slots, onClose, onToast }: WidgetProps) {
               }`}
             >
               <span className="min-w-0">
-                <span className="flex items-center gap-1.5 text-[11.5px] text-fg-0">
+                <span className={`flex items-center gap-1.5 text-[11.5px] ${keyed ? 'text-fg-0' : 'text-fg-3'}`}>
                   {m.label}
                   {isCurrent && <span className="kbd text-[8.5px]">current</span>}
+                  {!keyed && <span className="kbd text-[8.5px] text-warn">no key</span>}
                 </span>
                 <span className="block truncate text-[10px] text-fg-3">{m.description}</span>
               </span>
@@ -564,7 +369,7 @@ function fmtTokens(n: number) {
   return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)}k` : String(n)
 }
 
-function TokenUsage({ slots, onClose }: WidgetProps) {
+function TokenUsage({ slots, onClose, crumbs }: WidgetProps) {
   const sessions = useHarness((s) => s.sessions)
   const live = useHarness((s) => s.usage)
   const days = slots.periodDays ?? 7
@@ -596,6 +401,7 @@ function TokenUsage({ slots, onClose }: WidgetProps) {
 
   return (
     <Frame
+      crumbs={crumbs}
       kicker="Usage"
       title={`${label}${modelQ ? ` · ${modelQ}` : ''}`}
       badge={`${stats.n} sessions`}
@@ -646,7 +452,7 @@ function TokenUsage({ slots, onClose }: WidgetProps) {
 
 // ─── artifacts ────────────────────────────────────────────────────────────
 
-function ArtifactExplorer({ slots, onClose, onToast }: WidgetProps) {
+function ArtifactExplorer({ slots, onClose, onToast, handoff, crumbs }: WidgetProps) {
   const [rows, setRows] = useState<ArtifactIndexRow[]>([])
   const [total, setTotal] = useState(0)
   const text = slots.keyword ?? slots.topic ?? ''
@@ -669,6 +475,7 @@ function ArtifactExplorer({ slots, onClose, onToast }: WidgetProps) {
 
   return (
     <Frame
+      crumbs={crumbs}
       kicker="Artifacts"
       title={text ? `“${text}”` : types.length ? `${types.join('/')} files` : 'Recent'}
       badge={`${total} match${total === 1 ? '' : 'es'}`}
@@ -693,10 +500,7 @@ function ArtifactExplorer({ slots, onClose, onToast }: WidgetProps) {
           <button
             key={r.id}
             type="button"
-            onClick={() => {
-              useHarness.getState().toggleArtifactsBrowser(true, r.path)
-              onClose()
-            }}
+            onClick={() => handoff({ type: 'artifact_preview', label: 'Preview', context: { path: r.path, row: r } })}
             className="flex w-full items-center justify-between rounded px-2 py-1 text-left ring-hairline hover:bg-white/[0.04]"
           >
             <span className="min-w-0">
@@ -705,6 +509,16 @@ function ArtifactExplorer({ slots, onClose, onToast }: WidgetProps) {
             </span>
             <span className="ml-2 flex shrink-0 items-center gap-2 text-[9.5px] text-fg-3">
               <span>{(r.bytes / 1024).toFixed(0)} KB</span>
+              <span
+                className="kbd text-[8.5px]"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  useHarness.getState().toggleArtifactsBrowser(true, r.path)
+                  onClose()
+                }}
+              >
+                open
+              </span>
               <span
                 className="kbd text-[8.5px]"
                 onClick={(e) => {
@@ -726,7 +540,7 @@ function ArtifactExplorer({ slots, onClose, onToast }: WidgetProps) {
 
 // ─── briefing ─────────────────────────────────────────────────────────────
 
-function Briefing({ onClose }: WidgetProps) {
+function Briefing({ onClose, crumbs }: WidgetProps) {
   const sessions = useHarness((s) => s.sessions)
   const subagents = useHarness((s) => s.subagents)
   const jobs = useSchedulerStore((s) => s.jobs)
@@ -741,6 +555,7 @@ function Briefing({ onClose }: WidgetProps) {
 
   return (
     <Frame
+      crumbs={crumbs}
       kicker="Briefing"
       title={today.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
       badge="Morning Room"
@@ -804,7 +619,7 @@ function Briefing({ onClose }: WidgetProps) {
 
 // ─── swarm ────────────────────────────────────────────────────────────────
 
-function Swarm({ slots, onClose }: WidgetProps) {
+function Swarm({ slots, onClose, crumbs }: WidgetProps) {
   const subagents = useHarness((s) => s.subagents)
   const order = useHarness((s) => s.subagentOrder)
   const list = order
@@ -818,6 +633,7 @@ function Swarm({ slots, onClose }: WidgetProps) {
 
   return (
     <Frame
+      crumbs={crumbs}
       kicker="Swarm"
       title={slots.swarmStatus ? `${slots.swarmStatus} workers` : 'Workers'}
       badge={`${running} running`}
@@ -895,12 +711,13 @@ const TOOL_DOCS: Record<string, { category: string; risk: string; summary: strin
   talk: { category: 'swarm', risk: 'messages agents', summary: 'Message another agent session; wakes idle recipients.', params: [['to', 'string', true, 'parent · main · label · id'], ['content', 'string', true, '']] },
 }
 
-function ToolInspect({ slots, onClose, onToast }: WidgetProps) {
+function ToolInspect({ slots, onClose, onToast, crumbs }: WidgetProps) {
   const name = slots.toolName
   const doc = name ? TOOL_DOCS[name] : undefined
   const suggestions = name ? [] : TOOL_NAMES.slice(0, 12)
   return (
     <Frame
+      crumbs={crumbs}
       kicker="Tool"
       title={name ?? 'Which tool?'}
       badge={doc ? `${doc.category} · ${doc.risk}` : undefined}
@@ -967,7 +784,7 @@ function ToolInspect({ slots, onClose, onToast }: WidgetProps) {
 
 // ─── diagnostics ──────────────────────────────────────────────────────────
 
-function Diagnostics({ slots, onClose, onToast }: WidgetProps) {
+function Diagnostics({ slots, onClose, onToast, crumbs }: WidgetProps) {
   const mode = useHarness((s) => s.mode)
   const subagents = useHarness((s) => s.subagents)
   const usage = useHarness((s) => s.usage)
@@ -994,6 +811,7 @@ function Diagnostics({ slots, onClose, onToast }: WidgetProps) {
 
   return (
     <Frame
+      crumbs={crumbs}
       kicker="Diagnostics"
       title={slots.logLevel ? 'Problems only' : slots.subsystem ? slots.subsystem : 'System health'}
       badge={filtered.some((r) => r[2] === 'bad') ? 'attention' : filtered.some((r) => r[2] === 'warn') ? 'warnings' : 'healthy'}
@@ -1068,10 +886,11 @@ function Diagnostics({ slots, onClose, onToast }: WidgetProps) {
 
 // ─── voice ────────────────────────────────────────────────────────────────
 
-function Voice({ onClose, onToast }: WidgetProps) {
+function Voice({ onClose, onToast, crumbs }: WidgetProps) {
   const toggleVoice = useVoiceStore((s) => s.toggleVoice)
   return (
     <Frame
+      crumbs={crumbs}
       kicker="Voice"
       title="Talk instead of typing"
       badge="⌥Space"
@@ -1105,7 +924,7 @@ function Voice({ onClose, onToast }: WidgetProps) {
 
 // ─── quick controls ───────────────────────────────────────────────────────
 
-function Appearance({ slots, onClose, onToast }: WidgetProps) {
+function Appearance({ slots, onClose, onToast, crumbs }: WidgetProps) {
   const setAppearanceTheme = useHarness((s) => s.setAppearanceTheme)
   const want = slots.theme
   const options: Array<['dark' | 'light' | 'system', string, string]> = [
@@ -1120,6 +939,7 @@ function Appearance({ slots, onClose, onToast }: WidgetProps) {
   }
   return (
     <Frame
+      crumbs={crumbs}
       kicker="Appearance"
       title={want ? `Switch to ${want}` : 'Theme'}
       footer={want ? <Btn primary onClick={() => apply(want)}>Apply {want}</Btn> : <Btn onClick={onClose}>Close</Btn>}
@@ -1146,11 +966,12 @@ function Appearance({ slots, onClose, onToast }: WidgetProps) {
   )
 }
 
-function Mic({ slots, onClose, onToast }: WidgetProps) {
+function Mic({ slots, onClose, onToast, crumbs }: WidgetProps) {
   const toggleVoice = useVoiceStore((s) => s.toggleVoice)
   const want = slots.mute
   return (
     <Frame
+      crumbs={crumbs}
       kicker="Microphone"
       title={want === undefined ? 'Voice input' : want ? 'Mute' : 'Unmute'}
       badge="⌥Space"
@@ -1172,7 +993,7 @@ function Mic({ slots, onClose, onToast }: WidgetProps) {
   )
 }
 
-function QuickControls({ onClose, onToast }: WidgetProps) {
+function QuickControls({ onClose, onToast, crumbs }: WidgetProps) {
   const setAppearanceTheme = useHarness((s) => s.setAppearanceTheme)
   const toggleVoice = useVoiceStore((s) => s.toggleVoice)
   const items: Array<[string, string, () => void]> = [
@@ -1206,11 +1027,12 @@ function QuickControls({ onClose, onToast }: WidgetProps) {
 
 // ─── finance (no local data source; hands off to the agent) ───────────────
 
-function Finance({ query, slots, onClose, onToast }: WidgetProps) {
+function Finance({ query, slots, onClose, onToast, crumbs }: WidgetProps) {
   const sendMessage = useHarness((s) => s.sendMessage)
   const instruction = `${query}. Pull the transactions from my connected finance tools, total them, and break them down by merchant.`
   return (
     <Frame
+      crumbs={crumbs}
       kicker="Spend"
       title={slots.category ?? 'Expenses'}
       badge={slots.periodLabel ?? 'period?'}

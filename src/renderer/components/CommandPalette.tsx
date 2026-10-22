@@ -5,14 +5,102 @@ import { useSchedulerStore } from '../state/scheduler-store'
 import { SLASH_COMMANDS } from '../lib/slash'
 import { scrollToReveal, stepSelection } from '../lib/listNavigation'
 import { JevWidget } from './JevGenerativeWidgets'
-import { chooseWidget, parseSlots, type PaletteWidgetType } from '../lib/paletteIntent'
-import type { JevPaletteDecision } from '../../shared/events'
+import type { Handoff } from './palette/chrome'
+import { DOMAIN_LABEL, chooseWidget, parseSlots, widgetForDomain, type PaletteSlots, type PaletteWidgetType } from '../lib/paletteIntent'
+import { openExternal, readClipboard } from '../lib/paletteData'
+import type { JevPaletteDecision, PaletteClipboard } from '../../shared/events'
 interface PaletteItem {
   id: string
   title: string
   subtitle?: string
-  group: 'Command' | 'Skill' | 'Subagent' | 'Session'
+  group: 'Clipboard' | 'Command' | 'Skill' | 'Subagent' | 'Session'
   action: () => void
+}
+
+interface StackEntry extends Handoff {
+  queryBefore: string
+}
+
+/** Slots a card was handed keep filling the gaps the typed text leaves. */
+function mergeSlots(parsed: PaletteSlots, over?: Partial<PaletteSlots>): PaletteSlots {
+  if (!over) return parsed
+  const out = { ...parsed } as unknown as Record<string, unknown>
+  for (const [k, v] of Object.entries(over)) {
+    const cur = out[k]
+    if (Array.isArray(v)) {
+      if (!Array.isArray(cur) || cur.length === 0) out[k] = v
+    } else if (cur === undefined || cur === null || cur === '') {
+      out[k] = v
+    }
+  }
+  return out as unknown as PaletteSlots
+}
+
+interface Candidate {
+  domain: string
+  p: number
+  widget: Exclude<PaletteWidgetType, null>
+}
+
+/** Keeps items around for a beat after they drop out so they can fade. */
+function useLeaving<T extends { domain: string; p: number }>(items: T[], ms = 220): Array<T & { leaving: boolean }> {
+  const [shown, setShown] = useState<Array<T & { leaving: boolean }>>([])
+  useEffect(() => {
+    setShown((prev) => {
+      const live = new Set(items.map((i) => i.domain))
+      const kept = prev.filter((x) => live.has(x.domain) || !x.leaving).map((x) => (live.has(x.domain) ? { ...items.find((i) => i.domain === x.domain)!, leaving: false } : { ...x, leaving: true }))
+      for (const i of items) if (!kept.some((k) => k.domain === i.domain)) kept.push({ ...i, leaving: false })
+      return kept
+    })
+    const t = window.setTimeout(() => setShown((prev) => prev.filter((x) => !x.leaving)), ms)
+    return () => window.clearTimeout(t)
+  }, [items.map((i) => `${i.domain}:${i.p.toFixed(2)}`).join('|')])
+  return shown
+}
+
+function clipboardItems(clip: PaletteClipboard, push: (h: Handoff) => void, say: (text: string) => void, draft: (text: string) => void, toast: (m: string) => void): PaletteItem[] {
+  const t = clip.text.trim()
+  const preview = t.replace(/\s+/g, ' ').slice(0, 90) + (t.length > 90 ? '…' : '')
+  const fence = (lang = '') => `\n\`\`\`${lang}\n${t.slice(0, 6000)}\n\`\`\``
+  const out: PaletteItem[] = []
+  const add = (id: string, title: string, action: () => void) => out.push({ id: `clip:${id}`, title, subtitle: preview, group: 'Clipboard', action })
+  switch (clip.kind) {
+    case 'url':
+      add('summarize', 'Summarize this page', () => say(`Summarize ${t} and pull out anything that matters to me.`))
+      add('open', 'Open link', () => openExternal(t))
+      break
+    case 'stack':
+      add('explain', 'Explain this error', () => say(`Explain this error and the most likely fix:${fence()}`))
+      break
+    case 'json':
+      add('pretty', 'Pretty-print JSON back to the clipboard', () => {
+        try {
+          void navigator.clipboard.writeText(JSON.stringify(JSON.parse(t), null, 2))
+          toast('Formatted JSON copied')
+        } catch {
+          toast('Clipboard JSON did not parse')
+        }
+      })
+      add('explain', 'Explain this JSON', () => say(`What is this JSON and is anything off about it?${fence('json')}`))
+      break
+    case 'path':
+      add('preview', 'Preview this file', () => push({ type: 'artifact_preview', label: 'Clipboard', context: { path: t.replace(/^~/, '') } }))
+      break
+    case 'diff':
+      add('review', 'Review this diff', () => say(`Review this diff for bugs, regressions and missing tests:${fence('diff')}`))
+      break
+    case 'code':
+      add('explain', 'Explain this code', () => say(`Explain what this code does and flag anything risky:${fence()}`))
+      add('review', 'Review this code', () => say(`Review this code critically:${fence()}`))
+      break
+    case 'text':
+      if (t.length >= 40) {
+        add('ask', 'Ask Freyja about the clipboard', () => draft(t))
+        add('summarize', 'Summarize the clipboard', () => say(`Summarize this:${fence()}`))
+      }
+      break
+  }
+  return out
 }
 
 /** Jev answers domain and sub-target independently, so a sub-target is only
@@ -59,6 +147,12 @@ export function CommandPalette() {
   // plain command, or when a palette row matches the text outright.
   const [decision, setDecision] = useState<JevPaletteDecision | null>(null)
   const [inferring, setInferring] = useState(false)
+  // Cards pushed on top of the typed one (agenda row → reschedule). The
+  // top card renders until Esc pops it; typing refines its slots.
+  const [stack, setStack] = useState<StackEntry[]>([])
+  // A secondary candidate the person promoted by clicking its strip.
+  const [pinnedDomain, setPinnedDomain] = useState<string | null>(null)
+  const [clip, setClip] = useState<PaletteClipboard | null>(null)
   const jevSeq = useRef(0)
   const widgetRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -76,12 +170,33 @@ export function CommandPalette() {
 
   useEffect(() => {
     inputRef.current?.focus()
+    // Read once per open: the empty palette proposes actions for what is
+    // already on the clipboard, no typing needed.
+    void readClipboard().then((c) => c && c.kind !== 'empty' && setClip(c))
   }, [])
+
+  const handoff = useCallback(
+    (next: Handoff) => {
+      setStack((st) => [...st, { ...next, queryBefore: query }])
+      setPinnedDomain(null)
+      setQuery('')
+      inputRef.current?.focus()
+    },
+    [query],
+  )
+  const say = useCallback(
+    (text: string) => {
+      void useHarness.getState().sendMessage(text)
+      close(false)
+    },
+    [close],
+  )
 
   const trimmedQuery = query.trim()
   const slots = useMemo(() => parseSlots(trimmedQuery), [trimmedQuery])
   const items: PaletteItem[] = useMemo(() => {
     const out: PaletteItem[] = []
+    if (clip) out.push(...clipboardItems(clip, handoff, say, (t) => { setDraft(t); close(false) }, showToast))
     out.push(
       {
         id: 'morning-room',
@@ -273,7 +388,7 @@ export function CommandPalette() {
       })
     }
     return out
-  }, [skills, subagents, sessions, setDraft, close, openSubagent, burst, toggleMissionDashboard, toggleArtifactsBrowser, openSessionPane, openScheduler, schedulerJobCount])
+  }, [skills, subagents, sessions, setDraft, close, openSubagent, burst, toggleMissionDashboard, toggleArtifactsBrowser, openSessionPane, openScheduler, schedulerJobCount, clip, handoff, say, showToast])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -315,6 +430,7 @@ export function CommandPalette() {
 
   useEffect(() => {
     const q = trimmedQuery
+    if (stack.length > 0) return
     if (q.length < 3 || q.startsWith('/') || rowMatch) {
       jevSeq.current += 1
       setDecision(null)
@@ -339,13 +455,20 @@ export function CommandPalette() {
         })
     }, 160)
     return () => window.clearTimeout(timer)
-  }, [trimmedQuery, rowMatch])
+  }, [trimmedQuery, rowMatch, stack.length])
+
+  useEffect(() => {
+    if (trimmedQuery.length < 3) setPinnedDomain(null)
+  }, [trimmedQuery])
 
   // Hysteresis: while Jev is still deciding on a longer version of the same
   // sentence, keep the widget it already chose, so the card fills in rather
   // than flickering back to the list between keystrokes.
   const lastWidget = useRef<{ type: PaletteWidgetType; query: string }>({ type: null, query: '' })
+  const top = stack[stack.length - 1]
   const widgetType: PaletteWidgetType = useMemo(() => {
+    if (top) return top.type
+    if (pinnedDomain && trimmedQuery.length >= 3) return widgetForDomain(pinnedDomain, trimmedQuery, slots)
     if (trimmedQuery.length < 3 || rowMatch) return null
     if (decision) {
       const chosen = chooseWidget(decision.domain, decision.subTarget, decision.confidence, decision.readiness, trimmedQuery, slots)
@@ -359,7 +482,29 @@ export function CommandPalette() {
     }
     if (lastWidget.current.type && trimmedQuery.startsWith(lastWidget.current.query)) return lastWidget.current.type
     return null
-  }, [decision, trimmedQuery, slots, rowMatch])
+  }, [decision, trimmedQuery, slots, rowMatch, top, pinnedDomain])
+
+  const effSlots = useMemo(() => mergeSlots(slots, top?.slots), [slots, top])
+
+  // Secondary candidates from Jev's domain distribution. They show while
+  // the leader is not clearly ahead and prune away as certainty grows;
+  // clicking one promotes it.
+  const candidates: Candidate[] = useMemo(() => {
+    if (top || !decision?.probabilities || trimmedQuery.length < 3 || rowMatch) return []
+    const probs = decision.probabilities
+    // The card on screen may come from a local tiebreak rather than Jev's
+    // top domain; whichever domain it represents is the leader.
+    const shownDomain = widgetType ? (Object.keys(probs).find((d) => widgetForDomain(d, trimmedQuery, slots) === widgetType) ?? decision.domain) : null
+    const leader = pinnedDomain ?? shownDomain
+    const leadP = leader ? (probs[leader] ?? decision.confidence) : 0
+    return Object.entries(probs)
+      .filter(([d]) => d !== 'palette_command' && d !== leader)
+      .map(([domain, p]) => ({ domain, p, widget: widgetForDomain(domain, trimmedQuery, slots) }))
+      .filter((c): c is Candidate => !!c.widget && c.p >= 0.12 && leadP - c.p < 0.55)
+      .sort((a, b) => b.p - a.p)
+      .slice(0, 3)
+  }, [decision, trimmedQuery, slots, rowMatch, top, pinnedDomain, widgetType])
+  const strips = useLeaving(candidates)
 
   useEffect(() => {
     if (widgetType) lastWidget.current = { type: widgetType, query: decision?.query ?? trimmedQuery }
@@ -426,11 +571,19 @@ export function CommandPalette() {
       if (filtered[selected]) filtered[selected].action()
       else if (trimmedQuery.length >= 3) askFreyja()
     } else if (e.key === 'Escape') {
+      if (top) {
+        e.preventDefault()
+        e.stopPropagation()
+        setStack((st) => st.slice(0, -1))
+        setQuery(top.queryBefore)
+        return
+      }
       if (widgetType) {
         // App.tsx closes the palette on a bubbled Esc; inside a widget the
         // first Esc only steps back to the list.
         e.preventDefault()
         e.stopPropagation()
+        setPinnedDomain(null)
         setQuery('')
         return
       }
@@ -475,23 +628,30 @@ export function CommandPalette() {
             placeholder="Search commands, skills, subagents, sessions…"
             className="flex-1 bg-transparent text-[12.5px] text-fg-0 placeholder:text-fg-3 focus:outline-none"
           />
-          {(inferring || decision) && !rowMatch && (
+          {(inferring || decision) && !rowMatch && !top && (
             <span className={`kbd text-[9.5px] ${inferring ? 'text-accent' : 'text-fg-3'}`}>
-              {inferring ? 'jev…' : `${decision!.domain}${subTargetOf(decision!) ? `/${decision!.subTarget}` : ''} · ${decision!.latencyMs}ms`}
+              {inferring
+                ? 'jev…'
+                : `${pinnedDomain ?? decision!.domain}${!pinnedDomain && subTargetOf(decision!) ? `/${decision!.subTarget}` : ''} · ${Math.round(
+                    ((pinnedDomain ? decision!.probabilities?.[pinnedDomain] : decision!.probabilities?.[decision!.domain]) ?? decision!.confidence) * 100,
+                  )}% · ${decision!.latencyMs}ms`}
             </span>
           )}
           <kbd className="kbd">esc</kbd>
         </div>
 
         {widgetType ? (
-          <div ref={widgetRef} key={widgetType}>
+          <div ref={widgetRef} key={`${widgetType}:${stack.length}`}>
             <JevWidget
               type={widgetType}
               query={trimmedQuery}
               decision={decision ?? { ok: true, query: trimmedQuery, domain: '', subTarget: 'none', confidence: 0, readiness: 0, latencyMs: 0 }}
-              slots={slots}
+              slots={effSlots}
+              context={top?.context}
+              crumbs={stack.map((e) => e.label)}
               onClose={() => close(false)}
               onToast={showToast}
+              handoff={handoff}
             />
           </div>
         ) : (
@@ -538,6 +698,31 @@ export function CommandPalette() {
           </div>
         )}
 
+        {strips.length > 0 && (
+          <div className={`flex flex-wrap items-center gap-1.5 px-3.5 pb-2.5 font-mono text-[10px] text-fg-3 ${widgetType ? '' : 'hairline-t pt-2.5'}`}>
+            <span className="text-[9px] uppercase tracking-[0.16em]">{widgetType ? 'also' : 'jev sees'}</span>
+            {strips.map((c) => (
+              <button
+                key={c.domain}
+                type="button"
+                onClick={() => {
+                  setPinnedDomain(c.domain)
+                  inputRef.current?.focus()
+                }}
+                className={`flex items-center gap-1.5 rounded-md px-2 py-0.5 ring-hairline transition-all duration-200 hover:bg-white/[0.05] hover:text-fg-0 ${
+                  c.leaving ? 'scale-95 opacity-0' : 'opacity-100'
+                }`}
+              >
+                <span className="text-fg-2">{DOMAIN_LABEL[c.domain] ?? c.domain}</span>
+                <span className="h-1 w-10 overflow-hidden rounded-full bg-fg-4/60">
+                  <span className="block h-full bg-accent/70 transition-all duration-300" style={{ width: `${Math.round(c.p * 100)}%` }} />
+                </span>
+                <span className="tabular-nums">{Math.round(c.p * 100)}%</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="hairline-t flex items-center justify-between bg-black/35 px-4 py-2 text-[10px] text-fg-2">
           <div className="flex items-center gap-2">
             {widgetType ? (
@@ -545,7 +730,7 @@ export function CommandPalette() {
                 <kbd className="kbd">↵</kbd>
                 <span>primary action</span>
                 <kbd className="kbd ml-2">esc</kbd>
-                <span>back to list</span>
+                <span>{top ? `back to ${stack.length > 1 ? stack[stack.length - 2].label.toLowerCase() : 'previous card'}` : 'back to list'}</span>
               </>
             ) : (
               <>

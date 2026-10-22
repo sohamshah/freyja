@@ -1786,6 +1786,10 @@ export const IPC = {
   voiceToggle: 'voice:toggle',
   /** ⌘K palette: classify a natural-language query through Jev (System One). */
   jevClassify: 'jev:classify',
+  palettePrs: 'palette:prs',
+  paletteClipboard: 'palette:clipboard',
+  paletteReveal: 'palette:reveal',
+  paletteOpenExternal: 'palette:openExternal',
 } as const
 
 // ── Gateway IPC result types ────────────────────────────────────
@@ -2428,4 +2432,41 @@ export type AppInfo = {
   platform: NodeJS.Platform
   workspace: string
   harnessRoot: string
+}
+
+/** One pull request row for the ⌘K triage card (built in main via `gh`). */
+export interface PalettePr {
+  repo: string
+  number: number
+  title: string
+  url: string
+  author: string
+  isDraft: boolean
+  updatedAt: string
+  additions?: number
+  deletions?: number
+  changedFiles?: number
+  reviewDecision?: string
+  /** success | failure | pending | none */
+  checks: string
+  /** Files whose paths look like prompt / skill / tool-description text. */
+  promptFiles: string[]
+  mergeable?: string
+  labels: string[]
+}
+
+export interface PalettePrResult {
+  ok: boolean
+  scope: string
+  prs: PalettePr[]
+  error?: string
+  latencyMs: number
+}
+
+export interface PaletteClipboard {
+  text: string
+  /** url | json | stack | path | code | text | empty */
+  kind: string
+  chars: number
+  hasImage: boolean
 }

@@ -301,6 +301,18 @@ const api = {
   async jevClassify(query: string): Promise<import('../shared/events').JevPaletteDecision> {
     return ipcRenderer.invoke(IPC.jevClassify, query)
   },
+  async palettePrs(scope: string, repo?: string): Promise<import('../shared/events').PalettePrResult> {
+    return ipcRenderer.invoke(IPC.palettePrs, scope, repo)
+  },
+  async paletteClipboard(): Promise<import('../shared/events').PaletteClipboard> {
+    return ipcRenderer.invoke(IPC.paletteClipboard)
+  },
+  async paletteReveal(filePath: string): Promise<void> {
+    return ipcRenderer.invoke(IPC.paletteReveal, filePath)
+  },
+  async paletteOpenExternal(url: string): Promise<void> {
+    return ipcRenderer.invoke(IPC.paletteOpenExternal, url)
+  },
   // ── Voice (Galdr) ─────────────────────────────────────────
   // Main-process ⌥Space globalShortcut → renderer. Voice commands
   // themselves flow through the generic sendCommand path; this is the

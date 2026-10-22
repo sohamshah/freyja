@@ -31,6 +31,10 @@ export const PALETTE_DOMAINS = {
   voice_session: 'Starting or ending a voice conversation, talking instead of typing',
   quick_control: 'Appearance, dark or light mode, theme, mute the microphone, do not disturb, timer',
   finance: 'Personal money: credit card spending, expenses, receipts, a purchase category like travel or food (not LLM or API cost)',
+  skill_lookup: 'Asking how to do a kind of task Freyja has a skill or playbook for, finding or loading a skill, "how do I", "is there a skill for"',
+  pr_triage: 'Pull requests: PRs waiting on me, PRs to review, my open PRs, CI status, approving or triaging GitHub PRs',
+  slack_read: 'Reading Slack: what someone said, messages in a channel, catching up on a thread or channel',
+  context_budget: 'Context window usage, how full the context is, compaction, token pressure of the current conversation',
   palette_command: 'A plain command palette search: a command name, a skill name, a session name, a slash command, a keyword',
 } as const
 
@@ -48,6 +52,11 @@ export const PALETTE_SUBTARGETS = {
   artifact_search: 'Search artifacts by name, type, or topic',
   log_errors: 'Only errors or warnings',
   key_status: 'Which API keys or providers are configured',
+  pr_review_requested: 'PRs waiting on my review, review requests',
+  pr_mine: 'My own open PRs, PRs I authored',
+  slack_channel: 'Messages in a named channel',
+  slack_person: 'What a specific person said or posted',
+  compact_now: 'Compact or summarize the context now',
   none: 'No specific sub-target; a general query in its domain',
 } as const
 

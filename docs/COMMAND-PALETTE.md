@@ -55,3 +55,58 @@ card is the form, the agent is the executor. ↵ fires the card's primary
 action; Esc steps back to the list, a second Esc closes.
 
 The standalone prototype this grew from is in `mockups/jev-command-palette/`.
+
+
+## Deep cards (second pass)
+
+Three structural pieces were added on top of the two-clock design.
+
+**Candidate strips.** Jev returns the whole domain distribution, not just the
+winner. While the leader is not clearly ahead (`leadP − p < 0.55`, `p ≥ 0.12`),
+the runners-up render as small strips under the card (or above the list when
+no card has won yet): label, probability bar, percentage. As the sentence
+grows and the distribution sharpens, strips fade out (`useLeaving`, 220 ms).
+Clicking a strip pins its domain: that card shows, the former leader becomes
+a strip. Esc clears the pin. A local tiebreak ("how do I …" phrasing with an
+unsure Jev → Skills) can change the shown card; the strips always treat the
+*shown* card's domain as the leader.
+
+**Card-to-card handoff.** Every card gets `handoff(next)`; the palette keeps a
+stack. The top card renders with breadcrumbs (`CALENDAR › Reschedule`), the
+query is cleared so typing refines the pushed card's slots (`mergeSlots`:
+typed values fill gaps, handed-over values stay), Jev is paused while a pushed
+card is up, and Esc pops the stack and restores the previous query. Current
+handoffs: agenda row → reschedule (create card pre-filled, event id in
+`context`), PR row → review (delegation card with profile `review`, PR, repo,
+and a prompt-file focus), artifact row → preview, clipboard path → preview.
+
+**Cards that keep morphing after render.** Data arriving after first paint
+changes the card: the create card fetches the chosen day and shows conflicts
+and free-slot chips (`freeSlots`, working hours 9–18, 15-min grid); the agenda
+card turns a typed "at 3pm" into a busy/free verdict; the model card dims rows
+whose provider key is missing and keeps them out of the slot-driven pick; PR
+rows get CI, size and a `prompt` flag once `gh pr view` returns; Slack rows
+filter by the person as the name is typed.
+
+### Data layer
+
+`src/renderer/lib/paletteData.ts`
+- `mcpCall(server, tool, args)` sends `mcp_command` action `call` with the
+  panel surface and resolves when the reply lands in `mcp.lastResults`. No
+  agent turn, no transcript entry.
+- Calendar: `google_calendar_hosted` (Google's hosted Calendar MCP,
+  `https://calendarmcp.googleapis.com/mcp/v1`, same OAuth client as the Drive
+  and Docs entries). `listEvents`, `freeSlots`. Cards show a connect panel
+  with the setup steps until the server is active, and fall back to handing
+  the request to the agent.
+- Slack: `slack_search_channels` → `slack_read_channel` for a channel,
+  `slack_search_public_and_private` for a person or topic. The tool output is
+  markdown-ish text inside JSON; the parsers live next to the calls.
+
+`src/main/paletteSources.ts`
+- `listPalettePrs(scope, repo)`: `gh search prs` (review-requested / mine /
+  involves) plus `gh pr view` for the first eight (checks, size, files;
+  prompt/skill paths flagged). Cached 60 s.
+- `readPaletteClipboard()`: classifies the clipboard (url, json, stack, path,
+  diff, code, text) once per palette open; the empty palette proposes actions
+  for it.

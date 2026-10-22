@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, shell, nativeTheme } from 'electron'
 import { classifyPaletteQuery } from './jevRouter.js'
+import { listPalettePrs, readPaletteClipboard } from './paletteSources.js'
 import {
   configureGatewayBridge,
   syncProviderKeysToDaemonEnv,
@@ -1231,6 +1232,15 @@ function setupIpc() {
   )
   ipcMain.handle(IPC.slackGetConfig, async () => handleSlackGetConfig())
   ipcMain.handle(IPC.jevClassify, async (_e, query: string) => classifyPaletteQuery(String(query ?? '')))
+  ipcMain.handle(IPC.palettePrs, async (_e, scope: string, repo?: string) => listPalettePrs(String(scope ?? 'review-requested'), repo ? String(repo) : undefined))
+  ipcMain.handle(IPC.paletteClipboard, async () => readPaletteClipboard())
+  ipcMain.handle(IPC.paletteReveal, async (_e, filePath: string) => {
+    shell.showItemInFolder(String(filePath ?? ''))
+  })
+  ipcMain.handle(IPC.paletteOpenExternal, async (_e, url: string) => {
+    const u = String(url ?? '')
+    if (/^https?:\/\//.test(u)) await shell.openExternal(u)
+  })
   ipcMain.handle(IPC.llmKeysProbe, async () => handleLlmKeysProbe())
 
   // ── Skill-learning surface ───────────────────────────────────────
