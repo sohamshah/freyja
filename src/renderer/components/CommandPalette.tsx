@@ -461,7 +461,7 @@ export function CommandPalette() {
         className="absolute inset-0 bg-black/40 backdrop-blur-[1px]"
         onClick={() => close(false)}
       />
-      <div className="relative w-[620px] overflow-hidden rounded-2xl glass-strong shadow-2xl ring-hairline-strong transition-all duration-150">
+      <div className="relative w-[620px] overflow-hidden rounded-2xl modal-opaque shadow-2xl ring-hairline-strong transition-all duration-150">
         <div className="flex items-center gap-3 px-4 py-3 hairline-b">
           <svg width="14" height="14" viewBox="0 0 14 14">
             <circle cx="6" cy="6" r="4" stroke="var(--accent)" strokeWidth="1.2" fill="none" />
