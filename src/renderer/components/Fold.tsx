@@ -28,6 +28,9 @@ import type { CSSProperties, ReactNode, TransitionEvent } from 'react'
  *     matching (so a re-sorted or newly inserted row never replays the
  *     entrance) and the inner overflow is released so focus rings and
  *     hover shadows aren't clipped.
+ *   · `data-closing` marks the way out: the children on screen are the
+ *     snapshot, not live content, so anything that reads the DOM (the
+ *     conversation's search counter) can leave them out.
  */
 export function Fold({
   open,
@@ -99,6 +102,7 @@ export function Fold({
       className={`fold ${className}`}
       data-open={open && armed ? 'true' : 'false'}
       data-settled={open && settled ? 'true' : 'false'}
+      data-closing={!open && lingering ? 'true' : undefined}
       onTransitionEnd={onTransitionEnd}
       style={style}
     >

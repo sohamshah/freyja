@@ -317,11 +317,14 @@ export function Conversation() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  // Pass 1 — after every content change, count hits, clamp the active
-  // index, and keep the highlight classes in sync. This runs on every
-  // streaming message update but does NOT scroll (so new content
-  // arriving while the user is hunting never yanks them around).
-  useLayoutEffect(() => {
+  // Pass 1 — count hits, clamp the active index, and keep the highlight
+  // classes in sync. Runs on every keystroke and every streaming update
+  // but does NOT scroll (so new content arriving while the user is
+  // hunting never yanks them around). The active index is read through a
+  // ref so navigating never re-runs the count.
+  const activeMatchRef = useRef(activeMatchIdx)
+  activeMatchRef.current = activeMatchIdx
+  const syncHits = useCallback(() => {
     const el = scrollerRef.current
     if (!searchQuery) {
       setTotalMatches(0)
@@ -332,23 +335,51 @@ export function Conversation() {
       setTotalMatches(0)
       return
     }
-    const hits = el.querySelectorAll<HTMLElement>('.search-hit')
+    const hits = liveSearchHits(el)
     setTotalMatches(hits.length)
     const clampedActive =
-      hits.length === 0 ? 0 : Math.min(activeMatchIdx, hits.length - 1)
-    if (clampedActive !== activeMatchIdx) setActiveMatchIdx(clampedActive)
+      hits.length === 0 ? 0 : Math.min(activeMatchRef.current, hits.length - 1)
+    if (clampedActive !== activeMatchRef.current) setActiveMatchIdx(clampedActive)
     hits.forEach((h, i) => {
       h.classList.toggle('search-hit--active', i === clampedActive)
     })
+  }, [searchQuery])
+  useLayoutEffect(() => {
+    syncHits()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery, messages, thinking])
+  }, [syncHits, messages, thinking])
+
+  // Marks also come and go with no change to the query or the messages:
+  // a step or a thought folds shut and drops its snapshot a beat later, a
+  // chip unfolds to show a hit, a chunk mounts as the reader scrolls. So
+  // while a search is open, any change to the transcript's DOM recounts,
+  // once per frame. Class toggles are attribute changes, so they never
+  // trigger it.
+  const empty = messages.length === 0
+  useEffect(() => {
+    const el = scrollerRef.current
+    if (!searchQuery || !el) return
+    let raf = 0
+    const observer = new MutationObserver(() => {
+      if (raf) return
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        syncHits()
+      })
+    })
+    observer.observe(el, { childList: true, subtree: true })
+    return () => {
+      observer.disconnect()
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [searchQuery, syncHits, empty])
 
   // Pass 2 — when the user explicitly navigates (activeMatchIdx changes),
   // re-toggle classes and scroll the active hit into view.
   useLayoutEffect(() => {
     const el = scrollerRef.current
     if (!el) return
-    const hits = el.querySelectorAll<HTMLElement>('.search-hit')
+    const hits = liveSearchHits(el)
     if (hits.length === 0) return
     hits.forEach((h, i) => {
       h.classList.toggle('search-hit--active', i === activeMatchIdx)
@@ -2216,6 +2247,20 @@ function InlineGoalVerdict({ eventId }: { eventId: string }) {
       ) : null}
     </div>
   )
+}
+
+/**
+ * The hits that count: every `.search-hit` in the scroller except those
+ * inside a fold on its way shut. Fold keeps the last-rendered children
+ * mounted while it closes, and when a keystroke narrows the query those
+ * children still carry the previous query's marks for up to 700ms.
+ */
+function liveSearchHits(root: HTMLElement): HTMLElement[] {
+  const all = Array.from(root.querySelectorAll<HTMLElement>('.search-hit'))
+  const stale = root.querySelectorAll<HTMLElement>('.fold[data-closing="true"] .search-hit')
+  if (stale.length === 0) return all
+  const skip = new Set<HTMLElement>(stale)
+  return all.filter((h) => !skip.has(h))
 }
 
 /**

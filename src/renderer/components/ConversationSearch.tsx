@@ -65,11 +65,10 @@ export function ConversationSearch({
       // Let clicks on the actual bar work, but ignore the outer spacer.
     >
       <div
-        className="pointer-events-auto flex w-full max-w-[520px] items-center gap-2 rounded-lg glass-strong px-3 py-2 ring-hairline-strong"
-        // Near-opaque surface so the query + match count read cleanly against
-        // the busy transcript scrolling behind it (glass-strong alone is ~54%).
-        // Inline wins over the class's `background`; blur + shadow still apply.
-        style={{ background: 'rgba(14, 14, 14, 0.95)' }}
+        // `.find-bar` (globals.css) makes the surface near-opaque so the query
+        // and the match count read against the busy transcript scrolling
+        // behind it; it is restated per theme, so no inline background here.
+        className="find-bar pointer-events-auto flex w-full max-w-[520px] items-center gap-2 rounded-lg glass-strong px-3 py-2 ring-hairline-strong"
       >
         <span className="label text-fg-2">find</span>
         <input
