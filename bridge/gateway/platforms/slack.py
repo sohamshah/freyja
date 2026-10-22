@@ -1647,6 +1647,79 @@ class SlackAdapter:
             logger.warning("[slack] chat.stopStream failed: %s", code, exc_info=code == str(exc))
             return SendResult(ok=False, error=code)
 
+    async def read_message(self, chat_id: str, message_id: str) -> SendResult:
+        """Fetch one message as Slack stores it: blocks, text, metadata.
+
+        A sealed streamed message comes back with its prose as
+        ``rich_text`` blocks and its cards as ``task_card`` blocks, which
+        is what the stream consumer folds after the seal. Works for a
+        thread reply and for a top-level message.
+        """
+        if not self._app:
+            return SendResult(ok=False, error="not connected")
+        client = self._get_client(chat_id)
+        if client is None:
+            return SendResult(ok=False, error=f"no client for chat {chat_id}")
+        try:
+            res = await client.conversations_replies(
+                channel=chat_id, ts=message_id, limit=1, inclusive=True,
+                include_all_metadata=True,
+            )
+            msgs = res.get("messages") or []
+            msg = next((m for m in msgs if str(m.get("ts")) == str(message_id)), None)
+            if msg is None:
+                res = await client.conversations_history(
+                    channel=chat_id, latest=message_id, inclusive=True, limit=1,
+                    include_all_metadata=True,
+                )
+                msgs = res.get("messages") or []
+                msg = next((m for m in msgs if str(m.get("ts")) == str(message_id)), None)
+        except Exception as exc:  # noqa: BLE001
+            code = _slack_error(exc)
+            logger.warning("[slack] message readback failed: %s", code, exc_info=code == str(exc))
+            return SendResult(ok=False, error=code)
+        if msg is None:
+            return SendResult(ok=False, error="message_not_found")
+        return SendResult(ok=True, message_id=message_id, raw=dict(msg))
+
+    async def update_message_blocks(
+        self,
+        chat_id: str,
+        message_id: str,
+        *,
+        blocks: list[Any],
+        text: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        """``chat.update`` with Block Kit blocks. ``text`` is the
+        notification fallback. ``metadata`` is sent again because an
+        update without it drops the message's metadata."""
+        if not self._app:
+            return SendResult(ok=False, error="not connected")
+        client = self._get_client(chat_id)
+        if client is None:
+            return SendResult(ok=False, error=f"no client for chat {chat_id}")
+        kwargs: dict[str, Any] = {
+            "channel": chat_id,
+            "ts": message_id,
+            "blocks": blocks,
+            "text": text,
+        }
+        if metadata:
+            kwargs["metadata"] = metadata
+        try:
+            res = await client.chat_update(**kwargs)
+            return SendResult(
+                ok=bool(res.get("ok")), message_id=message_id,
+                raw=getattr(res, "data", None) or {},
+            )
+        except Exception as exc:  # noqa: BLE001
+            code = _slack_error(exc)
+            logger.warning(
+                "[slack] chat.update (blocks) failed: %s", code, exc_info=code == str(exc),
+            )
+            return SendResult(ok=False, error=code)
+
     async def upload_file(
         self,
         chat_id: str,

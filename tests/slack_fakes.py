@@ -30,6 +30,15 @@ class StreamingFakeAdapter:
         self.statuses: list[str] = []
         self.streams_started = 0
         self.streams_stopped: list[str] = []
+        # Per stream: the chunks in order and the blocks on the seal, so
+        # read_message hands back the message the way Slack stores it
+        # (prose as rich_text, the cards as task_card blocks merged by id).
+        self.stream_chunks: dict[str, list[Any]] = {}
+        self.stop_blocks: dict[str, list[dict[str, Any]]] = {}
+        # What update_message_blocks wrote, per message ts.
+        self.updated: dict[str, dict[str, Any]] = {}
+        # Errors for update_message_blocks to answer, one per call.
+        self.update_errors: list[str] = []
         self._start_ok = start_ok
 
     def format_content(self, content: str) -> str:
@@ -68,13 +77,83 @@ class StreamingFakeAdapter:
 
     async def append_stream(self, chat_id: str, ts: str, *, chunks: list[Any] | None = None, **kw: Any) -> SendResult:
         self._record(chunks)
+        self.stream_chunks.setdefault(ts, []).extend(chunks or [])
         return SendResult(ok=True)
 
     async def stop_stream(self, chat_id: str, ts: str, **kw: Any) -> SendResult:
         self._record(kw.get("chunks"))
+        self.stream_chunks.setdefault(ts, []).extend(kw.get("chunks") or [])
+        self.stop_blocks[ts] = list(kw.get("blocks") or [])
         self.stop_calls.append(dict(kw))
         self.streams_stopped.append(ts)
         return SendResult(ok=True)
+
+    def stored_message(self, ts: str) -> dict[str, Any]:
+        """The message as Slack would store it after the seal."""
+        blocks: list[dict[str, Any]] = []
+        cards: dict[str, dict[str, Any]] = {}
+        prose: dict[str, Any] | None = None
+        for chunk in self.stream_chunks.get(ts, []):
+            if hasattr(chunk, "status"):
+                prose = None
+                card = cards.get(chunk.id)
+                if card is None:
+                    card = {
+                        "type": "task_card", "block_id": f"task-{chunk.id}",
+                        "task_id": chunk.id, "title": chunk.title, "status": chunk.status,
+                    }
+                    cards[chunk.id] = card
+                    blocks.append(card)
+                else:
+                    card["title"] = chunk.title
+                    card["status"] = chunk.status
+                if getattr(chunk, "output", None):
+                    out = card.setdefault("output", {
+                        "type": "rich_text", "block_id": "o",
+                        "elements": [{"type": "rich_text_section", "elements": []}],
+                    })
+                    out["elements"][0]["elements"].append(
+                        {"type": "text", "text": str(chunk.output)},
+                    )
+            elif hasattr(chunk, "blocks"):
+                prose = None
+                blocks.extend(dict(b) for b in chunk.blocks)
+            elif hasattr(chunk, "text"):
+                if prose is None:
+                    prose = {
+                        "type": "rich_text", "block_id": f"p{len(blocks)}",
+                        "elements": [{
+                            "type": "rich_text_section",
+                            "elements": [{"type": "text", "text": ""}],
+                        }],
+                    }
+                    blocks.append(prose)
+                prose["elements"][0]["elements"][0]["text"] += chunk.text
+        blocks.extend(dict(b) for b in self.stop_blocks.get(ts, []))
+        parts: list[str] = []
+        for b in blocks:
+            if b.get("type") == "rich_text":
+                parts.append(b["elements"][0]["elements"][0]["text"])
+            elif b.get("type") == "task_card":
+                parts.append(str(b.get("title") or ""))
+        text = " ".join(parts)
+        return {"ts": ts, "blocks": blocks, "text": text}
+
+    async def read_message(self, chat_id: str, ts: str) -> SendResult:
+        if ts in self.updated:
+            return SendResult(ok=True, message_id=ts, raw={"ts": ts, **self.updated[ts]})
+        if ts not in self.stream_chunks:
+            return SendResult(ok=False, error="message_not_found")
+        return SendResult(ok=True, message_id=ts, raw=self.stored_message(ts))
+
+    async def update_message_blocks(
+        self, chat_id: str, ts: str, *, blocks: list[dict[str, Any]], text: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        if self.update_errors:
+            return SendResult(ok=False, error=self.update_errors.pop(0))
+        self.updated[ts] = {"blocks": blocks, "text": text, "metadata": metadata}
+        return SendResult(ok=True, message_id=ts)
 
     async def set_session_status(self, chat_id: str, *, thread_id: str | None = None, status: str, **kw: Any) -> SendResult:
         self.statuses.append(status)

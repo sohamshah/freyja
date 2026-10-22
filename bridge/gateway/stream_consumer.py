@@ -15,6 +15,10 @@ with ``chat.startStream`` and grown with ``chat.appendStream``:
   · ``chat.stopStream`` seals it with the tail prose, inline images,
     the feedback buttons, ``freyja_session`` metadata and the session
     status
+  · once a message is sealed (at the end of the turn, or when a long
+    turn continues in a new message) its cards fold into one collapsed
+    ``plan`` block through ``chat.update`` (see ``slack_fold``), so the
+    thread reads as prose with one "N steps" row per message
 
 Live probe on 2026-10-20: markdown, task and blocks chunks mix in one
 stream in both ``timeline`` and ``plan`` mode, and stopStream takes
@@ -81,6 +85,7 @@ from bridge.gateway.platforms.base import (
     SendResult,
     UploadItem,
 )
+from bridge.gateway.slack_fold import fold_task_cards
 
 logger = logging.getLogger(__name__)
 
@@ -475,6 +480,10 @@ class SlackStreamConsumer:
         self.display_mode = "timeline"
         # Thumbs up / down under the sealed message.
         self.feedback_enabled = True
+        # Once a message is sealed its step cards fold into one collapsed
+        # plan block (see slack_fold), so the thread reads as prose.
+        self.fold_steps = True
+        self._fold_tasks: list[asyncio.Task] = []
 
         self._state = _StreamState()
         self._lock = asyncio.Lock()
@@ -977,13 +986,20 @@ class SlackStreamConsumer:
                     await self.adapter.append_stream(
                         self.source.chat_id, st.stream_ts, chunks=[chunk],
                     )
+            old_ts = st.stream_ts
+            sealed_old = False
             try:
-                await self.adapter.stop_stream(
+                stop = await self.adapter.stop_stream(
                     self.source.chat_id, st.stream_ts,
                     metadata=self._metadata(), session_status="processing",
                 )
+                sealed_old = bool(stop.ok)
             except Exception:  # noqa: BLE001
                 logger.debug("[slack] rollover stop_stream failed", exc_info=True)
+            if sealed_old and old_ts:
+                # The finished message folds while the turn goes on in
+                # the next one.
+                self._fold_in_background(old_ts)
             result = await self.adapter.start_stream(
                 self.source.chat_id,
                 thread_id=self._reply_thread_id or None,
@@ -1050,6 +1066,58 @@ class SlackStreamConsumer:
                 "turn_ts": str(self.source.message_id or ""),
             },
         }
+
+    # ── folding sealed messages ──
+
+    def _fold_in_background(self, ts: str) -> None:
+        """Fold a sealed message without holding up the stream; finalize
+        waits for these before it reports the turn done."""
+        try:
+            task = self._loop.create_task(self._fold_sealed_message(ts))
+        except RuntimeError:
+            return
+        self._fold_tasks.append(task)
+
+    async def _fold_sealed_message(self, ts: str) -> None:
+        """Collapse the step cards of a sealed message into one plan block.
+
+        Reads the message back the way Slack stores it (prose as
+        ``rich_text``, the cards as ``task_card`` blocks) and rewrites it
+        with ``chat.update``: the same prose, widgets, images and
+        feedback buttons in place, and all the cards in one collapsed
+        ``plan`` block where the first card was. A message with no cards
+        needs no call. When the update is too long the tasks go again
+        with titles only. Any failure leaves the message as it streamed.
+        """
+        if not self.fold_steps or self._state.stopped_by_user:
+            return
+        read = getattr(self.adapter, "read_message", None)
+        update = getattr(self.adapter, "update_message_blocks", None)
+        if read is None or update is None:
+            return
+        try:
+            got = await read(self.source.chat_id, ts)
+            if not got.ok:
+                logger.debug("[slack] fold: readback of %s failed: %s", ts, got.error)
+                return
+            msg = got.raw or {}
+            blocks = msg.get("blocks") or []
+            folded = fold_task_cards(blocks)
+            if folded is None:
+                return
+            text = str(msg.get("text") or "").strip()[:4000] or "Freyja"
+            res = await update(
+                self.source.chat_id, ts, blocks=folded, text=text, metadata=self._metadata(),
+            )
+            if not res.ok and "too_long" in (res.error or "").lower():
+                folded = fold_task_cards(blocks, keep_output=False) or folded
+                res = await update(
+                    self.source.chat_id, ts, blocks=folded, text=text, metadata=self._metadata(),
+                )
+            if not res.ok:
+                logger.warning("[slack] fold of %s failed: %s", ts, res.error)
+        except Exception:  # noqa: BLE001
+            logger.warning("[slack] fold of %s failed", ts, exc_info=True)
 
     async def _set_status(self, status: str) -> None:
         """Best-effort agent session status through the adapter."""
@@ -1488,14 +1556,18 @@ class SlackStreamConsumer:
             return
 
         async def _seal() -> None:
-            if self._state.stream_ts and not self._state.cards_disabled:
+            ts = self._state.stream_ts
+            if ts and not self._state.cards_disabled:
                 try:
-                    await self.adapter.stop_stream(
-                        self.source.chat_id, self._state.stream_ts,
+                    stop = await self.adapter.stop_stream(
+                        self.source.chat_id, ts,
                         metadata=self._metadata(), session_status="active",
                     )
                 except Exception:  # noqa: BLE001
                     logger.debug("[slack] abort stop_stream failed", exc_info=True)
+                    return
+                if stop.ok:
+                    await self._fold_sealed_message(ts)
             else:
                 await self._set_status("active")
 
@@ -1625,6 +1697,15 @@ class SlackStreamConsumer:
         # successfully-uploaded images already rendered, so we skip
         # those entries and only push the rest.
         await self._upload_pending_images(skip_with_file_id=bool(inline_blocks))
+
+        # The sealed message reads as prose from here on: its step cards
+        # fold into one collapsed plan block. Earlier messages of the
+        # turn folded when they rolled over; wait for those too.
+        if sealed and st.stream_ts:
+            await self._fold_sealed_message(st.stream_ts)
+        if self._fold_tasks:
+            await asyncio.gather(*self._fold_tasks, return_exceptions=True)
+            self._fold_tasks.clear()
 
         # The session is idle. stopStream already said so when it
         # sealed; cover the paths that never sealed.
