@@ -4,6 +4,7 @@ import { highlightHtml } from '../lib/searchHighlight'
 import { useCharacterReveal } from '../lib/characterReveal'
 import { formatDuration } from '../lib/format'
 import { Fold } from './Fold'
+import { Glyph } from './seam/marks'
 
 /** While live, only this much of the newest text is rendered. The window
  *  shows six lines, so the rest would be clipped anyway, and markdown cost
@@ -89,7 +90,9 @@ export const ThinkingStream = memo(function ThinkingStream({
         onClick={() => setChoice(!open)}
         title={open ? 'Fold the thinking' : 'Show the thinking'}
       >
-        <span className="thought-mark" aria-hidden />
+        <span className="thought-mark" aria-hidden>
+          <Glyph kind="think" />
+        </span>
         <span className="thought-verb">{live ? 'thinking' : 'thought'}</span>
         {elapsed != null && (
           <span className="thought-time">{live ? formatSeconds(elapsed) : `for ${formatSeconds(elapsed)}`}</span>

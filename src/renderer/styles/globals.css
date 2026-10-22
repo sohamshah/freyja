@@ -1735,7 +1735,7 @@ body.splash-active [data-splash-target='hero-icon'] {
 .thought-head {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
   min-width: 0;
   padding: 2px 0;
@@ -1755,20 +1755,18 @@ body.splash-active [data-splash-target='hero-icon'] {
   border-radius: 3px;
 }
 
-/* A small rotated square: hollow once done, filled in blue while live. */
+/* A small coil of thread (seam/marks.tsx): grey once done, blue while
+   live. Drawn with the step marks' hairline (work.css). */
 .thought-mark {
   flex: none;
-  width: 6px;
-  height: 6px;
-  margin: 0 1px;
-  transform: rotate(45deg);
-  border: 1px solid rgb(var(--ink) / 0.24);
-  border-radius: 1px;
-  transition: border-color 220ms ease, background-color 220ms ease;
+  display: flex;
+  width: 11px;
+  height: 11px;
+  color: var(--wk-glyph);
+  transition: color 220ms ease;
 }
 .thought[data-live='true'] .thought-mark {
-  border-color: var(--accent);
-  background: rgb(var(--accent-rgb) / 0.3);
+  color: var(--accent);
 }
 
 .thought-verb {
@@ -1830,8 +1828,8 @@ body.splash-active [data-splash-target='hero-icon'] {
 /* The thought itself. `.md` supplies lists, code and links; these rules
    swap its mono for the serif. */
 .thought-body.md {
-  margin: 7px 0 4px 3px;
-  padding: 1px 0 1px 15px;
+  margin: 7px 0 4px 5px;
+  padding: 1px 0 1px 13px;
   border-left: 1px solid transparent;
   border-image: linear-gradient(to bottom, rgb(var(--accent-rgb) / 0.32), rgb(var(--ink) / 0.05)) 1;
   font-size: var(--thought-size);
@@ -2257,10 +2255,6 @@ body.splash-active [data-splash-target='hero-icon'] {
 :root[data-theme='light'] .thought-head:hover .thought-topic { color: rgb(var(--fg-1)); }
 :root[data-theme='light'] .thought-body.md { color: rgb(var(--fg-1)); }
 :root[data-theme='light'] .thought-body.md strong { color: rgb(var(--fg-0)); }
-:root[data-theme='light'] .thought[data-live='true'] .thought-mark {
-  background: rgb(var(--accent-rgb) / 0.5);
-  box-shadow: 0 0 8px rgb(var(--accent-rgb) / 0.35);
-}
 
 /* Receipt (activity tab): the compressed-idle plates on the braid. Dark keeps
    its near-black plate; on paper the plate is a paper tag with a sand edge. */

@@ -11,6 +11,7 @@ import { WorkStretch } from './seam/WorkStretch'
 import { Seam } from './seam/Seam'
 import { helperDigest, parseDigest } from './seam/helperDigest'
 import { buildBlocks } from './seam/source'
+import { Glyph } from './seam/marks'
 import { AppshotChip } from './AppshotCard'
 import { JevResultSummary, JevRunView, jevStatus } from './JevRun'
 import { looksLikeJevLog, parseJevResult } from '../lib/jevLog'
@@ -1146,11 +1147,13 @@ function MemoChip({
   const fresh = at != null && Date.now() - at < 8000
   return (
     <div className="wk-report select-text" data-state={look} data-fresh={fresh ? 'true' : 'false'}>
-      <svg className="wk-report-thread" width="9" height="22" aria-hidden>
-        <path d="M4.5 -2V21" pathLength={1} />
+      <svg className="wk-report-thread" width="11" height="23" aria-hidden>
+        <path d="M5.5 -2V22.5" pathLength={1} />
       </svg>
       <div className="wk-report-head">
-        <span className="wk-helper-mark" aria-hidden />
+        <span className="wk-helper-mark" aria-hidden>
+          <Glyph kind="letter" />
+        </span>
         {onOpen ? (
           <button
             type="button"

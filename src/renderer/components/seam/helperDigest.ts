@@ -1,6 +1,8 @@
 import type { MessagePart, ToolCallRecord } from '@shared/events'
 import type { SeamUnit } from '../../lib/seam'
 import { callMs, isEdit, stepWords, wordsText } from './stepWords'
+import { markKind } from './marks'
+import type { MarkKind } from './marks'
 
 /**
  * What a helper (sub-agent) has done so far, read from its own session:
@@ -19,7 +21,7 @@ export interface HelperSteps {
   /** The step it is on now, in plain words, or '' when idle. */
   now: string
   /** The finished steps as words, for its reply. */
-  steps: Array<{ kind: 'think' | 'step' | 'edit' | 'fail'; text: string }>
+  steps: Array<{ kind: 'think' | 'step' | 'edit' | 'fail'; text: string; mark?: MarkKind }>
 }
 
 const MAX_UNITS = 24
@@ -61,7 +63,7 @@ export function helperDigest(s: StoreLike, id: string): string {
       }
       const secs = part.startedAt != null && part.endedAt != null ? Math.max(1, (part.endedAt - part.startedAt) / 1000) : 2
       units.push({ k: 'think', secs, label: title || 'thought' })
-      steps.push({ kind: 'think', text: title || 'Thought it through' })
+      steps.push({ kind: 'think', text: title || 'Thought it through', mark: 'think' })
       return
     }
     if (part.type === 'tool_call' && part.toolCallId) {
@@ -74,10 +76,10 @@ export function helperDigest(s: StoreLike, id: string): string {
       }
       if (tc.status === 'error') {
         units.push({ k: 'fail', label: `${words} · failed` })
-        steps.push({ kind: 'fail', text: words })
+        steps.push({ kind: 'fail', text: words, mark: markKind(tc) })
       } else {
         units.push({ k: isEdit(tc) ? 'down' : 'up', ms: callMs(tc, t), label: words })
-        steps.push({ kind: isEdit(tc) ? 'edit' : 'step', text: words })
+        steps.push({ kind: isEdit(tc) ? 'edit' : 'step', text: words, mark: markKind(tc) })
       }
       return
     }

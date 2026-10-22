@@ -1,4 +1,4 @@
-import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useHarness } from '../../state/store'
 import { renderMarkdown } from '../../lib/markdown'
@@ -11,6 +11,7 @@ import { helperDigest, parseDigest, replyLine } from './helperDigest'
 import { prefersReducedMotion, useNow } from './hooks'
 import type { SubagentRecord } from '@shared/events'
 import { subagentsOf, useWorkView } from './source'
+import { Glyph } from './marks'
 
 type HelperState = 'running' | 'done' | 'failed'
 
@@ -58,6 +59,15 @@ export const Helpers = memo(function Helpers({ ids, u }: { ids: string[]; u: num
     const changed = drawRibbon(rowsRef.current, svgRef.current, headRef.current)
     if (changed) follow(rowsRef, svgRef, headRef)
   })
+  // A row that opens or closes its reply moves every row under it: the
+  // strands follow the rows' height frame by frame.
+  useEffect(() => {
+    const rows = rowsRef.current
+    if (!rows || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => drawRibbon(rowsRef.current, svgRef.current, headRef.current))
+    ro.observe(rows)
+    return () => ro.disconnect()
+  }, [])
 
   return (
     <div className="wk-helpers" data-dense={dense ? 'true' : 'false'} data-state={running ? 'live' : 'done'}>
@@ -132,7 +142,9 @@ const HelperRow = memo(function HelperRow({
   return (
     <div className="wk-helper" data-helper={id} data-state={state} data-open={open ? 'true' : 'false'}>
       <button type="button" className="wk-helper-head" aria-expanded={open} title={sub.task} onClick={() => setOpen(!open)}>
-        <span className="wk-helper-mark" data-u={u} data-s={s} aria-hidden />
+        <span className="wk-helper-mark" data-u={u} data-s={s} aria-hidden>
+          <Glyph kind="letter" />
+        </span>
         <span className="wk-helper-name">{sub.label}</span>
         {dense ? (
           <>
@@ -170,8 +182,10 @@ const HelperRow = memo(function HelperRow({
           {steps.steps.length > 0 && (
             <div className="wk-reply-steps">
               {steps.steps.slice(-12).map((st, i) => (
-                <div key={i} className="wk-reply-step">
-                  <span className={`wk-reply-mark wk-reply-mark--${st.kind}`} aria-hidden />
+                <div key={i} className="wk-reply-step" data-fail={st.kind === 'fail' ? 'true' : undefined}>
+                  <span className="wk-step-mark" data-kind={st.mark ?? 'step'} aria-hidden>
+                    <Glyph kind={st.mark ?? 'step'} />
+                  </span>
                   <span>{st.text}</span>
                 </div>
               ))}
@@ -204,9 +218,10 @@ const r2 = (n: number) => Math.round(n * 100) / 100
 
 /** One strand: down the ribbon from the line's mark, one rounded turn,
  *  across to its helper. The strand for the top helper sits nearest the
- *  rows, so no two ever cross. */
+ *  rows, so no two ever cross. Strands sit far enough apart that their
+ *  dashes never blur into one band. */
 function strandD(tx: number, hy: number, x1: number, y1: number, j: number, n: number): string {
-  const g = n > 1 ? Math.min(1.7, 10 / (n - 1)) : 0
+  const g = n > 1 ? Math.min(2.6, 12 / (n - 1)) : 0
   const xj = tx + ((n - 1) / 2 - j) * g
   const r = 5
   const turn = Math.max(hy + 9, y1 - r)
@@ -240,7 +255,7 @@ function drawRibbon(rows: HTMLDivElement | null, svg: SVGSVGElement | null, head
     const mark = row.querySelector('.wk-helper-mark')
     if (!mark) return
     const r = mark.getBoundingClientRect()
-    const x1 = r.left - rr.left - 2
+    const x1 = r.left - rr.left - 0.5
     const y1 = r.top + r.height / 2 - rr.top
     const d = strandD(tx, hy, x1, y1, j, list.length)
     const id = row.dataset.helper ?? String(j)

@@ -9,11 +9,17 @@
   --seam-ink: color-mix(in srgb, rgb(var(--ink)) var(--seam-p), rgb(var(--paper)));
   --seam-think: color-mix(in srgb, var(--accent) 76%, rgb(var(--paper)));
   --seam-blue: color-mix(in srgb, var(--accent) 66%, rgb(var(--paper)));
-  --wk-mark: 0.26;
+  /* A line's mark, and the hairline that joins marks: opaque mixes, so a
+     drawing's own crossings never darken. */
+  --wk-glyph-p: 38%;
+  --wk-glyph: color-mix(in srgb, rgb(var(--ink)) var(--wk-glyph-p), rgb(var(--paper)));
+  --wk-join: color-mix(in srgb, rgb(var(--ink)) 19%, rgb(var(--paper)));
+  --wk-join-open: color-mix(in srgb, var(--accent) 42%, rgb(var(--paper)));
 }
 :root[data-theme='light'] {
   --seam-p: 54%;
-  --wk-mark: 0.3;
+  --wk-glyph-p: 46%;
+  --wk-join: color-mix(in srgb, rgb(var(--ink)) 22%, rgb(var(--paper)));
 }
 
 /* Shared words */
@@ -44,7 +50,7 @@
 .wk-step-head {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
   min-width: 0;
   padding: 2px 0;
@@ -60,34 +66,63 @@ button.wk-step-head:focus-visible {
   outline-offset: 3px;
   border-radius: 3px;
 }
-/* A small ring: hollow once done, turning while live, red when failed. */
-.wk-step-mark {
+/* A line's mark (marks.tsx): an 11px box holding a hairline drawing of
+   what the step does, or a plain ring for a kind with no drawing. While
+   the step runs, every mark is the same turning ring; when it lands the
+   ring shrinks away and the drawing settles in. Red when it failed. */
+.wk-step-mark,
+.wk-helper-mark {
   flex: none;
   position: relative;
-  width: 7px;
-  height: 7px;
-  margin: 0 0.5px;
-  border-radius: 50%;
-  border: 1px solid rgb(var(--ink) / var(--wk-mark));
-  transition: border-color 300ms ease, background-color 300ms ease;
+  display: flex;
+  width: 11px;
+  height: 11px;
+  color: var(--wk-glyph);
+  transition: color 300ms ease;
 }
-.wk-step-mark::after {
+.wk-step-mark::before,
+.wk-helper-mark::before {
   content: '';
   position: absolute;
-  inset: -1px;
+  inset: 2px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  opacity: 0;
+  transform: scale(0.4);
+  transition: opacity 240ms ease, transform 420ms var(--ease-out-expo), background-color 300ms ease;
+}
+.wk-step-mark::after,
+.wk-helper-mark::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
   border-radius: 50%;
   border: 1px solid transparent;
   opacity: 0;
   transition: opacity 240ms ease;
 }
-.wk-step[data-state='live'] .wk-step-mark { border-color: rgb(var(--accent-rgb) / 0.25); }
+.wk-glyph {
+  display: block;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: opacity 320ms ease 90ms, transform 520ms var(--ease-out-expo) 90ms;
+}
+.wk-step-mark[data-kind='step']::before { opacity: 1; transform: none; }
+.wk-step[data-state='live'] .wk-step-mark { color: rgb(var(--accent-rgb) / 0.3); }
+.wk-step[data-state='live'] .wk-step-mark::before { opacity: 1; transform: none; }
 .wk-step[data-state='live'] .wk-step-mark::after {
   opacity: 1;
   border-top-color: var(--accent);
   border-right-color: rgb(var(--accent-rgb) / 0.45);
   animation: wk-turn 0.9s linear infinite;
 }
-.wk-step[data-state='error'] .wk-step-mark { border-color: rgb(var(--danger-rgb) / 0.85); background: rgb(var(--danger-rgb) / 0.2); }
+.wk-step[data-state='live'] .wk-glyph { opacity: 0; transform: scale(0.55); transition-delay: 0s; }
+.wk-step[data-state='error'] .wk-step-mark { color: var(--danger); }
+.wk-step[data-state='error'] .wk-step-mark[data-kind='step']::before { background: rgb(var(--danger-rgb) / 0.2); }
 .wk-step-text { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; letter-spacing: 0; transition: color 200ms ease; }
 .wk-step-head:hover .wk-step-text { color: rgb(var(--fg-0)); }
 .wk-step-meta { flex: none; margin-left: auto; display: flex; align-items: center; gap: 10px; color: rgb(var(--fg-3)); font-variant-numeric: tabular-nums; }
@@ -100,7 +135,7 @@ button.wk-step-head:focus-visible {
 .wk-step[data-open='true'] > .wk-step-head .wk-caret { transform: rotate(90deg); }
 .wk-step[data-focus='true'] > .wk-step-head .wk-step-text { color: var(--accent-hi); }
 .wk-step-cmd {
-  margin: 0 0 2px 17px;
+  margin: 0 0 2px 19px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -111,16 +146,17 @@ button.wk-step-head:focus-visible {
   animation: wk-rise 300ms var(--ease-out-expo);
 }
 .wk-step-cmd span { color: rgb(var(--fg-4)); }
-.wk-step-media { margin: 4px 0 6px 17px; max-width: 76%; }
+.wk-step-media { margin: 4px 0 6px 19px; max-width: 76%; }
 .wk-frame { display: block; overflow: hidden; border-radius: 6px; background: #000; cursor: zoom-in; }
 .wk-frame img { display: block; width: 100%; max-height: 200px; object-fit: contain; }
 .wk-frame img.wk-frame--big { max-height: 540px; }
 .wk-images { padding: 0; margin-top: 6px; }
 
-/* The detail, under the same hairline rule a thought uses. */
+/* The detail, under the same hairline rule a thought uses, on the line
+   through the middle of the marks. */
 .wk-rule {
-  margin: 6px 0 8px 3px;
-  padding: 1px 0 2px 15px;
+  margin: 6px 0 8px 5px;
+  padding: 1px 0 2px 13px;
   border-left: 1px solid transparent;
   border-image: linear-gradient(to bottom, rgb(var(--accent-rgb) / 0.32), rgb(var(--ink) / 0.05)) 1;
 }
@@ -135,26 +171,43 @@ button.wk-step-head:focus-visible {
 .wk-wait { color: rgb(var(--fg-3)); }
 .wk-foot { display: flex; flex-wrap: wrap; gap: 10px; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: rgb(var(--fg-3)); }
 
-/* ── A · a few calls at once ── */
+/* ── A · a few calls at once ──
+   Joined mark to mark: each line but the last draws the hairline from just
+   under its own mark to just above the next one, whatever it holds in
+   between. An open line's detail needs no rule of its own; the join runs
+   down beside it, tinted, and fades back to grey before the next mark. */
 .wk-group { position: relative; display: flex; flex-direction: column; gap: 2px; }
-.wk-group::before { content: ''; position: absolute; left: 4px; top: 10px; bottom: 10px; width: 1px; background: rgb(var(--ink) / 0.16); }
+.wk-group > .wk-step { position: relative; }
+.wk-group > .wk-step:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 16.5px;
+  bottom: -5.5px;
+  width: 1px;
+  background: var(--wk-join);
+}
+.wk-group > .wk-step[data-open='true']:not(:last-child)::before {
+  background: linear-gradient(to bottom, var(--wk-join-open), var(--wk-join-open) 26px, var(--wk-join) calc(100% - 10px));
+}
+.wk-group > .wk-step:not(:last-child) .wk-rule { border-image: none; border-left-color: transparent; }
 
 /* ── A · many calls at once ── */
 .wk-crowd-head { cursor: default; }
-.wk-fanmark { flex: none; position: relative; width: 8px; height: 13px; }
-.wk-fan { position: absolute; left: -4px; top: 0; overflow: visible; }
+.wk-fanmark { flex: none; position: relative; width: 11px; height: 13px; }
+.wk-fan { position: absolute; left: -2px; top: 0; overflow: visible; }
 .wk-fan path { fill: none; stroke-width: 0.7; stroke-linecap: round; transition: d 700ms var(--ease-out-expo), stroke 320ms ease; }
 .wk-fan-run { stroke: rgb(var(--accent-rgb) / 0.8); }
 .wk-fan-ok { stroke: var(--seam-ink); }
 .wk-fan-err { stroke: var(--danger); }
-.wk-crowd-words { margin: 1px 0 1px 17px; font-family: var(--font-mono); font-size: 10.5px; line-height: 19px; color: rgb(var(--fg-3)); }
+.wk-crowd-words { margin: 1px 0 1px 19px; font-family: var(--font-mono); font-size: 10.5px; line-height: 19px; color: rgb(var(--fg-3)); }
 .wk-crowd-words[data-clamp='true'] { max-height: 76px; overflow: hidden; }
 .wk-crowd-word { color: rgb(var(--fg-2)); border-radius: 3px; transition: color 420ms ease; }
 .wk-crowd-word:hover,
 .wk-crowd-word[aria-expanded='true'] { color: rgb(var(--fg-0)); text-decoration: underline 1px rgb(var(--accent-rgb) / 0.6); text-underline-offset: 3px; }
 .wk-crowd-word[data-state='error'] { color: var(--danger); text-decoration: underline wavy rgb(var(--danger-rgb) / 0.5); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .wk-crowd-sep { margin: 0 0.55ch; color: rgb(var(--fg-4)); }
-.wk-crowd-more { margin-left: 17px; }
+.wk-crowd-more { margin-left: 19px; }
 
 /* ── A · helpers ──
    A ribbon of fine parallel strands down from the line, one per helper.
@@ -182,7 +235,7 @@ button.wk-step-head:focus-visible {
 .wk-helper-head {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
   min-width: 0;
   padding: 2px 0;
@@ -194,26 +247,18 @@ button.wk-step-head:focus-visible {
   color: rgb(var(--fg-1));
 }
 .wk-helper-head:focus-visible { outline: 1px solid rgb(var(--accent-rgb) / 0.45); outline-offset: 3px; border-radius: 3px; }
-.wk-helper-mark {
-  flex: none;
-  position: relative;
-  width: 7px;
-  height: 7px;
-  margin: 0 0.5px;
-  border-radius: 50%;
-  border: 1px solid rgb(var(--ink) / calc(var(--wk-mark) + 0.06));
-  transition: background-color 360ms ease, border-color 360ms ease;
-}
-.wk-helper-mark::after { content: ''; position: absolute; inset: -1px; border-radius: 50%; border: 1px solid transparent; opacity: 0; transition: opacity 240ms ease; }
-.wk-helper[data-state='running'] .wk-helper-mark { border-color: rgb(var(--accent-rgb) / 0.25); }
+/* A helper's mark is a turning ring while it is out, and the letter it
+   sends back once it returns: red when it failed. */
+.wk-helper[data-state='running'] .wk-helper-mark { color: rgb(var(--accent-rgb) / 0.3); }
+.wk-helper[data-state='running'] .wk-helper-mark::before { opacity: 1; transform: none; }
 .wk-helper[data-state='running'] .wk-helper-mark::after {
   opacity: 1;
   border-top-color: var(--accent);
   border-right-color: rgb(var(--accent-rgb) / 0.45);
   animation: wk-turn 1.4s linear infinite;
 }
-.wk-helper[data-state='done'] .wk-helper-mark { background: rgb(var(--ink) / 0.3); border-color: rgb(var(--ink) / 0.32); box-shadow: inset 0 0 0 1.5px rgb(var(--paper)); }
-.wk-helper[data-state='failed'] .wk-helper-mark { border-color: var(--danger); background: rgb(var(--danger-rgb) / 0.22); }
+.wk-helper[data-state='running'] .wk-helper-mark .wk-glyph { opacity: 0; transform: scale(0.55); transition-delay: 0s; }
+.wk-helper[data-state='failed'] .wk-helper-mark { color: var(--danger); }
 .wk-helper-name { flex: none; color: rgb(var(--fg-0)); font-weight: 500; }
 .wk-helpers[data-dense='true'] .wk-helper-name { min-width: 9ch; }
 .wk-helper-task { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: rgb(var(--fg-2)); }
@@ -248,21 +293,18 @@ button.wk-step-head:focus-visible {
 .wk-helper-line2 > div { min-height: 0; min-width: 0; overflow: clip; overflow-clip-margin: 26px; }
 .wk-helper[data-state='done'] .wk-helper-line2,
 .wk-helper[data-state='failed'] .wk-helper-line2 { grid-template-rows: 0fr; opacity: 0; }
-.wk-helper-now { display: flex; align-items: center; gap: 10px; min-width: 0; height: 26px; margin-left: 17px; font-family: var(--font-mono); font-size: 10.5px; }
+.wk-helper-now { display: flex; align-items: center; gap: 10px; min-width: 0; height: 26px; margin-left: 19px; font-family: var(--font-mono); font-size: 10.5px; }
 .wk-helper-now .wk-helper-seam { transform-origin: 0 50%; transition: transform 720ms cubic-bezier(0.55, 0, 0.2, 1); }
 .wk-helper[data-state='done'] .wk-helper-now .wk-helper-seam,
-.wk-helper[data-state='failed'] .wk-helper-now .wk-helper-seam { transform: translate(-17px, -15px) scale(0.25); }
+.wk-helper[data-state='failed'] .wk-helper-now .wk-helper-seam { transform: translate(-19px, -15px) scale(0.25); }
 
 /* A helper's reply, opened from its line. */
-.wk-reply { margin-left: 20px; }
 .wk-reply-meta { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: rgb(var(--fg-3)); }
 .wk-reply-body.md { margin-top: 7px; font-size: 12px; line-height: 1.65; color: rgb(var(--fg-1)); }
 .wk-reply-steps { margin-top: 10px; display: flex; flex-direction: column; font-family: var(--font-mono); font-size: 10.5px; line-height: 18px; color: rgb(var(--fg-2)); }
-.wk-reply-step { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.wk-reply-step { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .wk-reply-step > span:last-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.wk-reply-mark { flex: none; width: 6px; height: 6px; margin: 0 1px; border-radius: 50%; border: 1px solid rgb(var(--ink) / var(--wk-mark)); }
-.wk-reply-mark--think { width: 5px; height: 5px; margin: 0 1.5px; border-radius: 1px; transform: rotate(45deg); }
-.wk-reply-mark--fail { border-color: var(--danger); background: rgb(var(--danger-rgb) / 0.2); }
+.wk-reply-step[data-fail='true'] .wk-step-mark { color: var(--danger); }
 .wk-reply-open { margin-top: 8px; font-family: var(--font-mono); font-size: 10px; color: var(--accent); text-decoration: underline dotted rgb(var(--accent-rgb) / 0.5); text-underline-offset: 3px; }
 .wk-reply-open:hover { color: var(--accent-hi); }
 
@@ -395,7 +437,10 @@ button.wk-step-head:focus-visible {
   .wk-step[data-state='live'] .wk-step-text,
   .wk-crowd-word[data-state='running'] { color: rgb(var(--fg-1)); background: none; }
   .wk-stretch-fold,
-  .wk-stretch-list > .wk-item { transition-duration: 1ms !important; transition-delay: 0s !important; }
+  .wk-stretch-list > .wk-item,
+  .wk-glyph,
+  .wk-step-mark::before,
+  .wk-helper-mark::before { transition-duration: 1ms !important; transition-delay: 0s !important; }
 }
 
 /* ── A report from a helper that ran in the background ──
@@ -405,13 +450,13 @@ button.wk-step-head:focus-visible {
    the thread is sewn in, drawn from the report up. */
 .wk-report { position: relative; margin: 14px 0 10px; }
 .wk-report-thread { position: absolute; left: 0; top: -18px; overflow: visible; pointer-events: none; }
-.wk-report-thread path { fill: none; stroke: rgb(var(--ink) / 0.22); stroke-width: 1; stroke-linecap: round; stroke-dasharray: 1 2; }
+.wk-report-thread path { fill: none; stroke: var(--wk-join); stroke-width: 1; stroke-linecap: round; stroke-dasharray: 1 2; }
 .wk-report[data-fresh='true'] .wk-report-thread path { animation: wk-sew 760ms cubic-bezier(0.5, 0, 0.2, 1) both; }
 @keyframes wk-sew { from { stroke-dashoffset: -1; } to { stroke-dashoffset: 0; } }
 .wk-report-head {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   min-width: 0;
   min-height: 24px;
   font-family: var(--font-mono);
@@ -420,10 +465,9 @@ button.wk-step-head:focus-visible {
   letter-spacing: 0.02em;
   color: rgb(var(--fg-2));
 }
-.wk-report[data-state='done'] .wk-helper-mark { background: rgb(var(--ink) / 0.3); border-color: rgb(var(--ink) / 0.32); box-shadow: inset 0 0 0 1.5px rgb(var(--paper)); }
-.wk-report[data-state='failed'] .wk-helper-mark { border-color: var(--danger); background: rgb(var(--danger-rgb) / 0.22); }
-.wk-report[data-state='stopped'] .wk-helper-mark { border-color: rgb(var(--warn-rgb) / 0.8); }
-.wk-report[data-state='event'] .wk-helper-mark { border-color: var(--accent); background: rgb(var(--accent-rgb) / 0.3); }
+.wk-report[data-state='failed'] .wk-helper-mark { color: var(--danger); }
+.wk-report[data-state='stopped'] .wk-helper-mark { color: rgb(var(--warn-rgb) / 0.85); }
+.wk-report[data-state='event'] .wk-helper-mark { color: var(--accent); }
 .wk-report-who { flex: none; max-width: 40%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: rgb(var(--fg-0)); font-weight: 500; }
 button.wk-report-who:hover { color: var(--accent-hi); }
 .wk-report-verb { flex: none; color: rgb(var(--fg-2)); }

@@ -80,6 +80,20 @@ await check('a step reads in plain words', () => {
   assert.ok(!wordsText(stepWords(call('mystery', { action: 'go', target: 'x' }))).includes(','))
 })
 
+await check('a step carries a drawing of what it does, and unknown tools keep the ring', async () => {
+  const { markKind } = await import('./src/renderer/components/seam/marks.tsx')
+  const call = (name, args = {}) => ({ id: 'x', name, status: 'success', startedAt: 0, arguments: args })
+  assert.equal(markKind(call('bash', { command: 'ls' })), 'run')
+  assert.equal(markKind(call('read_file', { path: 'a.ts' })), 'read')
+  assert.equal(markKind(call('grep', { pattern: 'x' })), 'look')
+  assert.equal(markKind(call('web_search', { query: 'x' })), 'web')
+  assert.equal(markKind(call('edit_file', { path: 'a.ts' })), 'edit')
+  assert.equal(markKind(call('artifacts', { action: 'save', ref: 'n.md' })), 'edit')
+  assert.equal(markKind(call('artifacts', { action: 'read', ref: 'n.md' })), 'read')
+  assert.equal(markKind(call('talk', { to: 'Store' })), 'talk')
+  assert.equal(markKind(call('mcp__slack__slack_read_thread')), 'step')
+})
+
 await check('a seam draws each kind of step, and squeezes to fit', () => {
   const units = [
     { k: 'think', secs: 4 },

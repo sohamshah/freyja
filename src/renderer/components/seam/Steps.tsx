@@ -13,11 +13,13 @@ import { useNow } from './hooks'
 import { strandIndex } from '../../lib/seam'
 import type { ToolCallRecord } from '@shared/events'
 import { callsOf, useWorkView } from './source'
+import { Glyph, markKind } from './marks'
 
 /* ── A: one tool call, one quiet line ──────────────────────────────────
-   A small ring stands where thinking has a diamond, then the step in plain
-   words. No box, no tool name, no colour. While it runs the ring turns and
-   the words shimmer; a running command shows faintly underneath. Click to
+   A small drawing of what the step does (marks.tsx), then the step in
+   plain words. No box, no tool name, no colour. While it runs the mark is
+   a turning ring and the words shimmer; a running command shows faintly
+   underneath. When it lands the ring settles into its drawing. Click to
    open the command and what came back under a hairline rule. */
 
 /** A call's record: the active session's store, or a pane's own slice. */
@@ -89,6 +91,7 @@ export const StepLine = memo(function StepLine({
   const totals = call.fileChangeSet?.totals
   const cmd = live ? liveCommand(call) : ''
   const plain = words.map((w) => w.t).join('')
+  const kind = markKind(call)
   return (
     <div
       className="wk-step"
@@ -98,7 +101,9 @@ export const StepLine = memo(function StepLine({
       data-focus={focus > 0 ? 'true' : undefined}
     >
       <button type="button" className="wk-step-head" aria-expanded={open} title={plain} onClick={() => setUserOpen(!open)}>
-        <span className="wk-step-mark" data-u={u} data-s={s} aria-hidden />
+        <span className="wk-step-mark" data-kind={kind} data-u={u} data-s={s} aria-hidden>
+          <Glyph kind={kind} />
+        </span>
         <span className="wk-step-text">
           <WordsView words={words} query={query} />
         </span>
@@ -223,8 +228,10 @@ export function StepDetail({ call, query }: { call: ToolCallRecord; query: strin
 }
 
 /* ── A: a few calls at once ────────────────────────────────────────────
-   Two to four calls that ran together: their lines, joined on the left,
-   the first carrying "together". */
+   Two to four calls that ran together: their lines, the first carrying
+   "together", joined mark to mark by a hairline that stops short of each
+   mark. A line opened inside the group needs no rule of its own: the join
+   runs down beside what it opened, tinted, to the next mark. */
 export const StepGroup = memo(function StepGroup({ ids, u, records }: { ids: string[]; u: number; records?: Record<string, ToolCallRecord> }) {
   const recs = useGroupRecords(ids, records)
   const done = recs.every((c) => c && c.status !== 'running')

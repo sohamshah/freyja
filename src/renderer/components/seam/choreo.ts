@@ -30,7 +30,7 @@ const easeInOut = (q: number) => (q < 0.5 ? 4 * q * q * q : 1 - Math.pow(-2 * q 
 const r2 = (n: number) => Math.round(n * 100) / 100
 
 /** Every mark in the stretch's lines, with where it sits now. A thought's
- *  diamond belongs to its item; a step's ring or a fan names its unit. */
+ *  coil belongs to its item; a step's mark or a fan names its unit. */
 export function findMarks(root: HTMLElement): Array<{ el: HTMLElement; u: number; s: number | null }> {
   const out: Array<{ el: HTMLElement; u: number; s: number | null }> = []
   root.querySelectorAll<HTMLElement>('.wk-stretch-list > .wk-item').forEach((item) => {
@@ -40,8 +40,8 @@ export function findMarks(root: HTMLElement): Array<{ el: HTMLElement; u: number
       own.forEach((el) => out.push({ el, u: Number(el.dataset.u), s: el.dataset.s != null ? Number(el.dataset.s) : null }))
       return
     }
-    const diamond = item.querySelector<HTMLElement>('.thought-mark')
-    if (diamond && Number.isFinite(u)) out.push({ el: diamond, u, s: null })
+    const coil = item.querySelector<HTMLElement>('.thought-mark')
+    if (coil && Number.isFinite(u)) out.push({ el: coil, u, s: null })
   })
   return out
 }
@@ -84,6 +84,9 @@ function ghost(layer: HTMLElement, source: HTMLElement, w: number, h: number): H
   g.style.height = `${h}px`
   const c = source.cloneNode(true) as HTMLElement
   c.removeAttribute('data-u')
+  // Out of its line the copy loses the line's state; keep its colour.
+  const color = source.ownerDocument.defaultView?.getComputedStyle(source).color
+  if (color) c.style.color = color
   g.append(c)
   layer.append(g)
   return g
