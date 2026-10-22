@@ -1,8 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentView, TaskCardView } from '../shared/types'
-import { renderMarkdown } from '../../lib/markdown'
 import { useEscapeClose } from '../../lib/useEscapeClose'
-import { DetailDrawer, DrawerAction, DrawerSection, DrawerTimeline } from '../shared/DetailDrawer'
+import { TaskReceipt } from './TaskReceipt'
+import {
+  type Bucket,
+  BUCKETS,
+  BUCKET_LABEL,
+  GLYPH,
+  GLYPH_CLASS,
+  ago,
+  agentLabel,
+  bucketFor,
+  clock,
+  isCancelled,
+  primaryAgent,
+  span,
+} from './taskBuckets'
 
 interface Props {
   /** The session's title: short and stable, unlike the latest message. */
@@ -19,25 +32,6 @@ interface Props {
   onFocusTaskHandled?: () => void
 }
 
-type Bucket = 'now' | 'next' | 'blocked' | 'done'
-
-function bucketFor(status: string): Bucket {
-  const s = status.toLowerCase()
-  if (s === 'done' || s === 'complete' || s === 'completed' || s === 'cancelled') return 'done'
-  if (s === 'blocked' || s === 'paused' || s === 'waiting') return 'blocked'
-  if (s === 'active' || s === 'running' || s === 'in_progress' || s === 'in-progress') return 'now'
-  return 'next'
-}
-
-const BUCKETS: Bucket[] = ['now', 'next', 'blocked', 'done']
-const BUCKET_LABEL: Record<Bucket, string> = { now: 'now', next: 'up next', blocked: 'blocked', done: 'done' }
-const GLYPH: Record<Bucket, string> = { now: '◐', next: '○', blocked: '⊘', done: '✓' }
-const GLYPH_CLASS: Record<Bucket, string> = {
-  now: 'text-accent',
-  next: 'text-fg-3',
-  blocked: 'text-warn',
-  done: 'text-ok',
-}
 /** Done tasks past this many collapse behind a "show earlier" row. */
 const DONE_VISIBLE = 5
 
@@ -80,11 +74,12 @@ export function TasksListRailView({
     onFocusTaskHandled?.()
   }, [focusTaskId, tasks, buckets, onFocusTaskHandled])
 
-  const tasksById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks])
-  const openTask = openTaskId ? tasksById.get(openTaskId) ?? null : null
-  const openAgent = openTask ? primaryAgent(openTask) : null
+  const openTask = openTaskId ? tasks.find((t) => t.id === openTaskId) ?? null : null
 
-  const gridCols = openTask ? 'grid-cols-[minmax(0,1fr)_500px]' : 'grid-cols-[minmax(0,1fr)]'
+  // The list keeps its width (880px + gutters) and the ticket lies right
+  // beside it; whatever desk is left stays on the far side of the ticket
+  // instead of opening up between the two.
+  const gridCols = openTask ? 'grid-cols-[minmax(0,960px)_minmax(520px,1fr)]' : 'grid-cols-[minmax(0,1fr)]'
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -156,55 +151,16 @@ export function TasksListRailView({
           />
         </div>
 
-        <DetailDrawer
-          open={openTask != null}
+        <TaskReceipt
+          task={openTask}
+          tasks={tasks}
           onClose={() => setOpenTaskId(null)}
-          title={openTask?.title ?? ''}
-          statusLabel={openTask ? statusLabel(openTask) : undefined}
-          statusTone={openTask ? STATUS_TONE[bucketFor(openTask.status)] : undefined}
-          statusPulse={openTask ? bucketFor(openTask.status) === 'now' : false}
-          width={500}
-          footer={
-            openAgent?.attachable ? (
-              <>
-                <DrawerAction variant="accent" onClick={() => onAttach(openAgent.session.id, 'split')}>
-                  Open agent in split
-                </DrawerAction>
-                <DrawerAction onClick={() => onAttach(openAgent.session.id, 'replace')}>Open agent here</DrawerAction>
-              </>
-            ) : undefined
-          }
-        >
-          {openTask ? <TaskTicket task={openTask} tasksById={tasksById} onOpenTask={setOpenTaskId} /> : null}
-        </DetailDrawer>
+          onOpenTask={setOpenTaskId}
+          onAttach={onAttach}
+        />
       </div>
     </div>
   )
-}
-
-const STATUS_TONE: Record<Bucket, 'accent' | 'ok' | 'warn' | 'muted'> = {
-  now: 'accent',
-  next: 'muted',
-  blocked: 'warn',
-  done: 'ok',
-}
-
-function statusLabel(task: TaskCardView): string {
-  const b = bucketFor(task.status)
-  if (task.status.toLowerCase() === 'cancelled') return 'cancelled'
-  if (b === 'now') return 'in flight'
-  if (b === 'next') return 'queued'
-  return b
-}
-
-/** The sub-agent working on a task, preferring one that can be opened. */
-function primaryAgent(task: TaskCardView): AgentView | null {
-  const agents = task.agents ?? []
-  return agents.find((a) => a.status === 'running' && a.attachable) ?? agents.find((a) => a.attachable) ?? agents[0] ?? null
-}
-
-function agentLabel(a: AgentView): string {
-  return a.sub?.label || a.session.title || a.agentType || a.session.id.slice(0, 8)
 }
 
 // ── Header ─────────────────────────────────────────────────────────────────
@@ -319,7 +275,7 @@ function TaskRow({
 }) {
   const agent = primaryAgent(task)
   const who = agent ? agent.agentType || agentLabel(agent) : task.assignee
-  const cancelled = task.status.toLowerCase() === 'cancelled'
+  const cancelled = isCancelled(task)
   const took = task.startedAt && task.completedAt ? span(task.completedAt - task.startedAt) : null
   const artifactCount = task.artifacts?.length ?? 0
   // The second line is the ticket's substance at a glance: who worked it,
@@ -568,219 +524,4 @@ function AgentsDock({
       </button>
     </div>
   )
-}
-
-// ── Ticket ─────────────────────────────────────────────────────────────────
-
-const CALLOUT: Record<Bucket, string> = {
-  now: 'border-accent/60 bg-accent/[0.06]',
-  next: 'border-fg-3/50 bg-white/[0.03]',
-  blocked: 'border-warn/60 bg-warn/[0.06]',
-  done: 'border-ok/60 bg-ok/[0.06]',
-}
-
-function TaskTicket({
-  task,
-  tasksById,
-  onOpenTask,
-}: {
-  task: TaskCardView
-  tasksById: Map<string, TaskCardView>
-  onOpenTask: (id: string) => void
-}) {
-  const agent = primaryAgent(task)
-  const bucket = bucketFor(task.status)
-  const events = (task.events ?? []).slice(-20)
-  const outcome = task.summary?.trim()
-  const details = task.result?.trim()
-  const dependsOn = task.blockedBy ?? []
-  const blocks = task.blocks ?? []
-  const took =
-    task.startedAt && task.completedAt
-      ? span(task.completedAt - task.startedAt)
-      : task.startedAt && bucket === 'now'
-      ? `${span(Date.now() - task.startedAt)} so far`
-      : null
-  const facts: Array<[string, string]> = [
-    ['agent', agent ? `${agentLabel(agent)} · ${agent.status}` : task.assignee || 'unassigned'],
-    ['started', task.startedAt ? dayClock(task.startedAt) : task.createdAt ? `queued ${dayClock(task.createdAt)}` : '—'],
-    ['finished', task.completedAt ? dayClock(task.completedAt) : bucket === 'now' ? 'in flight' : '—'],
-    ['took', took ?? '—'],
-  ]
-  return (
-    <>
-      {/* shrink-0: an overflow-hidden flex item would otherwise give up its
-          whole height to the sections below it in the scroller. */}
-      <dl className="ticket-facts m-0 grid shrink-0 grid-cols-2 overflow-hidden rounded-[10px] bg-white/[0.03] ring-1 ring-white/[0.06] [&>div:nth-child(n+3)]:border-t [&>div:nth-child(n+3)]:border-white/[0.06] [&>div:nth-child(odd)]:border-r [&>div:nth-child(odd)]:border-white/[0.06]">
-        {facts.map(([k, v]) => (
-          <div key={k} className="min-w-0 px-3.5 py-2.5" title={v}>
-            <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3">{k}</dt>
-            <dd className="m-0 mt-0.5 truncate font-mono text-[12px] text-fg-0">{v}</dd>
-          </div>
-        ))}
-      </dl>
-
-      {outcome ? (
-        <DrawerSection label="outcome">
-          <div className={`rounded-r-md border-l-2 px-4 py-3 ${CALLOUT[bucket]}`}>
-            <Markdown text={outcome} />
-          </div>
-        </DrawerSection>
-      ) : null}
-      {details && details !== outcome ? (
-        <DrawerSection label="details">
-          <Markdown text={details} />
-        </DrawerSection>
-      ) : null}
-      {task.body?.trim() ? (
-        <DrawerSection label="brief">
-          <Markdown text={task.body} />
-        </DrawerSection>
-      ) : null}
-      {dependsOn.length > 0 || blocks.length > 0 ? (
-        <DrawerSection label="dependencies">
-          <DependencyList
-            label={dependsOn.every((id) => bucketFor(tasksById.get(id)?.status ?? '') === 'done') ? 'depended on' : 'waits on'}
-            ids={dependsOn}
-            tasksById={tasksById}
-            onOpenTask={onOpenTask}
-          />
-          <DependencyList label="blocks" ids={blocks} tasksById={tasksById} onOpenTask={onOpenTask} />
-        </DrawerSection>
-      ) : null}
-      {events.length > 0 ? (
-        <DrawerSection label={`activity · ${events.length}`}>
-          <DrawerTimeline
-            events={events.map((e) => ({
-              ts: e.timestamp ? clock(e.timestamp) : '',
-              who: e.actor ?? 'system',
-              body: e.message ?? e.kind ?? '',
-              kind: e.actor ? 'agent' : 'system',
-            }))}
-          />
-        </DrawerSection>
-      ) : null}
-      {task.artifacts && task.artifacts.length > 0 ? (
-        <DrawerSection label={`artifacts · ${task.artifacts.length}`}>
-          <ul className="m-0 flex list-none flex-col p-0">
-            {task.artifacts.map((a, i) => {
-              const cut = a.lastIndexOf('/')
-              return (
-                <li
-                  key={i}
-                  className="grid grid-cols-[14px_minmax(0,1fr)] items-baseline gap-x-2 border-t border-white/[0.04] py-2 font-mono text-[11.5px] leading-[1.45] first:border-t-0"
-                  title={a}
-                >
-                  <span className="text-[9px] text-fg-3">▪</span>
-                  <span className="min-w-0">
-                    <span className="block truncate text-fg-0">{cut >= 0 ? a.slice(cut + 1) : a}</span>
-                    {cut >= 0 ? <span className="block truncate text-[10.5px] text-fg-3">{a.slice(0, cut + 1)}</span> : null}
-                  </span>
-                </li>
-              )
-            })}
-          </ul>
-        </DrawerSection>
-      ) : null}
-    </>
-  )
-}
-
-function DependencyList({
-  label,
-  ids,
-  tasksById,
-  onOpenTask,
-}: {
-  label: string
-  ids: string[]
-  tasksById: Map<string, TaskCardView>
-  onOpenTask: (id: string) => void
-}) {
-  if (ids.length === 0) return null
-  return (
-    <div className="flex flex-col gap-0.5">
-      <span className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3">{label}</span>
-      {ids.map((id) => {
-        const t = tasksById.get(id)
-        const b = t ? bucketFor(t.status) : 'next'
-        return (
-          <button
-            key={id}
-            type="button"
-            disabled={!t}
-            onClick={() => onOpenTask(id)}
-            className="grid grid-cols-[16px_minmax(0,1fr)] items-baseline gap-2 rounded px-2 py-1 text-left transition enabled:hover:bg-white/[0.04]"
-          >
-            <span className={`text-center text-[11px] ${GLYPH_CLASS[b]}`}>{GLYPH[b]}</span>
-            <span className={`break-words font-mono text-[12px] ${b === 'done' ? 'text-fg-2' : 'text-fg-1'}`}>
-              {t?.title ?? id}
-            </span>
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
-/** Agent-written markdown, rendered and kept inside the drawer: long words
- *  and paths wrap, tables and code scroll in their own box, and a long
- *  block folds behind "show all". */
-function Markdown({ text }: { text: string }) {
-  const html = useMemo(() => renderMarkdown(text), [text])
-  const long = text.length > 1200
-  const [expanded, setExpanded] = useState(false)
-  return (
-    <div className="flex min-w-0 flex-col gap-2">
-      <div
-        className={`md task-md selectable min-w-0 text-[12.5px] ${
-          long && !expanded ? 'max-h-[340px] overflow-hidden [mask-image:linear-gradient(to_bottom,black_70%,transparent)]' : ''
-        }`}
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-      {long ? (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="self-start rounded px-2 py-1 font-mono text-[11px] text-fg-3 transition hover:bg-white/[0.04] hover:text-fg-1"
-        >
-          {expanded ? 'show less' : 'show all'}
-        </button>
-      ) : null}
-    </div>
-  )
-}
-
-// ── Time ───────────────────────────────────────────────────────────────────
-
-function clock(ts: number): string {
-  const d = new Date(ts)
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
-function dayClock(ts: number): string {
-  const d = new Date(ts)
-  const today = new Date()
-  const sameDay = d.toDateString() === today.toDateString()
-  return sameDay
-    ? clock(ts)
-    : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${clock(ts)}`
-}
-
-function span(ms: number): string {
-  const minutes = Math.max(0, Math.round(ms / 60000))
-  if (minutes < 1) return 'under a minute'
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`
-}
-
-function ago(ts: number | undefined): string {
-  if (!ts) return ''
-  const minutes = Math.round((Date.now() - ts) / 60000)
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.round(hours / 24)}d ago`
 }
