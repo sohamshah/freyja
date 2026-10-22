@@ -439,6 +439,8 @@ function AgentTask({ type, query, slots, onClose, onToast }: WidgetProps) {
 
 // ─── models ───────────────────────────────────────────────────────────────
 
+const LEVEL_SHORT: Record<string, string> = { minimal: 'min', medium: 'med', xhigh: 'x-high' }
+
 function ModelPicker({ slots, onClose, onToast }: WidgetProps) {
   const reported = useHarness((s) => s.availableModels)
   const models = reported.length > 0 ? reported : FALLBACK_MODELS
@@ -446,34 +448,52 @@ function ModelPicker({ slots, onClose, onToast }: WidgetProps) {
   const reasoningLevel = useHarness((s) => s.reasoningLevel)
   const setModel = useHarness((s) => s.setModel)
   const q = slots.modelQuery?.toLowerCase().replace(/[\s-]/g, '')
-  const ranked = useMemo(() => {
-    const score = (m: { id: string; label: string; family: string }) => {
-      if (!q) return 0
-      const hay = `${m.id} ${m.label} ${m.family}`.toLowerCase().replace(/[\s-]/g, '')
-      return hay.includes(q) ? 2 : 0
-    }
-    return [...models].sort((a, b) => score(b) - score(a) || (a.id === current ? -1 : b.id === current ? 1 : 0))
-  }, [models, q, current])
-  const best = q ? ranked.find((m) => `${m.id} ${m.label} ${m.family}`.toLowerCase().replace(/[\s-]/g, '').includes(q)) : undefined
-  const level = slots.reasoning
+  const matches = (m: { id: string; label: string; family: string }) =>
+    !!q && `${m.id} ${m.label} ${m.family}`.toLowerCase().replace(/[\s-]/g, '').includes(q)
+  const ranked = useMemo(
+    () => [...models].sort((a, b) => Number(matches(b)) - Number(matches(a)) || (a.id === current ? -1 : b.id === current ? 1 : 0)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [models, q, current],
+  )
+  const best = q ? ranked.find(matches) : undefined
 
-  const apply = (id: string) => {
-    const m = models.find((x) => x.id === id)
-    const lvl = level && m?.reasoningLevels?.includes(level) ? level : undefined
-    void setModel(id, lvl)
-    onToast(`Model → ${m?.label ?? id}${lvl ? ` · ${lvl} thinking` : ''}`)
+  const [pickedOverride, setPickedOverride] = useState<string | null>(null)
+  const [levelOverride, setLevelOverride] = useState<string | null>(null)
+  useEffect(() => setPickedOverride(null), [best?.id])
+  useEffect(() => setLevelOverride(null), [slots.reasoning])
+
+  const pickedId = pickedOverride ?? best?.id ?? current
+  const picked = models.find((m) => m.id === pickedId)
+  const levels = picked?.reasoningLevels ?? []
+  const level = (() => {
+    if (levelOverride && levels.includes(levelOverride)) return levelOverride
+    if (slots.reasoning && levels.includes(slots.reasoning)) return slots.reasoning
+    if (pickedId === current && levels.includes(reasoningLevel)) return reasoningLevel
+    return picked?.reasoningDefault ?? levels[0]
+  })()
+  const modelChanged = pickedId !== current
+  const levelChanged = !!level && level !== reasoningLevel
+  const nowLabel = models.find((m) => m.id === current)?.label ?? current
+
+  const apply = () => {
+    void setModel(pickedId, level)
+    onToast(
+      modelChanged
+        ? `Model → ${picked?.label ?? pickedId}${level ? ` · ${level} thinking` : ''}`
+        : `Thinking → ${level}`,
+    )
     onClose()
   }
 
   return (
     <Frame
       kicker="Model"
-      title={best ? `Switch to ${best.label}` : 'Available models'}
-      badge={`now: ${models.find((m) => m.id === current)?.label ?? current}${reasoningLevel ? ` · ${reasoningLevel}` : ''}`}
+      title={modelChanged ? `Switch to ${picked?.label ?? pickedId}` : levelChanged ? `Set thinking to ${level}` : 'Available models'}
+      badge={`now: ${nowLabel}${reasoningLevel ? ` · ${reasoningLevel}` : ''}`}
       footer={
-        best ? (
-          <Btn primary onClick={() => apply(best.id)}>
-            Switch to {best.label}
+        modelChanged || levelChanged ? (
+          <Btn primary onClick={apply}>
+            {modelChanged ? `Switch to ${picked?.label ?? pickedId}` : 'Apply'}
             {level ? ` · ${level}` : ''}
           </Btn>
         ) : (
@@ -481,17 +501,17 @@ function ModelPicker({ slots, onClose, onToast }: WidgetProps) {
         )
       }
     >
-      <div className="max-h-[260px] space-y-1 overflow-y-auto">
+      <div className="max-h-[220px] space-y-1 overflow-y-auto">
         {ranked.slice(0, 8).map((m) => {
           const isCurrent = m.id === current
-          const isBest = best?.id === m.id
+          const isPicked = m.id === pickedId
           return (
             <button
               key={m.id}
               type="button"
-              onClick={() => apply(m.id)}
+              onClick={() => setPickedOverride(m.id)}
               className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left transition-colors ${
-                isBest ? 'bg-accent/15 ring-1 ring-accent/40' : 'ring-hairline hover:bg-white/[0.04]'
+                isPicked ? 'bg-accent/15 ring-1 ring-accent/40' : 'ring-hairline hover:bg-white/[0.04]'
               }`}
             >
               <span className="min-w-0">
@@ -509,6 +529,31 @@ function ModelPicker({ slots, onClose, onToast }: WidgetProps) {
           )
         })}
       </div>
+      {levels.length > 1 && (
+        <div className="mt-2 flex items-center gap-2">
+          <Label>Thinking</Label>
+          <div className="flex flex-wrap gap-1">
+            {levels.map((l) => {
+              const on = l === level
+              return (
+                <button
+                  key={l}
+                  type="button"
+                  onClick={() => setLevelOverride(l)}
+                  className={`rounded px-2 py-0.5 font-mono text-[10.5px] transition-colors ${
+                    on ? 'bg-accent/20 text-fg-0 ring-1 ring-accent/50' : 'text-fg-2 ring-hairline hover:bg-white/[0.05] hover:text-fg-0'
+                  }`}
+                >
+                  {LEVEL_SHORT[l] ?? l}
+                </button>
+              )
+            })}
+          </div>
+          {picked?.reasoningMode && picked.reasoningMode !== 'none' && (
+            <span className="ml-auto text-[10px] text-fg-3">{picked.reasoningMode}</span>
+          )}
+        </div>
+      )}
     </Frame>
   )
 }

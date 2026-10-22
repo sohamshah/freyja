@@ -63,7 +63,7 @@ const WEEKDAY_ABBR: Record<string, number> = {
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 
 /** Words that end a free-text capture such as the attendee list. */
-const STOP = /\b(?:today|tomorrow|tmrw|tmr|tonight|next|this|on|at|for|about|re|regarding|to|in|from|by|the|a|an|and|or|every|around|after|before|via|using|with|high|medium|low|max|minimal|thinking|reasoning|effort|errors?|warnings?)\b/i
+const STOP = /\b(?:today|tomorrow|tmrw|tmr|tonight|next|this|on|at|for|about|re|regarding|to|in|from|by|the|a|an|and|or|every|around|after|before|via|using|with|high|xhigh|medium|low|max|minimal|none|thinking|reasoning|effort|errors?|warnings?)\b/i
 
 function cap(s: string): string {
   return s.replace(/\b[a-z]/g, (c) => c.toUpperCase())
@@ -253,8 +253,14 @@ export function parseSlots(text: string, now = new Date()): PaletteSlots {
 
   const model = q.match(/\b(opus|sonnet|haiku|gpt[- ]?[\d.]*\s*(?:sol|luna)?|luna|sol|gemini|glm|kimi|deepseek|fable|o[1-9](?:-mini)?)\b/)
   if (model) slots.modelQuery = model[1].replace(/\s+/g, ' ').trim()
-  const reasoning = q.match(/\b(high|medium|low|max|minimal)\s*(?:thinking|reasoning|effort)\b/)
-  if (reasoning) slots.reasoning = reasoning[1]
+  const LEVEL = 'x-?high|high|medium|med|low|max|minimal|min|no|none|off'
+  const reasoning =
+    q.match(new RegExp(`\\b(${LEVEL})\\s*(?:thinking|reasoning|effort)\\b`)) ??
+    q.match(new RegExp(`\\b(?:thinking|reasoning|effort)(?:\\s+level)?\\s*(?:to|at|=|:|on)?\\s*(${LEVEL})\\b`))
+  if (reasoning) {
+    const raw = reasoning[1].replace('-', '')
+    slots.reasoning = raw === 'med' ? 'medium' : raw === 'min' ? 'minimal' : raw === 'no' || raw === 'off' ? 'none' : raw
+  }
 
   const period = parsePeriod(text)
   slots.periodDays = period.days
