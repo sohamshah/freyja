@@ -12,6 +12,7 @@ import { Seam } from './seam/Seam'
 import { helperDigest, parseDigest } from './seam/helperDigest'
 import { buildBlocks } from './seam/source'
 import { Glyph } from './seam/marks'
+import { finishedAt, turnEnders } from '../lib/turnEnd'
 import { AppshotChip } from './AppshotCard'
 import { JevResultSummary, JevRunView, jevStatus } from './JevRun'
 import { looksLikeJevLog, parseJevResult } from '../lib/jevLog'
@@ -910,6 +911,7 @@ function ConversationStream({
     })
     return entries
   }, [messages, narratorEvents, inboxArrivals])
+  const enders = useMemo(() => turnEnders(messages), [messages])
 
   // ── Tail window (see lib/transcriptWindow) ─────────────────────
   const weights = useMemo(
@@ -1059,7 +1061,7 @@ function ConversationStream({
           {stream.slice(start).map((entry, i) => {
             const idx = start + i
             if (entry.kind === 'message') {
-              return <MessageView key={entry.message.id} message={entry.message} />
+              return <MessageView key={entry.message.id} message={entry.message} endsTurn={enders.has(entry.message.id)} />
             }
             if (entry.kind === 'inbox') {
               const ev = entry.event
@@ -1391,7 +1393,7 @@ function escapeAttr(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
 }
 
-const MessageView = memo(function MessageView({ message }: { message: Message }) {
+const MessageView = memo(function MessageView({ message, endsTurn = false }: { message: Message; endsTurn?: boolean }) {
   const searchQuery = useContext(SearchQueryContext)
   const actions = useContext(MessageActionsContext)
   // Is this message the one currently receiving streamed deltas? We use
@@ -1537,6 +1539,7 @@ const MessageView = memo(function MessageView({ message }: { message: Message })
         completedAt={message.completedAt}
         toolCount={countTools(message.parts)}
         live={isStreamingMessage}
+        endsTurn={endsTurn}
       />
     </div>
   )
@@ -1582,8 +1585,9 @@ function countTools(parts: MessagePart[]): number {
 }
 
 /** Wall-clock receipt under a finished turn: how long the whole thing took
- *  (model + tools + sub-agents), and how many tools it burned getting
- *  there. Ticks live while the turn runs so a long crunch reads as
+ *  (model + tools + sub-agents), how many tools it burned getting there,
+ *  and, under the message that ends the turn, the date and time it
+ *  finished. Ticks live while the turn runs so a long crunch reads as
  *  progress rather than a hang. Renders nothing for turns with no span —
  *  user messages, transcripts reconstructed cold, turns interrupted by a
  *  quit. */
@@ -1592,11 +1596,13 @@ function TurnMeter({
   completedAt,
   toolCount,
   live,
+  endsTurn,
 }: {
   startedAt: number
   completedAt?: number
   toolCount: number
   live: boolean
+  endsTurn: boolean
 }) {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -1635,6 +1641,14 @@ function TurnMeter({
           <span className="normal-case tabular-nums">
             {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
           </span>
+        </>
+      )}
+      {!live && endsTurn && (
+        <>
+          <span className="text-fg-3/40">·</span>
+          <time dateTime={new Date(end).toISOString()} className="normal-case tabular-nums">
+            {finishedAt(end)}
+          </time>
         </>
       )}
     </div>

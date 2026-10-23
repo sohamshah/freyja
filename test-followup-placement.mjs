@@ -5,6 +5,7 @@
 //   npx tsx test-followup-placement.mjs
 import assert from 'node:assert/strict'
 import { useHarness } from './src/renderer/state/store.ts'
+import { turnEnders } from './src/renderer/lib/turnEnd.ts'
 
 const sent = []
 globalThis.window = globalThis.window ?? {}
@@ -60,6 +61,26 @@ await check('a message sent mid-turn waits as a pending bubble, then lands where
   const injected = useHarness.getState().messages.find((m) => m.id === clientId)
   assert.deepEqual(injected.followup, { force: false, midTurn: true })
   assert.equal(useHarness.getState().isStreaming, false)
+})
+
+await check('only the message that ends the turn carries its finish time', async () => {
+  const msgs = useHarness.getState().messages
+  const first = msgs.find((m) => m.role === 'assistant' && m.parts.some((p) => p.text === 'Running them now.'))
+  const last = msgs.find((m) => m.role === 'assistant' && m.parts.some((p) => p.text === 'Linting too.'))
+  assert.equal(first.continues, true)
+  assert.deepEqual([...turnEnders(msgs)], [last.id])
+  // A transcript saved before the mark: the mid-turn follow-up after the
+  // reply, or a continuation that opens when the reply closed, still says
+  // the turn went on.
+  const old = msgs.map(({ continues, ...m }) => m)
+  assert.deepEqual([...turnEnders(old)], [last.id])
+  const t = 1000
+  const memoSplit = [
+    { id: 'a', role: 'assistant', parts: [], createdAt: t, completedAt: t + 500 },
+    { id: 'b', role: 'assistant', parts: [], createdAt: t + 500, completedAt: t + 900 },
+    { id: 'c', role: 'assistant', parts: [], createdAt: t + 60_000, completedAt: t + 61_000 },
+  ]
+  assert.deepEqual([...turnEnders(memoSplit)], ['b', 'c'])
 })
 
 await check('ctrl+enter sends force; "now" upgrades a queued one', async () => {

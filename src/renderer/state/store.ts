@@ -2063,7 +2063,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       let messages = slice.messages
       if (ev.midTurn && streamingId) {
         messages = messages.map((m) =>
-          m.id === streamingId ? { ...m, completedAt: m.completedAt ?? at } : m,
+          m.id === streamingId ? { ...m, completedAt: m.completedAt ?? at, continues: true } : m,
         )
         let t = at
         for (const item of followups) {

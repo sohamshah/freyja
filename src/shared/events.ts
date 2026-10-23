@@ -385,6 +385,10 @@ export interface Message {
    *  on turns that never completed (app quit mid-stream), and on messages
    *  reconstructed from a bridge transcript, which carries no turn spans. */
   completedAt?: number
+  /** Set when input slid into the turn between two steps (a follow-up, a
+   *  memo): the reply was closed here and the turn went on in a later
+   *  message, which carries the turn's real end. */
+  continues?: boolean
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
