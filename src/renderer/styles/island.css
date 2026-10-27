@@ -87,6 +87,28 @@ body,
 .island[data-mode='attention'] {
   box-shadow: inset 0 0 0 1px rgb(var(--warn-rgb) / 0.55);
 }
+/* The shelf: something is being dragged over the island. */
+.island[data-drop='true'] {
+  box-shadow: inset 0 0 0 1px rgb(var(--island-accent) / 0.75);
+}
+/* A new needs-you item: the shape nudges once. */
+.island-nudge {
+  animation: island-nudge 0.6s var(--island-spring);
+}
+@keyframes island-nudge {
+  0% {
+    transform: translateX(-50%) scale(1);
+  }
+  30% {
+    transform: translateX(-50%) scale(1.045);
+  }
+  60% {
+    transform: translateX(-50%) scale(0.988);
+  }
+  100% {
+    transform: translateX(-50%) scale(1);
+  }
+}
 
 /* A display without a notch: the island is a themed pebble hanging from
    the top edge, not a piece of hardware. */
@@ -460,6 +482,16 @@ body,
   flex-wrap: wrap;
   gap: 6px;
 }
+.island-readout {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 8px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--island-sheet-dim));
+}
 
 /* The composer. */
 .island-composer {
@@ -612,7 +644,8 @@ body,
   .island-sheet,
   .island-banner,
   .island-check path,
-  .island-stamp {
+  .island-stamp,
+  .island-nudge {
     animation: none;
   }
   .island-check path {

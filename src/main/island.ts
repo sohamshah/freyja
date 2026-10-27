@@ -143,6 +143,11 @@ export class IslandWindow {
       case 'hover':
         win.setIgnoreMouseEvents(!msg.over, { forward: true })
         break
+      case 'focus':
+        // A non-activating panel can become the key window without the
+        // app coming forward, so typing lands here and Freyja stays back.
+        win.focus()
+        break
       case 'release':
         win.blur()
         break

@@ -1,5 +1,6 @@
 import { useHarness, type SessionSlice } from '../state/store'
 import { useVoiceStore } from '../state/voice-store'
+import { useSchedulerStore } from '../state/scheduler-store'
 import { summarizeArgs } from '../components/ToolCallChip'
 import { bucketFor } from '../components/views/taskBuckets'
 import type { Message } from '../../shared/events'
@@ -172,6 +173,11 @@ export function startIslandFeed(api: Partial<IslandHarnessApi> | null | undefine
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, 6)
       .map((row) => ({ id: row.id, title: row.title, updatedAt: row.updatedAt, streaming: streamingOf(row.id) }))
+    const metrics = useSchedulerStore.getState().metrics
+    const schedule =
+      metrics?.next_fire_at && metrics.next_fire_job_name
+        ? { name: metrics.next_fire_job_name, at: metrics.next_fire_at * 1000 }
+        : null
     const activeRow = sessionById.get(s.activeSessionId)
     const dayStart = new Date(nowMs).setHours(0, 0, 0, 0)
     const costToday = s.sessions.reduce((acc, row) => (row.updatedAt >= dayStart ? acc + (row.totalCost ?? 0) : acc), 0)
@@ -195,6 +201,7 @@ export function startIslandFeed(api: Partial<IslandHarnessApi> | null | undefine
       sessions,
       appshotLabel: s.appshotHotkeyLabel,
       costToday: Math.round(costToday * 100) / 100,
+      schedule,
     }
   }
 
@@ -245,6 +252,22 @@ export function startIslandFeed(api: Partial<IslandHarnessApi> | null | undefine
       case 'cancel':
         if (action.sessionId === st.activeSessionId) void st.cancelTurn()
         break
+      case 'attach': {
+        // Dropped on the island: into the composer's tray, as a paste would.
+        let skipped = 0
+        for (const file of action.files) {
+          const bytes = Uint8Array.from(atob(file.dataBase64), (c) => c.charCodeAt(0))
+          if (file.mimeType.startsWith('image/')) {
+            void st.attachImage(new File([bytes], file.name, { type: file.mimeType }))
+          } else if (file.mimeType.startsWith('video/')) {
+            void st.attachVideo(new File([bytes], file.name, { type: file.mimeType }))
+          } else {
+            skipped += 1
+          }
+        }
+        if (skipped > 0) st.showToast(skipped === 1 ? 'Only images and videos attach' : `${skipped} files skipped: only images and videos attach`, 'warn')
+        break
+      }
       case 'focus-app':
         break
     }
@@ -252,6 +275,7 @@ export function startIslandFeed(api: Partial<IslandHarnessApi> | null | undefine
 
   const offStore = useHarness.subscribe(schedule)
   const offVoice = useVoiceStore.subscribe(schedule)
+  const offScheduler = useSchedulerStore.subscribe(schedule)
   const offPerform = typeof api.onIslandPerform === 'function' ? api.onIslandPerform(perform) : () => {}
   // The banner and the stamp expire on the island's clock, but a digest
   // pushed while they are fresh must eventually be followed by one without
@@ -263,6 +287,7 @@ export function startIslandFeed(api: Partial<IslandHarnessApi> | null | undefine
   return () => {
     offStore()
     offVoice()
+    offScheduler()
     offPerform()
     window.clearInterval(sweep)
     if (timer != null) window.clearTimeout(timer)

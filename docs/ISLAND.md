@@ -25,6 +25,11 @@ The sheet, from top to bottom:
 - **Tasks.** The board's four counts and the four most recently touched tasks. A task that just closed gets the receipt's DONE stamp slammed on it.
 - **Reply.** A composer aimed at the active session, with a picker for the other recent ones. Enter queues after the turn, ⌘↵ cuts in. Sending folds the island and hands the keyboard back.
 - **Keys.** Talk (start or end a voice conversation, with the real hotkey), capture (an appshot into the composer), board, open Freyja.
+- **Readout.** Today's spend across the sessions touched today, and the next scheduled job with its time.
+
+While a reply is being written with no tool in flight, the trailing ear shows the tail of the reply as it grows: the sneak peek. A new needs-you item nudges the shape once and opens the sheet for six seconds, so allow or deny is one click away; it stays open while the pointer is on it or the caret is in the reply.
+
+The island is a shelf: drop an image or a video on it and it lands in the composer's tray in Freyja (other files are refused with a toast), drop text and it lands in the island's own reply box with the caret ready. The strip shows DROP · to attach while something is over it.
 
 ## Where it lives
 
@@ -50,7 +55,7 @@ Main holds no session state, so the main renderer reduces its store into an `Isl
 
 The window itself talks to main on `island:control`: `ready` (send me the geometry and the state), `hover` (toggle click-through), `release` (give the keyboard back).
 
-`settings.island.enabled` (default on) opens or closes the window; the switch is in Settings → island. ⌃⌥⌘I (or ⌃⌥⇧I when taken; `FREYJA_ISLAND_HOTKEY` overrides) opens the island if it is closed and otherwise expands or collapses it. Esc folds it.
+`settings.island.enabled` (default on) opens or closes the window; the switch is in Settings → island. ⌃⌥⌘I (or ⌃⌥⇧I when taken; `FREYJA_ISLAND_HOTKEY` overrides) opens the island if it is closed and otherwise expands or collapses it. When the hotkey opens the sheet, the island asks main for the keyboard (`focus`, which makes the panel the key window without activating the app) and puts the caret in the reply. Esc folds it and hands the keyboard back (`release`); so does the keyboard leaving on its own. A folded island goes back to click-through; an open one keeps the mouse so a key can be clicked without a prior hover.
 
 ## Motion
 

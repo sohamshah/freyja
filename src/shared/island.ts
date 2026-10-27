@@ -107,6 +107,8 @@ export interface IslandDigest {
   appshotLabel: string | null
   /** Spend across the sessions touched today, dollars. */
   costToday: number
+  /** The next scheduled job, if the scheduler knows one. */
+  schedule: { name: string; at: number } | null
 }
 
 /** Island → main → main renderer. */
@@ -121,12 +123,16 @@ export type IslandAction =
   | { type: 'focus-app' }
   | { type: 'dashboard'; tab: 'overview' | 'tasks' | 'activity' | 'scheduler' }
   | { type: 'cancel'; sessionId: string }
+  /** Files dropped on the island go to the composer's tray (images and videos). */
+  | { type: 'attach'; files: Array<{ name: string; mimeType: string; dataBase64: string }> }
 
 /** Island → main, about the window itself. */
 export type IslandControl =
   | { type: 'ready' }
   /** The pointer is over the drawn island (true) or over the transparent rest of the window (false). */
   | { type: 'hover'; over: boolean }
+  /** Take the keyboard (the composer wants to be typed into). */
+  | { type: 'focus' }
   /** Give keyboard focus back to whatever had it. */
   | { type: 'release' }
 

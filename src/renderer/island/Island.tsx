@@ -33,6 +33,10 @@ const STAMP_MS = 6000
 const DONE_STALE_MS = 30000
 const HOVER_OPEN_MS = 150
 const HOVER_CLOSE_MS = 420
+/** A new needs-you item opens the sheet by itself for this long. */
+const ATTENTION_PEEK_MS = 6000
+/** Files over the island: the shelf state. */
+const DROP_MS = 1200
 
 type Mode = 'quiet' | 'live' | 'attention' | 'voice'
 
@@ -43,15 +47,32 @@ export function Island() {
   const [expanded, setExpanded] = useState(false)
   /** The composer holds focus or text: the island must not fold away under it. */
   const [composing, setComposing] = useState(false)
+  /** The hotkey opened the island: the composer takes the keyboard. */
+  const [wantKeyboard, setWantKeyboard] = useState(0)
+  /** Something is being dragged over the island. */
+  const [dropping, setDropping] = useState(false)
+  /** Text dropped on the island lands in the composer. */
+  const [droppedText, setDroppedText] = useState('')
+  /** Bumps when a new needs-you item arrives: the shape nudges once. */
+  const [nudge, setNudge] = useState(0)
   const now = useNow(1000)
   const openTimer = useRef<number | null>(null)
   const closeTimer = useRef<number | null>(null)
+  const dropTimer = useRef<number | null>(null)
+  const hovering = useRef(false)
+  const seenAttention = useRef<Set<string> | null>(null)
+  const islandRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const offs = [
       api.onState(setDigest),
       api.onGeometry(setGeometry),
-      api.onToggle(() => setExpanded((open) => !open)),
+      api.onToggle(() => {
+        setExpanded((open) => {
+          if (!open) setWantKeyboard((n) => n + 1)
+          return !open
+        })
+      }),
     ]
     void api.control({ type: 'ready' })
     return () => offs.forEach((off) => off())
@@ -65,13 +86,23 @@ export function Island() {
     void api.control({ type: 'release' })
   }, [api])
 
-  // Esc folds the island and hands the keyboard back.
+  // Esc folds the island and hands the keyboard back. So does the keyboard
+  // leaving on its own (a click into another app while the caret sat in
+  // the reply), unless the pointer is still over the island.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') release()
     }
+    const onBlur = () => {
+      setComposing(false)
+      if (!hovering.current) setExpanded(false)
+    }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('blur', onBlur)
+    }
   }, [release])
 
   const clearTimer = (ref: typeof openTimer) => {
@@ -81,19 +112,91 @@ export function Island() {
     }
   }
   const onEnter = () => {
+    hovering.current = true
     void api.control({ type: 'hover', over: true })
     clearTimer(closeTimer)
     if (!expanded) openTimer.current = window.setTimeout(() => setExpanded(true), HOVER_OPEN_MS)
   }
   const onLeave = () => {
-    void api.control({ type: 'hover', over: false })
+    hovering.current = false
     clearTimer(openTimer)
     if (!composing) closeTimer.current = window.setTimeout(() => setExpanded(false), HOVER_CLOSE_MS)
+    // While the sheet is open the window keeps the mouse (a key may be
+    // about to be clicked); it goes back to click-through when it folds.
+    if (!expanded) void api.control({ type: 'hover', over: false })
   }
+  useEffect(() => {
+    if (!expanded && !hovering.current) void api.control({ type: 'hover', over: false })
+    if (expanded) void api.control({ type: 'hover', over: true })
+    // The composer unmounts with the sheet, and an unmount fires no blur.
+    if (!expanded) setComposing(false)
+  }, [expanded, api])
   useEffect(() => () => {
     clearTimer(openTimer)
     clearTimer(closeTimer)
+    clearTimer(dropTimer)
   }, [])
+
+  // A new needs-you item: the shape nudges once and the sheet opens for a
+  // moment, so allow or deny is one click away.
+  useEffect(() => {
+    const ids = (digest?.attention ?? []).map((item) => item.id)
+    if (seenAttention.current === null) {
+      seenAttention.current = new Set(ids)
+      return
+    }
+    const fresh = ids.filter((id) => !seenAttention.current!.has(id))
+    seenAttention.current = new Set(ids)
+    if (fresh.length === 0) return
+    setNudge((n) => n + 1)
+    setExpanded(true)
+    clearTimer(closeTimer)
+    closeTimer.current = window.setTimeout(() => {
+      if (!hovering.current && !composing) setExpanded(false)
+    }, ATTENTION_PEEK_MS)
+  }, [digest?.attention, composing])
+  useEffect(() => {
+    const el = islandRef.current
+    if (!el || nudge === 0) return
+    el.classList.remove('island-nudge')
+    void el.offsetWidth
+    el.classList.add('island-nudge')
+  }, [nudge])
+
+  // The shelf: files dropped on the island go to the composer's tray, text
+  // goes into the reply.
+  const onDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    setDropping(true)
+    clearTimer(dropTimer)
+    dropTimer.current = window.setTimeout(() => setDropping(false), DROP_MS)
+  }
+  const onDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    clearTimer(dropTimer)
+    setDropping(false)
+    const files = Array.from(e.dataTransfer.files ?? [])
+    const text = e.dataTransfer.getData('text/plain')
+    if (files.length > 0) {
+      const encoded = await Promise.all(
+        files.map(
+          (file) =>
+            new Promise<{ name: string; mimeType: string; dataBase64: string }>((resolve, reject) => {
+              const reader = new FileReader()
+              reader.onload = () => resolve({ name: file.name, mimeType: file.type, dataBase64: String(reader.result).split(',')[1] ?? '' })
+              reader.onerror = () => reject(reader.error)
+              reader.readAsDataURL(file)
+            }),
+        ),
+      ).catch(() => [])
+      if (encoded.length > 0) act({ type: 'attach', files: encoded })
+    } else if (text.trim()) {
+      setDroppedText(text.trim())
+      setExpanded(true)
+      setWantKeyboard((n) => n + 1)
+    }
+  }
 
   const act = useCallback(
     (action: IslandAction) => {
@@ -118,14 +221,19 @@ export function Island() {
   return (
     <div className="island-root">
       <div
+        ref={islandRef}
         className="island"
         data-mode={mode}
         data-expanded={expanded ? 'true' : 'false'}
         data-banner={banner ? 'true' : 'false'}
         data-notched={geometry.notched ? 'true' : 'false'}
+        data-drop={dropping ? 'true' : 'false'}
         style={style}
         onMouseEnter={onEnter}
         onMouseLeave={onLeave}
+        onDragOver={onDragOver}
+        onDragLeave={() => setDropping(false)}
+        onDrop={onDrop}
         onClick={() => {
           if (!expanded) setExpanded(true)
         }}
@@ -136,7 +244,7 @@ export function Island() {
           </div>
           <div className="island-notch" aria-hidden="true" />
           <div className="island-ear island-ear-r">
-            <Trailing mode={mode} digest={digest} voice={voice} live={live} attention={attention} banner={banner} done={done} now={now} expanded={expanded} />
+            <Trailing mode={mode} digest={digest} voice={voice} live={live} attention={attention} banner={banner} done={done} now={now} expanded={expanded} dropping={dropping} />
           </div>
         </div>
         <div className="island-body">
@@ -149,6 +257,11 @@ export function Island() {
               act={act}
               onComposing={setComposing}
               onSent={release}
+              wantKeyboard={wantKeyboard}
+              onKeyboardTaken={() => setWantKeyboard(0)}
+              droppedText={droppedText}
+              onDroppedTextTaken={() => setDroppedText('')}
+              onFocus={() => void api.control({ type: 'focus' })}
             />
           ) : banner && done ? (
             <Banner done={done} onOpen={() => act({ type: 'open', sessionId: done.sessionId })} />
@@ -193,6 +306,7 @@ function Trailing({
   done,
   now,
   expanded,
+  dropping,
 }: {
   mode: Mode
   digest: IslandDigest | null
@@ -203,7 +317,16 @@ function Trailing({
   done: IslandDone | null
   now: number
   expanded: boolean
+  dropping: boolean
 }) {
+  if (dropping) {
+    return (
+      <span className="island-swap island-ear-text" key="drop">
+        <span className="island-tag island-tag-info">drop</span>
+        <span className="island-ear-clip">to attach</span>
+      </span>
+    )
+  }
   if (banner && done) {
     return (
       <span className="island-swap island-ear-text" key={`done-${done.at}`}>
@@ -240,7 +363,8 @@ function Trailing({
     }
     const row = live[0]
     const word = row.thinking ? 'thinking' : row.tool ? toolWord(row.tool.name) : 'writing'
-    const detail = row.tool && !row.thinking && !expanded ? row.tool.summary : ''
+    // The sneak peek: the tail of the reply as it is written.
+    const detail = expanded || row.thinking ? '' : row.tool ? row.tool.summary : peek(row.text)
     return (
       <span className="island-swap island-ear-text" key={`live-${row.id}-${word}-${expanded}`}>
         <span className="island-ear-clip">
@@ -272,6 +396,11 @@ function Sheet({
   act,
   onComposing,
   onSent,
+  wantKeyboard,
+  onKeyboardTaken,
+  droppedText,
+  onDroppedTextTaken,
+  onFocus,
 }: {
   digest: IslandDigest
   now: number
@@ -280,8 +409,13 @@ function Sheet({
   act: (action: IslandAction) => void
   onComposing: (on: boolean) => void
   onSent: () => void
+  wantKeyboard: number
+  onKeyboardTaken: () => void
+  droppedText: string
+  onDroppedTextTaken: () => void
+  onFocus: () => void
 }) {
-  const { attention, live, tasks, voice, sessions, active, appshotLabel } = digest
+  const { attention, live, tasks, voice, sessions, active, appshotLabel, schedule, costToday } = digest
   return (
     <div className="island-sheet">
       {attention.map((item) => (
@@ -315,7 +449,18 @@ function Sheet({
           tasks.latest.map((task) => <TaskRow key={task.id} task={task} stamped={justDone?.id === task.id} act={act} />)
         )}
       </section>
-      <Composer sessions={sessions} active={active} act={act} onComposing={onComposing} onSent={onSent} />
+      <Composer
+        sessions={sessions}
+        active={active}
+        act={act}
+        onComposing={onComposing}
+        onSent={onSent}
+        wantKeyboard={wantKeyboard}
+        onKeyboardTaken={onKeyboardTaken}
+        droppedText={droppedText}
+        onDroppedTextTaken={onDroppedTextTaken}
+        onFocus={onFocus}
+      />
       <div className="island-keys">
         <button
           type="button"
@@ -337,6 +482,16 @@ function Sheet({
           open Freyja
         </button>
       </div>
+      {(costToday > 0 || schedule) && (
+        <div className="island-readout">
+          {costToday > 0 && <span>${costToday.toFixed(2)} today</span>}
+          {schedule && (
+            <span>
+              next · {schedule.name} · {clock(schedule.at)}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -457,15 +612,42 @@ function Composer({
   act,
   onComposing,
   onSent,
+  wantKeyboard,
+  onKeyboardTaken,
+  droppedText,
+  onDroppedTextTaken,
+  onFocus,
 }: {
   sessions: IslandSessionRow[]
   active: IslandDigest['active']
   act: (action: IslandAction) => void
   onComposing: (on: boolean) => void
   onSent: () => void
+  wantKeyboard: number
+  onKeyboardTaken: () => void
+  droppedText: string
+  onDroppedTextTaken: () => void
+  onFocus: () => void
 }) {
   const [text, setText] = useState('')
   const [chosen, setChosen] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  // The hotkey opened the sheet: take the keyboard and put the caret in the reply.
+  useEffect(() => {
+    if (wantKeyboard === 0) return
+    onKeyboardTaken()
+    onFocus()
+    const id = window.setTimeout(() => inputRef.current?.focus(), 60)
+    return () => window.clearTimeout(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantKeyboard])
+  useEffect(() => {
+    if (!droppedText) return
+    setText((cur) => (cur ? `${cur} ${droppedText}` : droppedText))
+    onComposing(true)
+    onDroppedTextTaken()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [droppedText])
   const options = useMemo(() => {
     const rows: IslandSessionRow[] = []
     const seen = new Set<string>()
@@ -510,6 +692,7 @@ function Composer({
         </select>
       )}
       <input
+        ref={inputRef}
         className="island-input"
         value={text}
         placeholder={hint}
@@ -518,7 +701,10 @@ function Composer({
           setText(e.target.value)
           onComposing(true)
         }}
-        onFocus={() => onComposing(true)}
+        onFocus={() => {
+          onComposing(true)
+          onFocus()
+        }}
         onBlur={() => onComposing(text.trim().length > 0)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -598,6 +784,24 @@ export function elapsed(ms: number): string {
 
 function toolWord(name: string): string {
   return name.replace(/^mcp__/, '').replace(/[_-]+/g, ' ')
+}
+
+/** The tail of the reply, for the ear: about as much as fits beside the clock. */
+function peek(text: string): string {
+  const t = text.trim()
+  if (!t) return ''
+  return t.length > 22 ? `…${t.slice(-21).trimStart()}` : t
+}
+
+function clock(ts: number): string {
+  const d = new Date(ts)
+  const today = new Date()
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  if (d.toDateString() === today.toDateString()) return time
+  const tomorrow = new Date(today)
+  tomorrow.setDate(today.getDate() + 1)
+  if (d.toDateString() === tomorrow.toDateString()) return `tomorrow ${time}`
+  return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`
 }
 
 function voiceWord(voice: IslandVoice): ReactNode {
