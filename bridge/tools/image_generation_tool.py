@@ -14,21 +14,24 @@ import httpx
 from bridge.tools.base import ImageBlock, TextBlock, ToolDefinition, ToolResult, ToolTier
 from bridge.tools.image_store import ImageAsset, SessionImageStore, strip_data_url
 
-DEFAULT_IMAGE_MODEL = "gpt-image-2"
-DEFAULT_IMAGE_OUTPUT_DIR = Path.home() / "Pictures" / "Freyja"
-SUPPORTED_SIZES = {
-    "auto",
-    "1024x1024",
-    "1536x1024",
-    "1024x1536",
-    "2048x2048",
-    "2048x1152",
-    "3840x2160",
-    "2160x3840",
+DEFAULT_IMAGE_MODEL = "gpt-image-2.5-sunburst"
+SUPPORTED_MODELS = {
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2.5-sunburst-2026-09-08",
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-flare-2026-09-08",
+    "gpt-image-2",
+    "gpt-image-2-2026-04-21",
+    "gpt-image-1.5",
+    "gpt-image-1",
+    "gpt-image-1-mini",
 }
-SUPPORTED_QUALITIES = {"auto", "low", "medium", "high"}
+LEGACY_IMAGE_MODELS = {"gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini"}
+DEFAULT_IMAGE_OUTPUT_DIR = Path.home() / "Pictures" / "Freyja"
+LEGACY_SIZES = {"auto", "1024x1024", "1536x1024", "1024x1536"}
+SUPPORTED_QUALITIES = {"auto", "low", "medium", "high", "xhigh", "max"}
 SUPPORTED_FORMATS = {"png", "jpeg", "webp"}
-SUPPORTED_BACKGROUNDS = {"auto", "opaque"}
+SUPPORTED_BACKGROUNDS = {"auto", "opaque", "transparent"}
 SUPPORTED_MODERATION = {"auto", "low"}
 SUPPORTED_INPUT_FIDELITY = {"low", "high"}
 
@@ -79,20 +82,49 @@ def _save_image_to_disk(
 def _clean_enum(
     value: Any,
     *,
+    name: str,
     allowed: set[str],
     default: str,
 ) -> str:
     normalized = str(value or default).strip().lower()
-    return normalized if normalized in allowed else default
+    if normalized not in allowed:
+        raise ValueError(f"{name} must be one of: {', '.join(sorted(allowed))}")
+    return normalized
+
+
+def _clean_size(value: Any, model: str) -> str:
+    size = str(value or "1024x1024").strip().lower()
+    if size in LEGACY_SIZES:
+        return size
+    if model in LEGACY_IMAGE_MODELS:
+        raise ValueError(f"{model} size must be one of: {', '.join(sorted(LEGACY_SIZES))}")
+    parts = size.split("x")
+    if len(parts) != 2 or any(
+        not part.isascii() or not part.isdecimal() or len(part) > 4 for part in parts
+    ):
+        raise ValueError("size must be auto or WIDTHxHEIGHT, for example 1536x864")
+    width, height = map(int, parts)
+    if (
+        min(width, height) <= 0
+        or max(width, height) > 3840
+        or width % 16
+        or height % 16
+        or max(width, height) > 3 * min(width, height)
+        or not 655_360 <= width * height <= 8_294_400
+    ):
+        raise ValueError(
+            "size edges must be multiples of 16 and at most 3840, with aspect ratio "
+            "between 1:3 and 3:1 and 655360–8294400 total pixels"
+        )
+    return size
 
 
 def _clean_compression(value: Any) -> int | None:
     if value in ("", None):
         return None
-    try:
-        return max(0, min(100, int(value)))
-    except (TypeError, ValueError):
-        return None
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
+        raise ValueError("output_compression must be an integer between 0 and 100")
+    return value
 
 
 def _bytes_from_base64(data: str) -> bytes:
@@ -215,58 +247,81 @@ class GenerateImageTool:
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             name="generate_image",
-            summary="Generate or edit an image with OpenAI GPT Image 2",
+            summary="Generate or edit an image with GPT Image 2.5 Sunburst or Flare",
             tier=ToolTier.WARM,
-            description="""Generate or edit an image using OpenAI's Images API.
+            description="""Generate or edit one image using OpenAI's Images API.
 
 Use this when the user explicitly asks for an image, illustration, design reference,
 texture, visual asset, mockup, or creative bitmap output. If input_images are
 provided, this edits/transforms those images; otherwise it generates from text.
-The tool returns a base64 image block so Freyja can render it inline in chat.
+The tool returns an inline image, a reusable session ref, and a saved file path.
+
+Model selection:
+- Default: gpt-image-2.5-sunburst, best for precise edits and detail preservation.
+- Choose gpt-image-2.5-flare for fast, high-quality everyday generation.
+- An explicit model overrides FREYJA_IMAGE_MODEL, which overrides the default.
+- Dated snapshots and earlier GPT Image models are available in the model enum.
+- GPT Image 2 and 2.5 process references at high fidelity automatically: omit
+  input_fidelity. Only older models allow adjustable fidelity.
 
 Guidelines:
 - Write the prompt as the actual image brief, not conversational scaffolding.
-- Include style, composition, aspect ratio, text constraints, and background needs.
+- Include style, composition, aspect ratio, exact text, and background needs.
 - To edit a user attachment, set use_latest_user_image=true or pass
   input_images: [{"ref":"latest_user_image"}].
 - To revise a previous output, pass input_images: [{"ref":"latest_generated_image"}].
 - You may also pass local paths, URLs, or base64 data in input_images.
 - Use a non-transparent background unless the user asks for cutouts/assets.
-- Generate one image per call; call again only if the user asks for variants.""",
+- Generate one image per call; call again only if the user asks for variants.
+
+API documentation: https://developers.openai.com/api/docs/guides/image-generation""",
             parameters={
                 "type": "object",
                 "properties": {
                     "prompt": {
                         "type": "string",
-                        "description": "Detailed image prompt to send to GPT Image 2.",
+                        "description": "Detailed image brief, including exact text to render.",
+                    },
+                    "model": {
+                        "type": "string",
+                        "enum": sorted(SUPPORTED_MODELS),
+                        "description": (
+                            "Sunburst for editing precision; Flare for fast everyday generation. "
+                            "Omit to use FREYJA_IMAGE_MODEL or gpt-image-2.5-sunburst."
+                        ),
                     },
                     "size": {
                         "type": "string",
-                        "enum": sorted(SUPPORTED_SIZES),
                         "description": (
-                            "Output size. GPT Image 2 supports these popular sizes "
-                            "plus auto."
+                            "auto or WIDTHxHEIGHT. GPT Image 2/2.5: edges divisible by 16, "
+                            "at most 3840px; ratio 1:3–3:1; 655360–8294400 total pixels. "
+                            "Examples: 1024x1024, 1536x864, 2048x2048, 3840x2160. "
+                            "Above 2560x1440 is experimental. Older models: auto, "
+                            "1024x1024, 1536x1024, or 1024x1536 only."
                         ),
                         "default": "1024x1024",
                     },
                     "quality": {
                         "type": "string",
                         "enum": sorted(SUPPORTED_QUALITIES),
-                        "description": "Generation quality. Higher quality may cost more and take longer.",
+                        "description": (
+                            "low for drafts; medium/high for final assets. GPT Image 2.5 also "
+                            "supports xhigh/max. Higher settings can cost more and take longer."
+                        ),
                         "default": "auto",
                     },
                     "output_format": {
                         "type": "string",
                         "enum": sorted(SUPPORTED_FORMATS),
-                        "description": "Image encoding returned to chat.",
+                        "description": "Encoding: png/webp for transparency; jpeg for speed.",
                         "default": "png",
                     },
                     "background": {
                         "type": "string",
                         "enum": sorted(SUPPORTED_BACKGROUNDS),
                         "description": (
-                            "Background mode. GPT Image 2 supports auto or opaque; "
-                            "transparent backgrounds are not currently supported."
+                            "transparent requires png/webp. Supported on GPT Image 2.5 and older "
+                            "GPT Image models; preview support on GPT Image 2."
                         ),
                         "default": "auto",
                     },
@@ -294,7 +349,7 @@ Guidelines:
                     },
                     "use_latest_user_image": {
                         "type": "boolean",
-                        "description": "Use the most recent pasted/uploaded user image as an input image.",
+                        "description": "Use the latest pasted/uploaded user image as an input.",
                         "default": False,
                     },
                     "use_latest_generated_image": {
@@ -304,7 +359,11 @@ Guidelines:
                     },
                     "mask_image": {
                         "type": "object",
-                        "description": "Optional mask image for image edits. Same shape as input_images items.",
+                        "description": (
+                            "Optional mask, resolved like input_images. Transparent pixels mark "
+                            "editable areas; match the first input image's dimensions. "
+                            "The mask guides the edit, not a guaranteed exact boundary."
+                        ),
                         "properties": {
                             "ref": {"type": "string"},
                             "path": {"type": "string"},
@@ -318,8 +377,11 @@ Guidelines:
                     "input_fidelity": {
                         "type": "string",
                         "enum": sorted(SUPPORTED_INPUT_FIDELITY),
-                        "description": "How strongly to preserve input image details for edits.",
-                        "default": "high",
+                        "description": (
+                            "Omit for GPT Image 2/2.5 (always high). Explicit high is not sent. "
+                            "Only GPT Image 1/1.5 allow low or high (default high here). "
+                            "GPT Image 1 Mini only supports low."
+                        ),
                     },
                     "output_compression": {
                         "type": "integer",
@@ -336,10 +398,10 @@ Guidelines:
                     "save_path": {
                         "type": "string",
                         "description": (
-                            "Optional file or directory path where the image should be saved on disk. "
+                            "Optional file or directory path for saving the generated image. "
                             "Supports ~ expansion. If a directory is given the image is auto-named "
                             "freyja_<ref>_<timestamp>.<ext> inside it. If omitted the image is "
-                            "auto-saved to FREYJA_IMAGE_OUTPUT_DIR (env), the session project image "
+                            "auto-saved to FREYJA_IMAGE_OUTPUT_DIR (env), the session image "
                             "folder, or ~/Pictures/Freyja/."
                         ),
                     },
@@ -365,34 +427,56 @@ Guidelines:
                 is_error=True,
             )
 
-        model = os.environ.get("FREYJA_IMAGE_MODEL", DEFAULT_IMAGE_MODEL).strip() or DEFAULT_IMAGE_MODEL
-        size = _clean_enum(arguments.get("size"), allowed=SUPPORTED_SIZES, default="1024x1024")
-        quality = _clean_enum(arguments.get("quality"), allowed=SUPPORTED_QUALITIES, default="auto")
-        output_format = _clean_enum(
-            arguments.get("output_format"),
-            allowed=SUPPORTED_FORMATS,
-            default="png",
-        )
-        background = _clean_enum(
-            arguments.get("background"),
-            allowed=SUPPORTED_BACKGROUNDS,
-            default="auto",
-        )
-        moderation = _clean_enum(
-            arguments.get("moderation"),
-            allowed=SUPPORTED_MODERATION,
-            default="auto",
-        )
-        input_fidelity = _clean_enum(
-            arguments.get("input_fidelity"),
-            allowed=SUPPORTED_INPUT_FIDELITY,
-            default="high",
-        )
-        output_compression = _clean_compression(arguments.get("output_compression"))
-        if output_format == "png":
-            output_compression = None
-
         try:
+            model = (
+                str(arguments.get("model") or "").strip()
+                or os.environ.get("FREYJA_IMAGE_MODEL", "").strip()
+                or DEFAULT_IMAGE_MODEL
+            )
+            if model not in SUPPORTED_MODELS:
+                raise ValueError(f"model must be one of: {', '.join(sorted(SUPPORTED_MODELS))}")
+            size = _clean_size(arguments.get("size"), model)
+            qualities = SUPPORTED_QUALITIES
+            if not model.startswith("gpt-image-2.5-"):
+                qualities = qualities - {"xhigh", "max"}
+            quality = _clean_enum(
+                arguments.get("quality"), name="quality", allowed=qualities, default="auto"
+            )
+            output_format = _clean_enum(
+                arguments.get("output_format"),
+                name="output_format",
+                allowed=SUPPORTED_FORMATS,
+                default="png",
+            )
+            background = _clean_enum(
+                arguments.get("background"),
+                name="background",
+                allowed=SUPPORTED_BACKGROUNDS,
+                default="auto",
+            )
+            if background == "transparent" and output_format == "jpeg":
+                raise ValueError("transparent background requires output_format png or webp")
+            moderation = _clean_enum(
+                arguments.get("moderation"),
+                name="moderation",
+                allowed=SUPPORTED_MODERATION,
+                default="auto",
+            )
+            input_fidelity = _clean_enum(
+                arguments.get("input_fidelity"),
+                name="input_fidelity",
+                allowed=SUPPORTED_INPUT_FIDELITY,
+                default="low" if model == "gpt-image-1-mini" else "high",
+            )
+            if model == "gpt-image-1-mini" and input_fidelity != "low":
+                raise ValueError("gpt-image-1-mini only supports input_fidelity low")
+            if model not in LEGACY_IMAGE_MODELS:
+                if input_fidelity == "low":
+                    raise ValueError(f"{model} uses high input fidelity; omit input_fidelity")
+                input_fidelity = None
+            output_compression = _clean_compression(arguments.get("output_compression"))
+            if output_format == "png":
+                output_compression = None
             input_images = await self._resolve_input_images(arguments.get("input_images"))
             if arguments.get("use_latest_user_image"):
                 input_images.append(
@@ -404,6 +488,8 @@ Guidelines:
                 )
             mask_image = None
             if isinstance(arguments.get("mask_image"), dict):
+                if not input_images:
+                    raise ValueError("mask_image requires an input image to edit")
                 mask_image = await self._resolve_input_image(arguments["mask_image"])
             b64, media_type = await self._generate(
                 api_key=api_key,
@@ -466,7 +552,9 @@ Guidelines:
         mode_text = "Edited image" if input_images else "Generated image"
         ref_text = ""
         if saved_ref:
-            ref_text += f" Saved as `{saved_ref}` (aliases: `latest_generated_image`, `latest_image`)."
+            ref_text += (
+                f" Saved as `{saved_ref}` (aliases: `latest_generated_image`, `latest_image`)."
+            )
         if disk_path:
             ref_text += f" File saved to `{disk_path}`."
 
@@ -499,7 +587,7 @@ Guidelines:
         moderation: str,
         input_images: list[ImageAsset],
         mask_image: ImageAsset | None,
-        input_fidelity: str,
+        input_fidelity: str | None,
     ) -> tuple[str, str]:
         client = self._make_client(api_key)
 
