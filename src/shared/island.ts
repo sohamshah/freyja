@@ -109,6 +109,8 @@ export interface IslandDigest {
   costToday: number
   /** The next scheduled job, if the scheduler knows one. */
   schedule: { name: string; at: number } | null
+  /** Computer use is capturing the screen: the island hides so it is not in the shot. */
+  veil: boolean
 }
 
 /** Island → main → main renderer. */

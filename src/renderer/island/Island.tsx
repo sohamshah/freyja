@@ -55,6 +55,8 @@ export function Island() {
   const [droppedText, setDroppedText] = useState('')
   /** Bumps when a new needs-you item arrives: the shape nudges once. */
   const [nudge, setNudge] = useState(0)
+  /** The banner's reply key aims the composer at that session. */
+  const [replyTo, setReplyTo] = useState<string | null>(null)
   const now = useNow(1000)
   const openTimer = useRef<number | null>(null)
   const closeTimer = useRef<number | null>(null)
@@ -240,10 +242,10 @@ export function Island() {
       >
         <div className="island-strip">
           <div className="island-ear island-ear-l">
-            <Leading mode={mode} voice={voice} banner={banner} />
+            <Leading mode={mode} voice={voice} banner={banner} bloomKey={done?.at ?? 0} />
           </div>
           <div className="island-notch" aria-hidden="true" />
-          <div className="island-ear island-ear-r">
+          <div className="island-ear island-ear-r" aria-live="polite">
             <Trailing mode={mode} digest={digest} voice={voice} live={live} attention={attention} banner={banner} done={done} now={now} expanded={expanded} dropping={dropping} />
           </div>
         </div>
@@ -259,12 +261,21 @@ export function Island() {
               onSent={release}
               wantKeyboard={wantKeyboard}
               onKeyboardTaken={() => setWantKeyboard(0)}
+              replyTo={replyTo}
               droppedText={droppedText}
               onDroppedTextTaken={() => setDroppedText('')}
               onFocus={() => void api.control({ type: 'focus' })}
             />
           ) : banner && done ? (
-            <Banner done={done} onOpen={() => act({ type: 'open', sessionId: done.sessionId })} />
+            <Banner
+              done={done}
+              onOpen={() => act({ type: 'open', sessionId: done.sessionId })}
+              onReply={() => {
+                setReplyTo(done.sessionId)
+                setExpanded(true)
+                setWantKeyboard((n) => n + 1)
+              }}
+            />
           ) : null}
         </div>
       </div>
@@ -274,7 +285,14 @@ export function Island() {
 
 // ── The strip ──────────────────────────────────────────────────────────
 
-function Leading({ mode, voice, banner }: { mode: Mode; voice: IslandVoice | null; banner: boolean }) {
+function Leading({ mode, voice, banner, bloomKey }: { mode: Mode; voice: IslandVoice | null; banner: boolean; bloomKey: number }) {
+  if (banner) {
+    return (
+      <span className="island-mark island-swap" key={`bloom-${bloomKey}`}>
+        <BloomMark key={bloomKey} />
+      </span>
+    )
+  }
   if (mode === 'voice' && voice) {
     return (
       <span className="island-swap" key="voice">
@@ -398,6 +416,7 @@ function Sheet({
   onSent,
   wantKeyboard,
   onKeyboardTaken,
+  replyTo,
   droppedText,
   onDroppedTextTaken,
   onFocus,
@@ -411,6 +430,7 @@ function Sheet({
   onSent: () => void
   wantKeyboard: number
   onKeyboardTaken: () => void
+  replyTo: string | null
   droppedText: string
   onDroppedTextTaken: () => void
   onFocus: () => void
@@ -457,6 +477,7 @@ function Sheet({
         onSent={onSent}
         wantKeyboard={wantKeyboard}
         onKeyboardTaken={onKeyboardTaken}
+        preferred={replyTo}
         droppedText={droppedText}
         onDroppedTextTaken={onDroppedTextTaken}
         onFocus={onFocus}
@@ -614,6 +635,7 @@ function Composer({
   onSent,
   wantKeyboard,
   onKeyboardTaken,
+  preferred,
   droppedText,
   onDroppedTextTaken,
   onFocus,
@@ -625,12 +647,16 @@ function Composer({
   onSent: () => void
   wantKeyboard: number
   onKeyboardTaken: () => void
+  preferred: string | null
   droppedText: string
   onDroppedTextTaken: () => void
   onFocus: () => void
 }) {
   const [text, setText] = useState('')
-  const [chosen, setChosen] = useState<string | null>(null)
+  const [chosen, setChosen] = useState<string | null>(preferred)
+  useEffect(() => {
+    if (preferred) setChosen(preferred)
+  }, [preferred])
   const inputRef = useRef<HTMLInputElement>(null)
   // The hotkey opened the sheet: take the keyboard and put the caret in the reply.
   useEffect(() => {
@@ -720,14 +746,50 @@ function Composer({
   )
 }
 
-function Banner({ done, onOpen }: { done: IslandDone; onOpen: () => void }) {
+function Banner({ done, onOpen, onReply }: { done: IslandDone; onOpen: () => void; onReply: () => void }) {
   return (
-    <button type="button" className="island-banner" onClick={onOpen} title="open in Freyja">
+    <div
+      className="island-banner"
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') onOpen()
+      }}
+      title="open in Freyja"
+    >
       <span className="island-banner-title">{done.title}</span>
       <span className="island-banner-meta">{elapsed(done.durationMs)}</span>
+      <button
+        type="button"
+        className="island-key island-banner-reply"
+        onClick={(e) => {
+          e.stopPropagation()
+          onReply()
+        }}
+      >
+        reply
+      </button>
       {done.text && <span className="island-banner-text">{done.text}</span>}
-    </button>
+    </div>
   )
+}
+
+/** The mark blooming out of nothing: the ear's moment when a turn ends. */
+function BloomMark() {
+  const progress = useRef(0)
+  useEffect(() => {
+    let raf = 0
+    const start = performance.now()
+    const tick = (t: number) => {
+      const x = Math.min(1, (t - start) / 700)
+      progress.current = 1 - Math.pow(1 - x, 3)
+      if (x < 1) raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+  return <AnimatedTopographicMark size={18} intensity={0.25} expandProgressRef={progress} className="island-mark-svg" />
 }
 
 // ── Small parts ────────────────────────────────────────────────────────

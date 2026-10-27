@@ -202,6 +202,7 @@ export function startIslandFeed(api: Partial<IslandHarnessApi> | null | undefine
       appshotLabel: s.appshotHotkeyLabel,
       costToday: Math.round(costToday * 100) / 100,
       schedule,
+      veil: s.computerActive,
     }
   }
 

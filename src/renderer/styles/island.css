@@ -536,15 +536,22 @@ body,
 /* The banner: a finished turn hangs from the notch for a moment. */
 .island-banner {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
   gap: 2px 10px;
   width: 100%;
-  padding: 9px 16px 13px;
+  padding: 8px 12px 13px 16px;
   border: 0;
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: default;
+  outline: none;
+}
+.island-banner-reply {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 10.5px;
 }
 .island-banner-title {
   font-size: 12px;

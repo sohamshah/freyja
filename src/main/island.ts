@@ -113,6 +113,12 @@ export class IslandWindow {
   setDigest(digest: IslandDigest): void {
     this.digest = digest
     this.pushState()
+    // Computer use captures the whole screen: step out of the shot.
+    const win = this.win
+    if (win && !win.isDestroyed()) {
+      if (digest.veil && win.isVisible()) win.hide()
+      else if (!digest.veil && !win.isVisible()) win.showInactive()
+    }
   }
 
   setNotchWidth(width: number | null): void {

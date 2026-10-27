@@ -291,6 +291,16 @@ export function CommandPalette() {
         },
       },
       {
+        id: 'island:toggle',
+        title: `Island: ${(useHarness.getState().settings.island?.enabled ?? true) ? 'hide' : 'show'}`,
+        subtitle: 'The notch mini view: live sessions, what needs you, a reply box (⌃⌥⌘I opens it)',
+        group: 'Command',
+        action: () => {
+          close(false)
+          void useHarness.getState().setIslandEnabled(!(useHarness.getState().settings.island?.enabled ?? true))
+        },
+      },
+      {
         id: 'appearance:toggle',
         title: `Appearance: switch to ${oppositeTheme(getEffectiveTheme())} mode`,
         subtitle: 'Flip between the dark and light shells (⌘⇧L)',
