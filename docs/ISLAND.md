@@ -15,7 +15,7 @@ The strip is the part fused with the notch: two ears either side of the hardware
 | voice | the voice sigil | the state or the line being said, and a three-bar mic meter |
 | just finished | the mark | a check that draws itself |
 
-A finished turn hangs a banner from the notch for eight seconds: the session's title, how long the turn took, the first lines of the reply. Click it to open the session.
+A finished turn hangs a banner from the notch for eight seconds: the session's title, how long the turn took, the first lines of the reply, and a reply key that opens the sheet with the composer aimed at that session. The mark in the leading ear blooms out of nothing as the banner lands. Click the banner to open the session.
 
 The sheet, from top to bottom:
 
@@ -55,7 +55,7 @@ Main holds no session state, so the main renderer reduces its store into an `Isl
 
 The window itself talks to main on `island:control`: `ready` (send me the geometry and the state), `hover` (toggle click-through), `release` (give the keyboard back).
 
-`settings.island.enabled` (default on) opens or closes the window; the switch is in Settings → island. ⌃⌥⌘I (or ⌃⌥⇧I when taken; `FREYJA_ISLAND_HOTKEY` overrides) opens the island if it is closed and otherwise expands or collapses it. When the hotkey opens the sheet, the island asks main for the keyboard (`focus`, which makes the panel the key window without activating the app) and puts the caret in the reply. Esc folds it and hands the keyboard back (`release`); so does the keyboard leaving on its own. A folded island goes back to click-through; an open one keeps the mouse so a key can be clicked without a prior hover.
+`settings.island.enabled` (default on) opens or closes the window; the switch is in Settings → island, and ⌘K has "Island: hide" and "Island: show". While computer use is capturing the screen the digest says so and main hides the island, so it is never in a shot; it comes back inactive after. ⌃⌥⌘I (or ⌃⌥⇧I when taken; `FREYJA_ISLAND_HOTKEY` overrides) opens the island if it is closed and otherwise expands or collapses it. When the hotkey opens the sheet, the island asks main for the keyboard (`focus`, which makes the panel the key window without activating the app) and puts the caret in the reply. Esc folds it and hands the keyboard back (`release`); so does the keyboard leaving on its own. A folded island goes back to click-through; an open one keeps the mouse so a key can be clicked without a prior hover.
 
 ## Motion
 
