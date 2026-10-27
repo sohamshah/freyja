@@ -22,10 +22,15 @@ import { SearchQueryContext } from './searchContext'
 import { highlightHtml, highlightRuns } from '../lib/searchHighlight'
 import { MessageContextMenu, type MessageMenuAction } from './MessageContextMenu'
 import {
+  markdownToRichText,
   messageToMarkdown,
   selectionIntersects,
   selectionToMarkdown,
+  selectionToRichText,
+  textToRichText,
   writeClipboard,
+  writeRichClipboard,
+  type RichText,
 } from '../lib/copyMarkdown'
 import { formatDuration } from '../lib/format'
 import {
@@ -84,19 +89,27 @@ export const SystemEventLookupContext = createContext<Map<string, SystemEventRec
   new Map(),
 )
 
-/** Copy markdown to the clipboard and say so. Shared by the context menu,
- *  the per-message hover button and the ⌘⇧C chord so all three report the
- *  same way. `label` names what was copied when it isn't a selection. */
-async function copyWithToast(markdown: string, label = 'Selection'): Promise<boolean> {
+/** Copy to the clipboard and say so. Shared by the context menu, the
+ *  per-message hover button and the ⌘⇧C chord so all three report the same
+ *  way. A string is markdown source; a RichText is the formatted copy.
+ *  `label` names what was copied when it isn't a selection. */
+async function copyWithToast(
+  content: string | RichText | null,
+  label = 'Selection',
+): Promise<boolean> {
   const toast = useHarness.getState().showToast
-  if (!markdown.trim()) {
+  const asMarkdown = typeof content === 'string'
+  const text = asMarkdown ? content : (content?.text ?? '')
+  if (!text.trim()) {
     toast('Nothing to copy', 'warn')
     return false
   }
-  const ok = await writeClipboard(markdown)
-  const lines = markdown.split('\n').length
+  const ok = asMarkdown ? await writeClipboard(content) : await writeRichClipboard(content)
+  const lines = text.split('\n').length
   toast(
-    ok ? `${label} copied as markdown · ${lines} line${lines === 1 ? '' : 's'}` : 'Clipboard unavailable',
+    ok
+      ? `${label} copied${asMarkdown ? ' as markdown' : ''} · ${lines} line${lines === 1 ? '' : 's'}`
+      : 'Clipboard unavailable',
     ok ? 'ok' : 'warn',
   )
   return ok
@@ -150,10 +163,11 @@ export function Conversation() {
         role: Message['role']
         x: number
         y: number
-        /** Markdown for whatever was selected inside this message when the
-         *  menu opened. Snapshotted here because picking a menu item blurs
-         *  the document and can drop the live selection. */
-        selectionMd: string
+        /** Whatever was selected inside this message when the menu opened,
+         *  as markdown and as the formatted copy. Snapshotted here because
+         *  picking a menu item blurs the document and can drop the live
+         *  selection. Null when nothing inside this message was selected. */
+        selection: { markdown: string; rich: RichText | null } | null
       }
     | null
   >(null)
@@ -167,16 +181,16 @@ export function Conversation() {
       const target = e.target as HTMLElement
       if (target.closest('a[href], input, textarea, [contenteditable="true"]')) return
       e.preventDefault()
-      const selection = window.getSelection()
-      const selectionMd = selectionIntersects(selection, e.currentTarget)
-        ? selectionToMarkdown(selection)
+      const live = window.getSelection()
+      const markdown = selectionIntersects(live, e.currentTarget)
+        ? selectionToMarkdown(live)
         : ''
       setMenuState({
         messageId: message.id,
         role: message.role,
         x: e.clientX,
         y: e.clientY,
-        selectionMd,
+        selection: markdown ? { markdown, rich: selectionToRichText(live) } : null,
       })
     },
     [],
@@ -187,15 +201,19 @@ export function Conversation() {
     (action: MessageMenuAction) => {
       if (!menuState) return
       const id = menuState.messageId
-      if (action === 'copy' || action === 'copy-selection') {
-        const target = messages.find((m) => m.id === id)
-        void copyWithToast(
-          action === 'copy-selection'
-            ? menuState.selectionMd
-            : target
-              ? messageToMarkdown(target)
-              : '',
-        )
+      if (action === 'copy' || action === 'copy-markdown') {
+        // Both rows copy the selection when there is one, else the message.
+        const asMarkdown = action === 'copy-markdown'
+        const picked = menuState.selection
+        if (picked) {
+          void copyWithToast(asMarkdown ? picked.markdown : picked.rich)
+        } else {
+          const target = messages.find((m) => m.id === id)
+          const markdown = target ? messageToMarkdown(target) : ''
+          // The user's bubble shows its text as typed, not rendered.
+          const rich = menuState.role === 'user' ? textToRichText(markdown) : markdownToRichText(markdown)
+          void copyWithToast(asMarkdown ? markdown : rich, 'Message')
+        }
       } else if (action === 'edit') {
         setEditingId(id)
       } else if (action === 'rerun') {
@@ -278,25 +296,27 @@ export function Conversation() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  // ⌘C over a rendered answer should yield markdown, not the DOM's
-  // flattened text (which loses fences, `#`, and turns tables into tab
-  // soup). Scoped to the conversation scroller so copying from the
-  // sidebar / activity panel keeps its native behaviour. Only text/plain
-  // is rewritten — deliberately no text/html, so the paste target sees
-  // markdown source rather than re-rendering it as rich text.
+  // ⌘C over a rendered answer copies what the reader sees: bold stays
+  // bold, with no `**` around it. text/html is a clean rebuild of the
+  // selection (no classes or dark-theme styles, which the browser's own copy
+  // would carry along); text/plain has no markdown markers. Markdown source
+  // lives on the right-click menu and ⌘⇧C. Scoped to the conversation
+  // scroller so copying from the sidebar / activity panel keeps its native
+  // behaviour.
   const onCopy = useCallback((e: React.ClipboardEvent) => {
     // The inline user-message editor lives inside the scroller; its
     // selection belongs to the textarea, not the document, so leave it be.
     const target = e.target as HTMLElement | null
     if (target?.closest?.('input, textarea, [contenteditable="true"]')) return
-    const md = selectionToMarkdown(window.getSelection())
-    if (!md) return
-    e.clipboardData.setData('text/plain', md)
+    const rich = selectionToRichText(window.getSelection())
+    if (!rich) return
+    e.clipboardData.setData('text/html', rich.html)
+    e.clipboardData.setData('text/plain', rich.text)
     e.preventDefault()
   }, [])
 
-  // ⌘⇧C — copy without reaching for the mouse: the current selection if
-  // there is one, otherwise the whole last assistant message.
+  // ⌘⇧C — copy as markdown without reaching for the mouse: the current
+  // selection if there is one, otherwise the whole last assistant message.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey
@@ -681,7 +701,7 @@ export function Conversation() {
           isPinned={Boolean(
             messages.find((m) => m.id === menuState.messageId)?.pinned,
           )}
-          hasSelection={Boolean(menuState.selectionMd)}
+          hasSelection={Boolean(menuState.selection)}
           onPick={handlePick}
           onClose={closeMenu}
         />

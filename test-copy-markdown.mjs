@@ -1,5 +1,6 @@
 // Round-trip check for the copy-as-markdown path:
 //   markdown --renderMarkdown--> HTML --rangeToMarkdown--> markdown
+// plus the formatted ⌘C path (rangeToRichText: clean HTML + plain text).
 // Needs a DOM, so install jsdom first (it is not a project dependency):
 //   npm i --no-save jsdom
 // Then run from the repo root:
@@ -21,7 +22,7 @@ globalThis.Element = dom.window.Element
 globalThis.Range = dom.window.Range
 
 const { renderMarkdown } = await import('./src/renderer/lib/markdown.ts')
-const { rangeToMarkdown } = await import('./src/renderer/lib/copyMarkdown.ts')
+const { rangeToMarkdown, rangeToRichText, markdownToRichText } = await import('./src/renderer/lib/copyMarkdown.ts')
 
 function mount(md) {
   const host = document.createElement('div')
@@ -42,7 +43,7 @@ function copyAll(md) {
 
 /** Partial selection: from `startText` inside the Nth text node match to
  *  `endText`, both located by substring search over the rendered DOM. */
-function copyBetween(md, startNeedle, endNeedle) {
+function rangeBetween(md, startNeedle, endNeedle) {
   const host = mount(md)
   const walker = document.createTreeWalker(host, 4 /* SHOW_TEXT */)
   let startNode = null, startOff = 0, endNode = null, endOff = 0
@@ -61,7 +62,19 @@ function copyBetween(md, startNeedle, endNeedle) {
   const range = document.createRange()
   range.setStart(startNode, startOff)
   range.setEnd(endNode, endOff)
-  return rangeToMarkdown(range)
+  return range
+}
+
+function copyBetween(md, startNeedle, endNeedle) {
+  return rangeToMarkdown(rangeBetween(md, startNeedle, endNeedle))
+}
+
+/** The formatted ⌘C copy of the whole rendered body. */
+function richAll(md) {
+  const host = mount(md)
+  const range = document.createRange()
+  range.selectNodeContents(host)
+  return rangeToRichText(range) ?? { html: '', text: '' }
 }
 
 let pass = 0, fail = 0
@@ -202,6 +215,53 @@ check('partial across two separate rendered blocks',
     return rangeToMarkdown(range)
   })(),
   '# One\n\nfirst para\n\n- item a\n- item b')
+
+// ── formatted copy (⌘C): plain text without markers, clean HTML ──────────
+check('plain: emphasis loses its markers',
+  richAll('**Weak: creative briefs** ("make it funny"). One *clear* win, ~~two~~.').text,
+  'Weak: creative briefs ("make it funny"). One clear win, two.')
+check('html: bold stays bold',
+  richAll('**Weak: creative briefs** ("make it funny").').html,
+  '<p><strong>Weak: creative briefs</strong> (&quot;make it funny&quot;).</p>')
+check('plain: numbered list keeps numbers, bullets become •',
+  richAll('1. **One** step\n2. two\n\n- alpha\n- beta').text,
+  '1. One step\n2. two\n\n• alpha\n• beta')
+check('html: lists',
+  richAll('1. **One** step\n2. two').html.replace(/\n/g, ''),
+  '<ol><li><strong>One</strong> step</li><li>two</li></ol>')
+check('plain: heading, inline code and link',
+  richAll('## Caveats\n\nRun `git apply` per [the docs](https://example.com/x).').text,
+  'Caveats\n\nRun git apply per the docs.')
+check('html: heading, inline code and link',
+  richAll('## Caveats\n\nRun `git apply` per [the docs](https://example.com/x).').html.replace(/\n/g, ''),
+  '<h2>Caveats</h2><p>Run <code>git apply</code> per <a href="https://example.com/x">the docs</a>.</p>')
+check('plain: code block without its fence keeps blank lines',
+  richAll('```python\ndef f():\n\n\n    return 1\n```').text,
+  'def f():\n\n\n    return 1')
+check('html: code block escapes markup',
+  richAll('```\na < b && c\n```').html,
+  '<pre><code>a &lt; b &amp;&amp; c</code></pre>')
+check('plain: table is tab-separated',
+  richAll('| Method | Purpose |\n| --- | --- |\n| `apply` | x \\| y |').text,
+  'Method\tPurpose\napply\tx | y')
+check('html: no classes or styles leak',
+  /class=|style="(?!text-align)/.test(richAll('Inline $E = mc^2$ and **bold** with `code`.').html) ? 'leaked' : 'clean',
+  'clean')
+check('plain: math keeps its TeX',
+  richAll('energy $E = mc^2$ here').text,
+  'energy $E = mc^2$ here')
+check('plain: partial selection inside a bold list item',
+  (() => {
+    const range = rangeBetween('1. **One decisive step** in a hard problem.\n2. **A cause** with no clue.', 'decisive', 'cause')
+    return rangeToRichText(range).text
+  })(),
+  '1. decisive step in a hard problem.\n2. A cause')
+check('whole message: charset wrapper + plain text',
+  (() => {
+    const rich = markdownToRichText('**What isn\'t L4.** Sonnet holds up — mostly.')
+    return `${rich.html}\n${rich.text}`
+  })(),
+  '<meta charset="utf-8"><p><strong>What isn\'t L4.</strong> Sonnet holds up — mostly.</p>\nWhat isn\'t L4. Sonnet holds up — mostly.')
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

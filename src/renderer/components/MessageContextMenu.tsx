@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 
 export type MessageMenuAction =
   | 'copy'
-  | 'copy-selection'
+  | 'copy-markdown'
   | 'edit'
   | 'rerun'
   | 'delete'
@@ -24,7 +24,7 @@ interface MessageContextMenuProps {
   /** True when this message is currently pinned (compaction_excluded). */
   isPinned?: boolean
   /** True when text inside this message was selected when the menu opened,
-   *  which swaps the copy row for a selection-scoped one. */
+   *  which scopes both copy rows to the selection. */
   hasSelection?: boolean
   onPick: (action: MessageMenuAction) => void
   onClose: () => void
@@ -97,20 +97,17 @@ export function MessageContextMenu({
     separator?: boolean
   }> = [
     // Copy sits at the top and is never blocked by a streaming turn —
-    // reading out what's already on screen is always safe.
-    ...(hasSelection
-      ? [
-          {
-            action: 'copy-selection' as const,
-            label: 'copy selection',
-            hint: 'as markdown',
-          },
-        ]
-      : []),
+    // reading out what's already on screen is always safe. `copy` matches
+    // ⌘C (formatted text); `copy as markdown` gives the source.
     {
       action: 'copy',
-      label: hasSelection ? 'copy message' : 'copy',
-      hint: 'as markdown',
+      label: 'copy',
+      hint: hasSelection ? 'selection' : 'message',
+    },
+    {
+      action: 'copy-markdown',
+      label: 'copy as markdown',
+      hint: hasSelection ? 'selection' : 'message',
     },
     {
       separator: true,
