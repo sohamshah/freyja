@@ -1794,6 +1794,17 @@ export const IPC = {
   paletteClipboard: 'palette:clipboard',
   paletteReveal: 'palette:reveal',
   paletteOpenExternal: 'palette:openExternal',
+  // Island: the notch-hugging mini view (shared/island.ts). The main
+  // renderer pushes a digest of its store, main relays it to the island
+  // window, and the island's actions come back to be performed by the
+  // main renderer.
+  islandDigest: 'island:digest',
+  islandState: 'island:state',
+  islandGeometry: 'island:geometry',
+  islandAction: 'island:action',
+  islandPerform: 'island:perform',
+  islandControl: 'island:control',
+  islandToggle: 'island:toggle',
 } as const
 
 // ── Gateway IPC result types ────────────────────────────────────
@@ -2410,6 +2421,13 @@ export interface AppearanceSettings {
   theme: AppearanceTheme
 }
 
+/** The island, the notch-hugging mini view. Mirrors `IslandSettings` in main/settings.ts. */
+export interface IslandSettings {
+  enabled: boolean
+  /** Override of the notch width in points; null measures nothing and uses the known 185. */
+  notchWidth: number | null
+}
+
 export interface DesktopSettings {
   version: 1
   permissions: {
@@ -2417,6 +2435,7 @@ export interface DesktopSettings {
   }
   computer: ComputerControlSettings
   appearance: AppearanceSettings
+  island: IslandSettings
 }
 
 /** Default blocklist for computer control -- shipped on day one.

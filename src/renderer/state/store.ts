@@ -774,6 +774,8 @@ export interface HarnessActions {
   setPermissionTier(tier: PermissionTier): Promise<void>
   /** Appearance: `system` follows macOS, `dark` / `light` pin the shell. */
   setAppearanceTheme(theme: AppearanceTheme): Promise<void>
+  /** The island, the notch-hugging mini view: shown or not. */
+  setIslandEnabled(enabled: boolean): Promise<void>
   escalateSessionPolicy(tier: PermissionTier, sessionId?: string): Promise<void>
   switchToParent(): Promise<void>
   // ─── Session management ──────────────────────────────────────
@@ -1461,6 +1463,7 @@ function emptyState(): HarnessState {
         showScreenshotsInline: true,
       },
       appearance: { theme: 'system' },
+      island: { enabled: true, notchWidth: null },
     },
     toast: null,
     computerSessions: {},
@@ -5717,6 +5720,23 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     // Plain browser (demo / design review): no main process, so the
     // preference is kept locally and applied directly.
     applyBrowserPreference(theme)
+  },
+
+  async setIslandEnabled(enabled) {
+    const prev = useHarness.getState().settings
+    if ((prev.island?.enabled ?? true) === enabled) return
+    const island = { enabled, notchWidth: prev.island?.notchWidth ?? null }
+    set({ settings: { ...prev, island } })
+    const api = (window as any).harness
+    if (!api?.settingsUpdate) return
+    // Main opens or closes the island window as the setting lands.
+    const res = await api.settingsUpdate({ island })
+    if (!res?.ok) {
+      set({ settings: prev })
+      useHarness.getState().showToast('Failed to save the island setting', 'warn')
+    } else if (res.settings) {
+      set({ settings: res.settings as DesktopSettings })
+    }
   },
 
   async setPermissionTier(tier) {

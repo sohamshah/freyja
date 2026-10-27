@@ -31,6 +31,12 @@ export interface AppearanceSettings {
   theme: AppearanceTheme
 }
 
+/** Mirrors `IslandSettings` in shared/events.ts. */
+export interface IslandSettings {
+  enabled: boolean
+  notchWidth: number | null
+}
+
 export interface DesktopSettings {
   version: 1
   permissions: {
@@ -38,6 +44,7 @@ export interface DesktopSettings {
   }
   computer: ComputerControlSettings
   appearance: AppearanceSettings
+  island: IslandSettings
 }
 
 const SETTINGS_DIR = path.join(os.homedir(), '.freyja')
@@ -67,6 +74,10 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   },
   appearance: {
     theme: 'system',
+  },
+  island: {
+    enabled: true,
+    notchWidth: null,
   },
 }
 

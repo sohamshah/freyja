@@ -3,6 +3,7 @@ import { unstable_batchedUpdates } from 'react-dom'
 import { useHarness } from './state/store'
 import { useSchedulerStore } from './state/scheduler-store'
 import { bindVoiceBridge, useVoiceStore } from './state/voice-store'
+import { startIslandFeed } from './lib/islandFeed'
 import { TitleBar } from './components/TitleBar'
 import { Sidebar } from './components/Sidebar'
 import { SessionPanes } from './components/SessionPanes'
@@ -335,6 +336,9 @@ export function App() {
         },
       })
       useVoiceStore.getState().hydrate()
+      // The island (the notch mini view) sees a digest of this store and
+      // sends its actions back here; see lib/islandFeed.ts.
+      const stopIslandFeed = startIslandFeed(api)
       const unsubVoiceToggle =
         typeof api.onVoiceToggle === 'function'
           ? api.onVoiceToggle(() => useVoiceStore.getState().toggleVoice())
@@ -394,6 +398,7 @@ export function App() {
         unsub()
         window.removeEventListener('pagehide', flushScheduledPersists)
         unsubVoiceToggle?.()
+        stopIslandFeed()
         window.removeEventListener('focus', focusHandler)
         clearInterval(pollTimer)
         if (rafRef.current != null) cancelAnimationFrame(rafRef.current)

@@ -53,6 +53,8 @@ import {
   saveSettings,
   type DesktopSettings,
 } from './settings.js'
+import { IslandWindow } from './island.js'
+import type { IslandAction, IslandControl, IslandDigest } from '../shared/island.js'
 import { GatewayLogTailer } from './gatewayLogTail.js'
 import { sendControlCommand } from './controlChannel.js'
 import { readCompactionTelemetry } from './telemetryReader.js'
@@ -299,6 +301,7 @@ let captureProxy: CaptureProxy | null = null
 let artifactServer: ArtifactServer | null = null
 let inputProxy: InputProxy | null = null
 let gatewayLogTailer: GatewayLogTailer | null = null
+let island: IslandWindow | null = null
 // Buffer bridge events that fire before the renderer is ready.
 // The `ready` event (with the full model list) typically arrives in
 // ~1-2 seconds, but the Electron window + React app takes 2-3s to
@@ -395,7 +398,7 @@ function forwardBridgeEvent(event: any): void {
   // bridge would capture Freyja itself. A failed capture does not raise the
   // window, since there is nothing to type about.
   if (event?.type === 'appshot_captured' && event.ok === true && event.source === 'hotkey') {
-    showMainWindowForAppshot()
+    raiseMainWindow()
   }
   if (rendererReady) {
     mainWindow?.webContents.send(IPC.bridgeEvent, event)
@@ -533,11 +536,70 @@ function captureAppshotFromHotkey(): void {
   })
 }
 
-function showMainWindowForAppshot(): void {
+function raiseMainWindow(): void {
   if (!mainWindow) return
   if (mainWindow.isMinimized()) mainWindow.restore()
   if (!mainWindow.isVisible()) mainWindow.show()
   mainWindow.focus()
+}
+
+// ── Island ──────────────────────────────────────────────────────────────
+// The notch-hugging mini view (src/main/island.ts). It is a second window
+// with its own tiny preload; the main renderer feeds it a digest of the
+// store and performs the actions it sends back, so main stays policy-free.
+const ISLAND_HOTKEY_CANDIDATES = ['Control+Alt+Command+I', 'Control+Alt+Shift+I']
+let activeIslandHotkey: string | null = null
+
+function islandLoadTarget(): { url: string } | { file: string } {
+  return isDev ? { url: `${DEV_URL}/island.html` } : { file: path.join(ROOT, 'dist-renderer', 'island.html') }
+}
+
+function ensureIsland(enabled: boolean, notchWidth: number | null = null): void {
+  if (!enabled) {
+    island?.close()
+    island = null
+    return
+  }
+  if (island?.isOpen) {
+    island.setNotchWidth(notchWidth)
+    return
+  }
+  island = new IslandWindow({
+    preload: path.resolve(ROOT, 'dist-preload', 'island-preload.cjs'),
+    load: islandLoadTarget(),
+    notchWidth,
+  })
+  island.open()
+}
+
+function registerIslandHotkey(): string | null {
+  const override = (process.env.FREYJA_ISLAND_HOTKEY || '').trim()
+  const candidates = override ? [override, ...ISLAND_HOTKEY_CANDIDATES] : ISLAND_HOTKEY_CANDIDATES
+  for (const accelerator of candidates) {
+    try {
+      if (
+        globalShortcut.register(accelerator, () => {
+          if (island) island.toggle()
+          else ensureIsland(true, loadSettings().island?.notchWidth ?? null)
+        })
+      ) {
+        console.info(`[main] island hotkey registered: ${accelerator}`)
+        return accelerator
+      }
+      console.warn(`[main] island hotkey unavailable (taken): ${accelerator}`)
+    } catch (err) {
+      console.warn(`[main] island hotkey rejected: ${accelerator}`, err)
+    }
+  }
+  return null
+}
+
+/** Actions the island sends. Raising the app is main's job; the rest is
+ *  performed by the main renderer against its store. */
+function performIslandAction(action: IslandAction): void {
+  if (action.type === 'focus-app' || action.type === 'open' || action.type === 'dashboard') raiseMainWindow()
+  if (action.type === 'focus-app') return
+  mainWindow?.webContents.send(IPC.islandPerform, action)
 }
 
 function initBridge() {
@@ -609,6 +671,20 @@ function setupIpc() {
       earlyEvents.length = 0
     }
     return bridge?.getMode() ?? 'error'
+  })
+
+  // ── Island ────────────────────────────────────────────────────
+  ipcMain.handle(IPC.islandDigest, (_event, digest: IslandDigest) => {
+    island?.setDigest(digest)
+    return { ok: true }
+  })
+  ipcMain.handle(IPC.islandAction, (_event, action: IslandAction) => {
+    performIslandAction(action)
+    return { ok: true }
+  })
+  ipcMain.handle(IPC.islandControl, (_event, control: IslandControl) => {
+    island?.control(control)
+    return { ok: true }
   })
 
   ipcMain.handle(IPC.sendCommand, async (_event, cmd: BridgeCommand) => {
@@ -1164,6 +1240,10 @@ function setupIpc() {
       if (patch.appearance?.theme !== undefined) {
         applyAppearance(next)
       }
+      // The island opens or closes with its switch; a notch override lands at once.
+      if (patch.island !== undefined) {
+        ensureIsland(next.island?.enabled !== false, next.island?.notchWidth ?? null)
+      }
       // Push the new permission policy down to the bridge so in-flight
       // sessions see it immediately without needing a restart.
       if (bridge && next.permissions?.autoApprove) {
@@ -1477,6 +1557,12 @@ app.whenReady().then(async () => {
   }
   initBridge()
   createWindow()
+  try {
+    const islandSettings = loadSettings().island
+    ensureIsland(islandSettings?.enabled !== false, islandSettings?.notchWidth ?? null)
+  } catch (err) {
+    console.warn('[main] island failed to open:', err)
+  }
 
   // Global emergency stop — works even when the app isn't focused.
   // Uses Electron's globalShortcut so the OS routes Cmd+Shift+Esc to us no
@@ -1529,6 +1615,7 @@ app.whenReady().then(async () => {
   announceVoiceHotkey()
   activeAppshotHotkey = registerAppshotHotkey(captureAppshotFromHotkey)
   announceAppshotHotkey()
+  activeIslandHotkey = registerIslandHotkey()
 
   if (SCREENSHOT_PATH && mainWindow) {
     const w = mainWindow
@@ -1616,7 +1703,8 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    // The island is a window too, so count the main window itself.
+    if (!mainWindow) createWindow()
   })
 })
 
@@ -1633,6 +1721,7 @@ app.on('will-quit', (event) => {
   try {
     if (activeVoiceHotkey) globalShortcut.unregister(activeVoiceHotkey)
     if (activeAppshotHotkey) globalShortcut.unregister(activeAppshotHotkey)
+    if (activeIslandHotkey) globalShortcut.unregister(activeIslandHotkey)
   } catch {}
   // Session saves are written off-thread; the last ones (the renderer
   // flushes its pending saves as the window goes away) may still be in
@@ -1649,6 +1738,8 @@ app.on('before-quit', () => {
   try {
     globalShortcut.unregisterAll()
   } catch {}
+  island?.close()
+  island = null
   gatewayLogTailer?.stop()
   bridge?.stop().catch(() => {})
   captureProxy?.close()

@@ -1,0 +1,621 @@
+/* ─── The island ─────────────────────────────────────────────────────
+   The notch-hugging mini view (src/renderer/island/, src/main/island.ts,
+   docs/ISLAND.md). The window is transparent and oversized; only `.island`
+   is drawn, at the top centre, fused with the notch. On a notched display
+   the strip is hardware black in both shells (it is the notch, grown), and
+   only the sheet that drops below it follows the theme. On a display
+   without a notch the whole island follows the theme. */
+
+:root {
+  --island-spring: linear(
+    0, 0.013 1.3%, 0.052 2.7%, 0.2 5.8%, 0.448 9.5%, 0.683 13.5%, 0.86 17.7%, 0.96 21.5%,
+    1.02 25.4%, 1.053 29.3%, 1.06 33.5%, 1.048 38.3%, 1.024 44.2%, 1.004 51%, 0.995 58.6%,
+    0.996 66.5%, 1
+  );
+  --island-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --island-black: 0 0 0;
+  --island-strip-fg: 236 234 230;
+  --island-strip-dim: 150 148 144;
+  --island-accent: 168 212 252;
+  --island-sheet: 15 15 16;
+  --island-sheet-fg: 236 234 230;
+  --island-sheet-dim: 140 138 134;
+  --island-rule: 255 255 255;
+  --island-ear-min: 46px;
+}
+:root[data-theme='light'] {
+  --island-sheet: 250 248 243;
+  --island-sheet-fg: 34 30 24;
+  --island-sheet-dim: 118 111 101;
+  --island-rule: 34 30 24;
+}
+
+html,
+body,
+#root {
+  background: transparent;
+  overflow: hidden;
+}
+
+.island-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* ── The shape ──────────────────────────────────────────────────────── */
+.island {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  display: grid;
+  grid-template-rows: var(--strip-h) auto;
+  interpolate-size: allow-keywords;
+  width: max-content;
+  min-width: calc(var(--notch-w) + 2 * var(--island-ear-min));
+  max-width: 560px;
+  height: var(--strip-h);
+  overflow: hidden;
+  border-radius: 0 0 15px 15px;
+  background: rgb(var(--island-black));
+  color: rgb(var(--island-strip-fg));
+  font: 500 11px/1 var(--font-mono);
+  letter-spacing: 0.01em;
+  transition:
+    width 0.55s var(--island-spring),
+    height 0.55s var(--island-spring),
+    border-radius 0.4s var(--island-ease),
+    box-shadow 0.3s var(--island-ease);
+  will-change: width, height;
+}
+.island[data-expanded='true'],
+.island[data-banner='true'] {
+  height: auto;
+}
+.island[data-expanded='true'] {
+  width: 448px;
+  border-radius: 0 0 26px 26px;
+}
+.island[data-banner='true'] {
+  width: 400px;
+  border-radius: 0 0 22px 22px;
+}
+/* Needs-you: a hairline of amber around the whole shape. */
+.island[data-mode='attention'] {
+  box-shadow: inset 0 0 0 1px rgb(var(--warn-rgb) / 0.55);
+}
+
+/* A display without a notch: the island is a themed pebble hanging from
+   the top edge, not a piece of hardware. */
+.island[data-notched='false'] {
+  --island-ear-min: 30px;
+  background: rgb(var(--island-sheet));
+  color: rgb(var(--island-sheet-fg));
+  box-shadow:
+    inset 0 -0.5px 0 rgb(var(--island-rule) / 0.08),
+    0 1px 2px rgb(0 0 0 / 0.25),
+    0 10px 28px -10px rgb(0 0 0 / 0.5);
+}
+:root[data-theme='light'] .island[data-notched='false'] {
+  box-shadow:
+    inset 0 -0.5px 0 rgb(var(--island-rule) / 0.1),
+    0 0.5px 0.5px rgb(62 50 32 / 0.14),
+    0 10px 28px -12px rgb(62 50 32 / 0.35);
+}
+
+/* ── The strip (the ears either side of the notch) ─────────────────── */
+.island-strip {
+  display: grid;
+  grid-template-columns: 1fr var(--notch-w) 1fr;
+  align-items: center;
+  height: var(--strip-h);
+}
+.island-ear {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: var(--island-ear-min);
+  height: 100%;
+  padding: 0 11px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+/* Snug against the notch, as on the phone. */
+.island-ear-l {
+  justify-content: flex-end;
+  padding-left: 14px;
+}
+.island-ear-r {
+  justify-content: flex-start;
+  padding-right: 14px;
+}
+.island-ear-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.island-ear-text b {
+  font-weight: 600;
+}
+.island-ear-clip {
+  display: inline-block;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.island[data-expanded='true'] .island-ear-clip {
+  max-width: 96px;
+}
+.island-dim {
+  color: rgb(var(--island-strip-dim));
+}
+.island-elapsed {
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--island-strip-dim));
+}
+.island-mark {
+  display: inline-flex;
+  color: rgb(var(--island-accent));
+}
+.island-mark .text-accent,
+.island-mark-svg {
+  color: rgb(var(--island-accent));
+}
+.island[data-notched='false'] .island-mark,
+.island[data-notched='false'] .island-mark .text-accent,
+.island[data-notched='false'] .island-mark-svg {
+  color: rgb(var(--accent-rgb));
+}
+.island[data-notched='false'] .island-dim,
+.island[data-notched='false'] .island-elapsed {
+  color: rgb(var(--island-sheet-dim));
+}
+.island-sigil {
+  display: block;
+}
+.island-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.island-tag-warn {
+  color: rgb(var(--warn-rgb));
+  box-shadow: inset 0 0 0 1px rgb(var(--warn-rgb) / 0.6);
+}
+.island-tag-danger {
+  color: rgb(var(--danger-rgb));
+  box-shadow: inset 0 0 0 1px rgb(var(--danger-rgb) / 0.6);
+}
+.island-tag-info {
+  color: rgb(var(--island-accent));
+  box-shadow: inset 0 0 0 1px rgb(var(--island-accent) / 0.5);
+}
+.island-sheet .island-tag-info {
+  color: rgb(var(--accent-rgb));
+  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.5);
+}
+
+/* The mic meter: three bars that follow the level. */
+.island-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 12px;
+}
+.island-meter span {
+  display: block;
+  width: 2.5px;
+  height: 12px;
+  border-radius: 2px;
+  background: rgb(var(--island-strip-dim));
+  transform-origin: center;
+  transition: transform 90ms linear;
+}
+.island-meter-live span {
+  background: rgb(var(--island-accent));
+}
+
+/* ── The sheet that drops below the strip ───────────────────────────── */
+.island-body {
+  display: grid;
+  min-height: 0;
+}
+.island-sheet,
+.island-banner {
+  background: rgb(var(--island-sheet));
+  color: rgb(var(--island-sheet-fg));
+  box-shadow: inset 0 0.5px 0 rgb(var(--island-rule) / 0.12);
+  animation: island-sheet-in 0.4s var(--island-ease) both;
+}
+.island-sheet {
+  display: grid;
+  gap: 11px;
+  padding: 10px 14px 14px;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+.island-section {
+  display: grid;
+  gap: 2px;
+}
+.island-h {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 3px;
+  padding: 0 8px;
+  font-size: 9.5px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgb(var(--island-sheet-dim));
+}
+.island-counts {
+  letter-spacing: 0.04em;
+  text-transform: none;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.island-glyph-now {
+  color: rgb(var(--accent-rgb));
+}
+.island-glyph-next {
+  color: rgb(var(--island-sheet-dim));
+}
+.island-glyph-blocked {
+  color: rgb(var(--warn-rgb));
+}
+.island-glyph-done {
+  color: rgb(var(--ok-rgb));
+}
+.island-empty {
+  padding: 4px 8px;
+  color: rgb(var(--island-sheet-dim));
+}
+
+/* Rows: a session, a task, a finished turn. */
+.island-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  position: relative;
+}
+.island-row:hover {
+  background: rgb(var(--island-rule) / 0.06);
+}
+.island-row-kind {
+  text-align: center;
+  color: rgb(var(--island-sheet-dim));
+}
+.island-row-kind-root {
+  color: rgb(var(--accent-rgb));
+}
+.island-row-kind-voice {
+  color: rgb(var(--ok-rgb));
+}
+.island-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.island-row-tool {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgb(var(--island-sheet-dim));
+}
+.island-row-detail {
+  opacity: 0.8;
+}
+.island-row .island-elapsed {
+  color: rgb(var(--island-sheet-dim));
+}
+.island-row-peek {
+  grid-column: 2 / -1;
+  margin-top: 1px;
+  font-size: 10.5px;
+  color: rgb(var(--island-sheet-dim));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.island-row-peek-wrap {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.island-row-done .island-row-kind {
+  color: rgb(var(--ok-rgb));
+}
+
+/* Cards: something that needs the operator. */
+.island-card {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgb(var(--island-rule) / 0.05);
+  box-shadow: inset 0 0 0 1px rgb(var(--island-rule) / 0.08);
+}
+.island-card-warn {
+  background: rgb(var(--warn-rgb) / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(var(--warn-rgb) / 0.45);
+}
+.island-card-danger {
+  background: rgb(var(--danger-rgb) / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(var(--danger-rgb) / 0.5);
+}
+.island-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.island-card-session {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgb(var(--island-sheet-dim));
+}
+.island-card-text {
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.island-card-sub {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: rgb(var(--island-sheet-dim));
+}
+.island-card-keys {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+/* Keys. */
+.island-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: rgb(var(--island-rule) / 0.07);
+  box-shadow: inset 0 0 0 1px rgb(var(--island-rule) / 0.08);
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: default;
+  transition:
+    background-color 0.15s,
+    transform 0.15s var(--island-ease);
+}
+.island-key:hover {
+  background: rgb(var(--island-rule) / 0.12);
+}
+.island-key:active {
+  transform: translateY(0.5px);
+}
+.island-key:disabled {
+  opacity: 0.4;
+}
+.island-key kbd {
+  font: inherit;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: rgb(var(--island-sheet-dim));
+}
+.island-key-primary {
+  background: rgb(var(--island-sheet-fg));
+  color: rgb(var(--island-sheet));
+  box-shadow: none;
+}
+.island-key-primary:hover {
+  background: rgb(var(--island-sheet-fg) / 0.88);
+}
+.island-key-primary kbd {
+  color: rgb(var(--island-sheet) / 0.7);
+}
+.island-key-danger {
+  background: rgb(var(--danger-rgb));
+  color: #fff;
+}
+.island-key-live {
+  color: rgb(var(--ok-rgb));
+  box-shadow: inset 0 0 0 1px rgb(var(--ok-rgb) / 0.5);
+}
+.island-key-end {
+  margin-left: auto;
+}
+.island-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* The composer. */
+.island-composer {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+.island-composer-single {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.island-input,
+.island-select {
+  height: 28px;
+  border: 0;
+  border-radius: 9px;
+  background: rgb(var(--island-rule) / 0.07);
+  box-shadow: inset 0 0 0 1px rgb(var(--island-rule) / 0.1);
+  color: inherit;
+  font: inherit;
+  font-size: 11.5px;
+  outline: none;
+}
+.island-input {
+  min-width: 0;
+  padding: 0 10px;
+}
+.island-input::placeholder {
+  color: rgb(var(--island-sheet-dim));
+}
+.island-input:focus {
+  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.7);
+}
+.island-select {
+  max-width: 130px;
+  padding: 0 8px;
+  appearance: none;
+  -webkit-appearance: none;
+  text-overflow: ellipsis;
+}
+
+/* The banner: a finished turn hangs from the notch for a moment. */
+.island-banner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  width: 100%;
+  padding: 9px 16px 13px;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.island-banner-title {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.island-banner-meta {
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--island-sheet-dim));
+}
+.island-banner-text {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgb(var(--island-sheet-dim));
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The check draws itself. */
+.island-check {
+  display: inline-block;
+  vertical-align: -2px;
+  color: rgb(var(--ok-rgb));
+}
+.island-check-bad {
+  color: rgb(var(--danger-rgb));
+}
+.island-ear .island-check {
+  color: rgb(var(--island-accent));
+}
+.island-check path {
+  stroke-dasharray: 20;
+  stroke-dashoffset: 20;
+  animation: island-draw 0.5s 0.12s var(--island-ease) forwards;
+}
+
+/* The stamp on a task that just closed: the receipt's stamp, slammed on. */
+.island-stamp-slot {
+  position: absolute;
+  right: 54px;
+  top: -3px;
+  pointer-events: none;
+}
+.island-stamp {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 9px;
+  animation: island-stamp 0.5s var(--island-spring) both;
+}
+
+/* ── Motion ──────────────────────────────────────────────────────────── */
+.island-swap {
+  animation: island-in 0.38s var(--island-spring) both;
+}
+@keyframes island-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+    filter: blur(3px);
+  }
+}
+@keyframes island-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+@keyframes island-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes island-stamp {
+  from {
+    opacity: 0;
+    transform: rotate(-14deg) scale(1.9);
+  }
+  55% {
+    opacity: 1;
+  }
+  to {
+    transform: rotate(-9deg) scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .island,
+  .island-key,
+  .island-meter span {
+    transition: none;
+  }
+  .island-swap,
+  .island-sheet,
+  .island-banner,
+  .island-check path,
+  .island-stamp {
+    animation: none;
+  }
+  .island-check path {
+    stroke-dashoffset: 0;
+  }
+}

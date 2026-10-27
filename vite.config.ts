@@ -17,6 +17,13 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'esnext',
     sourcemap: true,
+    // Two pages: the app and the island (the notch-hugging mini view).
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'src/renderer/index.html'),
+        island: path.resolve(__dirname, 'src/renderer/island.html'),
+      },
+    },
   },
   server: {
     port: 5179,

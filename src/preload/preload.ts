@@ -22,6 +22,7 @@ import {
   type SkillReadResult,
 } from '../shared/events.js'
 import type { LedgerTurn } from '../shared/turnLedger.js'
+import type { IslandAction, IslandDigest } from '../shared/island.js'
 
 type EventListener = (event: BridgeEvent) => void
 
@@ -328,6 +329,25 @@ const api = {
     ipcRenderer.on(IPC.voiceToggle, handler)
     return () => {
       ipcRenderer.removeListener(IPC.voiceToggle, handler)
+    }
+  },
+  // ── Island ────────────────────────────────────────────────
+  // The main renderer feeds the island window a digest of its store and
+  // performs the actions the island sends back (shared/island.ts).
+  async islandDigest(digest: IslandDigest): Promise<{ ok: boolean }> {
+    return ipcRenderer.invoke(IPC.islandDigest, digest)
+  },
+  onIslandPerform(listener: (action: IslandAction) => void): () => void {
+    const handler = (_e: unknown, action: IslandAction) => {
+      try {
+        listener(action)
+      } catch (err) {
+        console.error('[preload] island action listener error', err)
+      }
+    }
+    ipcRenderer.on(IPC.islandPerform, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.islandPerform, handler)
     }
   },
 } as const

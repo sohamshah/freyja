@@ -44,16 +44,25 @@ async function build() {
     outfile: path.join(ROOT, 'dist-preload/preload.cjs'),
   })
 
+  const islandPreloadCtx = await esbuild.context({
+    ...mainCommon,
+    entryPoints: [path.join(ROOT, 'src/preload/island-preload.ts')],
+    outfile: path.join(ROOT, 'dist-preload/island-preload.cjs'),
+  })
+
   if (watch) {
     await mainCtx.watch()
     await preloadCtx.watch()
+    await islandPreloadCtx.watch()
     console.log('[build-main] watching for changes...')
   } else {
     await mainCtx.rebuild()
     await preloadCtx.rebuild()
+    await islandPreloadCtx.rebuild()
     await mainCtx.dispose()
     await preloadCtx.dispose()
-    console.log('[build-main] built main + preload')
+    await islandPreloadCtx.dispose()
+    console.log('[build-main] built main + preloads')
   }
 }
 

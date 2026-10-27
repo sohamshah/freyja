@@ -80,6 +80,7 @@ export function SettingsModal() {
   const settings = useHarness((s) => s.settings)
   const setPermissionTier = useHarness((s) => s.setPermissionTier)
   const setAppearanceTheme = useHarness((s) => s.setAppearanceTheme)
+  const setIslandEnabled = useHarness((s) => s.setIslandEnabled)
   const effectiveTheme = useEffectiveTheme()
   const setComputerEnabled = useHarness((s) => s.setComputerEnabled)
   const voiceHotkey = useVoiceStore((s) => s.hotkeyLabel)
@@ -125,6 +126,41 @@ export function SettingsModal() {
               effective={effectiveTheme}
               onChange={(theme) => void setAppearanceTheme(theme)}
             />
+          </Section>
+
+          <Section
+            title="island"
+            description="A small view fused with the notch (or hanging from the top of the screen) that shows what Freyja is doing while you are in another app: live sessions and their current tool, what needs you, a turn that just finished, the board. Hover to open it, ⌃⌥⌘I opens it from anywhere. Allow or deny from there, reply without switching, start a voice conversation."
+          >
+            <button
+              onClick={() => void setIslandEnabled(!(settings.island?.enabled ?? true))}
+              className={`group flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left transition-colors ${
+                (settings.island?.enabled ?? true) ? 'bg-accent/10 ring-1 ring-accent/30' : 'hover:bg-white/[0.035] ring-hairline'
+              }`}
+            >
+              <div className="mt-[2px] flex h-4 w-4 shrink-0 items-center justify-center">
+                <div
+                  className={`h-3 w-3 rounded-full ring-1 ${
+                    (settings.island?.enabled ?? true) ? 'bg-accent/80 ring-accent' : 'bg-fg-3/30 ring-fg-3'
+                  }`}
+                />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[12px] text-fg-0">Show the island</span>
+                  <span
+                    className={`font-mono text-[9.5px] uppercase tracking-[0.08em] ${
+                      (settings.island?.enabled ?? true) ? 'text-accent' : 'text-fg-3'
+                    }`}
+                  >
+                    {(settings.island?.enabled ?? true) ? 'ON' : 'OFF'}
+                  </span>
+                </div>
+                <div className="mt-[3px] text-[11.5px] leading-[1.55] text-fg-2">
+                  Lives on the built-in display when there is one, over the menu bar and over full-screen apps. Off closes it; the hotkey opens it again.
+                </div>
+              </div>
+            </button>
           </Section>
 
           <Section title="permissions + tool approvals" description="Controls when the agent can run permission-gated tools (bash, write_file, ...) without asking first.">
