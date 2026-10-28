@@ -305,6 +305,38 @@ async def _reap(task: "asyncio.Future[Any]", baseline: int | None) -> None:
         pass
 
 
+async def run_off_loop(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    """Run blocking ``fn`` in a worker thread, so the event loop keeps serving
+    while it waits.
+
+    For compaction: it makes blocking provider calls (the summary deadline is
+    180 s to 600 s) and then rewrites the transcript. Run on the loop it froze
+    the whole process: the gateway missed Slack's Socket Mode pings and Slack
+    redelivered the message; the desktop bridge sent no events and queued
+    every command.
+
+    A thread can't be stopped. So a cancel (the operator's stop, or an
+    interrupt cutting a tool short) waits for ``fn`` to finish and then lands
+    at the caller's next await, as it did while ``fn`` ran on the loop. The
+    caller still records what ``fn`` did, and nothing else (the next turn, an
+    edit, a save) touches the transcript while the worker writes it.
+    """
+    work = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
+    stopped = False
+    while not work.done():
+        try:
+            await asyncio.wait({work})
+        except asyncio.CancelledError:
+            stopped = True
+    if stopped:
+        # Hand the caught cancel back, to be raised at the next await.
+        task = asyncio.current_task()
+        if task is not None:
+            task.uncancel()
+            task.cancel()
+    return work.result()
+
+
 # When the operator cuts in while a tool that can step aside is running
 # (bash: it moves its command to the background), the runner waits this long
 # for the tool to return its own result before cancelling it.
@@ -2998,7 +3030,7 @@ class AsyncAgentRunner:
         ))
 
         ctx.state = RunnerState.COMPACTING
-        result = self._attempt_compaction(session, ctx)
+        result = await self._attempt_compaction(session, ctx)
         ctx.state = RunnerState.RECOVERING
 
         if result.success:
@@ -3054,7 +3086,7 @@ class AsyncAgentRunner:
 
         return False
 
-    def _attempt_compaction(
+    async def _attempt_compaction(
         self,
         session: Session,
         ctx: RunnerContext,
@@ -3150,14 +3182,24 @@ class AsyncAgentRunner:
                     _wm_state = _gws()
                 except Exception:  # noqa: BLE001
                     _wm_state = None
-            result = self.compaction.compact(
-                session.transcript,
-                self.provider,
-                on_summarizer_call=_on_sum_call,
-                ground_truth=_ground_truth,
-                on_working_memory_upserts=getattr(self, "apply_working_memory_upserts", None),
-                working_memory_state=_wm_state,
-            )
+            # Worker thread, NOT the event loop (see run_off_loop).
+            _t0 = time.monotonic()
+            logger.info("Compaction started | session=%s", session.id)
+            try:
+                result = await run_off_loop(
+                    self.compaction.compact,
+                    session.transcript,
+                    self.provider,
+                    on_summarizer_call=_on_sum_call,
+                    ground_truth=_ground_truth,
+                    on_working_memory_upserts=getattr(self, "apply_working_memory_upserts", None),
+                    working_memory_state=_wm_state,
+                )
+            finally:
+                logger.info(
+                    "Compaction finished in %.1fs | session=%s",
+                    time.monotonic() - _t0, session.id,
+                )
             # Track savings for the thrash detector. <10% savings on
             # this attempt counts toward the cooldown counter.
             if result.success and result.tokens_before > 0:
@@ -3419,7 +3461,7 @@ class AsyncAgentRunner:
                 message="Pre-request compaction...",
                 details={"tokens_before": tokens_before, "trigger": "pre_request"},
             ))
-            compaction_result = self._attempt_compaction(session, ctx)
+            compaction_result = await self._attempt_compaction(session, ctx)
             if compaction_result.success:
                 try:
                     tokens_after = int(session.estimate_tokens())

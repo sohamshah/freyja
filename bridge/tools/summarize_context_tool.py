@@ -16,6 +16,7 @@ path based on whether a prior compaction exists.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -112,6 +113,8 @@ class SummarizeContextTool:
         # Without this the agent-path summarizer is invisible to spend
         # metrics.
         self._on_summarizer_llm_call = on_summarizer_llm_call
+        # One call at a time: see execute.
+        self._lock = asyncio.Lock()
 
     @property
     def definition(self) -> ToolDefinition:
@@ -193,6 +196,13 @@ class SummarizeContextTool:
         )
 
     async def execute(self, call_id: str, arguments: dict[str, Any]) -> ToolResult:
+        # The compaction runs in a worker thread (see _execute), so two calls
+        # in one parallel tool batch would rewrite the transcript at once. On
+        # the event loop they ran one after the other; the lock keeps that.
+        async with self._lock:
+            return await self._execute(call_id, arguments)
+
+    async def _execute(self, call_id: str, arguments: dict[str, Any]) -> ToolResult:
         scope = str(arguments.get("scope") or "since_last_compaction").strip()
         if scope not in self.SCOPE_VALUES:
             return _err(call_id, f"Unknown scope `{scope}`. "
@@ -283,8 +293,14 @@ class SummarizeContextTool:
             },
         })
 
+        from engine.runner import run_off_loop
+
         try:
-            result = self._dispatch(
+            # Worker thread, NOT the event loop: compaction blocks on the
+            # provider for minutes, and on the loop it froze the whole
+            # process (see run_off_loop).
+            result = await run_off_loop(
+                self._dispatch,
                 scope, level, compactor, transcript, provider,
                 on_summarizer_call=self._on_summarizer_llm_call,
             )
