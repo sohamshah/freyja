@@ -70,6 +70,9 @@
         "NSAudioCaptureUsageDescription": "Freyja captures your screen for computer-use tasks. It does not record system audio."
       }
     },
+    "asarUnpack": [
+      "dist-native/**/*"
+    ],
     "afterPack": "./scripts/sign-resources.js",
     "extraResources": [
       {
