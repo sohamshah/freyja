@@ -170,7 +170,15 @@ class SchedulerService:
     async def start(self) -> None:
         """Boot the run loop. Acquires the cross-process owner lock; if
         another scheduler in another process already holds it, this
-        instance runs in CRUD-only mode (no tick loop)."""
+        instance runs in CRUD-only mode (no tick loop).
+
+        A second call while started does nothing. It used to open
+        owner.lock again: a flock belongs to the open file description,
+        so our own first lock refused the second, the service dropped to
+        CRUD-only and stopped its tick loop, and the first descriptor,
+        no longer referenced, kept the lock from every peer."""
+        if self._owner_lock is not None:
+            return
         ensure_dirs()
         # Try to claim ownership of the tick loop. If a peer (daemon
         # or another desktop bridge) already holds it, we still

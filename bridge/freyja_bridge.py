@@ -16481,12 +16481,12 @@ async def _main_headless() -> None:
         gateway = GatewayDaemon()
         # Send-only: the dedicated gateway process owns inbound Slack.
         # Listening here too made both processes answer every mention.
+        # start() also starts the scheduler.
         await gateway.start(listen=False)
         state = gateway.state  # type: ignore[assignment]
         if state is None:
             log("error", "headless: gateway start produced no state")
             return
-        await state.scheduler.start()  # type: ignore[attr-defined]
         # Offline WM backfill runs in the daemon too — it's the process
         # that's alive overnight, which is exactly when idle sessions
         # should get summarized for the morning briefing. The pass-level
