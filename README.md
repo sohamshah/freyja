@@ -144,7 +144,7 @@ See [Slack gateway setup](#slack-gateway) below for the guided wizard.
 | `FREYJA_GATEWAY_PERMISSION_AUTO` | `yolo` | Auto-approval tier for chat-gateway (Slack/Telegram) sessions. Defaults to `yolo` because a prompt there stalls the turn until you tap a Block Kit button — and hard-denies after `FREYJA_PERMISSION_TIMEOUT_SEC`. Set to `high` to prompt for `rm -rf`/`sudo`-class commands. Skill promotion is unaffected: it never runs through the permission tier. |
 | `FREYJA_DEBUG_LOG` | `0` | Set to `1` for verbose bridge logging |
 | `FREYJA_COMPUTER_ENABLED` | `0` | Set to `1` to enable computer-use tools |
-| `FREYJA_IMAGE_MODEL` | `gpt-image-2.5-sunburst` | Default for `generate_image`; a call's `model` overrides it. Use Sunburst for precise edits or `gpt-image-2.5-flare` for fast everyday generation. |
+| `FREYJA_IMAGE_MODEL` | `gpt-image-2.5-sunburst` | Default for `generate_image`; a call's `model` overrides it. Use Sunburst for precise edits, `gpt-image-2.5-flare` for fast everyday generation, or `gemini-nano-banana-2.1` (Google's Nano Banana 2.1, needs `GEMINI_API_KEY`). |
 | `FREYJA_FRAME_DUMP` | `0` | Set to `1` to dump computer-use frames to disk |
 | `FREYJA_FRAME_DUMP_DIR` | _(temp dir)_ | Directory for frame dumps |
 | `FREYJA_HEADLESS` | `0` | Run bridge without Electron UI |

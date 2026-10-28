@@ -256,10 +256,12 @@ def test_generate_image_schema_describes_supported_models_and_options() -> None:
     properties = definition.parameters["properties"]
 
     assert image_generation_tool.DEFAULT_IMAGE_MODEL == "gpt-image-2.5-sunburst"
-    assert image_generation_tool.SUPPORTED_MODELS == set(ALL_MODELS)
-    assert set(properties["model"]["enum"]) == set(ALL_MODELS)
+    # The OpenAI set plus Google's Nano Banana 2.1 (tests/test_image_generation_gemini.py).
+    assert image_generation_tool.SUPPORTED_MODELS == set(ALL_MODELS) | {"gemini-nano-banana-2.1"}
+    assert set(properties["model"]["enum"]) == set(ALL_MODELS) | {"gemini-nano-banana-2.1"}
     assert "Sunburst" in definition.summary
     assert "Flare" in definition.summary
+    assert "Nano Banana" in definition.summary
     assert "gpt-image-2.5-sunburst" in definition.description
     assert "gpt-image-2.5-flare" in definition.description
     assert "explicit model overrides FREYJA_IMAGE_MODEL" in definition.description

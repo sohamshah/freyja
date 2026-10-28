@@ -1,9 +1,10 @@
-"""Image generation tool backed by OpenAI's Images API."""
+"""Image generation tool backed by OpenAI's Images API and Google's Nano Banana."""
 
 from __future__ import annotations
 
 import base64
 import inspect
+import math
 import os
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +16,7 @@ from bridge.tools.base import ImageBlock, TextBlock, ToolDefinition, ToolResult,
 from bridge.tools.image_store import ImageAsset, SessionImageStore, strip_data_url
 
 DEFAULT_IMAGE_MODEL = "gpt-image-2.5-sunburst"
-SUPPORTED_MODELS = {
+OPENAI_IMAGE_MODELS = {
     "gpt-image-2.5-sunburst",
     "gpt-image-2.5-sunburst-2026-09-08",
     "gpt-image-2.5-flare",
@@ -26,7 +27,26 @@ SUPPORTED_MODELS = {
     "gpt-image-1",
     "gpt-image-1-mini",
 }
+# Google's Nano Banana 2.1 (GA 2026-10-06, replaces gemini-3.1-flash-image)
+# runs through the Gemini API with GEMINI_API_KEY; everything above is
+# OpenAI's Images API.
+GEMINI_IMAGE_MODELS = {"gemini-nano-banana-2.1"}
+SUPPORTED_MODELS = OPENAI_IMAGE_MODELS | GEMINI_IMAGE_MODELS
 LEGACY_IMAGE_MODELS = {"gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini"}
+# Nano Banana takes a fixed aspect ratio and a size tier instead of WxH.
+# (512px is in the docs but 2.1 answers "Image size 512px is not supported
+# for this model" — probed 2026-10-28.)
+GEMINI_ASPECT_RATIOS = ("1:1", "3:2", "2:3", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9")
+GEMINI_IMAGE_SIZES = ("1K", "2K", "4K")
+GEMINI_QUALITY_TIERS = {
+    "auto": "1K",
+    "low": "1K",
+    "medium": "1K",
+    "high": "2K",
+    "xhigh": "4K",
+    "max": "4K",
+}
+GEMINI_MAX_INPUT_IMAGES = 14
 DEFAULT_IMAGE_OUTPUT_DIR = Path.home() / "Pictures" / "Freyja"
 LEGACY_SIZES = {"auto", "1024x1024", "1536x1024", "1024x1536"}
 SUPPORTED_QUALITIES = {"auto", "low", "medium", "high", "xhigh", "max"}
@@ -117,6 +137,80 @@ def _clean_size(value: Any, model: str) -> str:
             "between 1:3 and 3:1 and 655360–8294400 total pixels"
         )
     return size
+
+
+def _clean_gemini_size(value: Any) -> str:
+    """Nano Banana sizes: auto, one of GEMINI_ASPECT_RATIOS, or WIDTHxHEIGHT
+    with any positive integers (mapped onto the nearest ratio and a tier)."""
+    size = str(value or "auto").strip().lower()
+    if size == "auto" or size in GEMINI_ASPECT_RATIOS:
+        return size
+    parts = size.split("x")
+    if len(parts) == 2 and all(
+        part.isascii() and part.isdecimal() and 0 < len(part) <= 5 for part in parts
+    ):
+        width, height = map(int, parts)
+        if width > 0 and height > 0:
+            return f"{width}x{height}"
+    raise ValueError(
+        "size must be auto, an aspect ratio ("
+        + ", ".join(GEMINI_ASPECT_RATIOS)
+        + ") or WIDTHxHEIGHT for Nano Banana"
+    )
+
+
+def _nearest_gemini_aspect_ratio(width: int, height: int) -> str:
+    target = math.log(width / height)
+
+    def distance(ratio: str) -> float:
+        w, h = ratio.split(":")
+        return abs(math.log(int(w) / int(h)) - target)
+
+    return min(GEMINI_ASPECT_RATIOS, key=distance)
+
+
+def _gemini_render_plan(size: str, quality: str) -> tuple[str | None, str]:
+    """Map the tool's size/quality onto Nano Banana's (aspect_ratio, image_size).
+
+    An explicit WIDTHxHEIGHT picks the tier from its longest edge; otherwise
+    quality picks it (low/medium 1K, high 2K, xhigh/max 4K). ``None`` for the
+    ratio leaves the model's default (1:1, or the reference image's shape).
+    """
+    if size == "auto":
+        return None, GEMINI_QUALITY_TIERS[quality]
+    if ":" in size:
+        return size, GEMINI_QUALITY_TIERS[quality]
+    width, height = map(int, size.split("x"))
+    longest = max(width, height)
+    if longest <= 1024:
+        tier = "1K"
+    elif longest <= 2048:
+        tier = "2K"
+    else:
+        tier = "4K"
+    return _nearest_gemini_aspect_ratio(width, height), tier
+
+
+def _reencode_image(raw: bytes, output_format: str, compression: int | None) -> bytes:
+    """Nano Banana answers in the format it likes (PNG in practice) and
+    google-genai 2.0 refuses the output-format fields on the Gemini API, so
+    a requested jpeg/webp is produced locally."""
+    import io  # noqa: PLC0415
+
+    from PIL import Image  # noqa: PLC0415
+
+    with Image.open(io.BytesIO(raw)) as image:
+        buffer = io.BytesIO()
+        if output_format == "jpeg":
+            image.convert("RGB").save(
+                buffer, format="JPEG", quality=90 if compression is None else compression
+            )
+        elif output_format == "webp":
+            options = {} if compression is None else {"quality": compression}
+            image.save(buffer, format="WEBP", **options)
+        else:
+            image.save(buffer, format="PNG")
+        return buffer.getvalue()
 
 
 def _clean_compression(value: Any) -> int | None:
@@ -238,8 +332,10 @@ class GenerateImageTool:
         client_factory: Any | None = None,
         image_store: SessionImageStore | None = None,
         default_output_dir: Path | None = None,
+        gemini_client_factory: Any | None = None,
     ):
         self._client_factory = client_factory
+        self._gemini_client_factory = gemini_client_factory
         self._image_store = image_store
         self._default_output_dir = default_output_dir
 
@@ -247,9 +343,12 @@ class GenerateImageTool:
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             name="generate_image",
-            summary="Generate or edit an image with GPT Image 2.5 Sunburst or Flare",
+            summary=(
+                "Generate or edit an image with GPT Image 2.5 Sunburst or Flare, "
+                "or Gemini Nano Banana 2.1"
+            ),
             tier=ToolTier.WARM,
-            description="""Generate or edit one image using OpenAI's Images API.
+            description="""Generate or edit one image with OpenAI GPT Image or Google's Nano Banana.
 
 Use this when the user explicitly asks for an image, illustration, design reference,
 texture, visual asset, mockup, or creative bitmap output. If input_images are
@@ -259,6 +358,11 @@ The tool returns an inline image, a reusable session ref, and a saved file path.
 Model selection:
 - Default: gpt-image-2.5-sunburst, best for precise edits and detail preservation.
 - Choose gpt-image-2.5-flare for fast, high-quality everyday generation.
+- Choose gemini-nano-banana-2.1 (Google, needs GEMINI_API_KEY) for fast generation
+  with strong text rendering and consistent characters/objects across up to 14
+  reference images. It renders at 1K/2K/4K in a fixed set of aspect ratios and
+  has no mask, transparent background, or moderation setting; it answers in
+  jpeg unless output_format asks for something else.
 - An explicit model overrides FREYJA_IMAGE_MODEL, which overrides the default.
 - Dated snapshots and earlier GPT Image models are available in the model enum.
 - GPT Image 2 and 2.5 process references at high fidelity automatically: omit
@@ -286,7 +390,8 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                         "type": "string",
                         "enum": sorted(SUPPORTED_MODELS),
                         "description": (
-                            "Sunburst for editing precision; Flare for fast everyday generation. "
+                            "Sunburst for editing precision; Flare for fast everyday generation; "
+                            "gemini-nano-banana-2.1 for Google's Nano Banana 2.1 (GEMINI_API_KEY). "
                             "Omit to use FREYJA_IMAGE_MODEL or gpt-image-2.5-sunburst."
                         ),
                     },
@@ -297,7 +402,9 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                             "at most 3840px; ratio 1:3–3:1; 655360–8294400 total pixels. "
                             "Examples: 1024x1024, 1536x864, 2048x2048, 3840x2160. "
                             "Above 2560x1440 is experimental. Older models: auto, "
-                            "1024x1024, 1536x1024, or 1024x1536 only."
+                            "1024x1024, 1536x1024, or 1024x1536 only. Nano Banana: auto, an "
+                            "aspect ratio (1:1, 3:2, 2:3, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9), "
+                            "or WIDTHxHEIGHT mapped to the nearest ratio and a 1K/2K/4K tier."
                         ),
                         "default": "1024x1024",
                     },
@@ -306,14 +413,19 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                         "enum": sorted(SUPPORTED_QUALITIES),
                         "description": (
                             "low for drafts; medium/high for final assets. GPT Image 2.5 also "
-                            "supports xhigh/max. Higher settings can cost more and take longer."
+                            "supports xhigh/max. Higher settings can cost more and take longer. "
+                            "Nano Banana: low/medium render at 1K, high at 2K, xhigh/max at 4K "
+                            "unless an explicit WIDTHxHEIGHT size sets the tier."
                         ),
                         "default": "auto",
                     },
                     "output_format": {
                         "type": "string",
                         "enum": sorted(SUPPORTED_FORMATS),
-                        "description": "Encoding: png/webp for transparency; jpeg for speed.",
+                        "description": (
+                            "Encoding: png/webp for transparency; jpeg for speed. Nano Banana "
+                            "answers in jpeg; set this to re-encode its output."
+                        ),
                         "default": "png",
                     },
                     "background": {
@@ -321,7 +433,8 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                         "enum": sorted(SUPPORTED_BACKGROUNDS),
                         "description": (
                             "transparent requires png/webp. Supported on GPT Image 2.5 and older "
-                            "GPT Image models; preview support on GPT Image 2."
+                            "GPT Image models; preview support on GPT Image 2. Not available on "
+                            "Nano Banana."
                         ),
                         "default": "auto",
                     },
@@ -362,7 +475,8 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                         "description": (
                             "Optional mask, resolved like input_images. Transparent pixels mark "
                             "editable areas; match the first input image's dimensions. "
-                            "The mask guides the edit, not a guaranteed exact boundary."
+                            "The mask guides the edit, not a guaranteed exact boundary. "
+                            "GPT Image models only."
                         ),
                         "properties": {
                             "ref": {"type": "string"},
@@ -392,7 +506,10 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                     "moderation": {
                         "type": "string",
                         "enum": sorted(SUPPORTED_MODERATION),
-                        "description": "OpenAI image moderation strictness when supported.",
+                        "description": (
+                            "OpenAI image moderation strictness when supported. "
+                            "Ignored on Nano Banana."
+                        ),
                         "default": "auto",
                     },
                     "save_path": {
@@ -419,29 +536,36 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                 is_error=True,
             )
 
-        api_key = os.environ.get("OPENAI_API_KEY")
+        model = (
+            str(arguments.get("model") or "").strip()
+            or os.environ.get("FREYJA_IMAGE_MODEL", "").strip()
+            or DEFAULT_IMAGE_MODEL
+        )
+        gemini = model in GEMINI_IMAGE_MODELS
+        key_name = "GEMINI_API_KEY" if gemini else "OPENAI_API_KEY"
+        api_key = os.environ.get(key_name)
         if not api_key:
             return ToolResult(
                 call_id=call_id,
-                content="Error: OPENAI_API_KEY is not configured",
+                content=f"Error: {key_name} is not configured",
                 is_error=True,
             )
 
         try:
-            model = (
-                str(arguments.get("model") or "").strip()
-                or os.environ.get("FREYJA_IMAGE_MODEL", "").strip()
-                or DEFAULT_IMAGE_MODEL
-            )
             if model not in SUPPORTED_MODELS:
                 raise ValueError(f"model must be one of: {', '.join(sorted(SUPPORTED_MODELS))}")
-            size = _clean_size(arguments.get("size"), model)
+            if gemini:
+                size = _clean_gemini_size(arguments.get("size"))
+            else:
+                size = _clean_size(arguments.get("size"), model)
+            size_label = size
             qualities = SUPPORTED_QUALITIES
-            if not model.startswith("gpt-image-2.5-"):
+            if not (gemini or model.startswith("gpt-image-2.5-")):
                 qualities = qualities - {"xhigh", "max"}
             quality = _clean_enum(
                 arguments.get("quality"), name="quality", allowed=qualities, default="auto"
             )
+            format_requested = arguments.get("output_format") not in ("", None)
             output_format = _clean_enum(
                 arguments.get("output_format"),
                 name="output_format",
@@ -462,6 +586,17 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                 allowed=SUPPORTED_MODERATION,
                 default="auto",
             )
+            if gemini:
+                if background == "transparent":
+                    raise ValueError(
+                        f"{model} has no background control; a transparent background "
+                        "needs a GPT Image model"
+                    )
+                if isinstance(arguments.get("mask_image"), dict):
+                    raise ValueError(
+                        f"{model} does not take a mask_image; describe the region to "
+                        "change in the prompt"
+                    )
             input_fidelity = _clean_enum(
                 arguments.get("input_fidelity"),
                 name="input_fidelity",
@@ -491,20 +626,41 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                 if not input_images:
                     raise ValueError("mask_image requires an input image to edit")
                 mask_image = await self._resolve_input_image(arguments["mask_image"])
-            b64, media_type = await self._generate(
-                api_key=api_key,
-                model=model,
-                prompt=prompt,
-                size=size,
-                quality=quality,
-                output_format=output_format,
-                background=background,
-                output_compression=output_compression,
-                moderation=moderation,
-                input_images=input_images,
-                mask_image=mask_image,
-                input_fidelity=input_fidelity,
-            )
+            if gemini:
+                if len(input_images) > GEMINI_MAX_INPUT_IMAGES:
+                    raise ValueError(
+                        f"{model} takes at most {GEMINI_MAX_INPUT_IMAGES} input images"
+                    )
+                aspect_ratio, image_size = _gemini_render_plan(size, quality)
+                size_label = f"{aspect_ratio or 'auto'} at {image_size}"
+                b64, media_type = await self._generate_gemini(
+                    api_key=api_key,
+                    model=model,
+                    prompt=prompt,
+                    aspect_ratio=aspect_ratio,
+                    image_size=image_size,
+                    # The png default is OpenAI's; Nano Banana's own format
+                    # (jpeg) stands unless the caller asked for one.
+                    output_format=output_format if format_requested else None,
+                    output_compression=output_compression,
+                    input_images=input_images,
+                )
+                output_format = media_type.split("/", 1)[1]
+            else:
+                b64, media_type = await self._generate(
+                    api_key=api_key,
+                    model=model,
+                    prompt=prompt,
+                    size=size,
+                    quality=quality,
+                    output_format=output_format,
+                    background=background,
+                    output_compression=output_compression,
+                    moderation=moderation,
+                    input_images=input_images,
+                    mask_image=mask_image,
+                    input_fidelity=input_fidelity,
+                )
         except Exception as exc:  # noqa: BLE001
             return ToolResult(
                 call_id=call_id,
@@ -564,7 +720,7 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                 TextBlock(
                     text=(
                         f"{mode_text} with {model} "
-                        f"({size}, quality={quality}, format={output_format})."
+                        f"({size_label}, quality={quality}, format={output_format})."
                         f"{ref_text}"
                     )
                 ),
@@ -633,6 +789,80 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
             return await _download_image_url(str(url))
 
         raise RuntimeError("OpenAI image response had neither base64 data nor a URL")
+
+    async def _generate_gemini(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        prompt: str,
+        aspect_ratio: str | None,
+        image_size: str,
+        output_format: str | None,
+        output_compression: int | None,
+        input_images: list[ImageAsset],
+    ) -> tuple[str, str]:
+        """Nano Banana through ``generate_content``: the prompt plus any
+        reference images as inline parts, the picture back as inline data.
+        ``output_format`` None keeps whatever format the model answered in."""
+        from google.genai import types as gtypes  # noqa: PLC0415
+
+        client = self._make_gemini_client(api_key)
+        contents: list[Any] = [prompt]
+        for asset in input_images:
+            contents.append(
+                gtypes.Part.from_bytes(
+                    data=_bytes_from_base64(asset.data_base64),
+                    mime_type=asset.media_type,
+                )
+            )
+        image_config: dict[str, Any] = {"image_size": image_size}
+        if aspect_ratio:
+            image_config["aspect_ratio"] = aspect_ratio
+        response = await client.aio.models.generate_content(
+            model=model,
+            contents=contents,
+            config=gtypes.GenerateContentConfig(
+                # TEXT as well, so a refusal arrives as words rather than an
+                # empty candidate the operator can't act on.
+                response_modalities=["TEXT", "IMAGE"],
+                image_config=gtypes.ImageConfig(**image_config),
+            ),
+        )
+
+        candidates = getattr(response, "candidates", None) or []
+        content = getattr(candidates[0], "content", None) if candidates else None
+        parts = getattr(content, "parts", None) or []
+        notes: list[str] = []
+        for part in parts:
+            if getattr(part, "thought", False):
+                # Nano Banana 2.1 thinks before it draws; a thought part can
+                # carry a draft image, which is not the answer.
+                continue
+            inline = getattr(part, "inline_data", None)
+            data = getattr(inline, "data", None) if inline is not None else None
+            if data:
+                raw = data if isinstance(data, bytes) else base64.b64decode(data)
+                media_type = str(getattr(inline, "mime_type", None) or "image/png")
+                if output_format and media_type != f"image/{output_format}":
+                    raw = _reencode_image(raw, output_format, output_compression)
+                    media_type = f"image/{output_format}"
+                return base64.b64encode(raw).decode("ascii"), media_type
+            text = getattr(part, "text", None)
+            if text:
+                notes.append(str(text).strip())
+
+        finish = getattr(candidates[0], "finish_reason", None) if candidates else None
+        finish_name = getattr(finish, "name", None) or (str(finish) if finish else "no candidate")
+        detail = f": {' '.join(notes)}" if notes else ""
+        raise RuntimeError(f"{model} returned no image (finish_reason={finish_name}){detail}")
+
+    def _make_gemini_client(self, api_key: str) -> Any:
+        if self._gemini_client_factory is not None:
+            return self._gemini_client_factory(api_key)
+        from google import genai  # noqa: PLC0415
+
+        return genai.Client(api_key=api_key)
 
     async def _resolve_input_images(self, value: Any) -> list[ImageAsset]:
         if value in ("", None):
