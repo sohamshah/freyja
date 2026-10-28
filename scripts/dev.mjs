@@ -5,7 +5,7 @@
 // 3. Wait until Vite is ready, then spawn Electron pointing at the Vite URL.
 // 4. On exit, clean up all children.
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import http from 'node:http'
@@ -64,6 +64,9 @@ async function waitFor(url, timeoutMs = 20000) {
 }
 
 async function main() {
+  // 0. The island's backdrop-blur shim (best effort; see scripts/build-glass.sh).
+  spawnSync('bash', ['scripts/build-glass.sh'], { cwd: ROOT, stdio: 'inherit' })
+
   // 1. Watch main/preload
   const mainBuild = spawnChild('node', ['scripts/build-main.mjs', '--watch'])
   mainBuild.on('exit', (code) => {

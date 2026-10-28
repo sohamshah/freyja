@@ -1,10 +1,11 @@
 /* ─── The island ─────────────────────────────────────────────────────
    The notch-hugging mini view (src/renderer/island/, src/main/island.ts,
    docs/ISLAND.md). The window is transparent and oversized; only `.island`
-   is drawn, at the top centre, fused with the notch. On a notched display
-   the strip is hardware black in both shells (it is the notch, grown), and
-   only the sheet that drops below it follows the theme. On a display
-   without a notch the whole island follows the theme. */
+   is drawn, at the top centre, hanging from the notch. It is a pane of
+   glass in both shells: a native blur sits behind it in exactly its shape
+   (native/island-glass), and these rules add the tint, the rim and the
+   type on top. Without the blur (`data-glass="css"`) the tint goes nearly
+   solid so the words still have a ground. */
 
 :root {
   --island-spring: linear(
@@ -13,21 +14,65 @@
     0.996 66.5%, 1
   );
   --island-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
-  --island-black: 0 0 0;
-  --island-strip-fg: 236 234 230;
-  --island-strip-dim: 150 148 144;
-  --island-accent: 168 212 252;
-  --island-sheet: 15 15 16;
-  --island-sheet-fg: 236 234 230;
-  --island-sheet-dim: 140 138 134;
-  --island-rule: 255 255 255;
+  --island-font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif;
+  --island-mono: var(--font-mono);
   --island-ear-min: 46px;
+
+  /* Dark glass: a smoked pane. */
+  --island-fg: 242 240 236;
+  --island-dim: 188 184 178;
+  --island-tint: 12 12 14;
+  --island-tint-a: 0.3;
+  --island-tint-solid: 0.9;
+  --island-sheen: 0.07;
+  --island-rim: 255 255 255;
+  --island-rim-a: 0.16;
+  --island-rim-lo-a: 0.07;
+  --island-line: 0 0 0;
+  --island-line-a: 0.55;
+  --island-shade: 0 0 0;
+  --island-shadow-a: 0.5;
+  --island-divider: 255 255 255;
+  --island-divider-a: 0.1;
+  --island-well: 255 255 255;
+  --island-well-a: 0.1;
+  --island-well-hi-a: 0.17;
+  --island-card-a: 0.06;
+  --island-key-rim-a: 0.14;
+  --island-key-line-a: 0.35;
+  --island-accent: 168 212 252;
+  --island-on-accent: 12 18 28;
+  --island-ring: 0 0 0 0 transparent;
 }
 :root[data-theme='light'] {
-  --island-sheet: 250 248 243;
-  --island-sheet-fg: 34 30 24;
-  --island-sheet-dim: 118 111 101;
-  --island-rule: 34 30 24;
+  /* Light glass: a frosted white pane. */
+  --island-fg: 28 25 20;
+  --island-dim: 94 88 80;
+  --island-tint: 255 255 255;
+  --island-tint-a: 0.4;
+  --island-tint-solid: 0.94;
+  --island-sheen: 0.55;
+  --island-rim: 255 255 255;
+  --island-rim-a: 0.8;
+  --island-rim-lo-a: 0.6;
+  --island-line: 34 30 24;
+  --island-line-a: 0.16;
+  --island-shade: 62 50 32;
+  --island-shadow-a: 0.28;
+  --island-divider: 34 30 24;
+  --island-divider-a: 0.12;
+  --island-well: 255 255 255;
+  --island-well-a: 0.5;
+  --island-well-hi-a: 0.75;
+  --island-card-a: 0.42;
+  --island-key-rim-a: 0.9;
+  --island-key-line-a: 0.14;
+  --island-accent: 40 100 180;
+  --island-on-accent: 255 255 255;
+}
+/* No native blur behind the window: the tint carries the ground. */
+.island-root[data-glass='css'] {
+  --island-tint-a: var(--island-tint-solid);
 }
 
 html,
@@ -60,10 +105,25 @@ body,
   height: var(--strip-h);
   overflow: hidden;
   border-radius: 0 0 15px 15px;
-  background: rgb(var(--island-black));
-  color: rgb(var(--island-strip-fg));
-  font: 500 11px/1 var(--font-mono);
-  letter-spacing: 0.01em;
+  color: rgb(var(--island-fg));
+  font: 500 12px/1 var(--island-font);
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+  /* The pane: a sheen along the top edge over the tint. */
+  background:
+    linear-gradient(180deg, rgb(var(--island-rim) / var(--island-sheen)), rgb(var(--island-rim) / 0) 64px),
+    rgb(var(--island-tint) / var(--island-tint-a));
+  box-shadow:
+    var(--island-ring),
+    inset 0 0 0 0.5px rgb(var(--island-rim) / var(--island-rim-a)),
+    inset 0 -1px 0 rgb(var(--island-rim) / var(--island-rim-lo-a)),
+    0 0 0 0.5px rgb(var(--island-line) / var(--island-line-a)),
+    0 14px 34px -14px rgb(var(--island-shade) / var(--island-shadow-a)),
+    0 1px 2px rgb(var(--island-shade) / calc(var(--island-shadow-a) * 0.5));
+  /* Blurs the page's own backdrop (nothing, in the transparent window;
+     the fake desktop in the probes), never the screen: that is the shim's job. */
+  -webkit-backdrop-filter: blur(28px) saturate(1.4);
+  backdrop-filter: blur(28px) saturate(1.4);
   transition:
     width 0.55s var(--island-spring),
     height 0.55s var(--island-spring),
@@ -83,13 +143,13 @@ body,
   width: 400px;
   border-radius: 0 0 22px 22px;
 }
-/* Needs-you: a hairline of amber around the whole shape. */
+/* Needs-you: a hairline of amber around the whole pane. */
 .island[data-mode='attention'] {
-  box-shadow: inset 0 0 0 1px rgb(var(--warn-rgb) / 0.55);
+  --island-ring: inset 0 0 0 1px rgb(var(--warn-rgb) / 0.6);
 }
 /* The shelf: something is being dragged over the island. */
 .island[data-drop='true'] {
-  box-shadow: inset 0 0 0 1px rgb(var(--island-accent) / 0.75);
+  --island-ring: inset 0 0 0 1px rgb(var(--island-accent) / 0.8);
 }
 /* A new needs-you item: the shape nudges once. */
 .island-nudge {
@@ -109,23 +169,9 @@ body,
     transform: translateX(-50%) scale(1);
   }
 }
-
-/* A display without a notch: the island is a themed pebble hanging from
-   the top edge, not a piece of hardware. */
+/* A display without a notch: a smaller pane hanging from the top edge. */
 .island[data-notched='false'] {
   --island-ear-min: 30px;
-  background: rgb(var(--island-sheet));
-  color: rgb(var(--island-sheet-fg));
-  box-shadow:
-    inset 0 -0.5px 0 rgb(var(--island-rule) / 0.08),
-    0 1px 2px rgb(0 0 0 / 0.25),
-    0 10px 28px -10px rgb(0 0 0 / 0.5);
-}
-:root[data-theme='light'] .island[data-notched='false'] {
-  box-shadow:
-    inset 0 -0.5px 0 rgb(var(--island-rule) / 0.1),
-    0 0.5px 0.5px rgb(62 50 32 / 0.14),
-    0 10px 28px -12px rgb(62 50 32 / 0.35);
 }
 
 /* ── The strip (the ears either side of the notch) ─────────────────── */
@@ -175,11 +221,13 @@ body,
   max-width: 96px;
 }
 .island-dim {
-  color: rgb(var(--island-strip-dim));
+  color: rgb(var(--island-dim));
 }
 .island-elapsed {
+  font-family: var(--island-mono);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
-  color: rgb(var(--island-strip-dim));
+  color: rgb(var(--island-dim));
 }
 .island-mark {
   display: inline-flex;
@@ -189,27 +237,18 @@ body,
 .island-mark-svg {
   color: rgb(var(--island-accent));
 }
-.island[data-notched='false'] .island-mark,
-.island[data-notched='false'] .island-mark .text-accent,
-.island[data-notched='false'] .island-mark-svg {
-  color: rgb(var(--accent-rgb));
-}
-.island[data-notched='false'] .island-dim,
-.island[data-notched='false'] .island-elapsed {
-  color: rgb(var(--island-sheet-dim));
-}
 .island-sigil {
   display: block;
 }
 .island-tag {
   display: inline-flex;
   align-items: center;
-  height: 16px;
-  padding: 0 6px;
+  height: 17px;
+  padding: 0 7px;
   border-radius: 999px;
-  font-size: 9px;
+  font-size: 9.5px;
   font-weight: 600;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 .island-tag-warn {
@@ -222,11 +261,7 @@ body,
 }
 .island-tag-info {
   color: rgb(var(--island-accent));
-  box-shadow: inset 0 0 0 1px rgb(var(--island-accent) / 0.5);
-}
-.island-sheet .island-tag-info {
-  color: rgb(var(--accent-rgb));
-  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.5);
+  box-shadow: inset 0 0 0 1px rgb(var(--island-accent) / 0.55);
 }
 
 /* The mic meter: three bars that follow the level. */
@@ -241,7 +276,7 @@ body,
   width: 2.5px;
   height: 12px;
   border-radius: 2px;
-  background: rgb(var(--island-strip-dim));
+  background: rgb(var(--island-dim));
   transform-origin: center;
   transition: transform 90ms linear;
 }
@@ -256,17 +291,16 @@ body,
 }
 .island-sheet,
 .island-banner {
-  background: rgb(var(--island-sheet));
-  color: rgb(var(--island-sheet-fg));
-  box-shadow: inset 0 0.5px 0 rgb(var(--island-rule) / 0.12);
+  color: rgb(var(--island-fg));
+  box-shadow: inset 0 0.5px 0 rgb(var(--island-divider) / var(--island-divider-a));
   animation: island-sheet-in 0.4s var(--island-ease) both;
 }
 .island-sheet {
   display: grid;
-  gap: 11px;
-  padding: 10px 14px 14px;
-  font-size: 11.5px;
-  line-height: 1.35;
+  gap: 12px;
+  padding: 11px 14px 14px;
+  font-size: 12.5px;
+  line-height: 1.4;
 }
 .island-section {
   display: grid;
@@ -275,27 +309,29 @@ body,
 .island-h {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 9px;
   margin: 0 0 3px;
-  padding: 0 8px;
-  font-size: 9.5px;
-  font-weight: 500;
+  padding: 0 9px;
+  font-size: 10px;
+  font-weight: 600;
   line-height: 1;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: rgb(var(--island-sheet-dim));
+  color: rgb(var(--island-dim));
 }
 .island-counts {
-  letter-spacing: 0.04em;
+  font-family: var(--island-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   text-transform: none;
-  font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
 .island-glyph-now {
-  color: rgb(var(--accent-rgb));
+  color: rgb(var(--island-accent));
 }
 .island-glyph-next {
-  color: rgb(var(--island-sheet-dim));
+  color: rgb(var(--island-dim));
 }
 .island-glyph-blocked {
   color: rgb(var(--warn-rgb));
@@ -304,8 +340,8 @@ body,
   color: rgb(var(--ok-rgb));
 }
 .island-empty {
-  padding: 4px 8px;
-  color: rgb(var(--island-sheet-dim));
+  padding: 4px 9px;
+  color: rgb(var(--island-dim));
 }
 
 /* Rows: a session, a task, a finished turn. */
@@ -315,7 +351,7 @@ body,
   align-items: center;
   column-gap: 8px;
   width: 100%;
-  padding: 5px 8px;
+  padding: 6px 9px;
   border: 0;
   border-radius: 9px;
   background: transparent;
@@ -326,14 +362,14 @@ body,
   position: relative;
 }
 .island-row:hover {
-  background: rgb(var(--island-rule) / 0.06);
+  background: rgb(var(--island-well) / var(--island-card-a));
 }
 .island-row-kind {
   text-align: center;
-  color: rgb(var(--island-sheet-dim));
+  color: rgb(var(--island-dim));
 }
 .island-row-kind-root {
-  color: rgb(var(--accent-rgb));
+  color: rgb(var(--island-accent));
 }
 .island-row-kind-voice {
   color: rgb(var(--ok-rgb));
@@ -348,19 +384,17 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: rgb(var(--island-sheet-dim));
+  font-size: 12px;
+  color: rgb(var(--island-dim));
 }
 .island-row-detail {
-  opacity: 0.8;
-}
-.island-row .island-elapsed {
-  color: rgb(var(--island-sheet-dim));
+  opacity: 0.85;
 }
 .island-row-peek {
   grid-column: 2 / -1;
   margin-top: 1px;
-  font-size: 10.5px;
-  color: rgb(var(--island-sheet-dim));
+  font-size: 11.5px;
+  color: rgb(var(--island-dim));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -375,22 +409,24 @@ body,
   color: rgb(var(--ok-rgb));
 }
 
-/* Cards: something that needs the operator. */
+/* Cards: something that needs the operator. A chip of thicker glass. */
 .island-card {
   display: grid;
   gap: 6px;
   padding: 10px 12px;
   border-radius: 12px;
-  background: rgb(var(--island-rule) / 0.05);
-  box-shadow: inset 0 0 0 1px rgb(var(--island-rule) / 0.08);
+  background: rgb(var(--island-well) / var(--island-card-a));
+  box-shadow:
+    inset 0 0.5px 0 rgb(var(--island-rim) / var(--island-key-rim-a)),
+    0 0 0 0.5px rgb(var(--island-line) / var(--island-key-line-a));
 }
 .island-card-warn {
-  background: rgb(var(--warn-rgb) / 0.08);
-  box-shadow: inset 0 0 0 1px rgb(var(--warn-rgb) / 0.45);
+  background: rgb(var(--warn-rgb) / 0.12);
+  box-shadow: inset 0 0 0 1px rgb(var(--warn-rgb) / 0.5);
 }
 .island-card-danger {
-  background: rgb(var(--danger-rgb) / 0.08);
-  box-shadow: inset 0 0 0 1px rgb(var(--danger-rgb) / 0.5);
+  background: rgb(var(--danger-rgb) / 0.12);
+  box-shadow: inset 0 0 0 1px rgb(var(--danger-rgb) / 0.55);
 }
 .island-card-head {
   display: flex;
@@ -401,17 +437,17 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: rgb(var(--island-sheet-dim));
+  color: rgb(var(--island-dim));
 }
 .island-card-text {
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: 13px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 .island-card-sub {
-  font-size: 10.5px;
+  font-size: 11.5px;
   line-height: 1.4;
-  color: rgb(var(--island-sheet-dim));
+  color: rgb(var(--island-dim));
 }
 .island-card-keys {
   display: flex;
@@ -420,20 +456,23 @@ body,
   margin-top: 2px;
 }
 
-/* Keys. */
+/* Keys: chips of glass. */
 .island-key {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 26px;
-  padding: 0 10px;
+  height: 27px;
+  padding: 0 11px;
   border: 0;
-  border-radius: 8px;
-  background: rgb(var(--island-rule) / 0.07);
-  box-shadow: inset 0 0 0 1px rgb(var(--island-rule) / 0.08);
-  color: inherit;
-  font: inherit;
-  font-size: 11px;
+  border-radius: 9px;
+  background: rgb(var(--island-well) / var(--island-well-a));
+  box-shadow:
+    inset 0 0.5px 0 rgb(var(--island-rim) / var(--island-key-rim-a)),
+    inset 0 0 0 0.5px rgb(var(--island-rim) / calc(var(--island-key-rim-a) * 0.5)),
+    0 0 0 0.5px rgb(var(--island-line) / var(--island-key-line-a)),
+    0 1px 2px rgb(var(--island-shade) / 0.12);
+  color: rgb(var(--island-fg));
+  font: 500 12px/1 var(--island-font);
   white-space: nowrap;
   cursor: default;
   transition:
@@ -441,38 +480,44 @@ body,
     transform 0.15s var(--island-ease);
 }
 .island-key:hover {
-  background: rgb(var(--island-rule) / 0.12);
+  background: rgb(var(--island-well) / var(--island-well-hi-a));
 }
 .island-key:active {
   transform: translateY(0.5px);
 }
 .island-key:disabled {
-  opacity: 0.4;
+  opacity: 0.45;
 }
 .island-key kbd {
-  font: inherit;
-  font-size: 9.5px;
-  letter-spacing: 0.04em;
-  color: rgb(var(--island-sheet-dim));
+  font-family: var(--island-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: rgb(var(--island-dim));
 }
 .island-key-primary {
-  background: rgb(var(--island-sheet-fg));
-  color: rgb(var(--island-sheet));
-  box-shadow: none;
+  background: rgb(var(--island-accent));
+  color: rgb(var(--island-on-accent));
+  box-shadow:
+    inset 0 0.5px 0 rgb(255 255 255 / 0.35),
+    0 0 0 0.5px rgb(var(--island-line) / var(--island-key-line-a)),
+    0 1px 2px rgb(var(--island-shade) / 0.2);
 }
 .island-key-primary:hover {
-  background: rgb(var(--island-sheet-fg) / 0.88);
+  background: rgb(var(--island-accent) / 0.88);
 }
 .island-key-primary kbd {
-  color: rgb(var(--island-sheet) / 0.7);
+  color: rgb(var(--island-on-accent) / 0.7);
 }
 .island-key-danger {
   background: rgb(var(--danger-rgb));
   color: #fff;
 }
+.island-key-danger:hover {
+  background: rgb(var(--danger-rgb) / 0.88);
+}
 .island-key-live {
   color: rgb(var(--ok-rgb));
-  box-shadow: inset 0 0 0 1px rgb(var(--ok-rgb) / 0.5);
+  box-shadow: inset 0 0 0 1px rgb(var(--ok-rgb) / 0.55);
 }
 .island-key-end {
   margin-left: auto;
@@ -486,11 +531,12 @@ body,
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  padding: 0 8px;
-  font-size: 10px;
-  letter-spacing: 0.04em;
+  padding: 0 9px;
+  font-family: var(--island-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
-  color: rgb(var(--island-sheet-dim));
+  color: rgb(var(--island-dim));
 }
 
 /* The composer. */
@@ -505,14 +551,15 @@ body,
 }
 .island-input,
 .island-select {
-  height: 28px;
+  height: 29px;
   border: 0;
   border-radius: 9px;
-  background: rgb(var(--island-rule) / 0.07);
-  box-shadow: inset 0 0 0 1px rgb(var(--island-rule) / 0.1);
-  color: inherit;
-  font: inherit;
-  font-size: 11.5px;
+  background: rgb(var(--island-well) / var(--island-well-a));
+  box-shadow:
+    inset 0 0.5px 0 rgb(var(--island-rim) / var(--island-key-rim-a)),
+    0 0 0 0.5px rgb(var(--island-line) / var(--island-key-line-a));
+  color: rgb(var(--island-fg));
+  font: 500 12.5px/1 var(--island-font);
   outline: none;
 }
 .island-input {
@@ -520,14 +567,16 @@ body,
   padding: 0 10px;
 }
 .island-input::placeholder {
-  color: rgb(var(--island-sheet-dim));
+  color: rgb(var(--island-dim));
 }
 .island-input:focus {
-  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.7);
+  box-shadow:
+    inset 0 0.5px 0 rgb(var(--island-rim) / var(--island-key-rim-a)),
+    0 0 0 1px rgb(var(--island-accent) / 0.8);
 }
 .island-select {
-  max-width: 130px;
-  padding: 0 8px;
+  max-width: 140px;
+  padding: 0 9px;
   appearance: none;
   -webkit-appearance: none;
   text-overflow: ellipsis;
@@ -538,37 +587,37 @@ body,
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 2px 10px;
+  gap: 3px 10px;
   width: 100%;
-  padding: 8px 12px 13px 16px;
+  padding: 9px 12px 13px 16px;
   border: 0;
-  color: inherit;
-  font: inherit;
   text-align: left;
   cursor: default;
   outline: none;
 }
 .island-banner-reply {
-  height: 22px;
-  padding: 0 8px;
-  font-size: 10.5px;
+  height: 23px;
+  padding: 0 9px;
+  font-size: 11.5px;
 }
 .island-banner-title {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .island-banner-meta {
+  font-family: var(--island-mono);
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
-  color: rgb(var(--island-sheet-dim));
+  color: rgb(var(--island-dim));
 }
 .island-banner-text {
   grid-column: 1 / -1;
-  font-size: 11px;
-  line-height: 1.4;
-  color: rgb(var(--island-sheet-dim));
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgb(var(--island-dim));
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;

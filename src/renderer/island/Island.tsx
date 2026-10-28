@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import type {
   IslandAction,
   IslandAttention,
@@ -10,7 +10,7 @@ import type {
   IslandTaskRow,
   IslandVoice,
 } from '../../shared/island'
-import { islandApi } from './bridge'
+import { islandApi, type IslandApi } from './bridge'
 import { TopographicMark } from '../components/TopographicMark'
 import { AnimatedTopographicMark } from '../components/AnimatedTopographicMark'
 import { VoiceSigil } from '../components/voice/VoiceSigil'
@@ -24,6 +24,7 @@ const FALLBACK_GEOMETRY: IslandGeometry = {
   width: 760,
   height: 480,
   scale: 2,
+  glass: false,
 }
 /** How long a finished turn hangs from the notch before the island settles. */
 const DONE_BANNER_MS = 8000
@@ -64,6 +65,8 @@ export function Island() {
   const hovering = useRef(false)
   const seenAttention = useRef<Set<string> | null>(null)
   const islandRef = useRef<HTMLDivElement>(null)
+  useGlassShape(islandRef, api, geometry.glass)
+  useGlassTheme(api)
 
   useEffect(() => {
     const offs = [
@@ -221,7 +224,7 @@ export function Island() {
   } as CSSProperties
 
   return (
-    <div className="island-root">
+    <div className="island-root" data-glass={geometry.glass ? 'native' : 'css'}>
       <div
         ref={islandRef}
         className="island"
@@ -281,6 +284,77 @@ export function Island() {
       </div>
     </div>
   )
+}
+
+// ── The glass ──────────────────────────────────────────────────────────
+
+/**
+ * The blur behind the window follows the drawn island: its rect and corner
+ * radii go to main whenever they change, every frame while the shape is in
+ * motion, so the frosted area is the island and nothing else.
+ */
+function useGlassShape(ref: RefObject<HTMLDivElement>, api: IslandApi, enabled: boolean) {
+  useEffect(() => {
+    const el = ref.current
+    if (!el || !enabled) return
+    let last = ''
+    let raf = 0
+    let settle = 0
+    const send = () => {
+      const r = el.getBoundingClientRect()
+      const cs = getComputedStyle(el)
+      const radiusTop = parseFloat(cs.borderTopLeftRadius) || 0
+      const radiusBottom = parseFloat(cs.borderBottomLeftRadius) || 0
+      const shape = { x: r.left, y: r.top, width: r.width, height: r.height, radiusTop, radiusBottom }
+      const key = Object.values(shape)
+        .map((n) => Math.round(n * 2) / 2)
+        .join(',')
+      if (key === last) return
+      last = key
+      void api.control({ type: 'shape', ...shape })
+    }
+    const tick = () => {
+      send()
+      if (el.getAnimations({ subtree: false }).length > 0) {
+        settle = 2
+        raf = requestAnimationFrame(tick)
+      } else if (settle > 0) {
+        settle -= 1
+        raf = requestAnimationFrame(tick)
+      } else {
+        raf = 0
+      }
+    }
+    const kick = () => {
+      if (!raf) raf = requestAnimationFrame(tick)
+    }
+    const sizes = new ResizeObserver(kick)
+    sizes.observe(el)
+    const attrs = new MutationObserver(kick)
+    attrs.observe(el, { attributes: true })
+    el.addEventListener('transitionrun', kick)
+    el.addEventListener('animationstart', kick)
+    kick()
+    return () => {
+      sizes.disconnect()
+      attrs.disconnect()
+      el.removeEventListener('transitionrun', kick)
+      el.removeEventListener('animationstart', kick)
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [ref, api, enabled])
+}
+
+/** The blur material follows the page's theme (`<html data-theme>`, written by initTheme). */
+function useGlassTheme(api: IslandApi) {
+  useEffect(() => {
+    const root = document.documentElement
+    const send = () => void api.control({ type: 'theme', dark: root.dataset.theme !== 'light' })
+    send()
+    const watch = new MutationObserver(send)
+    watch.observe(root, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => watch.disconnect()
+  }, [api])
 }
 
 // ── The strip ──────────────────────────────────────────────────────────

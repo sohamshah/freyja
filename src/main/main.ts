@@ -54,6 +54,7 @@ import {
   type DesktopSettings,
 } from './settings.js'
 import { IslandWindow } from './island.js'
+import { loadGlass } from './glass.js'
 import type { IslandAction, IslandControl, IslandDigest } from '../shared/island.js'
 import { GatewayLogTailer } from './gatewayLogTail.js'
 import { sendControlCommand } from './controlChannel.js'
@@ -567,6 +568,7 @@ function ensureIsland(enabled: boolean, notchWidth: number | null = null): void 
   island = new IslandWindow({
     preload: path.resolve(ROOT, 'dist-preload', 'island-preload.cjs'),
     load: islandLoadTarget(),
+    glass: loadGlass(ROOT),
     notchWidth,
   })
   island.open()

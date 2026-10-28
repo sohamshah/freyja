@@ -8,7 +8,8 @@
     "dev": "node scripts/dev.mjs",
     "build:renderer": "vite build",
     "build:main": "node scripts/build-main.mjs",
-    "build": "npm run build:renderer && npm run build:main",
+    "build:native": "bash scripts/build-glass.sh",
+    "build": "npm run build:renderer && npm run build:main && npm run build:native",
     "start": "npm run build && electron .",
     "package": "npm run build && electron-builder --mac --dir",
     "dist": "npm run build && electron-builder --mac --dir && node scripts/create-dmg.mjs",
@@ -46,6 +47,7 @@
       "dist-main/**/*",
       "dist-preload/**/*",
       "dist-renderer/**/*",
+      "dist-native/**/*",
       "bridge/**/*",
       "assets/**/*",
       "package.json"

@@ -137,6 +137,10 @@ export type IslandControl =
   | { type: 'focus' }
   /** Give keyboard focus back to whatever had it. */
   | { type: 'release' }
+  /** Where the island is drawn, in CSS px from the window's top-left: the backdrop blur follows it. */
+  | { type: 'shape'; x: number; y: number; width: number; height: number; radiusTop: number; radiusBottom: number }
+  /** The page's effective theme, so the blur material matches. */
+  | { type: 'theme'; dark: boolean }
 
 export interface IslandGeometry {
   displayId: number
@@ -149,4 +153,6 @@ export interface IslandGeometry {
   width: number
   height: number
   scale: number
+  /** The window has a real backdrop blur behind the island (macOS, with the native shim built). */
+  glass: boolean
 }

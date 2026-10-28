@@ -1,6 +1,7 @@
 import { BrowserWindow, screen, type Display } from 'electron'
 import { IPC } from '../shared/events.js'
 import type { IslandControl, IslandDigest, IslandGeometry } from '../shared/island.js'
+import { GLASS_MATERIAL, type Glass } from './glass.js'
 
 /** Every notched MacBook so far (14" and 16") has a 185pt notch. The setting
  *  `island.notchWidth` overrides it for anything Apple ships next. */
@@ -17,6 +18,8 @@ export interface IslandWindowOptions {
   preload: string
   load: { url: string } | { file: string }
   notchWidth?: number | null
+  /** The backdrop-blur shim, when it built (src/main/glass.ts). */
+  glass?: Glass | null
 }
 
 /**
@@ -32,9 +35,13 @@ export class IslandWindow {
   private geometry: IslandGeometry | null = null
   private pageReady = false
   private notchWidth: number | null
+  private glass: Glass | null
+  private handle: Buffer | null = null
+  private dark = true
 
   constructor(private readonly opts: IslandWindowOptions) {
     this.notchWidth = opts.notchWidth ?? null
+    this.glass = opts.glass ?? null
   }
 
   get isOpen(): boolean {
@@ -72,6 +79,19 @@ export class IslandWindow {
     })
     this.win = win
     this.pageReady = false
+    // The glass: a masked blur view behind the page, sized by the page's
+    // `shape` messages so it is exactly the drawn island and nothing else.
+    if (this.glass) {
+      try {
+        this.handle = win.getNativeWindowHandle()
+        if (!this.glass.attach(this.handle)) throw new Error('attach returned false')
+        this.glass.setStyle(this.handle, this.dark, this.dark ? GLASS_MATERIAL.dark : GLASS_MATERIAL.light)
+      } catch (err) {
+        console.warn('[island] backdrop blur unavailable:', err)
+        this.glass = null
+        this.handle = null
+      }
+    }
     win.setAlwaysOnTop(true, 'screen-saver', 1)
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
     try {
@@ -87,6 +107,7 @@ export class IslandWindow {
     })
     win.on('closed', () => {
       this.win = null
+      this.handle = null
       this.pageReady = false
     })
     screen.on('display-added', this.replace)
@@ -103,6 +124,7 @@ export class IslandWindow {
   close(): void {
     const win = this.win
     this.win = null
+    this.handle = null
     this.pageReady = false
     screen.removeListener('display-added', this.replace)
     screen.removeListener('display-removed', this.replace)
@@ -157,6 +179,17 @@ export class IslandWindow {
       case 'release':
         win.blur()
         break
+      case 'shape':
+        if (this.glass && this.handle) {
+          this.glass.setShape(this.handle, msg.x, msg.y, msg.width, msg.height, msg.radiusTop, msg.radiusBottom)
+        }
+        break
+      case 'theme':
+        this.dark = msg.dark
+        if (this.glass && this.handle) {
+          this.glass.setStyle(this.handle, msg.dark, msg.dark ? GLASS_MATERIAL.dark : GLASS_MATERIAL.light)
+        }
+        break
     }
   }
 
@@ -168,7 +201,7 @@ export class IslandWindow {
     const win = this.win
     if (!win || win.isDestroyed()) return
     const display = pickDisplay()
-    this.geometry = geometryFor(display, this.notchWidth)
+    this.geometry = geometryFor(display, this.notchWidth, this.glass !== null)
     const x = Math.round(display.bounds.x + (display.bounds.width - WINDOW_WIDTH) / 2)
     win.setBounds({ x, y: display.bounds.y, width: WINDOW_WIDTH, height: WINDOW_HEIGHT })
     this.pushGeometry()
@@ -192,7 +225,7 @@ function pickDisplay(): Display {
   return screen.getAllDisplays().find((d) => d.internal) ?? screen.getPrimaryDisplay()
 }
 
-export function geometryFor(display: Display, notchWidth: number | null): IslandGeometry {
+export function geometryFor(display: Display, notchWidth: number | null, glass = false): IslandGeometry {
   const menuBar = Math.max(0, display.workArea.y - display.bounds.y)
   const notched = !!display.internal && menuBar >= NOTCHED_MENU_BAR_MIN
   return {
@@ -203,5 +236,6 @@ export function geometryFor(display: Display, notchWidth: number | null): Island
     width: WINDOW_WIDTH,
     height: WINDOW_HEIGHT,
     scale: display.scaleFactor,
+    glass,
   }
 }
