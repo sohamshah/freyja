@@ -5853,7 +5853,7 @@ class _BridgeSession:
                     # it froze the whole gateway for 5.7 min on 2026-10-05,
                     # Slack's Socket Mode missed its pings, the socket was
                     # dropped, and Slack redelivered the message.
-                    await asyncio.to_thread(
+                    compaction_result = await asyncio.to_thread(
                         compactor.compact,
                         self.session.transcript, self.provider,
                         ground_truth=self._ledger_ground_truth(),
@@ -5866,27 +5866,53 @@ class _BridgeSession:
                         f"restore compaction finished in "
                         f"{time.monotonic() - _t0:.1f}s ({reason})",
                     )
-                self.session.compaction_count += 1
                 # Anchor the mid-session WM-trigger cooldown to this
                 # compaction so a session_memory mutation in the next few
                 # turns doesn't immediately re-run Call B — Call B already
-                # ran inside `compactor.compact()` above.
+                # ran inside `compactor.compact()` above, whether or not the
+                # summary came back.
                 self._last_compaction_turn_id = self.current_turn_id
-                emit(
-                    {
-                        "type": "system_event",
-                        "sessionId": self.id,
-                        "subtype": "compaction_complete",
-                        "message": (
-                            f"Compacted on restore (reason={reason})"
-                        ),
-                        "details": {
-                            "trigger": reason,
-                            "tokens_before": estimated,
-                            "tokens_after": self.session.estimate_tokens(),
-                        },
-                    }
-                )
+                if not getattr(compaction_result, "success", False):
+                    # Say so. On 2026-10-25 and 10-26 both idle-revisit
+                    # compactions of the operator's DM ran 224 s, hit the
+                    # summary deadline, changed nothing, and were still
+                    # logged and counted as "Compacted on restore".
+                    error = str(getattr(compaction_result, "error", None) or "unknown")
+                    log("warn", f"restore compaction failed ({reason}): {error}")
+                    emit(
+                        {
+                            "type": "system_event",
+                            "sessionId": self.id,
+                            "subtype": "compaction_failed",
+                            "message": (
+                                f"Compaction on restore failed (reason={reason}): "
+                                f"{error}"
+                            ),
+                            "details": {
+                                "trigger": reason,
+                                "tokens_before": estimated,
+                                "tokens_after": self.session.estimate_tokens(),
+                                "error": error,
+                            },
+                        }
+                    )
+                else:
+                    self.session.compaction_count += 1
+                    emit(
+                        {
+                            "type": "system_event",
+                            "sessionId": self.id,
+                            "subtype": "compaction_complete",
+                            "message": (
+                                f"Compacted on restore (reason={reason})"
+                            ),
+                            "details": {
+                                "trigger": reason,
+                                "tokens_before": estimated,
+                                "tokens_after": self.session.estimate_tokens(),
+                            },
+                        }
+                    )
         except Exception as exc:
             log("warn", f"post-restore compaction failed: {exc}")
 

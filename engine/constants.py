@@ -365,6 +365,7 @@ loop-break or verification injections."""
 # ============================================================================
 
 ANTHROPIC_API_TIMEOUT = 300.0
+"""Timeout for Anthropic API calls."""
 
 # Compaction runs two parallel calls. The SDK timeout above is 300 s, which
 # is far too long to hold a Slack turn on a best-effort call. Call B (working
@@ -372,7 +373,15 @@ ANTHROPIC_API_TIMEOUT = 300.0
 # longer before the compaction is declared failed.
 WORKING_MEMORY_CALL_TIMEOUT_S = 90.0
 SUMMARY_CALL_TIMEOUT_S = 180.0
-"""Timeout for Anthropic API calls."""
+"""Floor of the summary deadline. A long transcript needs more: on
+2026-10-25 and 10-26 the summary of a 190k-token DM transcript (Opus 5.5,
+cold cache) answered about 235 s in, 10 s past the deadline, twice, so the
+compaction failed and the operator had waited four minutes for nothing.
+``engine.compaction.summary_call_timeout_s`` grows the deadline with the
+size: the floor, plus SUMMARY_CALL_TIMEOUT_PER_KTOKEN_S per 1,000 tokens
+summarized, capped at SUMMARY_CALL_TIMEOUT_MAX_S."""
+SUMMARY_CALL_TIMEOUT_PER_KTOKEN_S = 1.0
+SUMMARY_CALL_TIMEOUT_MAX_S = 600.0
 
 DEFAULT_BASH_TIMEOUT = 120.0
 """Default timeout for bash command execution."""

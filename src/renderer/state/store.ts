@@ -2566,6 +2566,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         'compaction_start',
         'compaction_complete',
         'compaction_skipped',
+        'compaction_failed',
         'tool_truncation',
         'context_pruning',
         'media_pruning',

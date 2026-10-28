@@ -77,3 +77,46 @@ def test_fast_calls_unchanged(monkeypatch):
     )
     assert result == "s"
     assert upserts == [{"summary": "wm"}]
+
+
+# ─── the summary deadline grows with the transcript ──────────────────
+
+
+def test_summary_deadline_grows_with_the_transcript(monkeypatch):
+    monkeypatch.setattr(comp, "SUMMARY_CALL_TIMEOUT_S", 180.0)
+    monkeypatch.setattr(comp, "SUMMARY_CALL_TIMEOUT_PER_KTOKEN_S", 1.0)
+    monkeypatch.setattr(comp, "SUMMARY_CALL_TIMEOUT_MAX_S", 600.0)
+    assert comp.summary_call_timeout_s(None) == 180.0
+    assert comp.summary_call_timeout_s(0) == 180.0
+    # The DM transcript that failed twice at 180 s: 197k tokens, and the
+    # summary answered about 235 s in.
+    assert comp.summary_call_timeout_s(197_403) == pytest.approx(377.4, abs=0.1)
+    assert comp.summary_call_timeout_s(2_000_000) == 600.0
+
+
+def _sized_run(monkeypatch, size_tokens):
+    # Floor 0.2 s, plus 0.5 s per 1k tokens: a 1k-token transcript gets 0.7 s.
+    monkeypatch.setattr(comp, "WORKING_MEMORY_CALL_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(comp, "SUMMARY_CALL_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(comp, "SUMMARY_CALL_TIMEOUT_PER_KTOKEN_S", 0.5)
+    c = SummaryCompaction()
+
+    def summary(*a, **k):
+        time.sleep(0.4)
+        return "in time"
+
+    monkeypatch.setattr(c, "_generate_summary", summary)
+    monkeypatch.setattr(c, "_extract_working_memory", lambda *a, **k: {"summary": "wm"})
+    return c._run_summary_and_working_memory(
+        "conversation", object(), on_working_memory_upserts=lambda _u: None,
+        size_tokens=size_tokens,
+    )
+
+
+def test_a_big_transcript_gets_its_longer_deadline(monkeypatch):
+    assert _sized_run(monkeypatch, 1_000) == "in time"
+
+
+def test_the_floor_still_applies_without_a_size(monkeypatch):
+    with pytest.raises(TimeoutError, match="exceeded 0s"):
+        _sized_run(monkeypatch, None)

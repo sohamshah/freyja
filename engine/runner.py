@@ -1101,6 +1101,25 @@ AsyncSystemEventCallback = Callable[[SystemEvent], Awaitable[None]]
 # Async Agent Runner
 # ============================================================================
 
+@dataclass(frozen=True)
+class ContextOutlook:
+    """What the next request will meet: the prompt size the runner acts
+    on, the window left for input, whether it will compact before sending,
+    and whether the provider still holds the last prompt in its cache. The
+    Slack gateway reads it to say something true about a slow reply."""
+
+    used_tokens: int
+    effective_window: int
+    will_compact: bool
+    prompt_cached: bool
+
+    @property
+    def fraction(self) -> float:
+        if self.effective_window <= 0:
+            return 0.0
+        return self.used_tokens / self.effective_window
+
+
 class AsyncAgentRunner:
     """
     Async agent runner with streaming support.
@@ -3170,6 +3189,31 @@ class AsyncAgentRunner:
         except Exception:  # noqa: BLE001
             tokenizer_based = 0
         return max(api_based, tokenizer_based)
+
+    def context_outlook(self, session: Session) -> ContextOutlook:
+        """The measure ``_ensure_context_room`` will act on, read before a
+        turn. ``will_compact`` is the prediction from the numbers as they
+        stand; halving old tool results on a cold cache can still bring the
+        prompt under the threshold first. ``prompt_cached`` means the last
+        prompt is still in the provider's cache and would be sent unchanged,
+        so the reply starts fast whatever the size."""
+        used = int(self._current_context_tokens(session))
+        context_window = int(getattr(self.provider, "context_window", 0) or 0)
+        effective = (
+            max(1, context_window - self.config.max_tokens_per_turn)
+            if context_window > 0 else 0
+        )
+        will_compact = effective > 0 and used / effective > CONTEXT_COMPACTION_THRESHOLD
+        try:
+            cached = self._cached_prompt(session) is not None
+        except Exception:  # noqa: BLE001
+            cached = False
+        return ContextOutlook(
+            used_tokens=used,
+            effective_window=effective,
+            will_compact=will_compact,
+            prompt_cached=cached,
+        )
 
     def _mark_context_compacted(self, context_tokens_after: int) -> None:
         """Drop stale last-call context counters after compaction."""

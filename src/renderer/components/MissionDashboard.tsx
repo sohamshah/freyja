@@ -601,6 +601,7 @@ export function MissionDashboard() {
           'compaction_start',
           'compaction_complete',
           'compaction_skipped',
+          'compaction_failed',
           'context_pruning',
           'tool_truncation',
           'output_truncation',

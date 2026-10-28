@@ -31,6 +31,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from typing import Any
 
 from bridge.gateway.pid import (
     acquire_lock,
@@ -357,6 +358,29 @@ def _help_card_text() -> str:
 
 
 _IMAGE_EXT_PATTERNS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif")
+
+
+def _latest_prompt_tokens(entries: list) -> int:
+    """The prompt size of the most recent model call in a transcript:
+    ``input + cache_read + cache_write`` of the last message that reported
+    usage. ``input_tokens`` alone is only the uncached remainder on a
+    caching provider, which once produced "84 prior messages (~94 tokens)".
+
+    The LAST call, not the peak over the session: a peak never comes down,
+    so a thread that had once reached 511k tokens kept announcing a
+    compaction on every later turn after its prompt had halved."""
+    for e in reversed(entries):
+        msg = getattr(e, "message", None)
+        if msg is None:
+            continue
+        turn = (
+            int(getattr(msg, "input_tokens", 0) or 0)
+            + int(getattr(msg, "cache_read_tokens", 0) or 0)
+            + int(getattr(msg, "cache_write_tokens", 0) or 0)
+        )
+        if turn > 0:
+            return turn
+    return 0
 
 
 def _format_ctx_window(n: int) -> str:
@@ -963,18 +987,21 @@ class GatewayDaemon:
                 return a
         return None
 
-    # Thresholds for the "catching up" notice. Tuned so we stay quiet
+    # Threshold for the "catching up" notice. Tuned so we stay quiet
     # on routine threads (no notice when the LLM call will be quick)
     # but speak up before chewing through a large transcript. Below
     # 100k tokens the startup gap is short enough that a notice would
-    # just add noise; above 500k tokens we explicitly mention
-    # compaction since the runner is likely to summarize.
+    # just add noise. The word "compacting" is not a threshold of ours:
+    # it comes from the runner's own outlook (engine.runner
+    # .ContextOutlook), which is the same measure the runner compacts
+    # on. A fixed 500k figure against the session's PEAK prompt used to
+    # stand in for it and made a thread that had once reached 511k
+    # tokens announce a compaction on every later turn (2026-10-27).
     #
     # Message count is deliberately NOT a trigger — see the gate in
     # _maybe_send_catching_up_notice. It fired on ordinary busy threads
     # and told the operator nothing they could act on.
     _CATCHING_UP_TOKEN_THRESHOLD = 100_000
-    _CATCHING_UP_BIG_TOKEN_THRESHOLD = 500_000
 
     async def _maybe_send_catching_up_notice(
         self,
@@ -1006,32 +1033,20 @@ class GatewayDaemon:
                 return
             entries = list(getattr(transcript, "entries", []) or [])
             n_msgs = sum(1 for e in entries if getattr(e, "message", None) is not None)
-            # Token estimate — peak PROMPT SIZE across all assistant
-            # turns. Each turn's input already includes its full prior
-            # history, so the MAX across turns is the best lower bound
-            # on how big the *next* prompt will be. The last turn alone
-            # can be misleading right after a compaction (the kept tail
-            # is tiny so input_tokens drops) even though the conversation
-            # itself is still long.
-            #
-            # `input_tokens` alone is NOT the prompt size: on providers
-            # with prompt caching it counts only the uncached remainder,
-            # so a long conversation with a warm cache reports a couple
-            # hundred tokens. That is what produced nonsense like
-            # "84 prior messages (~94 tokens)". Real size is
-            # input + cache_read + cache_write.
-            est_tokens = 0
-            for e in entries:
-                msg = getattr(e, "message", None)
-                if msg is None:
-                    continue
-                turn_tokens = (
-                    int(getattr(msg, "input_tokens", 0) or 0)
-                    + int(getattr(msg, "cache_read_tokens", 0) or 0)
-                    + int(getattr(msg, "cache_write_tokens", 0) or 0)
-                )
-                if turn_tokens > est_tokens:
-                    est_tokens = turn_tokens
+            # The runner's own outlook when the session has one: the prompt
+            # size it will act on, whether it will compact first, and
+            # whether the provider still holds the last prompt in its
+            # cache. That is the only honest source for "compacting".
+            outlook = self._context_outlook(session, inner)
+            if outlook is not None:
+                est_tokens = int(outlook.used_tokens)
+                compacting = bool(outlook.will_compact)
+                if not compacting and outlook.prompt_cached:
+                    # A cached prompt answers in seconds whatever its size.
+                    return
+            else:
+                est_tokens = _latest_prompt_tokens(entries)
+                compacting = False
 
             if est_tokens == 0:
                 # No assistant turn has reported usage yet — the common
@@ -1057,19 +1072,34 @@ class GatewayDaemon:
             # with a token figure that read ~0 meant the notice fired on
             # essentially every busy thread. Tokens are the thing that
             # actually costs time.
-            if est_tokens < self._CATCHING_UP_TOKEN_THRESHOLD:
+            if not compacting and est_tokens < self._CATCHING_UP_TOKEN_THRESHOLD:
                 return
 
             await self._send_catching_up_notice(
                 adapter,
                 message,
                 est_tokens,
-                compacting=est_tokens >= self._CATCHING_UP_BIG_TOKEN_THRESHOLD,
+                compacting=compacting,
                 n_msgs=n_msgs,
             )
         except Exception:  # noqa: BLE001
             # Never block the turn on a UI notice failure.
             logger.warning("catching-up notice raised", exc_info=True)
+
+    @staticmethod
+    def _context_outlook(session: Any, inner: Any) -> Any | None:
+        """The runner's ``ContextOutlook`` for the engine session, or None
+        when the session has no runner or the runner predates it."""
+        if inner is None:
+            return None
+        method = getattr(getattr(session, "runner", None), "context_outlook", None)
+        if method is None:
+            return None
+        try:
+            return method(inner)
+        except Exception:  # noqa: BLE001
+            logger.debug("context outlook failed", exc_info=True)
+            return None
 
     async def _send_catching_up_notice(
         self,

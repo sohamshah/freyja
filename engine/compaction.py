@@ -30,6 +30,8 @@ from engine.constants import (
     MIN_CONTENT_LENGTH_FOR_TRUNCATION,
     MIN_MESSAGES_TO_COMPACT,
     MIN_TOKENS_TO_SUMMARIZE,
+    SUMMARY_CALL_TIMEOUT_MAX_S,
+    SUMMARY_CALL_TIMEOUT_PER_KTOKEN_S,
     SUMMARY_CALL_TIMEOUT_S,
     SUMMARY_MAX_TOKENS,
     WORKING_MEMORY_CALL_TIMEOUT_S,
@@ -484,6 +486,21 @@ def _count_image_bytes_in_blocks(blocks: list) -> int:
 # Compaction Result
 # ============================================================================
 
+def summary_call_timeout_s(tokens: int | None) -> float:
+    """The deadline for the summary call of a transcript of ``tokens``:
+    the floor, plus a second per 1,000 tokens, capped at ten minutes. The
+    output grows with the transcript, and Opus 5.5 writes it at a fixed
+    pace, so a fixed deadline failed exactly the long transcripts that
+    needed the compaction most."""
+    base = float(SUMMARY_CALL_TIMEOUT_S)
+    if not tokens or tokens <= 0:
+        return base
+    return min(
+        float(SUMMARY_CALL_TIMEOUT_MAX_S),
+        base + (tokens / 1000.0) * float(SUMMARY_CALL_TIMEOUT_PER_KTOKEN_S),
+    )
+
+
 @dataclass
 class CompactionResult:
     """Result of a compaction operation."""
@@ -929,6 +946,7 @@ CONVERSATION TO EXTRACT FROM:
                 on_working_memory_call_start=on_working_memory_call_start,
                 prefix=prefix,
                 kept=to_keep,
+                size_tokens=tokens_before,
             )
         except Exception as e:
             logger.warning(f"Summary generation failed: {e}")
@@ -1746,6 +1764,7 @@ CONVERSATION TO EXTRACT FROM:
         on_working_memory_call_start: "Callable[[dict[str, Any]], None] | None" = None,
         prefix: PromptPrefix | None = None,
         kept: list[Message] | None = None,
+        size_tokens: int | None = None,
     ) -> str:
         """Run the prose-summary call (Call A) and the structured
         working-memory extraction (Call B) concurrently against the same
@@ -1856,11 +1875,13 @@ CONVERSATION TO EXTRACT FROM:
             # applied even when the summary call overflowed.
             summary_exc: Exception | None = None
             summary: str | None = None
+            summary_timeout = summary_call_timeout_s(size_tokens)
             try:
-                summary = fa.result(timeout=SUMMARY_CALL_TIMEOUT_S)
+                summary = fa.result(timeout=summary_timeout)
             except FuturesTimeout:
                 summary_exc = TimeoutError(
-                    f"compaction summary call exceeded {SUMMARY_CALL_TIMEOUT_S:.0f}s"
+                    f"compaction summary call exceeded {summary_timeout:.0f}s "
+                    f"({int(size_tokens or 0):,} tokens)"
                 )
             except Exception as e:  # noqa: BLE001
                 summary_exc = e

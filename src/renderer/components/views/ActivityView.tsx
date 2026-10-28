@@ -620,6 +620,7 @@ function isCompactionTelemetry(raw: BusEventView | TelemetryEventView): raw is T
     sub === 'compaction_complete' ||
     sub === 'compaction_start' ||
     sub === 'compaction_skipped' ||
+    sub === 'compaction_failed' ||
     sub === 'context_pruning' ||
     sub === 'media_pruning'
   )
