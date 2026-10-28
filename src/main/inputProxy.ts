@@ -20,10 +20,15 @@ import fs from 'node:fs'
  *  (which DOES have TCC grants) performs the privileged operation on
  *  behalf of the Python subprocess.
  *
- *  Implementation: we shell out to a tiny Python one-liner that imports
+ *  Implementation: we shell out to a fixed Python script that imports
  *  freyja_native and calls the requested input function. The Python
  *  process inherits TCC from this (Electron main) process because it's
  *  a direct child. We use the same Python binary the bridge uses.
+ *
+ *  Every field is checked here, and the call reaches the script as JSON
+ *  on stdin, never as Python source. When fields were pasted into the
+ *  source, any local process that found the port could run its own
+ *  code with Freyja's Accessibility grant.
  *
  *  Endpoints:
  *    POST /input  { action, ...params }
@@ -91,6 +96,144 @@ function buildPythonEnv(
   return env
 }
 
+/** A request turned into the freyja_native call it asks for. */
+export interface InputCall {
+  action: string
+  args: unknown[]
+  kwargs: Record<string, unknown>
+}
+
+/** Mouse buttons, modifiers and named keys that freyja_native accepts:
+ *  parse_button, parse_modifier and parse_key in
+ *  native/freyja_native/src/input.rs. Matched without case, as there. */
+const BUTTONS = new Set(['left', 'l', 'primary', 'right', 'r', 'secondary', 'middle', 'm'])
+const MODIFIERS = new Set([
+  'cmd', 'command', 'meta', 'super', 'win', 'ctrl', 'control', 'alt', 'option', 'opt', 'shift', 'fn',
+])
+const NAMED_KEYS = new Set([
+  'return', 'enter', 'ret', 'tab', 'space', 'escape', 'esc', 'backspace', 'back', 'bs',
+  'delete', 'del', 'home', 'end', 'pageup', 'page_up', 'pagedown', 'page_down',
+  'up', 'arrow_up', 'up_arrow', 'down', 'arrow_down', 'down_arrow',
+  'left', 'arrow_left', 'left_arrow', 'right', 'arrow_right', 'right_arrow',
+  'caps', 'capslock', 'caps_lock', 'cmd', 'command', 'meta', 'super',
+  'ctrl', 'control', 'alt', 'option', 'opt', 'shift',
+  'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12',
+])
+/** cmd, ctrl, alt, shift and fn. */
+const MAX_MODIFIERS = 5
+/** Far more than any type_text call; it only bounds one request. */
+const MAX_TEXT_LENGTH = 100_000
+/** freyja_native takes coordinates and scroll amounts as i32. */
+const I32_MAX = 2 ** 31 - 1
+
+class InvalidInput extends Error {}
+
+function intField(body: Record<string, unknown>, key: string): number {
+  const v = body[key]
+  const n = typeof v === 'number' || (typeof v === 'string' && v.trim() !== '') ? Number(v) : NaN
+  if (!Number.isFinite(n) || Math.abs(n) > I32_MAX) {
+    throw new InvalidInput(`${key} must be a number`)
+  }
+  return Math.trunc(n)
+}
+
+function optionalIntField(body: Record<string, unknown>, key: string): number | null {
+  return body[key] == null ? null : intField(body, key)
+}
+
+function keyField(body: Record<string, unknown>): string {
+  const key = body.key
+  if (typeof key !== 'string') throw new InvalidInput('key must be a string')
+  const k = key.trim()
+  // One character is typed as itself; anything longer must be a named key.
+  if ([...k].length !== 1 && !NAMED_KEYS.has(k.toLowerCase())) {
+    throw new InvalidInput(`unknown key: ${key.slice(0, 40)}`)
+  }
+  return key
+}
+
+function modifiersField(body: Record<string, unknown>): string[] {
+  const mods = body.modifiers ?? []
+  if (!Array.isArray(mods) || mods.length > MAX_MODIFIERS) {
+    throw new InvalidInput(`modifiers must be a list of at most ${MAX_MODIFIERS}`)
+  }
+  for (const m of mods) {
+    if (typeof m !== 'string' || !MODIFIERS.has(m.toLowerCase())) {
+      throw new InvalidInput(`unknown modifier: ${String(m).slice(0, 40)}`)
+    }
+  }
+  return mods as string[]
+}
+
+/** Check a request body and build the call it asks for. Returns an error
+ *  string for anything freyja_native would not accept. */
+export function parseInputRequest(body: unknown): { call: InputCall } | { error: string } {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { error: 'body must be a JSON object' }
+  }
+  const b = body as Record<string, unknown>
+  if (!b.action) return { error: 'missing action' }
+  const action = String(b.action)
+  try {
+    switch (action) {
+      case 'click': {
+        const button = b.button || 'left'
+        if (typeof button !== 'string' || !BUTTONS.has(button.toLowerCase())) {
+          throw new InvalidInput(`unknown button: ${String(button).slice(0, 40)}`)
+        }
+        const double = b.double ?? false
+        if (typeof double !== 'boolean') throw new InvalidInput('double must be a boolean')
+        return {
+          call: {
+            action,
+            args: [intField(b, 'x'), intField(b, 'y')],
+            kwargs: { button, double, modifiers: modifiersField(b) },
+          },
+        }
+      }
+      case 'move_mouse':
+        return { call: { action, args: [intField(b, 'x'), intField(b, 'y')], kwargs: {} } }
+      case 'type_text': {
+        const text = b.text
+        if (typeof text !== 'string') throw new InvalidInput('text must be a string')
+        if (text.length > MAX_TEXT_LENGTH) {
+          throw new InvalidInput(`text is longer than ${MAX_TEXT_LENGTH} characters`)
+        }
+        return { call: { action, args: [text], kwargs: {} } }
+      }
+      case 'press_key':
+        return { call: { action, args: [keyField(b)], kwargs: { modifiers: modifiersField(b) } } }
+      case 'key_down':
+      case 'key_up':
+        return { call: { action, args: [keyField(b)], kwargs: {} } }
+      case 'scroll':
+        return {
+          call: {
+            action,
+            args: [intField(b, 'dx'), intField(b, 'dy')],
+            kwargs: { x: optionalIntField(b, 'x'), y: optionalIntField(b, 'y') },
+          },
+        }
+      default:
+        return { error: `unknown action: ${action.slice(0, 40)}` }
+    }
+  } catch (err) {
+    if (err instanceof InvalidInput) return { error: err.message }
+    throw err
+  }
+}
+
+/** The one script every action runs. The call arrives as JSON on stdin,
+ *  so nothing from a request is ever read as Python source. Keyword
+ *  arguments match the freyja_native wrapper, whose button, double,
+ *  modifiers, x and y are keyword-only. */
+const INPUT_SCRIPT = [
+  'import json, sys',
+  'import freyja_native as n',
+  'call = json.load(sys.stdin)',
+  "getattr(n, call['action'])(*call['args'], **call['kwargs'])",
+].join('\n')
+
 /**
  * Execute an input action by calling freyja_native through Python.
  * Returns null on success, or an error string on failure.
@@ -98,39 +241,12 @@ function buildPythonEnv(
 function execInput(
   pythonBin: string,
   env: NodeJS.ProcessEnv,
-  action: string,
-  params: Record<string, unknown>,
+  call: InputCall,
 ): string | null {
-  // Build a Python one-liner that calls the right freyja_native function
-  let pyCode: string
-  switch (action) {
-    case 'click':
-      pyCode = `import freyja_native as n; n.click(${params.x},${params.y},${JSON.stringify(params.button || 'left')},${!!params.double},${JSON.stringify(params.modifiers || [])})`
-      break
-    case 'move_mouse':
-      pyCode = `import freyja_native as n; n.move_mouse(${params.x},${params.y})`
-      break
-    case 'type_text':
-      pyCode = `import freyja_native as n; n.type_text(${JSON.stringify(String(params.text))})`
-      break
-    case 'press_key':
-      pyCode = `import freyja_native as n; n.press_key(${JSON.stringify(String(params.key))},${JSON.stringify(params.modifiers || [])})`
-      break
-    case 'key_down':
-      pyCode = `import freyja_native as n; n.key_down(${JSON.stringify(String(params.key))})`
-      break
-    case 'key_up':
-      pyCode = `import freyja_native as n; n.key_up(${JSON.stringify(String(params.key))})`
-      break
-    case 'scroll':
-      pyCode = `import freyja_native as n; n.scroll(${params.dx},${params.dy},${params.x ?? 'None'},${params.y ?? 'None'})`
-      break
-    default:
-      return `unknown action: ${action}`
-  }
   try {
-    execFileSync(pythonBin, ['-c', pyCode], {
+    execFileSync(pythonBin, ['-c', INPUT_SCRIPT], {
       env,
+      input: JSON.stringify(call),
       timeout: 5000,
       stdio: 'pipe',
     })
@@ -161,7 +277,7 @@ export async function startInputProxy(
     // Read JSON body
     const chunks: Buffer[] = []
     for await (const chunk of req) chunks.push(chunk as Buffer)
-    let body: Record<string, unknown>
+    let body: unknown
     try {
       body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     } catch {
@@ -170,14 +286,14 @@ export async function startInputProxy(
       return
     }
 
-    const action = String(body.action || '')
-    if (!action) {
+    const parsed = parseInputRequest(body)
+    if ('error' in parsed) {
       res.writeHead(400, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: false, error: 'missing action' }))
+      res.end(JSON.stringify({ ok: false, error: parsed.error }))
       return
     }
 
-    const error = execInput(pythonBin, env, action, body)
+    const error = execInput(pythonBin, env, parsed.call)
     if (error) {
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: false, error }))
