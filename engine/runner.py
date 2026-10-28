@@ -3451,7 +3451,7 @@ class AsyncAgentRunner:
                     },
                 ))
                 used_tokens = self._current_context_tokens(session)
-                usage_fraction = used_tokens / context_window
+                usage_fraction = used_tokens / effective_window
 
         if usage_fraction > CONTEXT_COMPACTION_THRESHOLD:
             ctx.state = RunnerState.COMPACTING
