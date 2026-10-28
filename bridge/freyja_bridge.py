@@ -12654,12 +12654,8 @@ class _BridgeState:
         # context don't spawn a stray run loop.
         from bridge.scheduler import SchedulerService
         self.scheduler: SchedulerService = SchedulerService(self)
-        # Platform adapters registered by the gateway. Slack sink looks
-        # these up at fire time. List, not dict, so multiple workspaces
-        # can coexist.
-        self.platform_adapters: list[Any] = []
-        # Gateway runner reference (set by the gateway boot). Slack sink
-        # falls back here when adapters list isn't populated yet.
+        # The GatewayDaemon that built this state (set by its start()).
+        # The scheduler's Slack sink posts through its adapters.
         self.gateway_runner: Any = None
         # Optional callable(session) -> zero-arg on_turn_start hook,
         # registered by the gateway daemon so talk-triggered wake turns
@@ -16490,7 +16486,6 @@ async def _main_headless() -> None:
         if state is None:
             log("error", "headless: gateway start produced no state")
             return
-        state.gateway_runner = gateway  # type: ignore[attr-defined]
         await state.scheduler.start()  # type: ignore[attr-defined]
         # Offline WM backfill runs in the daemon too — it's the process
         # that's alive overnight, which is exactly when idle sessions

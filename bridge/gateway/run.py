@@ -2720,6 +2720,8 @@ class GatewayDaemon:
         # including for sessions cold-loaded by a cross-process
         # talk_deliver (see freyja_bridge._install_talk_wake_hook).
         self.state.talk_wake_hook_factory = self._talk_wake_hook_factory
+        # The scheduler's Slack sink posts through self.adapters.
+        self.state.gateway_runner = self
 
         # Start the scheduler. Under the stateless design every process
         # races for the owner_lock — only one wins and runs the tick
