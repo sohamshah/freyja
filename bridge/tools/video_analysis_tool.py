@@ -10,7 +10,7 @@ Local files go through Gemini's Files API: the tool uploads the file, polls
 
 Default model is ``gemini-3.8-flash``: as of Sep 2026 it's the model every
 example in the official video-understanding docs uses, with
-``gemini-3.1-pro-preview`` as the "best quality" option. Both can be
+``gemini-4-argon`` (Oct 2026) as the "best quality" option. Both can be
 overridden per-call.
 """
 
@@ -36,15 +36,15 @@ DEFAULT_VIDEO_MODEL = "gemini-3.8-flash"
 # id (e.g. the now-shut-down `gemini-3-pro-preview` or
 # `gemini-3.1-flash-lite-preview`).
 RECOMMENDED_MODELS = {
+    "gemini-4-argon",                  # highest quality (Oct 2026)
     "gemini-3.8-flash",                # default per docs
-    "gemini-3.7-flash",
+    "gemini-3.7-flash",                # served as 3.8-flash since 2026-10-08
     "gemini-3.6-flash",
-    "gemini-3.5-flash",
+    "gemini-3.5-flash",                # served as 3.6-flash since 2026-10-08
     "gemini-3.5-flash-lite",
-    "gemini-3.1-flash",
     "gemini-3.1-flash-lite",
-    "gemini-3.1-pro-preview",          # highest quality
-    "gemini-2.5-flash",                 # cheaper fallback
+    "gemini-3.1-pro-preview",          # previous flagship
+    "gemini-2.5-flash",                 # legacy, limited access
     "gemini-2.5-pro",
 }
 
@@ -165,7 +165,7 @@ Guidelines:
                         "type": "string",
                         "description": (
                             f"Gemini model id. Defaults to {DEFAULT_VIDEO_MODEL}. "
-                            "Use gemini-3.1-pro-preview for best quality on tricky video."
+                            "Use gemini-4-argon for best quality on tricky video."
                         ),
                         "default": DEFAULT_VIDEO_MODEL,
                     },

@@ -115,6 +115,32 @@ provider forwards whatever effort it is handed. `MODEL_REASONING_META`
 (#11) is the only thing that stops an unsupported rung — e.g. `none` or
 `minimal` on `gpt-6-astra` — from reaching the wire as a 400.
 
+### 8b. `engine/google_provider.py` — `_MINIMAL_UNSUPPORTED_MODELS` (Google only)
+Gemini cannot turn thinking off; "off" and structured output are sent as
+the model's lowest `thinking_level`. Models in this tuple reject
+`MINIMAL` with a 400 and get `LOW` instead (3.1 Pro, 3.7/3.8 Flash,
+Gemini 4 Argon — each verified by a live probe; the thinking docs'
+per-model table says which rungs a model has). Substring-matched, so a
+dated suffix is tolerated.
+
+Missing entry on a model without a MINIMAL rung → every thinking-off
+call (title generation, judge synthesis, compaction summaries) 400s on
+that model. Argon reproduced this exactly on 2026-10-28 until it was
+added. The reasoning ladders in #11 and #13 must omit `minimal` too.
+
+Two Gemini-specific notes while you are in this file:
+
+- `GoogleConfig.max_tokens` is the cap used when a caller passes no
+  `max_tokens`. On Gemini 4, `max_output_tokens` is shared with
+  thinking (Argon at MEDIUM under a 48-token cap returned `MAX_TOKENS`
+  and no text), so keep it at the model's full output limit (65,536).
+- The 2.5 models take `thinking_budget`, not `thinking_level`; the
+  provider only sends `thinking_level`, so they answer 400 "Thinking
+  level is not supported for this model" whenever a `ThinkingConfig` is
+  passed. They are access-limited since 2026-09-18 and no longer a
+  fallback target; fixing them means a budget mapping in
+  `_build_thinking_config`.
+
 ### 9. `engine/types.py` — `_ADAPTIVE_THINKING_MODEL_IDS`
 Duplicate of #5. The engine types module needs it for type-level
 inference without importing the provider (circular import). Comment in
@@ -248,6 +274,24 @@ Retired ids are kept as `FALLBACK_CHAINS` **keys** (so a session still
 pinned to one degrades to something live) but must never appear as a
 fallback **target**. `tests/test_model_registry_consistency.py` enforces
 that, along with every registry model having a price and a chain.
+
+A third state showed up with Google on 2026-10-28: an id that still
+answers, but by routing to another model. `gemini-3.7-flash` and
+`gemini-3.5-flash` were deprecated on 2026-10-08 and a probe returned
+`model_version=gemini-3.8-flash` / `gemini-3.6-flash` for them, while
+`gemini-3.1-flash` returned 404 outright. An alias stays registered so a
+pinned session keeps working, but it is useless as a fallback target —
+it lands on the very backend that just failed — and its first fallback
+should be the model it is already served as. The consistency test
+carries these in `ALIASED_MODEL_IDS`. The cheap check for Gemini:
+
+```sh
+# Gemini: what actually answers for this id?
+curl -s "https://generativelanguage.googleapis.com/v1beta/models/<id>:generateContent" \
+  -H "x-goog-api-key: $GEMINI_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"contents":[{"parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":64}}' \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("modelVersion") or d.get("error"))'
+```
 
 ### A model whose capabilities shrank
 

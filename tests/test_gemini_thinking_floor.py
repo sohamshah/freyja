@@ -21,6 +21,9 @@ def test_floor_thinking_level_detection():
     assert _floor_thinking_level("gemini-3.1-pro-preview-20260601") == "LOW"  # suffix-tolerant
     # 3.7-flash rejects MINIMAL per its model page (2026-08); 3.6 still accepts.
     assert _floor_thinking_level("gemini-3.7-flash") == "LOW"
+    # Gemini 4 Argon rejects MINIMAL too (probed live 2026-10-28; the
+    # thinking docs list low/medium/high with medium as default).
+    assert _floor_thinking_level("gemini-4-argon") == "LOW"
     assert _floor_thinking_level("gemini-3.6-flash") == "MINIMAL"
     assert _floor_thinking_level("gemini-3.5-flash") == "MINIMAL"
     assert _floor_thinking_level("gemini-2.5-flash") == "MINIMAL"
@@ -50,3 +53,20 @@ def test_disabled_thinking_stays_minimal_for_flash():
     p = _provider("gemini-3.5-flash")
     tc = p._build_thinking_config(ThinkingConfig(enabled=False))
     assert tc is not None and "MINIMAL" in str(tc.thinking_level)
+
+
+def test_disabled_thinking_floors_to_low_for_argon():
+    # Before Argon joined the floor list, the provider sent MINIMAL for
+    # thinking-off and Argon answered 400 (reproduced live 2026-10-28
+    # through complete_async with ThinkingConfig(enabled=False)).
+    p = _provider("gemini-4-argon")
+    tc = p._build_thinking_config(ThinkingConfig(enabled=False))
+    assert tc is not None and "LOW" in str(tc.thinking_level)
+
+
+def test_default_output_cap_leaves_room_for_thinking():
+    """On Gemini 4, max_output_tokens is shared with thinking: Argon at
+    MEDIUM under a 48-token cap returned MAX_TOKENS and no text (probed
+    2026-10-28). Callers that pass no max_tokens must not get a cap a few
+    thousand tokens of thought can exhaust."""
+    assert GoogleConfig().max_tokens >= 65_536

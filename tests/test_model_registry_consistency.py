@@ -23,7 +23,8 @@ from engine.types import ThinkingConfig
 
 # Ids kept in the registry so a pinned session still resolves, but which the
 # provider no longer serves. They may be fallback KEYS, never TARGETS.
-# Verified dead by live probe against the Fireworks API on 2026-09-29.
+# Verified dead by live probe against the Fireworks API on 2026-09-29;
+# gemini-3.1-flash answered 404 NOT_FOUND on 2026-10-28.
 RETIRED_MODEL_IDS = frozenset({
     "deepseek-v4-pro",
     "glm-5.1",
@@ -34,7 +35,19 @@ RETIRED_MODEL_IDS = frozenset({
     "minimax-m2.7",
     "qwen3.6-plus",
     "qwen3.7-plus",
+    "gemini-3.1-flash",
 })
+
+# Ids the provider still answers, but by routing the request to another
+# model (Google deprecated both on 2026-10-08; a live probe on 2026-10-28
+# returned model_version=gemini-3.8-flash and gemini-3.6-flash). A pinned
+# session keeps working, so they stay registered — but as a fallback TARGET
+# they are pointless: the request lands on the same backend as the id it is
+# meant to rescue, so the "fallback" fails exactly when the primary does.
+ALIASED_MODEL_IDS: dict[str, str] = {
+    "gemini-3.7-flash": "gemini-3.8-flash",
+    "gemini-3.5-flash": "gemini-3.6-flash",
+}
 
 
 def _catalog():
@@ -88,6 +101,24 @@ def test_no_chain_falls_back_onto_a_retired_model():
         if any(t in RETIRED_MODEL_IDS for t in chain)
     }
     assert offenders == {}, f"chains pointing at retired models: {offenders}"
+
+
+def test_no_chain_falls_back_onto_an_alias_of_another_model():
+    """An alias id is served by its replacement, so a chain that names it
+    retries the very backend that just failed."""
+    offenders = {
+        model: [t for t in chain if t in ALIASED_MODEL_IDS]
+        for model, chain in FALLBACK_CHAINS.items()
+        if any(t in ALIASED_MODEL_IDS for t in chain)
+    }
+    assert offenders == {}, f"chains pointing at aliased ids: {offenders}"
+
+
+def test_an_alias_falls_back_to_what_it_is_served_as_first():
+    """If Google ever stops routing the alias, the pinned session should
+    land on the model it was already getting, not somewhere new."""
+    for alias, target in ALIASED_MODEL_IDS.items():
+        assert FALLBACK_CHAINS[alias][0] == target, (alias, FALLBACK_CHAINS[alias])
 
 
 def test_a_model_never_falls_back_to_itself():

@@ -693,6 +693,15 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "reasoning_default": "high",
     },
     # Google Gemini (GEMINI_API_KEY)
+    "gemini-4-argon": {
+        "provider": "google",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        # low/medium/high, default medium; MINIMAL 400s (probed 2026-10-28).
+        "reasoning_levels": ("low", "medium", "high"),
+        "reasoning_default": "medium",
+    },
     "gemini-3.1-pro-preview": {
         "provider": "google",
         "context_window": 1_048_576,
@@ -887,13 +896,22 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     "glm-5.3-flash-fireworks": (0.15, 0.50, 0.03),
     # Google Gemini (USD per 1M tokens — input/output/cache_read).
     # Cache write defaults to 1.25× input.
-    "gemini-3.1-pro-preview": (1.25, 10.0, 0.31),
-    # 3.7/3.6 Flash: introductory pricing through Dec 31, 2026 — doubles to
+    # Gemini 4 Argon: introductory pricing through Nov 30, 2026 — doubles to
+    # (4.0, 20.0, 0.20) on Dec 1, 2026 (ai.google.dev pricing page, 2026-10-28).
+    # Caching is implicit only; thinking tokens bill at the output rate.
+    "gemini-4-argon": (2.0, 10.0, 0.10),
+    # 3.1 Pro: the ≤200k-prompt tier. Prompts above 200k bill (4.0, 18.0, 0.40).
+    # Was (1.25, 10.0, 0.31) here; the pricing page lists $2/$12 (2026-10-28).
+    "gemini-3.1-pro-preview": (2.0, 12.0, 0.20),
+    # 3.8/3.6 Flash: introductory pricing through Dec 31, 2026 — doubles to
     # (1.50, 7.50, 0.15) on Jan 1, 2027 (per ai.google.dev pricing page).
+    # 3.7 and 3.5 Flash were deprecated on 2026-10-08 and now route to 3.8
+    # and 3.6; the pricing page no longer lists them, so they carry the
+    # rate of the model that actually answers.
     "gemini-3.8-flash": (0.75, 3.75, 0.075),
     "gemini-3.7-flash": (0.75, 3.75, 0.075),
     "gemini-3.6-flash": (0.75, 3.75, 0.075),
-    "gemini-3.5-flash": (1.50, 9.0, 0.15),
+    "gemini-3.5-flash": (0.75, 3.75, 0.075),
     "gemini-3.5-flash-lite": (0.30, 2.50, 0.03),
     "gemini-3.1-flash": (0.30, 2.50, 0.075),
     "gemini-3.1-flash-lite": (0.10, 0.40, 0.025),
@@ -1011,16 +1029,21 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     # NOTE: the 2.5 models are no longer generally reachable — Google limited
     # access on 2026-09-18 to projects with prior 2.5 usage — so they are not
     # fallback targets for any 3.x model any more.
-    "gemini-3.1-pro-preview": ["gemini-3.8-flash", "gemini-3.7-flash"],
-    "gemini-3.8-flash": ["gemini-3.7-flash", "gemini-3.6-flash"],
+    # Live probe 2026-10-28: gemini-3.7-flash is served as 3.8-flash and
+    # gemini-3.5-flash as 3.6-flash (deprecated 2026-10-08, auto-routed), so
+    # neither is a useful TARGET — it lands on the same backend as the id it
+    # would rescue. gemini-3.1-flash answers 404 and is a key only.
+    "gemini-4-argon": ["gemini-3.8-flash", "gemini-3.1-pro-preview"],
+    "gemini-3.1-pro-preview": ["gemini-4-argon", "gemini-3.8-flash"],
+    "gemini-3.8-flash": ["gemini-3.6-flash", "gemini-3.5-flash-lite"],
     "gemini-3.7-flash": ["gemini-3.8-flash", "gemini-3.6-flash"],
-    "gemini-3.6-flash": ["gemini-3.8-flash", "gemini-3.7-flash"],
-    "gemini-3.5-flash": ["gemini-3.8-flash", "gemini-3.6-flash"],
+    "gemini-3.6-flash": ["gemini-3.8-flash", "gemini-3.5-flash-lite"],
+    "gemini-3.5-flash": ["gemini-3.6-flash", "gemini-3.8-flash"],
     "gemini-3.5-flash-lite": ["gemini-3.1-flash-lite", "gemini-3.6-flash"],
     "gemini-3.1-flash": ["gemini-3.8-flash", "gemini-3.1-flash-lite"],
-    "gemini-3.1-flash-lite": ["gemini-3.5-flash-lite", "gemini-3.1-flash"],
-    "gemini-2.5-pro": ["gemini-3.1-pro-preview", "gemini-3.8-flash"],
-    "gemini-2.5-flash": ["gemini-3.8-flash", "gemini-3.7-flash"],
+    "gemini-3.1-flash-lite": ["gemini-3.5-flash-lite", "gemini-3.6-flash"],
+    "gemini-2.5-pro": ["gemini-4-argon", "gemini-3.8-flash"],
+    "gemini-2.5-flash": ["gemini-3.8-flash", "gemini-3.6-flash"],
 }
 
 

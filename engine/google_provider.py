@@ -94,6 +94,11 @@ _MINIMAL_UNSUPPORTED_MODELS: tuple[str, ...] = (
     # 3.8-flash carries the same ladder as 3.7 (low/medium/high, default
     # medium) — verified against the thinking docs' per-model table.
     "gemini-3.8-flash",
+    # Gemini 4 Argon: low/medium/high, default medium. Probed live
+    # 2026-10-28 — MINIMAL answers 400 "Thinking level MINIMAL is not
+    # supported for this model"; without this entry every thinking-off
+    # call (title generation, judge synthesis) on Argon died that way.
+    "gemini-4-argon",
 )
 
 
@@ -116,8 +121,13 @@ class GoogleConfig:
     model: str = "gemini-3.1-pro-preview"
     """Gemini model id."""
 
-    max_tokens: int = 8192
-    """Default max output tokens per request."""
+    max_tokens: int = 65_536
+    """Default max output tokens per request, used when the caller passes
+    none. Every current Gemini text model caps output at 65,536, and on
+    Gemini 4 ``max_output_tokens`` is shared with thinking: probed
+    2026-10-28, gemini-4-argon at MEDIUM with a 48-token cap returned
+    MAX_TOKENS and no text at all. The old 8192 default would have cut
+    answers off after a few thousand tokens of thought."""
 
     timeout: float = 180.0
     """Request timeout in seconds."""
@@ -542,9 +552,10 @@ class GoogleProvider:
     ) -> gtypes.ThinkingConfig | None:
         """Map our internal ThinkingConfig onto Gemini's ThinkingConfig.
 
-        - ``enabled=False`` → MINIMAL + include_thoughts=False (Gemini
-          doesn't allow disabling thinking on 3.x reasoning models;
-          MINIMAL is the lowest effort tier).
+        - ``enabled=False`` → the model's floor (MINIMAL, or LOW for the
+          models in ``_MINIMAL_UNSUPPORTED_MODELS``) + include_thoughts=
+          False. Gemini doesn't allow disabling thinking on 3.x/4
+          reasoning models; the floor is the lowest tier each accepts.
         - ``enabled=True`` → ``effort`` maps onto ThinkingLevel and
           ``include_thoughts=True`` so the renderer can show the
           reasoning chain and the cost panel can split reasoning

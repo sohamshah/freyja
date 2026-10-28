@@ -1183,6 +1183,7 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // These were missing here, so gemini-* sessions showed `ctx N/200k` while
   // the real window is ~1M — the dashboard denominator (not the provider /
   // compaction, which read the registry) was wrong.
+  'gemini-4-argon': 1_048_576,
   'gemini-3.1-pro-preview': 1_048_576,
   'gemini-3.8-flash': 1_048_576,
   'gemini-3.7-flash': 1_048_576,
@@ -1256,6 +1257,7 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'glm-5.3-fireworks': { levels: ['low', 'high', 'max'], defaultLevel: 'high' },
   'glm-5.3-flash-fireworks': { levels: ['low', 'high', 'max'], defaultLevel: 'high' },
   // Google Gemini (keep in sync with bridge MODEL_REASONING_META).
+  'gemini-4-argon': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
   'gemini-3.1-pro-preview': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'gemini-3.8-flash': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
   'gemini-3.7-flash': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },

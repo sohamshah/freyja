@@ -116,7 +116,7 @@ ids run the same weights on Fireworks with a separate key and quota pool, and
 each route is the other's first fallback. Reasoning is mandatory on all four
 (ladder `low`/`high`/`max`, no off). `glm-5.3-flash` is natively multimodal
 (image input); plain `glm-5.3` is text-only.
-| `GEMINI_API_KEY` | Google | Gemini 2.5 / 3.x; also required for the `analyze_video` tool |
+| `GEMINI_API_KEY` | Google | Gemini 4 Argon and the 3.x line (2.5 access is limited to projects that used it before); also required for the `analyze_video` tool |
 
 ### Tools
 
@@ -247,7 +247,7 @@ Swarms are visualized as a round-based mission graph: spawn waves, publish/read 
 | OpenAI | GPT-5.5, GPT-5.4, GPT-5.4 Pro, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.3 Codex |
 | Cerebras | Z.ai GLM 4.7 |
 | Fireworks | Kimi K2.6, Kimi K2.5, DeepSeek V4 Pro, GLM 5.1, GLM 5, MiniMax M2.7, MiniMax M2.5, Qwen 3.6 Plus |
-| Google | Gemini 3.1 Pro Preview, Gemini 3.5 Flash, Gemini 3.1 Flash, Gemini 3.1 Flash Lite, Gemini 2.5 Pro, Gemini 2.5 Flash |
+| Google | Gemini 4 Argon, Gemini 3.1 Pro Preview, Gemini 3.8 Flash, Gemini 3.6 Flash, Gemini 3.5 Flash Lite, Gemini 3.1 Flash Lite (legacy: 2.5 Pro, 2.5 Flash) |
 
 The model picker tracks context window, thinking-mode support, API key availability, and per-model reasoning history behavior. Provider adapters live in `engine/*_provider.py`; the catalog is in `engine/providers.py`.
 

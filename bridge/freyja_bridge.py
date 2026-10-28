@@ -252,7 +252,7 @@ _DEEP_JUDGE_SAFETY_NET_ITERATIONS = 50
 _KANBAN_JUDGE_MODEL_POOL: tuple[str, ...] = (
     "claude-fable-5-1",
     "gpt-5.6-sol",
-    "gemini-3.1-pro-preview",
+    "gemini-4-argon",
 )
 # Goal-mode judge models. Deliberately NOT the session's own model: a
 # model grading its own work carries its own blind spots into the
@@ -261,12 +261,14 @@ _KANBAN_JUDGE_MODEL_POOL: tuple[str, ...] = (
 # `self.model_id` and the judge was whatever the session happened to be
 # running — so the default-model change made the agent its own grader.
 #
-# gemini-3.1-pro-preview for standard/deep: frontier reasoning at
-# ~$1.25/$10, a quarter of Opus-tier, and it already carries the
-# thinking-floor handling the judge's thinking-off calls need.
+# gemini-4-argon for standard/deep: Google's flagship at $2/$10 (intro
+# through Nov 30, 2026; $4/$20 after), a fraction of Opus-tier, and it
+# carries the same thinking-floor handling the judge's thinking-off
+# calls need (its floor is LOW, like the 3.1 Pro it replaces here —
+# 3.1 Pro now bills $2/$12 and is the weaker model).
 # glm-5.3-flash-fireworks for quick: $0.15/$0.50, cheaper AND stronger
 # than the claude-haiku-4-5 it replaces.
-_GOAL_JUDGE_MODEL = "gemini-3.1-pro-preview"
+_GOAL_JUDGE_MODEL = "gemini-4-argon"
 _GOAL_JUDGE_MODEL_ALT = "claude-opus-5-5"
 _GOAL_JUDGE_QUICK_MODEL = "glm-5.3-flash-fireworks"
 _GOAL_JUDGE_QUICK_MODEL_ALT = "claude-haiku-4-5"
@@ -2635,6 +2637,16 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
     },
     # ─── Google Gemini (GEMINI_API_KEY) ────────────────────────────────
     {
+        "id": "gemini-4-argon",
+        "family": "google",
+        "label": "Gemini 4 Argon",
+        "tier": "max",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "GEMINI_API_KEY",
+        "description": "Google's flagship (GA Oct 13, 2026). Frontier coding, agentic, math and science work. 1M ctx, 64k out (1M with long decode); text, image, video, audio and PDF in. Intro $2/$10 through Nov 30, 2026, then $4/$20. Paid tier only.",
+    },
+    {
         "id": "gemini-3.1-pro-preview",
         "family": "google",
         "label": "Gemini 3.1 Pro",
@@ -2642,7 +2654,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_048_576,
         "thinking": True,
         "envVar": "GEMINI_API_KEY",
-        "description": "Google's frontier Gemini. Ties Claude Opus 4.7 on AA intelligence at <½ price. 1M ctx, native multimodal.",
+        "description": "Previous Google flagship (Feb 2026). Now $2/$12 under 200k ctx and $4/$18 above — Argon is cheaper and stronger; keep for matching earlier runs. 1M ctx, native multimodal.",
     },
     {
         "id": "gemini-3.8-flash",
@@ -2662,7 +2674,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_048_576,
         "thinking": True,
         "envVar": "GEMINI_API_KEY",
-        "description": "Newest workhorse Flash (Aug 2026). Big agentic/coding jump over 3.6. 1M ctx, 64k out. Intro $0.75/$3.75 through 2026. Best fanout slot.",
+        "description": "Deprecated Oct 8, 2026 — Google now serves this id as 3.8 Flash (verified live Oct 28). Kept so pinned sessions keep working; pick 3.8 Flash for new ones.",
     },
     {
         "id": "gemini-3.6-flash",
@@ -2672,7 +2684,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_048_576,
         "thinking": True,
         "envVar": "GEMINI_API_KEY",
-        "description": "Token-efficient Flash (Jul 2026). Same intro pricing as 3.7 — prefer 3.7 unless matching earlier runs.",
+        "description": "Token-efficient Flash (Jul 2026). Same intro pricing as 3.8 — prefer 3.8 unless matching earlier runs.",
     },
     {
         "id": "gemini-3.5-flash",
@@ -2682,7 +2694,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_048_576,
         "thinking": True,
         "envVar": "GEMINI_API_KEY",
-        "description": "Older Flash gen (~200 tok/s). 1M ctx. Now pricier ($1.50/$9) than 3.7 Flash intro.",
+        "description": "Deprecated Oct 8, 2026 — Google now serves this id as 3.6 Flash (verified live Oct 28). Pick 3.6 or 3.8 Flash for new sessions.",
     },
     {
         "id": "gemini-3.5-flash-lite",
@@ -2702,7 +2714,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_048_576,
         "thinking": True,
         "envVar": "GEMINI_API_KEY",
-        "description": "Previous-gen Flash. 1M ctx, multimodal.",
+        "description": "Retired — Google answers 404 for this id (verified Oct 28, 2026). Kept only so a pinned session can fall back; pick 3.8 Flash.",
     },
     {
         "id": "gemini-3.1-flash-lite",
@@ -2722,7 +2734,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_048_576,
         "thinking": True,
         "envVar": "GEMINI_API_KEY",
-        "description": "Previous-gen Gemini Pro. Kept as a stable fallback target for 3.x.",
+        "description": "Legacy Gemini Pro. Access limited since Sep 18, 2026 to projects that used 2.5 before; no longer a fallback target.",
     },
     {
         "id": "gemini-2.5-flash",
@@ -2732,7 +2744,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_048_576,
         "thinking": True,
         "envVar": "GEMINI_API_KEY",
-        "description": "Previous-gen Gemini Flash. Cheap, fast, 1M ctx.",
+        "description": "Legacy Gemini Flash. Access limited since Sep 18, 2026 to projects that used 2.5 before. 1M ctx.",
     },
 ]
 
@@ -2999,6 +3011,12 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
     # Gemini 3.x exposes a discrete ThinkingLevel enum (minimal/low/medium/high).
     # We map our "minimal" UI rung onto Gemini MINIMAL and surface the same
     # four levels so the existing reasoning UI works unchanged.
+    # Gemini 4 Argon has no MINIMAL rung (400s, probed 2026-10-28) — low/medium/high.
+    "gemini-4-argon": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningDefault": "medium",
+    },
     "gemini-3.1-pro-preview": {
         "reasoningMode": "effort",
         "reasoningLevels": ["minimal", "low", "medium", "high"],
