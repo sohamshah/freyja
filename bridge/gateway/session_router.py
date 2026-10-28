@@ -238,7 +238,10 @@ def parse_inline_session_flags(
 
     if model is not None:
         try:
-            from engine.providers import MODEL_REGISTRY
+            from engine.providers import MODEL_REGISTRY, resolve_retired_model
+            # A binding or a habit may still name a retired id; run what
+            # stands in for it rather than refusing a model that used to work.
+            model = resolve_retired_model(model)
             valid = model in MODEL_REGISTRY
         except Exception:  # noqa: BLE001
             # If the registry can't be imported (e.g. unit-test

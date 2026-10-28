@@ -62,24 +62,14 @@ FIREWORKS_MODEL_MAP: dict[str, str] = {
     # it sits under the `fireworks` account, NOT `deepseek-ai`, even though
     # the public playground URL is fireworks.ai/models/deepseek-ai/...
     "deepseek-v4p1-flash": "accounts/fireworks/models/deepseek-v4p1-flash",
-    # RETIRED 2026-09-26 — kept so a pinned session resolves rather than
-    # crashing, but every one of these now returns
-    # `404 Model not found, inaccessible, and/or not deployed`.
-    # Verified dead by live probe 2026-09-29.
-    "deepseek-v4-pro": "accounts/fireworks/models/deepseek-v4-pro",
-    "glm-5.1": "accounts/fireworks/models/glm-5p1",
-    "glm-5.2": "accounts/fireworks/models/glm-5p2",
+    # The nine ids Fireworks removed from serverless on 2026-09-26 are gone
+    # from this map; engine/providers.py:RETIRED_MODEL_REPLACEMENTS says
+    # what runs in their place.
     # GLM 5.3 family — same models Z.ai serves first-party (see
     # zai_provider); the `-fireworks` ids pick the Fireworks route.
     "glm-5.3-fireworks": "accounts/fireworks/models/glm-5p3",
     "glm-5.3-flash-fireworks": "accounts/fireworks/models/glm-5p3-flash",
-    "kimi-k2.6": "accounts/fireworks/models/kimi-k2p6",
-    "kimi-k2.7-code": "accounts/fireworks/models/kimi-k2p7-code",
-    "minimax-m2.7": "accounts/fireworks/models/minimax-m2p7",
     "minimax-m3": "accounts/fireworks/models/minimax-m3",
-    "qwen3.6-plus": "accounts/fireworks/models/qwen3p6-plus",
-    "qwen3.7-plus": "accounts/fireworks/models/qwen3p7-plus",
-    "kimi-k2.5": "accounts/fireworks/models/kimi-k2p5",
     "kimi-k3": "accounts/fireworks/models/kimi-k3",
     "kimi-k3-fast": "accounts/fireworks/routers/kimi-k3-fast",
 }
@@ -87,30 +77,12 @@ FIREWORKS_MODEL_MAP: dict[str, str] = {
 FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
     "deepseek-v4p1-flash": 1_048_576,
     "accounts/fireworks/models/deepseek-v4p1-flash": 1_048_576,
-    "deepseek-v4-pro": 1_048_576,
-    "accounts/fireworks/models/deepseek-v4-pro": 1_048_576,
-    "glm-5.1": 202_752,
-    "accounts/fireworks/models/glm-5p1": 202_752,
-    "glm-5.2": 1_048_576,
-    "accounts/fireworks/models/glm-5p2": 1_048_576,
     "glm-5.3-fireworks": 1_048_576,
     "accounts/fireworks/models/glm-5p3": 1_048_576,
     "glm-5.3-flash-fireworks": 1_048_576,
     "accounts/fireworks/models/glm-5p3-flash": 1_048_576,
-    "kimi-k2.6": 262_144,
-    "accounts/fireworks/models/kimi-k2p6": 262_144,
-    "kimi-k2.7-code": 262_144,
-    "accounts/fireworks/models/kimi-k2p7-code": 262_144,
-    "minimax-m2.7": 196_608,
-    "accounts/fireworks/models/minimax-m2p7": 196_608,
     "minimax-m3": 524_288,
     "accounts/fireworks/models/minimax-m3": 524_288,
-    "qwen3.6-plus": 1_000_000,
-    "accounts/fireworks/models/qwen3p6-plus": 1_000_000,
-    "qwen3.7-plus": 262_144,
-    "accounts/fireworks/models/qwen3p7-plus": 262_144,
-    "kimi-k2.5": 262_144,
-    "accounts/fireworks/models/kimi-k2p5": 262_144,
     "kimi-k3": 1_048_576,
     "accounts/fireworks/models/kimi-k3": 1_048_576,
     "kimi-k3-fast": 1_048_576,
@@ -120,18 +92,8 @@ FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
 
 # Models that support vision (image_url content blocks)
 FIREWORKS_VISION_MODELS: set[str] = {
-    "kimi-k2.6",
-    "accounts/fireworks/models/kimi-k2p6",
-    "kimi-k2.7-code",
-    "accounts/fireworks/models/kimi-k2p7-code",
     "minimax-m3",
     "accounts/fireworks/models/minimax-m3",
-    "qwen3.6-plus",
-    "accounts/fireworks/models/qwen3p6-plus",
-    "qwen3.7-plus",
-    "accounts/fireworks/models/qwen3p7-plus",
-    "kimi-k2.5",
-    "accounts/fireworks/models/kimi-k2p5",
     # GLM 5.3 Flash is natively multimodal; plain GLM 5.3 is text-only.
     "glm-5.3-flash-fireworks",
     "accounts/fireworks/models/glm-5p3-flash",
@@ -144,13 +106,7 @@ FIREWORKS_VISION_MODELS: set[str] = {
 FIREWORKS_REASONING_MODE: dict[str, str] = {
     # Fireworks API docs: DeepSeek V4 supports none/low/medium/high/max
     # and defaults to high. Low/medium are promoted to high by Fireworks.
-    "deepseek-v4-pro": "effort",
-    "accounts/fireworks/models/deepseek-v4-pro": "effort",
     # GLM 5.1 exposes reasoning/tool calling in Fireworks model metadata.
-    "glm-5.1": "effort",
-    "accounts/fireworks/models/glm-5p1": "effort",
-    "glm-5.2": "effort",
-    "accounts/fireworks/models/glm-5p2": "effort",
     # GLM 5.3 family reasoning is MANDATORY (Z.ai error 1210 on the
     # first-party API) — "required" makes the resolver omit
     # reasoning_effort instead of sending "none" when thinking is off.
@@ -160,17 +116,7 @@ FIREWORKS_REASONING_MODE: dict[str, str] = {
     "accounts/fireworks/models/glm-5p3-flash": "required",
     # Kimi K2.6 / Qwen 3.6 use Fireworks reasoning fields and support
     # preserved reasoning history in model-specific prompt formatting.
-    "kimi-k2.6": "effort",
-    "accounts/fireworks/models/kimi-k2p6": "effort",
-    "kimi-k2.7-code": "effort",
-    "accounts/fireworks/models/kimi-k2p7-code": "effort",
-    "qwen3.6-plus": "effort",
-    "accounts/fireworks/models/qwen3p6-plus": "effort",
-    "qwen3.7-plus": "effort",
-    "accounts/fireworks/models/qwen3p7-plus": "effort",
     # Fireworks docs list MiniMax M2 reasoning as required/on by default.
-    "minimax-m2.7": "required",
-    "accounts/fireworks/models/minimax-m2p7": "required",
     "minimax-m3": "required",
     "accounts/fireworks/models/minimax-m3": "required",
     "kimi-k3": "effort",
@@ -180,24 +126,14 @@ FIREWORKS_REASONING_MODE: dict[str, str] = {
 }
 
 FIREWORKS_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
-    "deepseek-v4-pro": ("none", "low", "medium", "high", "max"),
-    "accounts/fireworks/models/deepseek-v4-pro": ("none", "low", "medium", "high", "max"),
-    "kimi-k2.7-code": ("none", "low", "medium", "high"),
-    "accounts/fireworks/models/kimi-k2p7-code": ("none", "low", "medium", "high"),
-    "minimax-m2.7": ("low", "medium", "high"),
-    "accounts/fireworks/models/minimax-m2p7": ("low", "medium", "high"),
     "minimax-m3": ("low", "medium", "high"),
     "accounts/fireworks/models/minimax-m3": ("low", "medium", "high"),
-    "glm-5.2": ("none", "low", "medium", "high", "max"),
-    "accounts/fireworks/models/glm-5p2": ("none", "low", "medium", "high", "max"),
     # GLM 5.3 family ladder is low/high/max — there is no "medium" rung
     # and no way to turn thinking off.
     "glm-5.3-fireworks": ("low", "high", "max"),
     "accounts/fireworks/models/glm-5p3": ("low", "high", "max"),
     "glm-5.3-flash-fireworks": ("low", "high", "max"),
     "accounts/fireworks/models/glm-5p3-flash": ("low", "high", "max"),
-    "qwen3.7-plus": ("none", "low", "medium", "high", "max"),
-    "accounts/fireworks/models/qwen3p7-plus": ("none", "low", "medium", "high", "max"),
     "kimi-k3": ("none", "low", "medium", "high", "max"),
     "accounts/fireworks/models/kimi-k3": ("none", "low", "medium", "high", "max"),
     "kimi-k3-fast": ("none", "low", "medium", "high", "max"),
@@ -205,18 +141,6 @@ FIREWORKS_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
 }
 
 FIREWORKS_REASONING_HISTORY: dict[str, str] = {
-    "deepseek-v4-pro": "interleaved",
-    "accounts/fireworks/models/deepseek-v4-pro": "interleaved",
-    "qwen3.6-plus": "preserved",
-    "accounts/fireworks/models/qwen3p6-plus": "preserved",
-    "qwen3.7-plus": "preserved",
-    "accounts/fireworks/models/qwen3p7-plus": "preserved",
-    "kimi-k2.6": "preserved",
-    "accounts/fireworks/models/kimi-k2p6": "preserved",
-    "kimi-k2.7-code": "preserved",
-    "accounts/fireworks/models/kimi-k2p7-code": "preserved",
-    "minimax-m2.7": "interleaved",
-    "accounts/fireworks/models/minimax-m2p7": "interleaved",
     "minimax-m3": "interleaved",
     "accounts/fireworks/models/minimax-m3": "interleaved",
     "kimi-k3": "preserved",
@@ -269,7 +193,7 @@ class FireworksConfig:
     api_key: str | None = None
     """API key (defaults to FIREWORKS_API_KEY env var)."""
 
-    model: str = "kimi-k2.5"
+    model: str = "kimi-k3"
     """Model identifier (short name or full Fireworks model ID)."""
 
     max_tokens: int = 8192

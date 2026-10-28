@@ -83,8 +83,6 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-5.4": 1_050_000,
     "gpt-5.4-pro": 1_050_000,
     "gpt-5.4-mini": 400_000,
-    "gpt-5.4-nano": 400_000,
-    "gpt-5.3-codex": 400_000,
 }
 
 # Models that support the `reasoning` parameter.
@@ -104,8 +102,6 @@ REASONING_MODELS: set[str] = {
     "gpt-5.4",
     "gpt-5.4-pro",
     "gpt-5.4-mini",
-    "gpt-5.4-nano",
-    "gpt-5.3-codex",
 }
 
 NATIVE_COMPUTER_MODELS: set[str] = {

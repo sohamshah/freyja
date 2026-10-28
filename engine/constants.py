@@ -72,11 +72,8 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # Claude 4.6
     "claude-opus-4-6": 1_000_000,
     "claude-sonnet-4-6": 1_000_000,
-    # Claude 4.5 / 4
-    "claude-opus-4": 200_000,
-    "claude-sonnet-4": 200_000,
+    # Claude 4.5
     "claude-haiku-4-5": 200_000,
-    "claude-sonnet-4-5": 1_000_000,
     "claude-opus-4-5": 200_000,
     # OpenAI. The `-ultrafast` ids are the ultrafast service tier of the
     # same model, listed for the same reason as the `-fast` ids above.
@@ -95,23 +92,9 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-5.4": 1_050_000,
     "gpt-5.4-pro": 1_050_000,
     "gpt-5.4-mini": 400_000,
-    "gpt-5.4-nano": 400_000,
-    "gpt-5.3-codex": 400_000,
-    "gpt-4-turbo": 128_000,
-    "gpt-4": 8_192,
-    "gpt-3.5-turbo": 16_385,
     # Fireworks
     "deepseek-v4p1-flash": 1_048_576,
-    "deepseek-v4-pro": 1_048_576,
-    "glm-5.1": 202_752,
-    "glm-5.2": 1_048_576,
-    "kimi-k2.6": 262_144,
-    "kimi-k2.7-code": 262_144,
-    "minimax-m2.7": 196_608,
     "minimax-m3": 524_288,
-    "qwen3.6-plus": 1_000_000,
-    "qwen3.7-plus": 262_144,
-    "kimi-k2.5": 262_144,
     "kimi-k3": 1_048_576,
     "kimi-k3-fast": 1_048_576,
     # Google Gemini — keep in sync with engine/providers.py MODEL_REGISTRY.
@@ -120,16 +103,12 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "glm-5.3-fireworks": 1_048_576,
     "glm-5.3-flash-fireworks": 1_048_576,
     "gemini-4-argon": 1_048_576,
+    "gemini-4-carbon": 1_048_576,
     "gemini-3.1-pro-preview": 1_048_576,
     "gemini-3.8-flash": 1_048_576,
-    "gemini-3.7-flash": 1_048_576,
     "gemini-3.6-flash": 1_048_576,
-    "gemini-3.5-flash": 1_048_576,
     "gemini-3.5-flash-lite": 1_048_576,
-    "gemini-3.1-flash": 1_048_576,
     "gemini-3.1-flash-lite": 1_048_576,
-    "gemini-2.5-pro": 1_048_576,
-    "gemini-2.5-flash": 1_048_576,
 }
 
 # ============================================================================

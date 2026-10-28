@@ -135,14 +135,25 @@ def resolve_model_choice(agent_type: AgentType, parent_model: str) -> ModelResol
     )
 
 
+def _live(models: list[str]) -> list[str]:
+    """The given ids with retired ones swapped for what stands in for them,
+    deduplicated in order. A profile on disk may still name kimi-k2.6,
+    zai-glm-4.7 or gemini-3.7-flash; the spawn should run the replacement,
+    not die at its first request."""
+    from engine.providers import resolve_retired_model
+
+    deduped: list[str] = []
+    for item in models:
+        live = resolve_retired_model(item) if item else item
+        if live and live not in deduped:
+            deduped.append(live)
+    return deduped
+
+
 def _model_candidates(agent_type: AgentType, parent_model: str) -> list[str]:
     candidates = _primary_model_candidates(agent_type, parent_model)
     candidates.extend(agent_type.model_fallbacks)
-    deduped: list[str] = []
-    for item in candidates:
-        if item and item not in deduped:
-            deduped.append(item)
-    return deduped
+    return _live(candidates)
 
 
 def _primary_model_candidates(agent_type: AgentType, parent_model: str) -> list[str]:
@@ -159,11 +170,7 @@ def _primary_model_candidates(agent_type: AgentType, parent_model: str) -> list[
     elif agent_type.model_policy == "prefer_parent":
         candidates = [parent_model, *candidates]
 
-    deduped: list[str] = []
-    for item in candidates:
-        if item and item not in deduped:
-            deduped.append(item)
-    return deduped
+    return _live(candidates)
 
 
 def _model_available(model: str, parent_model: str) -> tuple[bool, str]:
@@ -546,7 +553,11 @@ AGENT_TYPES: dict[str, AgentType] = {
         # rotation with one working model out of three. gpt-6-luna is the
         # cheapest option anywhere ($0.10/$0.50) and, unlike the rest of the
         # GPT-6 family, still accepts reasoning effort "none".
-        model=["gpt-6-luna", "glm-5.3-flash-fireworks", "zai-glm-4.7"],
+        # Retargeted again 2026-10-28: Cerebras archived zai-glm-4.7 (404
+        # "model_archived"). gemini-3.5-flash-lite takes the third seat —
+        # $0.30/$2.50, sub-second, and a third provider in the rotation.
+        # Gemini cannot switch thinking off; "off" lands on its MINIMAL rung.
+        model=["gpt-6-luna", "glm-5.3-flash-fireworks", "gemini-3.5-flash-lite"],
         thinking_effort="off",
         model_policy="random_available",
         model_fallbacks=("claude-haiku-4-5",),

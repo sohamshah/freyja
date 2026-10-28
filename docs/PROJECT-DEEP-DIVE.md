@@ -133,10 +133,13 @@ Current families:
 
 | Family | Models in bridge catalog | Env var |
 |---|---|---|
-| Anthropic | `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`, `claude-opus-4-5`, `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` |
-| OpenAI | `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano` | `OPENAI_API_KEY` |
-| Cerebras | `zai-glm-4.7` | `CEREBRAS_API_KEY` |
-| Fireworks | `kimi-k2.5`, `glm5`, `minimax-m2.5` | `FIREWORKS_API_KEY` |
+| Anthropic | `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-4-5` and the earlier 4.x line | `ANTHROPIC_API_KEY` |
+| OpenAI | `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`, the GPT-5.6 and 5.4/5.5 families | `OPENAI_API_KEY` |
+| Cerebras | none at present (`zai-glm-4.7` was archived) | `CEREBRAS_API_KEY` |
+| Fireworks | `kimi-k3`, `deepseek-v4p1-flash`, `minimax-m3`, `glm-5.3-fireworks` | `FIREWORKS_API_KEY` |
+| Google | `gemini-4-argon`, `gemini-3.8-flash` and the 3.x line | `GEMINI_API_KEY` |
+
+The live list is `AVAILABLE_MODELS` in `bridge/freyja_bridge.py`; retired ids map to replacements through `RETIRED_MODEL_REPLACEMENTS` in `engine/providers.py`.
 
 `build_provider()` maps model IDs to provider implementations and raises a recoverable bridge error if the required API key is missing.
 
@@ -281,10 +284,10 @@ Agent types are declared in `bridge/tools/agent_types.py`:
 | Type | Model | Tools | Use |
 |---|---|---|---|
 | `general` | parent model | inherited tools minus recursion/memory bus exclusions | default bounded delegation |
-| `explore` | `claude-sonnet-4-6` | web/file/bash subset | deep research |
-| `explore-fast` | random `kimi-k2.5`, `glm5`, or `zai-glm-4.7` | quick web/file subset | fast breadth lookups |
+| `explore` | `claude-sonnet-5-5` | web/file/bash subset | deep research |
+| `explore-fast` | random `gpt-6-luna`, `glm-5.3-flash-fireworks`, or `gemini-3.5-flash-lite` | quick web/file subset | fast breadth lookups |
 | `code` | parent model | file/bash/search subset | isolated code edits |
-| `verify` | `gpt-5.4` | read/search/bash subset | QA/verification |
+| `verify` | `gpt-5.5` | read/search/bash subset | QA/verification |
 
 Child agents cannot recursively spawn further sub-agents. They get a filtered tool registry, their own provider/model/thinking config, a child system prompt, and a first-class session ID. Their streaming events route to their own archived renderer slice.
 

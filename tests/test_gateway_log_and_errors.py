@@ -34,7 +34,7 @@ def test_turn_failure_carries_a_session_id(monkeypatch):
     from bridge.freyja_bridge import _emit_turn_failed
 
     seen = _capture_emit(monkeypatch)
-    sess = SimpleNamespace(id="freyja:slack:T1:channel:C1:1.0", model_id="gemini-3.7-flash")
+    sess = SimpleNamespace(id="freyja:slack:T1:channel:C1:1.0", model_id="gemini-3.8-flash")
     _emit_turn_failed(sess, RuntimeError("GEMINI_API_KEY is not set"))
 
     assert len(seen) == 1
@@ -42,7 +42,7 @@ def test_turn_failure_carries_a_session_id(monkeypatch):
     assert evt["type"] == "turn_failed"
     assert evt["sessionId"] == sess.id, "no sessionId means no listener fan-out"
     assert "GEMINI_API_KEY is not set" in evt["message"]
-    assert evt["model"] == "gemini-3.7-flash"
+    assert evt["model"] == "gemini-3.8-flash"
 
 
 def test_missing_key_failures_explain_where_the_key_goes(monkeypatch):
@@ -51,7 +51,7 @@ def test_missing_key_failures_explain_where_the_key_goes(monkeypatch):
     from bridge.freyja_bridge import _emit_turn_failed
 
     seen = _capture_emit(monkeypatch)
-    sess = SimpleNamespace(id="s", model_id="gemini-3.7-flash")
+    sess = SimpleNamespace(id="s", model_id="gemini-3.8-flash")
     _emit_turn_failed(sess, RuntimeError("GEMINI_API_KEY is not set"))
 
     hint = seen[0]["hint"]

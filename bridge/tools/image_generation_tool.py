@@ -16,6 +16,9 @@ from bridge.tools.base import ImageBlock, TextBlock, ToolDefinition, ToolResult,
 from bridge.tools.image_store import ImageAsset, SessionImageStore, strip_data_url
 
 DEFAULT_IMAGE_MODEL = "gpt-image-2.5-sunburst"
+# GPT Image 1 shut down on 2026-10-23; GPT Image 1.5 and 1 Mini are
+# deprecated and shut down on 2026-12-01 (OpenAI deprecations page). They
+# took the legacy fixed sizes and an input_fidelity knob; both went with them.
 OPENAI_IMAGE_MODELS = {
     "gpt-image-2.5-sunburst",
     "gpt-image-2.5-sunburst-2026-09-08",
@@ -23,16 +26,12 @@ OPENAI_IMAGE_MODELS = {
     "gpt-image-2.5-flare-2026-09-08",
     "gpt-image-2",
     "gpt-image-2-2026-04-21",
-    "gpt-image-1.5",
-    "gpt-image-1",
-    "gpt-image-1-mini",
 }
 # Google's Nano Banana 2.1 (GA 2026-10-06, replaces gemini-3.1-flash-image)
 # runs through the Gemini API with GEMINI_API_KEY; everything above is
 # OpenAI's Images API.
 GEMINI_IMAGE_MODELS = {"gemini-nano-banana-2.1"}
 SUPPORTED_MODELS = OPENAI_IMAGE_MODELS | GEMINI_IMAGE_MODELS
-LEGACY_IMAGE_MODELS = {"gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini"}
 # Nano Banana takes a fixed aspect ratio and a size tier instead of WxH.
 # (512px is in the docs but 2.1 answers "Image size 512px is not supported
 # for this model" — probed 2026-10-28.)
@@ -48,12 +47,10 @@ GEMINI_QUALITY_TIERS = {
 }
 GEMINI_MAX_INPUT_IMAGES = 14
 DEFAULT_IMAGE_OUTPUT_DIR = Path.home() / "Pictures" / "Freyja"
-LEGACY_SIZES = {"auto", "1024x1024", "1536x1024", "1024x1536"}
 SUPPORTED_QUALITIES = {"auto", "low", "medium", "high", "xhigh", "max"}
 SUPPORTED_FORMATS = {"png", "jpeg", "webp"}
 SUPPORTED_BACKGROUNDS = {"auto", "opaque", "transparent"}
 SUPPORTED_MODERATION = {"auto", "low"}
-SUPPORTED_INPUT_FIDELITY = {"low", "high"}
 
 
 def _timestamp_str() -> str:
@@ -114,10 +111,8 @@ def _clean_enum(
 
 def _clean_size(value: Any, model: str) -> str:
     size = str(value or "1024x1024").strip().lower()
-    if size in LEGACY_SIZES:
+    if size == "auto":
         return size
-    if model in LEGACY_IMAGE_MODELS:
-        raise ValueError(f"{model} size must be one of: {', '.join(sorted(LEGACY_SIZES))}")
     parts = size.split("x")
     if len(parts) != 2 or any(
         not part.isascii() or not part.isdecimal() or len(part) > 4 for part in parts
@@ -364,9 +359,8 @@ Model selection:
   has no mask, transparent background, or moderation setting; it answers in
   jpeg unless output_format asks for something else.
 - An explicit model overrides FREYJA_IMAGE_MODEL, which overrides the default.
-- Dated snapshots and earlier GPT Image models are available in the model enum.
-- GPT Image 2 and 2.5 process references at high fidelity automatically: omit
-  input_fidelity. Only older models allow adjustable fidelity.
+- Dated snapshots are available in the model enum.
+- GPT Image 2 and 2.5 process reference images at high fidelity automatically.
 
 Guidelines:
 - Write the prompt as the actual image brief, not conversational scaffolding.
@@ -401,8 +395,7 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                             "auto or WIDTHxHEIGHT. GPT Image 2/2.5: edges divisible by 16, "
                             "at most 3840px; ratio 1:3–3:1; 655360–8294400 total pixels. "
                             "Examples: 1024x1024, 1536x864, 2048x2048, 3840x2160. "
-                            "Above 2560x1440 is experimental. Older models: auto, "
-                            "1024x1024, 1536x1024, or 1024x1536 only. Nano Banana: auto, an "
+                            "Above 2560x1440 is experimental. Nano Banana: auto, an "
                             "aspect ratio (1:1, 3:2, 2:3, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9), "
                             "or WIDTHxHEIGHT mapped to the nearest ratio and a 1K/2K/4K tier."
                         ),
@@ -487,15 +480,6 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                             "mimeType": {"type": "string"},
                             "mime_type": {"type": "string"},
                         },
-                    },
-                    "input_fidelity": {
-                        "type": "string",
-                        "enum": sorted(SUPPORTED_INPUT_FIDELITY),
-                        "description": (
-                            "Omit for GPT Image 2/2.5 (always high). Explicit high is not sent. "
-                            "Only GPT Image 1/1.5 allow low or high (default high here). "
-                            "GPT Image 1 Mini only supports low."
-                        ),
                     },
                     "output_compression": {
                         "type": "integer",
@@ -597,18 +581,6 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                         f"{model} does not take a mask_image; describe the region to "
                         "change in the prompt"
                     )
-            input_fidelity = _clean_enum(
-                arguments.get("input_fidelity"),
-                name="input_fidelity",
-                allowed=SUPPORTED_INPUT_FIDELITY,
-                default="low" if model == "gpt-image-1-mini" else "high",
-            )
-            if model == "gpt-image-1-mini" and input_fidelity != "low":
-                raise ValueError("gpt-image-1-mini only supports input_fidelity low")
-            if model not in LEGACY_IMAGE_MODELS:
-                if input_fidelity == "low":
-                    raise ValueError(f"{model} uses high input fidelity; omit input_fidelity")
-                input_fidelity = None
             output_compression = _clean_compression(arguments.get("output_compression"))
             if output_format == "png":
                 output_compression = None
@@ -659,7 +631,6 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                     moderation=moderation,
                     input_images=input_images,
                     mask_image=mask_image,
-                    input_fidelity=input_fidelity,
                 )
         except Exception as exc:  # noqa: BLE001
             return ToolResult(
@@ -743,7 +714,6 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
         moderation: str,
         input_images: list[ImageAsset],
         mask_image: ImageAsset | None,
-        input_fidelity: str | None,
     ) -> tuple[str, str]:
         client = self._make_client(api_key)
 
@@ -768,7 +738,6 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
             ]
             if mask_image is not None:
                 extras["mask"] = self._file_tuple(mask_image, 0)
-            extras["input_fidelity"] = input_fidelity
             self._merge_supported_kwargs(client.images.edit, kwargs, extras)
             response = await client.images.edit(**kwargs)
         else:

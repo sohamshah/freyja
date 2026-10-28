@@ -19,14 +19,16 @@ from engine.types import ThinkingConfig
 def test_floor_thinking_level_detection():
     assert _floor_thinking_level("gemini-3.1-pro-preview") == "LOW"
     assert _floor_thinking_level("gemini-3.1-pro-preview-20260601") == "LOW"  # suffix-tolerant
-    # 3.7-flash rejects MINIMAL per its model page (2026-08); 3.6 still accepts.
-    assert _floor_thinking_level("gemini-3.7-flash") == "LOW"
+    # 3.8-flash rejects MINIMAL per its model page; 3.6 still accepts.
+    assert _floor_thinking_level("gemini-3.8-flash") == "LOW"
     # Gemini 4 Argon rejects MINIMAL too (probed live 2026-10-28; the
-    # thinking docs list low/medium/high with medium as default).
+    # thinking docs list low/medium/high with medium as default). Carbon is
+    # gated and unprobed, so it takes the safe floor.
     assert _floor_thinking_level("gemini-4-argon") == "LOW"
+    assert _floor_thinking_level("gemini-4-carbon") == "LOW"
     assert _floor_thinking_level("gemini-3.6-flash") == "MINIMAL"
-    assert _floor_thinking_level("gemini-3.5-flash") == "MINIMAL"
-    assert _floor_thinking_level("gemini-2.5-flash") == "MINIMAL"
+    assert _floor_thinking_level("gemini-3.5-flash-lite") == "MINIMAL"
+    assert _floor_thinking_level("gemini-3.1-flash-lite") == "MINIMAL"
     assert _floor_thinking_level("") == "MINIMAL"
 
 
@@ -50,7 +52,7 @@ def test_structured_output_floors_to_low_for_pro():
 
 
 def test_disabled_thinking_stays_minimal_for_flash():
-    p = _provider("gemini-3.5-flash")
+    p = _provider("gemini-3.6-flash")
     tc = p._build_thinking_config(ThinkingConfig(enabled=False))
     assert tc is not None and "MINIMAL" in str(tc.thinking_level)
 

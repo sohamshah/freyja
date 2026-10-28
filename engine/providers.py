@@ -538,7 +538,6 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
     "claude-sonnet-4-6": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-6": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-haiku-4-5": {"provider": "anthropic", "context_window": 200_000, "thinking": True},
-    "claude-sonnet-4-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-5": {"provider": "anthropic", "context_window": 200_000, "thinking": True},
     # OpenAI models (Responses API)
     "gpt-6-astra": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
@@ -553,10 +552,8 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
     "gpt-5.4": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-5.4-pro": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-5.4-mini": {"provider": "openai", "context_window": 400_000, "thinking": True},
-    "gpt-5.4-nano": {"provider": "openai", "context_window": 400_000, "thinking": True},
-    "gpt-5.3-codex": {"provider": "openai", "context_window": 400_000, "thinking": True},
-    # Cerebras models
-    "zai-glm-4.7": {"provider": "cerebras", "context_window": 131_072, "thinking": False, "reasoning_mode": "disabled"},
+    # Cerebras: no model at present. zai-glm-4.7 was archived by Cerebras
+    # (404 "model_archived", probed 2026-10-28); the provider class stays.
     # Fireworks models
     # DeepSeek V4.1 Flash — the replacement Fireworks names for the retired
     # deepseek-v4-pro line. 552B MoE, native image input, 1M ctx.
@@ -566,22 +563,6 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "thinking": True,
         "reasoning_mode": "effort",
         "reasoning_levels": ("none", "low", "medium", "high", "max"),
-        "reasoning_default": "high",
-    },
-    "deepseek-v4-pro": {
-        "provider": "fireworks",
-        "context_window": 1_048_576,
-        "thinking": True,
-        "reasoning_mode": "effort",
-        "reasoning_levels": ("none", "low", "medium", "high", "max"),
-        "reasoning_default": "high",
-    },
-    "glm-5.1": {
-        "provider": "fireworks",
-        "context_window": 202_752,
-        "thinking": True,
-        "reasoning_mode": "effort",
-        "reasoning_levels": ("none", "low", "medium", "high"),
         "reasoning_default": "high",
     },
     "glm-5.3-fireworks": {
@@ -600,38 +581,6 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "reasoning_levels": ("low", "high", "max"),
         "reasoning_default": "high",
     },
-    "glm-5.2": {
-        "provider": "fireworks",
-        "context_window": 1_048_576,
-        "thinking": True,
-        "reasoning_mode": "effort",
-        "reasoning_levels": ("none", "low", "medium", "high", "max"),
-        "reasoning_default": "high",
-    },
-    "kimi-k2.6": {
-        "provider": "fireworks",
-        "context_window": 262_144,
-        "thinking": True,
-        "reasoning_mode": "effort",
-        "reasoning_levels": ("none", "low", "medium", "high"),
-        "reasoning_default": "high",
-    },
-    "kimi-k2.7-code": {
-        "provider": "fireworks",
-        "context_window": 262_144,
-        "thinking": True,
-        "reasoning_mode": "effort",
-        "reasoning_levels": ("none", "low", "medium", "high"),
-        "reasoning_default": "high",
-    },
-    "minimax-m2.7": {
-        "provider": "fireworks",
-        "context_window": 196_608,
-        "thinking": True,
-        "reasoning_mode": "required",
-        "reasoning_levels": ("low", "medium", "high"),
-        "reasoning_default": "medium",
-    },
     "minimax-m3": {
         "provider": "fireworks",
         "context_window": 524_288,
@@ -640,23 +589,6 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "reasoning_levels": ("low", "medium", "high"),
         "reasoning_default": "medium",
     },
-    "qwen3.6-plus": {
-        "provider": "fireworks",
-        "context_window": 1_000_000,
-        "thinking": True,
-        "reasoning_mode": "effort",
-        "reasoning_levels": ("none", "low", "medium", "high"),
-        "reasoning_default": "medium",
-    },
-    "qwen3.7-plus": {
-        "provider": "fireworks",
-        "context_window": 262_144,
-        "thinking": True,
-        "reasoning_mode": "effort",
-        "reasoning_levels": ("none", "low", "medium", "high", "max"),
-        "reasoning_default": "medium",
-    },
-    "kimi-k2.5": {"provider": "fireworks", "context_window": 262_144, "thinking": False, "reasoning_mode": "none"},
     "kimi-k3": {
         "provider": "fireworks",
         "context_window": 1_048_576,
@@ -702,6 +634,18 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "reasoning_levels": ("low", "medium", "high"),
         "reasoning_default": "medium",
     },
+    # Gemini 4 Carbon: announced 2026-10-28, gated (cyber defenders first,
+    # then the Fairwind Program, developers "soon"). Not served to API keys
+    # yet — every id probed that day 404s — so the ladder below is Argon's,
+    # assumed, and the catalog entry is marked gated until it answers.
+    "gemini-4-carbon": {
+        "provider": "google",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("low", "medium", "high"),
+        "reasoning_default": "medium",
+    },
     "gemini-3.1-pro-preview": {
         "provider": "google",
         "context_window": 1_048_576,
@@ -719,24 +663,7 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "reasoning_levels": ("low", "medium", "high"),
         "reasoning_default": "medium",
     },
-    "gemini-3.7-flash": {
-        "provider": "google",
-        "context_window": 1_048_576,
-        "thinking": True,
-        "reasoning_mode": "effort",
-        # No "minimal": 3.7-flash 400s on thinking_level=MINIMAL (model page).
-        "reasoning_levels": ("low", "medium", "high"),
-        "reasoning_default": "medium",
-    },
     "gemini-3.6-flash": {
-        "provider": "google",
-        "context_window": 1_048_576,
-        "thinking": True,
-        "reasoning_mode": "effort",
-        "reasoning_levels": ("minimal", "low", "medium", "high"),
-        "reasoning_default": "medium",
-    },
-    "gemini-3.5-flash": {
         "provider": "google",
         "context_window": 1_048_576,
         "thinking": True,
@@ -752,14 +679,6 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "reasoning_levels": ("minimal", "low", "medium", "high"),
         "reasoning_default": "low",
     },
-    "gemini-3.1-flash": {
-        "provider": "google",
-        "context_window": 1_048_576,
-        "thinking": True,
-        "reasoning_mode": "effort",
-        "reasoning_levels": ("minimal", "low", "medium", "high"),
-        "reasoning_default": "medium",
-    },
     "gemini-3.1-flash-lite": {
         "provider": "google",
         "context_window": 1_048_576,
@@ -768,22 +687,6 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "reasoning_levels": ("minimal", "low", "medium", "high"),
         "reasoning_default": "low",
     },
-    "gemini-2.5-pro": {
-        "provider": "google",
-        "context_window": 1_048_576,
-        "thinking": True,
-        "reasoning_mode": "effort",
-        "reasoning_levels": ("minimal", "low", "medium", "high"),
-        "reasoning_default": "high",
-    },
-    "gemini-2.5-flash": {
-        "provider": "google",
-        "context_window": 1_048_576,
-        "thinking": True,
-        "reasoning_mode": "effort",
-        "reasoning_levels": ("minimal", "low", "medium", "high"),
-        "reasoning_default": "medium",
-    },
 }
 
 MODEL_SPEED_TIERS = {
@@ -791,8 +694,10 @@ MODEL_SPEED_TIERS = {
     "medium": "claude-sonnet-5-5",
     "slow": "claude-opus-5-5",   # latest Opus; older ones stay in registry as fallback targets
     "openai": "gpt-5.6-sol",     # OpenAI flagship (GPT-5.6 Sol)
-    "codex": "gpt-5.3-codex",    # agentic coding specialist
-    "cerebras": "zai-glm-4.7",
+    # gpt-5.3-codex was deprecated 2026-10-01 (shutdown 2027-04-01); OpenAI
+    # points Codex users at the Sol line.
+    "codex": "gpt-6.1-sol",
+    # No "cerebras" tier: zai-glm-4.7 was archived by Cerebras (2026-10-28).
     # Retargeted 2026-09-29: kimi-k2.6, glm-5.1, deepseek-v4-pro and
     # minimax-m2.7 were all removed from Fireworks serverless and 404.
     "kimi": "kimi-k3",
@@ -842,7 +747,6 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     # session by 50%.
     "claude-sonnet-5": (2.0, 10.0, 0.20, 2.5),
     "claude-sonnet-4-6": (3.0, 15.0, 0.30),
-    "claude-sonnet-4-5": (3.0, 15.0, 0.30),
     "claude-haiku-4-5": (0.80, 4.0, 0.08),
     # OpenAI Responses API. GPT-5.6 (Sol/Terra/Luna): cache_read is 10% of
     # input; cache_write defaults to 1.25× input (OpenAI's stated markup).
@@ -867,24 +771,11 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     "gpt-5.4": (3.0, 12.0, 0.30),
     "gpt-5.4-pro": (5.0, 20.0, 0.50),
     "gpt-5.4-mini": (0.30, 1.20, 0.03),
-    "gpt-5.4-nano": (0.05, 0.40, 0.005),
-    "gpt-5.3-codex": (2.0, 8.0, 0.20),
-    # Cerebras
-    "zai-glm-4.7": (0.50, 0.85, 0.0),
     # Fireworks
     "deepseek-v4p1-flash": (0.30, 1.20, 0.006),
-    "deepseek-v4-pro": (0.55, 1.65, 0.0),
-    "glm-5.1": (0.55, 2.20, 0.0),
-    "glm-5.2": (1.40, 4.40, 0.26),
-    "kimi-k2.6": (0.55, 1.20, 0.0),
-    "kimi-k2.7-code": (0.95, 4.00, 0.19),
-    "kimi-k2.5": (0.55, 1.20, 0.0),
     "kimi-k3": (3.00, 15.00, 0.30),
     "kimi-k3-fast": (4.50, 22.50, 0.45),
-    "minimax-m2.7": (0.30, 1.20, 0.0),
     "minimax-m3": (0.30, 1.20, 0.06),
-    "qwen3.6-plus": (0.40, 1.40, 0.0),
-    "qwen3.7-plus": (0.40, 1.60, 0.08),
     # Z.ai first-party (same sticker as Fireworks' GLM 5.2).
     # glm-5.3-flash: STANDARD rates. Z.ai ran a launch promo at half
     # these ($0.075/$0.25) that expires 2026-09-09 — too short-lived to
@@ -900,23 +791,18 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     # (4.0, 20.0, 0.20) on Dec 1, 2026 (ai.google.dev pricing page, 2026-10-28).
     # Caching is implicit only; thinking tokens bill at the output rate.
     "gemini-4-argon": (2.0, 10.0, 0.10),
+    # Gemini 4 Carbon: announced at Argon's intro price ($2/$10, $4/$20
+    # regular, cached input 95% off). Not on the pricing page yet.
+    "gemini-4-carbon": (2.0, 10.0, 0.10),
     # 3.1 Pro: the ≤200k-prompt tier. Prompts above 200k bill (4.0, 18.0, 0.40).
     # Was (1.25, 10.0, 0.31) here; the pricing page lists $2/$12 (2026-10-28).
     "gemini-3.1-pro-preview": (2.0, 12.0, 0.20),
     # 3.8/3.6 Flash: introductory pricing through Dec 31, 2026 — doubles to
     # (1.50, 7.50, 0.15) on Jan 1, 2027 (per ai.google.dev pricing page).
-    # 3.7 and 3.5 Flash were deprecated on 2026-10-08 and now route to 3.8
-    # and 3.6; the pricing page no longer lists them, so they carry the
-    # rate of the model that actually answers.
     "gemini-3.8-flash": (0.75, 3.75, 0.075),
-    "gemini-3.7-flash": (0.75, 3.75, 0.075),
     "gemini-3.6-flash": (0.75, 3.75, 0.075),
-    "gemini-3.5-flash": (0.75, 3.75, 0.075),
     "gemini-3.5-flash-lite": (0.30, 2.50, 0.03),
-    "gemini-3.1-flash": (0.30, 2.50, 0.075),
     "gemini-3.1-flash-lite": (0.10, 0.40, 0.025),
-    "gemini-2.5-pro": (1.25, 10.0, 0.31),
-    "gemini-2.5-flash": (0.30, 2.50, 0.075),
 }
 
 
@@ -981,11 +867,7 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "claude-sonnet-5": ["claude-sonnet-5-5", "glm-5.3-fireworks", "kimi-k3"],
     "claude-sonnet-4-6": ["claude-sonnet-5-5", "glm-5.3-fireworks", "kimi-k3"],
     "claude-haiku-4-5": ["glm-5.3-flash-fireworks", "kimi-k3"],
-    # These two had no chain at all before 2026-09-29 — a 503 on either was
-    # simply a failed turn. Pre-existing gap, not related to the model adds.
-    "claude-sonnet-4-5": ["claude-sonnet-5-5", "claude-sonnet-4-6"],
     "claude-opus-4-5": ["claude-opus-5-5", "claude-opus-4-8"],
-    "zai-glm-4.7": ["glm-5.3-flash-fireworks", "kimi-k3"],
     # ── OpenAI ──
     "gpt-6-astra": ["gpt-6.1-sol", "gpt-5.6-sol", "gpt-6-luna"],
     "gpt-6-astra-ultrafast": ["gpt-6-astra", "gpt-6.1-sol"],
@@ -998,9 +880,7 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "gpt-5.5": ["gpt-6.1-sol", "gpt-5.4", "gpt-5.4-mini"],
     "gpt-5.4": ["gpt-6.1-sol", "gpt-5.4-mini"],
     "gpt-5.4-pro": ["gpt-6.1-sol", "gpt-5.4", "gpt-5.4-mini"],
-    "gpt-5.4-mini": ["gpt-6-luna", "gpt-5.4-nano"],
-    "gpt-5.4-nano": ["gpt-6-luna", "gpt-5.4-mini"],
-    "gpt-5.3-codex": ["gpt-6.1-sol", "gpt-5.4-mini"],
+    "gpt-5.4-mini": ["gpt-6-luna", "gpt-5.6-luna"],
     # ── Fireworks (live) ──
     "deepseek-v4p1-flash": ["glm-5.3-fireworks", "kimi-k3"],
     "glm-5.3-fireworks": ["glm-5.3", "kimi-k3", "minimax-m3"],
@@ -1012,39 +892,70 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     # Cross-provider first (same weights, separate key and quota pool).
     "glm-5.3": ["glm-5.3-fireworks", "kimi-k3", "minimax-m3"],
     "glm-5.3-flash": ["glm-5.3-flash-fireworks", "glm-5.3", "kimi-k3"],
-    # ── Retired Fireworks ids ──
-    # These 404 on Fireworks serverless as of 2026-09-26. The keys stay so a
-    # saved session still pinned to one degrades to something live instead of
-    # dying with no chain at all; they are no longer anyone's fallback TARGET.
-    "deepseek-v4-pro": ["deepseek-v4p1-flash", "glm-5.3-fireworks"],
-    "glm-5.1": ["glm-5.3-fireworks", "kimi-k3"],
-    "glm-5.2": ["glm-5.3-fireworks", "kimi-k3"],
-    "kimi-k2.5": ["kimi-k3", "glm-5.3-fireworks"],
-    "kimi-k2.6": ["kimi-k3", "glm-5.3-fireworks"],
-    "kimi-k2.7-code": ["kimi-k3", "glm-5.3-fireworks"],
-    "minimax-m2.7": ["minimax-m3", "kimi-k3"],
-    "qwen3.6-plus": ["glm-5.3-fireworks", "kimi-k3"],
-    "qwen3.7-plus": ["glm-5.3-fireworks", "kimi-k3"],
     # ── Google Gemini ──
-    # NOTE: the 2.5 models are no longer generally reachable — Google limited
-    # access on 2026-09-18 to projects with prior 2.5 usage — so they are not
-    # fallback targets for any 3.x model any more.
-    # Live probe 2026-10-28: gemini-3.7-flash is served as 3.8-flash and
-    # gemini-3.5-flash as 3.6-flash (deprecated 2026-10-08, auto-routed), so
-    # neither is a useful TARGET — it lands on the same backend as the id it
-    # would rescue. gemini-3.1-flash answers 404 and is a key only.
+    # Retired Gemini ids (3.7/3.5 Flash routed to 3.8/3.6, 3.1 Flash 404,
+    # the access-limited 2.5 models) live in RETIRED_MODEL_REPLACEMENTS
+    # below, not here. Carbon is gated and never a TARGET.
     "gemini-4-argon": ["gemini-3.8-flash", "gemini-3.1-pro-preview"],
+    "gemini-4-carbon": ["gemini-4-argon", "gemini-3.8-flash"],
     "gemini-3.1-pro-preview": ["gemini-4-argon", "gemini-3.8-flash"],
     "gemini-3.8-flash": ["gemini-3.6-flash", "gemini-3.5-flash-lite"],
-    "gemini-3.7-flash": ["gemini-3.8-flash", "gemini-3.6-flash"],
     "gemini-3.6-flash": ["gemini-3.8-flash", "gemini-3.5-flash-lite"],
-    "gemini-3.5-flash": ["gemini-3.6-flash", "gemini-3.8-flash"],
     "gemini-3.5-flash-lite": ["gemini-3.1-flash-lite", "gemini-3.6-flash"],
-    "gemini-3.1-flash": ["gemini-3.8-flash", "gemini-3.1-flash-lite"],
     "gemini-3.1-flash-lite": ["gemini-3.5-flash-lite", "gemini-3.6-flash"],
-    "gemini-2.5-pro": ["gemini-4-argon", "gemini-3.8-flash"],
-    "gemini-2.5-flash": ["gemini-3.8-flash", "gemini-3.6-flash"],
 }
+
+
+# Ids this registry once carried and no longer does, each mapped to the
+# model that stands in for it. The provider retired them outright (Fireworks
+# dropped nine from serverless on 2026-09-26; Cerebras archived zai-glm-4.7;
+# Google answers 404 for gemini-3.1-flash) or deprecated them with a
+# shutdown date (claude-sonnet-4-5 retires 2026-11-30; gpt-5.3-codex and
+# gpt-5.4-nano on 2027-04-01; gemini-3.7/3.5-flash are already served as
+# 3.8/3.6; the Gemini 2.5 models are access-limited since 2026-09-18 and
+# reject thinking_level). All verified by live probe on 2026-10-28.
+#
+# This map is what keeps an old id from failing at its first request: a
+# persisted session's metadata, a scheduler job, a Slack thread binding, a
+# sub-agent profile on disk and FREYJA_MODEL all pass through
+# resolve_retired_model() before the id reaches a provider. Removing an id
+# from MODEL_REGISTRY means adding it here; the consistency test checks that
+# no retired id survives in any table and that every replacement is live.
+RETIRED_MODEL_REPLACEMENTS: dict[str, str] = {
+    "claude-sonnet-4-5": "claude-sonnet-5-5",
+    "gpt-5.3-codex": "gpt-6.1-sol",
+    "gpt-5.4-nano": "gpt-6-luna",
+    "zai-glm-4.7": "glm-5.3-flash-fireworks",
+    "deepseek-v4-pro": "deepseek-v4p1-flash",
+    "glm-5.1": "glm-5.3-fireworks",
+    "glm-5.2": "glm-5.3-fireworks",
+    "kimi-k2.5": "kimi-k3",
+    "kimi-k2.6": "kimi-k3",
+    "kimi-k2.7-code": "kimi-k3",
+    "minimax-m2.7": "minimax-m3",
+    "qwen3.6-plus": "kimi-k3",
+    "qwen3.7-plus": "kimi-k3",
+    "gemini-3.7-flash": "gemini-3.8-flash",
+    "gemini-3.5-flash": "gemini-3.6-flash",
+    "gemini-3.1-flash": "gemini-3.8-flash",
+    "gemini-2.5-pro": "gemini-4-argon",
+    "gemini-2.5-flash": "gemini-3.8-flash",
+}
+
+
+def resolve_retired_model(model_id: str) -> str:
+    """The id to run for ``model_id``: itself when registered, its
+    replacement when retired (followed through a chain of retirements), and
+    otherwise itself untouched — an unknown id is for the caller to reject
+    with a message, not for this function to guess at."""
+    current = model_id
+    seen: set[str] = set()
+    while current not in MODEL_REGISTRY and current in RETIRED_MODEL_REPLACEMENTS:
+        if current in seen:
+            break
+        seen.add(current)
+        current = RETIRED_MODEL_REPLACEMENTS[current]
+    return current
 
 
 def get_context_window(model: str) -> int:
@@ -1146,6 +1057,10 @@ def create_provider(
     thinking_config: ThinkingConfig | None = None,
 ) -> "ModelProvider":
     """Create the appropriate provider for a given model."""
+    live = resolve_retired_model(model)
+    if live != model:
+        logger.warning("%s was retired; running %s instead", model, live)
+        model = live
     thinking = thinking_config or ThinkingConfig(enabled=False)
 
     if thinking.enabled and not supports_thinking(model):
@@ -1162,6 +1077,7 @@ def create_provider_with_fallback(
     thinking_config: ThinkingConfig | None = None,
 ) -> tuple["ModelProvider", ModelFallbackChain | None]:
     """Create a provider and its fallback chain (if configured)."""
+    model = resolve_retired_model(model)
     primary = create_provider(model, max_tokens=max_tokens, thinking_config=thinking_config)
 
     fallback_models = FALLBACK_CHAINS.get(model, [])

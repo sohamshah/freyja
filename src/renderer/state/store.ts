@@ -315,6 +315,9 @@ export interface ModelChoice {
   reasoningHistory?: string[]
   envVar?: string
   available?: boolean
+  /** Why the model cannot be picked, when it is not the usual missing key
+   *  (e.g. a gated rollout the provider has not opened to API keys). */
+  unavailableReason?: string
 }
 
 export interface HarnessState extends SessionSlice {
@@ -1136,7 +1139,6 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Claude 4.5 / 4
   'claude-haiku-4-5': 200_000,
   'claude-opus-4-5': 200_000,
-  'claude-sonnet-4-5': 1_000_000,
   'claude-sonnet-4': 200_000,
   'claude-opus-4': 200_000,
   // OpenAI
@@ -1152,26 +1154,14 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'gpt-5.4': 1_050_000,
   'gpt-5.4-pro': 1_050_000,
   'gpt-5.4-mini': 400_000,
-  'gpt-5.4-nano': 400_000,
-  'gpt-5.3-codex': 400_000,
   'gpt-4-turbo': 128_000,
   // Keep these in sync with engine/providers.py MODEL_META.
   // Previously anything not listed here silently defaulted to 200k,
   // so zai-glm-4.7 sessions showed `ctx X/200k` while the actual
   // Cerebras context window is 131k — compaction triggers felt
   // "wrong" because the UI denominator didn't match the provider.
-  'zai-glm-4.7': 131_072,
   'deepseek-v4p1-flash': 1_048_576,
-  'deepseek-v4-pro': 1_048_576,
-  'glm-5.1': 202_752,
-  'glm-5.2': 1_048_576,
-  'kimi-k2.6': 262_144,
-  'kimi-k2.7-code': 262_144,
-  'minimax-m2.7': 196_608,
   'minimax-m3': 524_288,
-  'qwen3.6-plus': 1_000_000,
-  'qwen3.7-plus': 262_144,
-  'kimi-k2.5': 262_144,
   'kimi-k3': 1_048_576,
   'kimi-k3-fast': 1_048_576,
   // Z.ai first-party (+ the same models via Fireworks)
@@ -1184,16 +1174,12 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // the real window is ~1M — the dashboard denominator (not the provider /
   // compaction, which read the registry) was wrong.
   'gemini-4-argon': 1_048_576,
+  'gemini-4-carbon': 1_048_576,
   'gemini-3.1-pro-preview': 1_048_576,
   'gemini-3.8-flash': 1_048_576,
-  'gemini-3.7-flash': 1_048_576,
   'gemini-3.6-flash': 1_048_576,
-  'gemini-3.5-flash': 1_048_576,
   'gemini-3.5-flash-lite': 1_048_576,
-  'gemini-3.1-flash': 1_048_576,
   'gemini-3.1-flash-lite': 1_048_576,
-  'gemini-2.5-pro': 1_048_576,
-  'gemini-2.5-flash': 1_048_576,
 }
 
 function contextWindowFor(model: string): number {
@@ -1222,7 +1208,6 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'claude-sonnet-4-6': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'claude-haiku-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'claude-opus-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
-  'claude-sonnet-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   // Astra: no 'none' or 'minimal' rung.
   'gpt-6-astra': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'gpt-6-astra-ultrafast': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
@@ -1236,20 +1221,10 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'gpt-5.4': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'high' },
   'gpt-5.4-pro': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'high' },
   'gpt-5.4-mini': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'medium' },
-  'gpt-5.4-nano': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'low' },
-  'gpt-5.3-codex': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'medium' },
   'deepseek-v4p1-flash': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
-  'deepseek-v4-pro': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
-  'glm-5.1': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
-  'glm-5.2': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
-  'kimi-k2.6': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
-  'kimi-k2.7-code': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'kimi-k3': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
   'kimi-k3-fast': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
-  'minimax-m2.7': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
   'minimax-m3': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
-  'qwen3.6-plus': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'medium' },
-  'qwen3.7-plus': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'medium' },
   // GLM 5.3 family — reasoning is mandatory (no 'none' rung), on both
   // the Z.ai and Fireworks routes.
   'glm-5.3': { levels: ['low', 'high', 'max'], defaultLevel: 'high' },
@@ -1258,16 +1233,12 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'glm-5.3-flash-fireworks': { levels: ['low', 'high', 'max'], defaultLevel: 'high' },
   // Google Gemini (keep in sync with bridge MODEL_REASONING_META).
   'gemini-4-argon': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
+  'gemini-4-carbon': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
   'gemini-3.1-pro-preview': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'gemini-3.8-flash': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
-  'gemini-3.7-flash': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
   'gemini-3.6-flash': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'medium' },
-  'gemini-3.5-flash': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'medium' },
   'gemini-3.5-flash-lite': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'low' },
-  'gemini-3.1-flash': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'medium' },
   'gemini-3.1-flash-lite': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'low' },
-  'gemini-2.5-pro': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'high' },
-  'gemini-2.5-flash': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'medium' },
 }
 
 function modelChoiceFor(model: string, models: ModelChoice[] = []): ModelChoice | undefined {

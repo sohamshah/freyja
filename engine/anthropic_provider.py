@@ -5,7 +5,7 @@ Implements the ModelProvider protocol for Claude models via the
 Anthropic Python SDK, with full support for:
 - Async/await operations
 - Streaming responses
-- Extended thinking (claude-sonnet-4-5, claude-opus-4-5) — budget_tokens
+- Extended thinking (claude-opus-4-5) — budget_tokens
 - Adaptive thinking (claude-sonnet-4-6, claude-haiku-4-5, claude-opus-4-6,
   claude-opus-4-7, claude-opus-4-8, claude-fable-5) — type="adaptive" + output_config.effort
 - Tool use with thinking block preservation
@@ -119,7 +119,6 @@ BETWEEN_TOOLS_THINKING_MODELS = {
     "claude-sonnet-5-5",
 }
 LEGACY_THINKING_MODELS = {
-    "claude-sonnet-4-5",
     "claude-opus-4-5",
 }
 THINKING_MODELS = ADAPTIVE_THINKING_MODELS | LEGACY_THINKING_MODELS

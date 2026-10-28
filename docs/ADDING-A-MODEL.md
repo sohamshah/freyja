@@ -270,20 +270,36 @@ curl -s -o /dev/null -w '%{http_code}\n' \
        "messages":[{"role":"user","content":"hi"}]}'
 ```
 
-Retired ids are kept as `FALLBACK_CHAINS` **keys** (so a session still
-pinned to one degrades to something live) but must never appear as a
-fallback **target**. `tests/test_model_registry_consistency.py` enforces
-that, along with every registry model having a price and a chain.
+### Retiring a model
 
-A third state showed up with Google on 2026-10-28: an id that still
-answers, but by routing to another model. `gemini-3.7-flash` and
-`gemini-3.5-flash` were deprecated on 2026-10-08 and a probe returned
-`model_version=gemini-3.8-flash` / `gemini-3.6-flash` for them, while
-`gemini-3.1-flash` returned 404 outright. An alias stays registered so a
-pinned session keeps working, but it is useless as a fallback target —
-it lands on the very backend that just failed — and its first fallback
-should be the model it is already served as. The consistency test
-carries these in `ALIASED_MODEL_IDS`. The cheap check for Gemini:
+A dead or deprecated id does not stay in the tables. It comes out of
+every codepoint above and goes into `RETIRED_MODEL_REPLACEMENTS` in
+`engine/providers.py`, mapped to the model that stands in for it.
+`resolve_retired_model()` is applied at every place an old id can still
+arrive from: a persisted session's metadata (`_saved_model`),
+`ensure_session` (which the renderer, Slack bindings and scheduler jobs
+all go through), `build_provider`, `FREYJA_MODEL`, the engine's
+`create_provider`, sub-agent profile candidates (built-in and on-disk
+`.md` profiles), the Slack `--model` flag and the `/model` command. A
+session saved on `gemini-3.7-flash` therefore resumes on 3.8 Flash and
+says so in the log, instead of failing its next turn or silently
+dropping to the process default.
+
+Until 2026-10-28 the rule was the opposite — keep the id as a
+`FALLBACK_CHAINS` key so a pinned session degrades. That left eighteen
+dead or deprecated ids in the picker, two of them (3.7/3.5 Flash) as
+fallback targets that resolved to the very backend they were meant to
+rescue. `tests/test_model_registry_consistency.py` now asserts the
+removed ids are absent from every table, that each has a live
+replacement, and that no built-in sub-agent profile names one;
+`tests/test_retired_models.py` covers the entry points.
+
+"Deprecated" comes from the providers' own pages (Anthropic
+`model-deprecations`, OpenAI `deprecations`, Google `deprecations` and
+the changelog) and from a live probe of every registered id — the probe
+is what found Cerebras had archived `zai-glm-4.7` and that Google
+answers `gemini-3.7-flash` with `model_version=gemini-3.8-flash`. The
+cheap check for Gemini:
 
 ```sh
 # Gemini: what actually answers for this id?

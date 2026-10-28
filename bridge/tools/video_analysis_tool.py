@@ -38,14 +38,10 @@ DEFAULT_VIDEO_MODEL = "gemini-3.8-flash"
 RECOMMENDED_MODELS = {
     "gemini-4-argon",                  # highest quality (Oct 2026)
     "gemini-3.8-flash",                # default per docs
-    "gemini-3.7-flash",                # served as 3.8-flash since 2026-10-08
     "gemini-3.6-flash",
-    "gemini-3.5-flash",                # served as 3.6-flash since 2026-10-08
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
     "gemini-3.1-pro-preview",          # previous flagship
-    "gemini-2.5-flash",                 # legacy, limited access
-    "gemini-2.5-pro",
 }
 
 MEDIA_RESOLUTION_VALUES = {

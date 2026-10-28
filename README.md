@@ -105,10 +105,10 @@ Copy `.env.example` to `.env` and fill in what you need.
 
 | Variable | Provider | Notes |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic | Claude Opus / Sonnet / Haiku |
-| `OPENAI_API_KEY` | OpenAI | GPT-5.x family |
-| `CEREBRAS_API_KEY` | Cerebras / Z.ai | `zai-glm-4.7` |
-| `FIREWORKS_API_KEY` | Fireworks | Kimi K2/K3, DeepSeek V4 Pro, MiniMax M2/M3, GLM 5 (incl. `glm-5.3-fireworks`, `glm-5.3-flash-fireworks`), Qwen 3.6/3.7 |
+| `ANTHROPIC_API_KEY` | Anthropic | Claude Fable / Opus / Sonnet / Haiku |
+| `OPENAI_API_KEY` | OpenAI | GPT-6 and GPT-5.x families; also `generate_image` on GPT Image |
+| `CEREBRAS_API_KEY` | Cerebras | No catalog model at present: Cerebras archived `zai-glm-4.7` (Oct 2026). The provider stays for when one is added. |
+| `FIREWORKS_API_KEY` | Fireworks | Kimi K3, DeepSeek V4.1 Flash, MiniMax M3, GLM 5.3 (`glm-5.3-fireworks`, `glm-5.3-flash-fireworks`) |
 | `ZAI_API_KEY` | Z.ai (first-party) | `glm-5.3` — the default model for new sessions (override with `FREYJA_MODEL`) — and `glm-5.3-flash`. Optional `ZAI_BASE_URL` switches to the GLM Coding Plan endpoint. |
 
 The GLM 5.3 family is reachable through **two providers**: the `-fireworks`
@@ -243,11 +243,14 @@ Swarms are visualized as a round-based mission graph: spawn waves, publish/read 
 
 | Family | Models |
 |---|---|
-| Anthropic | Claude Opus 4.8, Opus 4.7, Sonnet 4.6, Opus 4.6, Sonnet 4.5, Opus 4.5, Haiku 4.5 |
-| OpenAI | GPT-5.5, GPT-5.4, GPT-5.4 Pro, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.3 Codex |
-| Cerebras | Z.ai GLM 4.7 |
-| Fireworks | Kimi K2.6, Kimi K2.5, DeepSeek V4 Pro, GLM 5.1, GLM 5, MiniMax M2.7, MiniMax M2.5, Qwen 3.6 Plus |
-| Google | Gemini 4 Argon, Gemini 3.1 Pro Preview, Gemini 3.8 Flash, Gemini 3.6 Flash, Gemini 3.5 Flash Lite, Gemini 3.1 Flash Lite (legacy: 2.5 Pro, 2.5 Flash) |
+| Anthropic | Claude Fable 5.1, Fable 5, Opus 5.5 (+ Fast), Opus 4.8 (+ Fast), Opus 4.7, Opus 4.6, Sonnet 5.5, Sonnet 5, Sonnet 4.6, Haiku 4.5, Opus 4.5 |
+| OpenAI | GPT-6 Astra (+ Ultrafast), GPT-6.1 Sol (+ Ultrafast), GPT-6 Luna, GPT-5.6 Sol / Terra / Luna, GPT-5.5, GPT-5.4, GPT-5.4 Pro, GPT-5.4 Mini |
+| Cerebras | none at present (GLM 4.7 was archived by Cerebras) |
+| Fireworks | Kimi K3, Kimi K3 Fast, DeepSeek V4.1 Flash, MiniMax M3, GLM 5.3, GLM 5.3 Flash |
+| Z.ai | GLM 5.3, GLM 5.3 Flash |
+| Google | Gemini 4 Argon, Gemini 4 Carbon (gated by Google until it opens to API keys), Gemini 3.1 Pro Preview, Gemini 3.8 Flash, Gemini 3.6 Flash, Gemini 3.5 Flash Lite, Gemini 3.1 Flash Lite |
+
+Retired ids (for example `gemini-3.7-flash`, `kimi-k2.6`, `claude-sonnet-4-5`) are mapped to their replacements wherever a saved session, job, binding or profile still names them; see `RETIRED_MODEL_REPLACEMENTS` in `engine/providers.py`.
 
 The model picker tracks context window, thinking-mode support, API key availability, and per-model reasoning history behavior. Provider adapters live in `engine/*_provider.py`; the catalog is in `engine/providers.py`.
 

@@ -1630,8 +1630,10 @@ class GatewayDaemon:
         # message failed at the provider with a 404, because the model
         # string only gets resolved at request time. Reject here instead,
         # where we can say what went wrong and suggest the near miss.
-        from engine.providers import MODEL_REGISTRY
+        from engine.providers import MODEL_REGISTRY, resolve_retired_model
 
+        asked = target
+        target = resolve_retired_model(target)
         if target not in MODEL_REGISTRY:
             import difflib
 
@@ -1671,6 +1673,8 @@ class GatewayDaemon:
         else:
             applied = getattr(session, "model_id", target)
             text = f"Model set to `{applied}`."
+        if asked != target:
+            text += f" (`{asked}` was retired; `{target}` stands in for it.)"
         await adapter.send(  # type: ignore[attr-defined]
             message.source.chat_id,
             text,

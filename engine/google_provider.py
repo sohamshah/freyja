@@ -85,20 +85,22 @@ _EFFORT_TO_THINKING_LEVEL: dict[str, str] = {
 # "disable thinking" / structured-output intent onto each model's lowest
 # SUPPORTED tier, so e.g. the kanban/goal judge synthesis (structured output
 # with thinking off) doesn't 400 when the cross-provider ensemble picks one.
-# gemini-3.7-flash: per its model page (2026-08), "minimal is not supported
-# and returns an error" — lowest tier is LOW. 3.6-flash and 3.5-flash-lite
-# still accept MINIMAL per the thinking docs' level table.
+# 3.6-flash, 3.5-flash-lite and 3.1-flash-lite still accept MINIMAL per the
+# thinking docs' level table.
 _MINIMAL_UNSUPPORTED_MODELS: tuple[str, ...] = (
     "gemini-3.1-pro-preview",
-    "gemini-3.7-flash",
-    # 3.8-flash carries the same ladder as 3.7 (low/medium/high, default
-    # medium) — verified against the thinking docs' per-model table.
+    # 3.8-flash: low/medium/high, default medium — its model page says
+    # "minimal is not supported and returns an error" (verified live).
     "gemini-3.8-flash",
     # Gemini 4 Argon: low/medium/high, default medium. Probed live
     # 2026-10-28 — MINIMAL answers 400 "Thinking level MINIMAL is not
     # supported for this model"; without this entry every thinking-off
     # call (title generation, judge synthesis) on Argon died that way.
     "gemini-4-argon",
+    # Gemini 4 Carbon is gated and unprobed (2026-10-28). LOW is the safe
+    # floor: every Gemini accepts it, and a model that also takes MINIMAL
+    # just thinks a little more on thinking-off calls.
+    "gemini-4-carbon",
 )
 
 

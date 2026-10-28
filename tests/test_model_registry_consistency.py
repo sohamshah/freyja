@@ -17,15 +17,22 @@ from engine.providers import (
     FALLBACK_CHAINS,
     MODEL_PRICING_PER_M,
     MODEL_REGISTRY,
+    RETIRED_MODEL_REPLACEMENTS,
     compute_cost,
+    resolve_retired_model,
 )
 from engine.types import ThinkingConfig
 
-# Ids kept in the registry so a pinned session still resolves, but which the
-# provider no longer serves. They may be fallback KEYS, never TARGETS.
-# Verified dead by live probe against the Fireworks API on 2026-09-29;
-# gemini-3.1-flash answered 404 NOT_FOUND on 2026-10-28.
-RETIRED_MODEL_IDS = frozenset({
+# Every id the registry has dropped so far. Each must be absent from every
+# table and present in RETIRED_MODEL_REPLACEMENTS, so a session, job,
+# binding or profile that still names it lands on something live. Verified
+# dead or deprecated by live probe and the providers' deprecation pages on
+# 2026-10-28 (the Fireworks nine on 2026-09-29).
+REMOVED_MODEL_IDS = frozenset({
+    "claude-sonnet-4-5",
+    "gpt-5.3-codex",
+    "gpt-5.4-nano",
+    "zai-glm-4.7",
     "deepseek-v4-pro",
     "glm-5.1",
     "glm-5.2",
@@ -35,19 +42,12 @@ RETIRED_MODEL_IDS = frozenset({
     "minimax-m2.7",
     "qwen3.6-plus",
     "qwen3.7-plus",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
     "gemini-3.1-flash",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
 })
-
-# Ids the provider still answers, but by routing the request to another
-# model (Google deprecated both on 2026-10-08; a live probe on 2026-10-28
-# returned model_version=gemini-3.8-flash and gemini-3.6-flash). A pinned
-# session keeps working, so they stay registered — but as a fallback TARGET
-# they are pointless: the request lands on the same backend as the id it is
-# meant to rescue, so the "fallback" fails exactly when the primary does.
-ALIASED_MODEL_IDS: dict[str, str] = {
-    "gemini-3.7-flash": "gemini-3.8-flash",
-    "gemini-3.5-flash": "gemini-3.6-flash",
-}
 
 
 def _catalog():
@@ -93,37 +93,78 @@ def test_fallback_targets_are_all_registered_models():
     assert bad == [], f"fallback targets missing from MODEL_REGISTRY: {bad}"
 
 
-def test_no_chain_falls_back_onto_a_retired_model():
-    """The bug this file was written for: a rescue path that 404s."""
-    offenders = {
-        model: [t for t in chain if t in RETIRED_MODEL_IDS]
-        for model, chain in FALLBACK_CHAINS.items()
-        if any(t in RETIRED_MODEL_IDS for t in chain)
-    }
-    assert offenders == {}, f"chains pointing at retired models: {offenders}"
-
-
-def test_no_chain_falls_back_onto_an_alias_of_another_model():
-    """An alias id is served by its replacement, so a chain that names it
-    retries the very backend that just failed."""
-    offenders = {
-        model: [t for t in chain if t in ALIASED_MODEL_IDS]
-        for model, chain in FALLBACK_CHAINS.items()
-        if any(t in ALIASED_MODEL_IDS for t in chain)
-    }
-    assert offenders == {}, f"chains pointing at aliased ids: {offenders}"
-
-
-def test_an_alias_falls_back_to_what_it_is_served_as_first():
-    """If Google ever stops routing the alias, the pinned session should
-    land on the model it was already getting, not somewhere new."""
-    for alias, target in ALIASED_MODEL_IDS.items():
-        assert FALLBACK_CHAINS[alias][0] == target, (alias, FALLBACK_CHAINS[alias])
-
-
 def test_a_model_never_falls_back_to_itself():
     selfref = {m: c for m, c in FALLBACK_CHAINS.items() if m in c}
     assert selfref == {}, f"self-referencing chains: {selfref}"
+
+
+# ── retired ids ──────────────────────────────────────────────────────────
+
+def test_removed_ids_are_gone_from_every_table():
+    """The bug this file was written for: a dead id sitting in a table as
+    if it were live. Once removed, it stays removed everywhere."""
+    from bridge.freyja_bridge import AVAILABLE_MODELS, MODEL_REASONING_META
+    from engine.constants import MODEL_CONTEXT_WINDOWS
+
+    tables = {
+        "MODEL_REGISTRY": set(MODEL_REGISTRY),
+        "MODEL_PRICING_PER_M": set(MODEL_PRICING_PER_M),
+        "FALLBACK_CHAINS keys": set(FALLBACK_CHAINS),
+        "FALLBACK_CHAINS targets": {t for c in FALLBACK_CHAINS.values() for t in c},
+        "MODEL_CONTEXT_WINDOWS": set(MODEL_CONTEXT_WINDOWS),
+        "AVAILABLE_MODELS": {m["id"] for m in AVAILABLE_MODELS},
+        "MODEL_REASONING_META": set(MODEL_REASONING_META),
+    }
+    offenders = {
+        name: sorted(ids & REMOVED_MODEL_IDS) for name, ids in tables.items()
+        if ids & REMOVED_MODEL_IDS
+    }
+    assert offenders == {}, f"removed ids still present: {offenders}"
+
+
+def test_every_removed_id_has_a_live_replacement():
+    """Removal without a replacement strands whatever still names the id."""
+    missing = sorted(REMOVED_MODEL_IDS - set(RETIRED_MODEL_REPLACEMENTS))
+    assert missing == [], f"removed ids with no replacement: {missing}"
+    dead_ends = {
+        old: new for old, new in RETIRED_MODEL_REPLACEMENTS.items()
+        if resolve_retired_model(new) not in MODEL_REGISTRY
+    }
+    assert dead_ends == {}, f"replacements that are not live: {dead_ends}"
+    stale = sorted(set(RETIRED_MODEL_REPLACEMENTS) & set(MODEL_REGISTRY))
+    assert stale == [], f"ids both registered and retired: {stale}"
+
+
+def test_resolve_retired_model_follows_chains_and_leaves_live_ids_alone():
+    assert resolve_retired_model("gemini-3.7-flash") == "gemini-3.8-flash"
+    assert resolve_retired_model("kimi-k2.6") == "kimi-k3"
+    for live in ("claude-opus-5-5", "gemini-4-argon", "kimi-k3"):
+        assert resolve_retired_model(live) == live
+    # Unknown ids pass through untouched: rejecting them with a message is
+    # the caller's job (gateway /model, Slack flags, the picker).
+    assert resolve_retired_model("not-a-model") == "not-a-model"
+
+
+def test_sub_agent_profiles_name_only_live_models():
+    """A profile whose model list holds a removed id spawns on the
+    replacement (resolve_model_choice maps it), but the built-in profiles
+    should not need the net: fix the profile."""
+    from bridge.tools.agent_types import AGENT_TYPES
+
+    stale = {
+        name: sorted(
+            m for m in [*(_as_list(t.model)), *t.model_fallbacks] if m in REMOVED_MODEL_IDS
+        )
+        for name, t in AGENT_TYPES.items()
+    }
+    stale = {k: v for k, v in stale.items() if v}
+    assert stale == {}, f"built-in profiles naming removed models: {stale}"
+
+
+def _as_list(value):
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value] if isinstance(value, str) else []
 
 
 # ── bridge catalog ↔ engine registry ────────────────────────────────────
@@ -206,5 +247,5 @@ def test_non_between_tools_models_still_omit_thinking_when_off():
     between_tools; everything else must keep sending no thinking field."""
     off = ThinkingConfig(enabled=False)
     for model in ("claude-opus-5-5", "claude-sonnet-5", "claude-sonnet-4-6",
-                  "claude-haiku-4-5", "claude-sonnet-4-5"):
+                  "claude-haiku-4-5", "claude-opus-4-5"):
         assert off.to_api_param(model) is None, model

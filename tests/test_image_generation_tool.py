@@ -27,17 +27,9 @@ MODELS_2_5 = (
     "gpt-image-2.5-flare-2026-09-08",
 )
 MODERN_MODELS = (*MODELS_2_5, "gpt-image-2", "gpt-image-2-2026-04-21")
-LEGACY_MODELS = ("gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini")
-ALL_MODELS = (*MODERN_MODELS, *LEGACY_MODELS)
-FIDELITY_CASES = [
-    (model, fidelity, None)
-    for model in MODERN_MODELS
-    for fidelity in (None, "high")
-] + [
-    (model, fidelity, fidelity or "high")
-    for model in ("gpt-image-1.5", "gpt-image-1")
-    for fidelity in (None, "high", "low")
-] + [("gpt-image-1-mini", fidelity, "low") for fidelity in (None, "low")]
+# GPT Image 1 shut down 2026-10-23; 1.5 and 1 Mini follow on 2026-12-01.
+# They left with their fixed sizes and the input_fidelity knob.
+ALL_MODELS = MODERN_MODELS
 
 
 @pytest.fixture(autouse=True)
@@ -177,7 +169,6 @@ async def test_generate_image_uses_edit_api_for_image_refs(monkeypatch) -> None:
         {
             "prompt": "make this feel like a luminous topo poster",
             "use_latest_user_image": True,
-            "input_fidelity": "high",
         },
     )
 
@@ -279,10 +270,9 @@ def test_generate_image_schema_describes_supported_models_and_options() -> None:
     assert set(properties["background"]["enum"]) == {"auto", "opaque", "transparent"}
     assert set(properties["output_format"]["enum"]) == {"png", "jpeg", "webp"}
     assert set(properties["moderation"]["enum"]) == {"auto", "low"}
-    assert set(properties["input_fidelity"]["enum"]) == {"low", "high"}
-    assert "default" not in properties["input_fidelity"]
-    assert "Omit for GPT Image 2/2.5" in properties["input_fidelity"]["description"]
-    assert "Mini only supports low" in properties["input_fidelity"]["description"]
+    # input_fidelity left with the GPT Image 1 line; modern models always
+    # process references at high fidelity.
+    assert "input_fidelity" not in properties
     assert properties["output_compression"]["type"] == "integer"
     assert properties["output_compression"]["minimum"] == 0
     assert properties["output_compression"]["maximum"] == 100
@@ -298,7 +288,7 @@ def test_generate_image_schema_describes_supported_models_and_options() -> None:
         ("gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-flare"),
         ("invalid-environment-model", "gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst"),
         ("gpt-image-2.5-flare", "   ", "gpt-image-2.5-flare"),
-        (None, " gpt-image-1.5 ", "gpt-image-1.5"),
+        (None, " gpt-image-2 ", "gpt-image-2"),
     ],
 )
 async def test_model_selection_precedence(
@@ -332,45 +322,26 @@ async def test_unsupported_environment_model_is_rejected(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("model", "requested_fidelity", "expected_fidelity"), FIDELITY_CASES)
-async def test_edit_input_fidelity_model_matrix(
-    model, requested_fidelity, expected_fidelity
-) -> None:
+@pytest.mark.parametrize("model", MODERN_MODELS)
+async def test_edits_never_send_input_fidelity(model) -> None:
+    """The knob belonged to the GPT Image 1 line; a leftover argument from
+    an older prompt is ignored rather than forwarded or rejected."""
     fake = FakeClient()
     tool = GenerateImageTool(client_factory=lambda _key: fake)
-    arguments = {"prompt": "preserve details", "model": model, "input_images": [_inline_png()]}
-    if requested_fidelity is not None:
-        arguments["input_fidelity"] = requested_fidelity
 
-    result = await tool.execute("fidelity", arguments)
+    result = await tool.execute(
+        "fidelity",
+        {
+            "prompt": "preserve details",
+            "model": model,
+            "input_images": [_inline_png()],
+            "input_fidelity": "high",
+        },
+    )
 
     assert not result.is_error
     assert fake.images.generate_kwargs is None
-    body = _fake_request_body(fake.images.edit_kwargs)
-    if expected_fidelity is None:
-        assert "input_fidelity" not in body
-    else:
-        assert body["input_fidelity"] == expected_fidelity
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("model", "fidelity"),
-    [(model, "low") for model in MODERN_MODELS] + [("gpt-image-1-mini", "high")],
-)
-@pytest.mark.parametrize("editing", [False, True])
-async def test_unsupported_model_input_fidelity_is_rejected(model, fidelity, editing) -> None:
-    fake = FakeClient()
-    tool = GenerateImageTool(client_factory=lambda _key: fake)
-    arguments = {"prompt": "anything", "model": model, "input_fidelity": fidelity}
-    if editing:
-        arguments["input_images"] = [_inline_png()]
-
-    result = await tool.execute("bad-fidelity", arguments)
-
-    assert result.is_error
-    assert "fidelity" in str(result.content)
-    assert fake.images.kwargs is None
+    assert "input_fidelity" not in _fake_request_body(fake.images.edit_kwargs)
 
 
 @pytest.mark.asyncio
@@ -433,24 +404,6 @@ async def test_modern_models_reject_invalid_custom_sizes(model, size) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", LEGACY_MODELS)
-@pytest.mark.parametrize("size", ["auto", "1024x1024", "1536x1024", "1024x1536", "1536x864"])
-async def test_legacy_models_only_accept_standard_sizes(model, size) -> None:
-    fake = FakeClient()
-    tool = GenerateImageTool(client_factory=lambda _key: fake)
-
-    result = await tool.execute("legacy-size", {"prompt": "anything", "model": model, "size": size})
-
-    if size == "1536x864":
-        assert result.is_error
-        assert "size must be one of" in str(result.content)
-        assert fake.images.kwargs is None
-    else:
-        assert not result.is_error
-        assert fake.images.generate_kwargs["size"] == size
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("model", ALL_MODELS)
 @pytest.mark.parametrize("quality", ["auto", "low", "medium", "high", "xhigh", "max"])
 async def test_quality_is_validated_for_selected_model(model, quality) -> None:
@@ -508,7 +461,6 @@ async def test_transparency_requires_png_or_webp(model, output_format) -> None:
         ("output_format", "jpg"),
         ("background", "checkerboard"),
         ("moderation", "off"),
-        ("input_fidelity", "auto"),
     ],
 )
 async def test_unsupported_enum_options_are_rejected(option, value) -> None:
@@ -578,17 +530,12 @@ async def test_mask_without_input_image_is_rejected() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", MODERN_MODELS)
-@pytest.mark.parametrize("input_fidelity", [None, "high"])
-async def test_sdk_generation_omits_modern_input_fidelity(
-    sdk_client, model, input_fidelity
-) -> None:
+async def test_sdk_generation_sends_only_the_documented_fields(sdk_client, model) -> None:
     client, requests = sdk_client
     tool = GenerateImageTool(client_factory=lambda _key: client)
     arguments = {"prompt": "precise image", "model": model, "size": "1536x864"}
-    if input_fidelity is not None:
-        arguments["input_fidelity"] = input_fidelity
 
-    result = await tool.execute("sdk-generation-fidelity", arguments)
+    result = await tool.execute("sdk-generation", arguments)
 
     assert not result.is_error, result.content
     assert len(requests) == 1
@@ -658,17 +605,17 @@ async def test_sdk_generation_serializes_output_options(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("model", "requested_fidelity", "expected_fidelity"), FIDELITY_CASES)
+@pytest.mark.parametrize("model", MODERN_MODELS)
 @pytest.mark.parametrize(("output_format", "compression"), [("png", 75), ("jpeg", 0)])
 async def test_sdk_edit_serializes_files_mask_and_model_options(
-    sdk_client, model, requested_fidelity, expected_fidelity, output_format, compression
+    sdk_client, model, output_format, compression
 ) -> None:
     client, requests = sdk_client
     tool = GenerateImageTool(client_factory=lambda _key: client)
     arguments = {
         "prompt": "preserve this input outside the mask",
         "model": model,
-        "size": "1536x864" if model in MODERN_MODELS else "1024x1024",
+        "size": "1536x864",
         "quality": "xhigh" if model in MODELS_2_5 else "high",
         "input_images": [_inline_png()],
         "mask_image": _inline_png("mask"),
@@ -677,8 +624,6 @@ async def test_sdk_edit_serializes_files_mask_and_model_options(
         "background": "transparent" if output_format == "png" else "opaque",
         "moderation": "low",
     }
-    if requested_fidelity is not None:
-        arguments["input_fidelity"] = requested_fidelity
 
     result = await tool.execute("sdk-edit", arguments)
 
@@ -702,14 +647,12 @@ async def test_sdk_edit_serializes_files_mask_and_model_options(
         "model": model,
         "prompt": "preserve this input outside the mask",
         "n": "1",
-        "size": "1536x864" if model in MODERN_MODELS else "1024x1024",
+        "size": "1536x864",
         "quality": "xhigh" if model in MODELS_2_5 else "high",
         "output_format": output_format,
         "background": "transparent" if output_format == "png" else "opaque",
         "moderation": "low",
     }
-    if expected_fidelity is not None:
-        expected["input_fidelity"] = expected_fidelity
     if output_format == "jpeg":
         expected["output_compression"] = str(compression)
     assert fields == expected

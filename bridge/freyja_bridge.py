@@ -1192,10 +1192,24 @@ def _record_is_terminal(rec: Any) -> bool:
     )
 
 
+def _live_model_id(model_id: str, *, where: str) -> str:
+    """``model_id`` itself, or — when the provider retired it — the model
+    that stands in for it (engine.providers.RETIRED_MODEL_REPLACEMENTS).
+    Logged, so a session that quietly moved is explained in the log."""
+    from engine.providers import resolve_retired_model
+
+    live = resolve_retired_model(model_id)
+    if live != model_id:
+        log("info", f"{where}: {model_id} was retired — running {live} instead")
+    return live
+
+
 def _saved_model(session_id: str) -> tuple[str | None, str | None]:
     """The model and reasoning level a persisted session was last saved
     with: (None, None) without a transcript, or when that model is no
-    longer offered."""
+    longer offered. A retired model comes back as its replacement, so a
+    thread saved on gemini-3.7-flash or kimi-k2.6 resumes on what serves
+    it now instead of falling to the process default."""
     from bridge.transcript_persistence import load_transcript
     from engine.providers import MODEL_REGISTRY
 
@@ -1204,6 +1218,9 @@ def _saved_model(session_id: str) -> tuple[str | None, str | None]:
     if not isinstance(meta, dict):
         return None, None
     model_id = str(meta.get("model_id") or "")
+    if not model_id:
+        return None, None
+    model_id = _live_model_id(model_id, where=f"restore {session_id}")
     if model_id not in MODEL_REGISTRY:
         return None, None
     return model_id, str(meta.get("reasoning_level") or "") or None
@@ -1996,7 +2013,9 @@ async def _main() -> None:
     # Sub-agent defaults stay on sonnet (see bridge/tools/registry.py)
     # for cost control on fan-out.
     # Override per-launch with FREYJA_MODEL env.
-    default_model = os.environ.get("FREYJA_MODEL", "claude-opus-5-5")
+    default_model = _live_model_id(
+        os.environ.get("FREYJA_MODEL", "claude-opus-5-5"), where="FREYJA_MODEL"
+    )
     from bridge.runtimes.registry import capabilities_payload as _harness_capabilities
     emit(
         {
@@ -2302,16 +2321,6 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "envVar": "ANTHROPIC_API_KEY",
         "description": "Previous-gen Opus.",
     },
-    {
-        "id": "claude-sonnet-4-5",
-        "family": "anthropic",
-        "label": "Claude Sonnet 4.5",
-        "tier": "balanced",
-        "contextWindow": 1_000_000,
-        "thinking": True,
-        "envVar": "ANTHROPIC_API_KEY",
-        "description": "Previous-gen Sonnet.",
-    },
     # ─── OpenAI (OPENAI_API_KEY) ───────────────────────────────────────
     {
         "id": "gpt-6-astra",
@@ -2433,67 +2442,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "envVar": "OPENAI_API_KEY",
         "description": "Balanced OpenAI tier. Cheap per-turn, still reasons.",
     },
-    {
-        "id": "gpt-5.4-nano",
-        "family": "openai",
-        "label": "GPT-5.4 Nano",
-        "tier": "fast",
-        "contextWindow": 400_000,
-        "thinking": True,
-        "envVar": "OPENAI_API_KEY",
-        "description": "Cheapest OpenAI tier. Good for fanout and high-volume subagents.",
-    },
-    {
-        "id": "gpt-5.3-codex",
-        "family": "openai",
-        "label": "GPT-5.3 Codex",
-        "tier": "balanced",
-        "contextWindow": 400_000,
-        "thinking": True,
-        "envVar": "OPENAI_API_KEY",
-        "description": "Agentic coding specialist. Powers GPT-5.4's coding capabilities.",
-    },
-    {
-        "id": "zai-glm-4.7",
-        "family": "cerebras",
-        "label": "GLM 4.7 (Cerebras)",
-        "tier": "fast",
-        "contextWindow": 131_072,
-        "thinking": False,
-        "envVar": "CEREBRAS_API_KEY",
-        "description": "~1000 tps on Cerebras. Great for subagents and fanout.",
-    },
     # ─── Fireworks (FIREWORKS_API_KEY) ─────────────────────────────────
-    {
-        "id": "kimi-k2.5",
-        "family": "fireworks",
-        "label": "Kimi K2.5",
-        "tier": "balanced",
-        "contextWindow": 262_144,
-        "thinking": False,
-        "envVar": "FIREWORKS_API_KEY",
-        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Moonshot's Kimi K2.5 via Fireworks. Vision + 262k ctx.",
-    },
-    {
-        "id": "kimi-k2.6",
-        "family": "fireworks",
-        "label": "Kimi K2.6",
-        "tier": "max",
-        "contextWindow": 262_144,
-        "thinking": True,
-        "envVar": "FIREWORKS_API_KEY",
-        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Moonshot's newer multimodal agentic model via Fireworks. Vision + 262k ctx.",
-    },
-    {
-        "id": "kimi-k2.7-code",
-        "family": "fireworks",
-        "label": "Kimi K2.7 Code",
-        "tier": "max",
-        "contextWindow": 262_144,
-        "thinking": True,
-        "envVar": "FIREWORKS_API_KEY",
-        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Moonshot's Kimi K2.7 Code via Fireworks. Coding-focused agentic model, vision + 262k ctx, ~30% fewer thinking tokens than K2.6.",
-    },
     {
         "id": "kimi-k3",
         "family": "fireworks",
@@ -2525,36 +2474,6 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "DeepSeek's V4.1 Flash via Fireworks (Sep 2026) — the replacement for the retired V4 Pro line. 552B MoE, native image input, 1M ctx, $0.30/$1.20 with $0.006 cached input. Cheapest capable Fireworks slot.",
     },
     {
-        "id": "deepseek-v4-pro",
-        "family": "fireworks",
-        "label": "DeepSeek V4 Pro",
-        "tier": "max",
-        "contextWindow": 1_048_576,
-        "thinking": True,
-        "envVar": "FIREWORKS_API_KEY",
-        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). DeepSeek's frontier MoE reasoning model via Fireworks. 1M ctx, function calling.",
-    },
-    {
-        "id": "glm-5.1",
-        "family": "fireworks",
-        "label": "GLM 5.1",
-        "tier": "max",
-        "contextWindow": 202_752,
-        "thinking": True,
-        "envVar": "FIREWORKS_API_KEY",
-        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Z.ai's newer GLM 5.1 via Fireworks. Agentic engineering, tool use, 202.8k ctx.",
-    },
-    {
-        "id": "glm-5.2",
-        "family": "fireworks",
-        "label": "GLM 5.2",
-        "tier": "max",
-        "contextWindow": 1_048_576,
-        "thinking": True,
-        "envVar": "FIREWORKS_API_KEY",
-        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Z.ai's GLM 5.2 via Fireworks. Long-horizon agentic coding flagship, tool use, 1M ctx.",
-    },
-    {
         "id": "glm-5.3-fireworks",
         "family": "fireworks",
         "label": "GLM 5.3 (Fireworks)",
@@ -2575,16 +2494,6 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "GLM 5.3 Flash via Fireworks. Multimodal (image in), $0.15/$0.50, reasoning always on. Cheap fanout with a Fireworks quota pool.",
     },
     {
-        "id": "minimax-m2.7",
-        "family": "fireworks",
-        "label": "MiniMax M2.7",
-        "tier": "balanced",
-        "contextWindow": 196_608,
-        "thinking": True,
-        "envVar": "FIREWORKS_API_KEY",
-        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). MiniMax M2.7 via Fireworks. Agent harnesses, teams, skills, and dynamic tool search.",
-    },
-    {
         "id": "minimax-m3",
         "family": "fireworks",
         "label": "MiniMax M3",
@@ -2593,26 +2502,6 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
         "description": "MiniMax M3 via Fireworks. Native multimodal (text/image/video), 512k ctx, MiniMax Sparse Attention, frontier agentic coding.",
-    },
-    {
-        "id": "qwen3.6-plus",
-        "family": "fireworks",
-        "label": "Qwen3.6 Plus",
-        "tier": "balanced",
-        "contextWindow": 1_000_000,
-        "thinking": True,
-        "envVar": "FIREWORKS_API_KEY",
-        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Alibaba's Qwen3.6 Plus via Fireworks. Vision, function calling, preserved reasoning, 1M ctx.",
-    },
-    {
-        "id": "qwen3.7-plus",
-        "family": "fireworks",
-        "label": "Qwen 3.7 Plus",
-        "tier": "balanced",
-        "contextWindow": 262_144,
-        "thinking": True,
-        "envVar": "FIREWORKS_API_KEY",
-        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Alibaba's Qwen 3.7 Plus via Fireworks (Fireworks-exclusive flagship). Vision + 262k ctx, function calling, effort reasoning.",
     },
     # ─── Z.ai first-party (ZAI_API_KEY) ────────────────────────────────
     {
@@ -2647,6 +2536,22 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Google's flagship (GA Oct 13, 2026). Frontier coding, agentic, math and science work. 1M ctx, 64k out (1M with long decode); text, image, video, audio and PDF in. Intro $2/$10 through Nov 30, 2026, then $4/$20. Paid tier only.",
     },
     {
+        "id": "gemini-4-carbon",
+        "family": "google",
+        "label": "Gemini 4 Carbon",
+        "tier": "max",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "GEMINI_API_KEY",
+        # Announced 2026-10-28: cyber defenders this week, the Fairwind
+        # Program next, developers "soon". Every id probed that day 404s
+        # and models.list shows only Argon, so the picker holds the seat
+        # and refuses the click until Google serves it. Drop `gated`
+        # (and re-probe the thinking ladder) when it answers.
+        "gated": "Gemini 4 Carbon is not served to API keys yet (gated rollout since Oct 28, 2026)",
+        "description": "Google's strongest model (announced Oct 28, 2026): gains over Argon on coding, agentic work and cyber defense. Gated rollout — cyber defenders first, developers later. Priced at Argon's intro rate ($2/$10). 1M ctx and Argon's thinking ladder assumed until it is reachable.",
+    },
+    {
         "id": "gemini-3.1-pro-preview",
         "family": "google",
         "label": "Gemini 3.1 Pro",
@@ -2667,16 +2572,6 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Newest workhorse Flash (Sep 2026). Tuned for long-horizon software engineering and autonomous agents; same price as 3.7 with better benchmarks. 1M ctx, 64k out. Intro $0.75/$3.75 through 2026.",
     },
     {
-        "id": "gemini-3.7-flash",
-        "family": "google",
-        "label": "Gemini 3.7 Flash",
-        "tier": "balanced",
-        "contextWindow": 1_048_576,
-        "thinking": True,
-        "envVar": "GEMINI_API_KEY",
-        "description": "Deprecated Oct 8, 2026 — Google now serves this id as 3.8 Flash (verified live Oct 28). Kept so pinned sessions keep working; pick 3.8 Flash for new ones.",
-    },
-    {
         "id": "gemini-3.6-flash",
         "family": "google",
         "label": "Gemini 3.6 Flash",
@@ -2685,16 +2580,6 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "thinking": True,
         "envVar": "GEMINI_API_KEY",
         "description": "Token-efficient Flash (Jul 2026). Same intro pricing as 3.8 — prefer 3.8 unless matching earlier runs.",
-    },
-    {
-        "id": "gemini-3.5-flash",
-        "family": "google",
-        "label": "Gemini 3.5 Flash",
-        "tier": "balanced",
-        "contextWindow": 1_048_576,
-        "thinking": True,
-        "envVar": "GEMINI_API_KEY",
-        "description": "Deprecated Oct 8, 2026 — Google now serves this id as 3.6 Flash (verified live Oct 28). Pick 3.6 or 3.8 Flash for new sessions.",
     },
     {
         "id": "gemini-3.5-flash-lite",
@@ -2707,16 +2592,6 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Low-latency Lite tier (Jul 2026). High-volume subagents and quick lookups.",
     },
     {
-        "id": "gemini-3.1-flash",
-        "family": "google",
-        "label": "Gemini 3.1 Flash",
-        "tier": "balanced",
-        "contextWindow": 1_048_576,
-        "thinking": True,
-        "envVar": "GEMINI_API_KEY",
-        "description": "Retired — Google answers 404 for this id (verified Oct 28, 2026). Kept only so a pinned session can fall back; pick 3.8 Flash.",
-    },
-    {
         "id": "gemini-3.1-flash-lite",
         "family": "google",
         "label": "Gemini 3.1 Flash Lite",
@@ -2725,26 +2600,6 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "thinking": True,
         "envVar": "GEMINI_API_KEY",
         "description": "Cheapest Gemini tier. Good for high-volume subagents and quick lookups.",
-    },
-    {
-        "id": "gemini-2.5-pro",
-        "family": "google",
-        "label": "Gemini 2.5 Pro",
-        "tier": "max",
-        "contextWindow": 1_048_576,
-        "thinking": True,
-        "envVar": "GEMINI_API_KEY",
-        "description": "Legacy Gemini Pro. Access limited since Sep 18, 2026 to projects that used 2.5 before; no longer a fallback target.",
-    },
-    {
-        "id": "gemini-2.5-flash",
-        "family": "google",
-        "label": "Gemini 2.5 Flash",
-        "tier": "balanced",
-        "contextWindow": 1_048_576,
-        "thinking": True,
-        "envVar": "GEMINI_API_KEY",
-        "description": "Legacy Gemini Flash. Access limited since Sep 18, 2026 to projects that used 2.5 before. 1M ctx.",
     },
 ]
 
@@ -2839,11 +2694,6 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["none", "low", "medium", "high"],
         "reasoningDefault": "high",
     },
-    "claude-sonnet-4-5": {
-        "reasoningMode": "budget",
-        "reasoningLevels": ["none", "low", "medium", "high"],
-        "reasoningDefault": "high",
-    },
     # Astra drops both the "none" and "minimal" rungs the 5.x family has;
     # reasoning.effort accepts only low/medium/high/xhigh/max.
     "gpt-6-astra": {
@@ -2907,48 +2757,10 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh"],
         "reasoningDefault": "medium",
     },
-    "gpt-5.4-nano": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh"],
-        "reasoningDefault": "low",
-    },
-    "gpt-5.3-codex": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh"],
-        "reasoningDefault": "medium",
-    },
     "deepseek-v4p1-flash": {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "low", "medium", "high", "max"],
         "reasoningDefault": "high",
-    },
-    "deepseek-v4-pro": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["none", "low", "medium", "high", "max"],
-        "reasoningDefault": "high",
-        "reasoningHistory": ["interleaved"],
-    },
-    "glm-5.1": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["none", "low", "medium", "high"],
-        "reasoningDefault": "high",
-    },
-    "glm-5.2": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["none", "low", "medium", "high", "max"],
-        "reasoningDefault": "high",
-    },
-    "kimi-k2.6": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["none", "low", "medium", "high"],
-        "reasoningDefault": "high",
-        "reasoningHistory": ["preserved"],
-    },
-    "kimi-k2.7-code": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["none", "low", "medium", "high"],
-        "reasoningDefault": "high",
-        "reasoningHistory": ["preserved"],
     },
     "kimi-k3": {
         "reasoningMode": "effort",
@@ -2962,29 +2774,11 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningDefault": "high",
         "reasoningHistory": ["preserved"],
     },
-    "minimax-m2.7": {
-        "reasoningMode": "required",
-        "reasoningLevels": ["low", "medium", "high"],
-        "reasoningDefault": "medium",
-        "reasoningHistory": ["interleaved"],
-    },
     "minimax-m3": {
         "reasoningMode": "required",
         "reasoningLevels": ["low", "medium", "high"],
         "reasoningDefault": "medium",
         "reasoningHistory": ["interleaved"],
-    },
-    "qwen3.6-plus": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["none", "low", "medium", "high"],
-        "reasoningDefault": "medium",
-        "reasoningHistory": ["preserved"],
-    },
-    "qwen3.7-plus": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["none", "low", "medium", "high", "max"],
-        "reasoningDefault": "medium",
-        "reasoningHistory": ["preserved"],
     },
     # GLM 5.3 family: reasoning is mandatory — no "none" rung, and the API
     # only accepts low/high/max ("medium" is snapped to high by the provider).
@@ -3017,6 +2811,12 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["low", "medium", "high"],
         "reasoningDefault": "medium",
     },
+    # Carbon: Argon's ladder, assumed — gated and unprobed as of 2026-10-28.
+    "gemini-4-carbon": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningDefault": "medium",
+    },
     "gemini-3.1-pro-preview": {
         "reasoningMode": "effort",
         "reasoningLevels": ["minimal", "low", "medium", "high"],
@@ -3028,17 +2828,7 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["low", "medium", "high"],
         "reasoningDefault": "medium",
     },
-    "gemini-3.7-flash": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["low", "medium", "high"],
-        "reasoningDefault": "medium",
-    },
     "gemini-3.6-flash": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["minimal", "low", "medium", "high"],
-        "reasoningDefault": "medium",
-    },
-    "gemini-3.5-flash": {
         "reasoningMode": "effort",
         "reasoningLevels": ["minimal", "low", "medium", "high"],
         "reasoningDefault": "medium",
@@ -3048,34 +2838,24 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["minimal", "low", "medium", "high"],
         "reasoningDefault": "low",
     },
-    "gemini-3.1-flash": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["minimal", "low", "medium", "high"],
-        "reasoningDefault": "medium",
-    },
     "gemini-3.1-flash-lite": {
         "reasoningMode": "effort",
         "reasoningLevels": ["minimal", "low", "medium", "high"],
         "reasoningDefault": "low",
     },
-    "gemini-2.5-pro": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["minimal", "low", "medium", "high"],
-        "reasoningDefault": "high",
-    },
-    "gemini-2.5-flash": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["minimal", "low", "medium", "high"],
-        "reasoningDefault": "medium",
-    },
 }
 
 
 def _annotate_models(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Mark each model as `available` based on whether its env var is set."""
+    """Mark each model as `available` based on whether its env var is set.
+
+    A catalog entry carrying ``gated`` (a sentence) is listed but never
+    available, and the sentence travels as ``unavailableReason`` so the
+    picker says why instead of blaming a missing key."""
     result: list[dict[str, Any]] = []
     for m in models:
         env = m.get("envVar", "")
+        gated = m.get("gated")
         reasoning_meta = MODEL_REASONING_META.get(
             m["id"],
             {
@@ -3088,7 +2868,8 @@ def _annotate_models(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 **m,
                 **reasoning_meta,
-                "available": bool(env and os.environ.get(env)),
+                "available": bool(env and os.environ.get(env)) and not gated,
+                **({"unavailableReason": str(gated)} if gated else {}),
             }
         )
     return result
@@ -3500,6 +3281,7 @@ def build_provider(model_id: str, thinking_level: str = "auto") -> Any:
       - model-specific effort levels such as "minimal", "low",
         "medium", "high", "xhigh", or "max"
     """
+    model_id = _live_model_id(model_id, where="build_provider")
     family = _family_for_model(model_id)
     thinking = _thinking_config_for_model(model_id, thinking_level)
 
@@ -12718,6 +12500,13 @@ class _BridgeState:
     ) -> _BridgeSession:
         from bridge.tools.coordination import normalize_coordination_strategy
         from bridge.runtimes.registry import normalize_runtime
+
+        # A retired id can arrive from anywhere that remembers models: the
+        # renderer's persisted choice, a Slack binding, a scheduler job.
+        # Resolve it here, before the comparison below, so the swap counts
+        # as "no change" on a session that already runs the replacement.
+        if model_id:
+            model_id = _live_model_id(model_id, where=f"ensure_session {session_id}")
 
         existing = self.sessions.get(session_id)
         if existing is not None:

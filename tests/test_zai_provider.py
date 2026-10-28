@@ -52,11 +52,14 @@ def test_env_var_routing_splits_zai_from_fireworks():
     assert _env_var_for_model("glm-5.3-fireworks") == "FIREWORKS_API_KEY"
     assert _env_var_for_model("glm-5.3-flash-fireworks") == "FIREWORKS_API_KEY"
     # Unchanged neighbours
-    assert _env_var_for_model("glm-5.2") == "FIREWORKS_API_KEY"
-    assert _env_var_for_model("zai-glm-4.7") == "CEREBRAS_API_KEY"
+    assert _env_var_for_model("kimi-k3") == "FIREWORKS_API_KEY"
     assert _env_var_for_model("claude-opus-4-8") == "ANTHROPIC_API_KEY"
     # Gemini had no rule at all before the registry lookup went in.
-    assert _env_var_for_model("gemini-3.7-flash") == "GEMINI_API_KEY"
+    assert _env_var_for_model("gemini-3.8-flash") == "GEMINI_API_KEY"
+    # Ids the registry no longer carries still resolve by prefix (a profile
+    # on disk may name one; resolve_model_choice swaps it before this runs).
+    assert _env_var_for_model("zai-glm-4.7") == "CEREBRAS_API_KEY"
+    assert _env_var_for_model("glm-5.2") == "FIREWORKS_API_KEY"
 
 
 def test_fireworks_required_mode_respects_model_ladder():
@@ -72,10 +75,11 @@ def test_fireworks_required_mode_respects_model_ladder():
     assert resolve("glm-5.3-fireworks", "high") == "high"
     assert resolve("glm-5.3-fireworks", "low") == "low"
     assert resolve("glm-5.3-fireworks", "medium") == "high"  # no medium rung
-    # MiniMax behaviour is unchanged by that fix
-    assert resolve("minimax-m2.7", "max") == "medium"
-    assert resolve("minimax-m2.7", "low") == "low"
-    assert resolve("minimax-m2.7", "medium") == "medium"
+    # MiniMax behaviour is unchanged by that fix (M3 carries the same
+    # low/medium/high ladder M2.7 had before Fireworks retired it)
+    assert resolve("minimax-m3", "max") == "medium"
+    assert resolve("minimax-m3", "low") == "low"
+    assert resolve("minimax-m3", "medium") == "medium"
 
 
 def test_fireworks_required_mode_omits_effort_when_disabled():

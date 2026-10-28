@@ -239,7 +239,7 @@ const AGENT_PROFILES: ProfileDefinition[] = [
   {
     id: 'explore',
     bestFor: 'Deep web, docs, file, and codebase reconnaissance.',
-    model: 'claude-sonnet-4-6, fallback gpt-5.5 / kimi-k2.6 / deepseek-v4-pro',
+    model: 'claude-sonnet-5-5, fallback gpt-6.1-sol / glm-5.3-fireworks / kimi-k3',
     thinking: 'medium',
     tools: 'Web research + read-only file tools',
     maxIterations: 160,
@@ -248,7 +248,7 @@ const AGENT_PROFILES: ProfileDefinition[] = [
   {
     id: 'explore-fast',
     bestFor: 'Cheap factual lookups and parallel fanout searches.',
-    model: 'Random fast fallback',
+    model: 'Random pick of gpt-6-luna / glm-5.3-flash-fireworks / gemini-3.5-flash-lite',
     thinking: 'off',
     tools: 'Basic web/file lookup',
     maxIterations: 60,
@@ -266,7 +266,7 @@ const AGENT_PROFILES: ProfileDefinition[] = [
   {
     id: 'verify',
     bestFor: 'Independent validation after a change.',
-    model: 'gpt-5.5 fallback chain; DeepSeek V4 Pro / GLM 5.1 when available',
+    model: 'gpt-5.5, fallback gpt-6.1-sol / claude-sonnet-5-5 / deepseek-v4p1-flash',
     thinking: 'high',
     tools: 'Read-only test/file tools',
     maxIterations: 100,
@@ -284,7 +284,7 @@ const AGENT_PROFILES: ProfileDefinition[] = [
   {
     id: 'review',
     bestFor: 'Code review after implementation.',
-    model: 'Independent fallback chain; DeepSeek V4 Pro / GLM 5.1 when available',
+    model: 'Prefers the parent, fallback claude-sonnet-5-5 / gpt-6.1-sol / deepseek-v4p1-flash',
     thinking: 'high',
     tools: 'Read-only code/file tools',
     maxIterations: 100,
