@@ -1,5 +1,6 @@
-// The input proxy: what it accepts, what it refuses, and that request data
-// reaches Python as JSON, never as source. Run from the repo root:
+// The input proxy: what it accepts, what it refuses, that request data
+// reaches Python as JSON, never as source, and that it wants the per-launch
+// token. Run from the repo root:
 //   npx tsx test-input-proxy.mjs
 //
 // No input is ever sent. execFileSync is swapped for a recorder, and the
@@ -20,6 +21,7 @@ cp.execFileSync = (bin, args, opts) => {
 process.env.FREYJA_PYTHON = process.execPath
 
 const { parseInputRequest, startInputProxy } = await import('./src/main/inputProxy.ts')
+const { hasProxyToken } = await import('./src/main/proxyToken.ts')
 
 let failures = 0
 function check(name, actual, expected) {
@@ -89,12 +91,19 @@ console.log('\naccepted bodies (what freyja_native._proxy_input sends)')
 console.log('\nover HTTP')
 const harnessRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'freyja-input-test-'))
 const proxy = await startInputProxy(harnessRoot)
-async function post(body) {
-  const res = await fetch(`${proxy.url}/input`, { method: 'POST', body })
+async function post(body, token = proxy.token) {
+  const headers = token === null ? {} : { 'X-Freyja-Token': token }
+  const res = await fetch(`${proxy.url}/input`, { method: 'POST', body, headers })
   return { status: res.status, body: await res.json() }
 }
 {
   spawned.length = 0
+  const move = JSON.stringify({ action: 'move_mouse', x: 1, y: 2 })
+  check('no token is a 401', (await post(move, null)).status, 401)
+  check('a wrong token is a 401', (await post(move, 'x'.repeat(proxy.token.length))).status, 401)
+  check('a short token is a 401', (await post(move, proxy.token.slice(1))).status, 401)
+  check('and nothing is spawned for them', spawned.length, 0)
+  check('the token is per launch', proxy.token.length, 64)
   const bad = await post(JSON.stringify({ action: 'move_mouse', x: INJECT, y: 0 }))
   check('code in a field is a 400', bad.status, 400)
   check('and nothing is spawned', spawned.length, 0)
@@ -110,6 +119,16 @@ async function post(body) {
 }
 proxy.close()
 fs.rmSync(harnessRoot, { recursive: true, force: true })
+
+console.log('\nthe token check (shared with the capture proxy)')
+{
+  const req = (headers) => ({ headers })
+  check('right token', hasProxyToken(req({ 'x-freyja-token': 'abc' }), 'abc'), true)
+  check('wrong token', hasProxyToken(req({ 'x-freyja-token': 'abd' }), 'abc'), false)
+  check('longer token', hasProxyToken(req({ 'x-freyja-token': 'abcd' }), 'abc'), false)
+  check('repeated header', hasProxyToken(req({ 'x-freyja-token': ['abc', 'abc'] }), 'abc'), false)
+  check('no header', hasProxyToken(req({}), 'abc'), false)
+}
 
 console.log('\nthe script against a stub freyja_native')
 {

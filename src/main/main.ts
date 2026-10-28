@@ -607,7 +607,9 @@ function initBridge() {
     harnessRoot: HARNESS_ROOT,
     workspace: USER_WORKSPACE,
     captureProxyUrl: captureProxy?.url,
+    captureProxyToken: captureProxy?.token,
     inputProxyUrl: inputProxy?.url,
+    inputProxyToken: inputProxy?.token,
     onEvent: forwardBridgeEvent,
   })
 

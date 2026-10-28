@@ -50,11 +50,17 @@ export interface HarnessBridgeOptions {
    *  (which has Screen Recording TCC grant) instead of calling the
    *  native capture path directly from Python (which does not). */
   captureProxyUrl?: string
+  /** Per-launch token the capture proxy requires. Passed via
+   *  FREYJA_CAPTURE_TOKEN; freyja_native sends it back as a header. */
+  captureProxyToken?: string
   /** Localhost URL of the input proxy running in the main process.
    *  Passed via FREYJA_INPUT_URL so the bridge can route input
    *  injection (click, type, etc.) through the main process when
    *  the Python subprocess lacks Accessibility TCC grant. */
   inputProxyUrl?: string
+  /** Per-launch token the input proxy requires. Passed via
+   *  FREYJA_INPUT_TOKEN. */
+  inputProxyToken?: string
 }
 
 /**
@@ -191,9 +197,11 @@ export class HarnessBridge {
     }
     if (this.opts.captureProxyUrl) {
       childEnv.FREYJA_CAPTURE_URL = this.opts.captureProxyUrl
+      childEnv.FREYJA_CAPTURE_TOKEN = this.opts.captureProxyToken
     }
     if (this.opts.inputProxyUrl) {
       childEnv.FREYJA_INPUT_URL = this.opts.inputProxyUrl
+      childEnv.FREYJA_INPUT_TOKEN = this.opts.inputProxyToken
     }
     if (!childEnv.HOME) childEnv.HOME = os.homedir()
 

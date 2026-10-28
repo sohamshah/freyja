@@ -3,6 +3,7 @@ import { AddressInfo } from 'node:net'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
+import { hasProxyToken, newProxyToken } from './proxyToken.js'
 
 /**
  * Localhost HTTP proxy for input injection (mouse, keyboard, scroll).
@@ -45,11 +46,14 @@ import fs from 'node:fs'
  *  Response: 200 { ok: true } or 4xx/5xx { ok: false, error: string }
  *
  *  Bound to 127.0.0.1 on an ephemeral port. URL passed to the Python
- *  bridge via FREYJA_INPUT_URL env var.
+ *  bridge via FREYJA_INPUT_URL env var, and a per-launch token via
+ *  FREYJA_INPUT_TOKEN; a request without the token (X-Freyja-Token
+ *  header, see proxyToken.ts) gets a 401.
  */
 
 export interface InputProxy {
   url: string
+  token: string
   close(): void
 }
 
@@ -266,8 +270,14 @@ export async function startInputProxy(
     return null
   }
   const env = buildPythonEnv(pythonBin, harnessRoot)
+  const token = newProxyToken()
 
   const server = http.createServer(async (req, res) => {
+    if (!hasProxyToken(req, token)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, error: 'missing or wrong token' }))
+      return
+    }
     if (req.method !== 'POST' || !req.url?.startsWith('/input')) {
       res.writeHead(404, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: false, error: 'not found' }))
@@ -313,6 +323,7 @@ export async function startInputProxy(
 
   return {
     url,
+    token,
     close() {
       try {
         server.close()

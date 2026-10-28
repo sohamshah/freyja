@@ -178,6 +178,15 @@ def _capture_proxy_url() -> str:
     )
 
 
+def _proxy_token_headers(env_var: str) -> dict[str, str]:
+    """The per-launch token Electron main puts in the bridge's env next to
+    each proxy URL (FREYJA_CAPTURE_TOKEN, FREYJA_INPUT_TOKEN). The proxies
+    refuse a request without it (src/main/proxyToken.ts)."""
+    import os
+    token = os.environ.get(env_var, "").strip()
+    return {"X-Freyja-Token": token} if token else {}
+
+
 def _proxy_screenshot(
     proxy_url: str, *, display_id: int | None, window_id: int | None = None,
     window_bounds: tuple[float, float, float, float] | None = None,
@@ -197,9 +206,10 @@ def _proxy_screenshot(
     if max_dim is not None:
         params.append(("max_dim", str(int(max_dim))))
     url = f"{proxy_url}/capture?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers=_proxy_token_headers("FREYJA_CAPTURE_TOKEN"))
     t0 = time.perf_counter()
     try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             data = resp.read()
     except urllib.error.HTTPError as exc:
         # The proxy says why in the body (window not capturable, no permission).
@@ -297,7 +307,7 @@ def _proxy_input(action: str, **params: Any) -> None:
     req = urllib.request.Request(
         f"{url}/input",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **_proxy_token_headers("FREYJA_INPUT_TOKEN")},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=10) as resp:

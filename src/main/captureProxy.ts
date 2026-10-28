@@ -1,6 +1,7 @@
 import http from 'node:http'
 import { AddressInfo } from 'node:net'
 import { desktopCapturer, screen } from 'electron'
+import { hasProxyToken, newProxyToken } from './proxyToken.js'
 
 /**
  * Localhost HTTP proxy for screen capture.
@@ -43,11 +44,15 @@ import { desktopCapturer, screen } from 'electron'
  *
  *  We bind to 127.0.0.1 exclusively and pick an ephemeral port so the
  *  endpoint is not reachable from off-machine. The URL is passed to
- *  the Python bridge via FREYJA_CAPTURE_URL env var.
+ *  the Python bridge via FREYJA_CAPTURE_URL env var, and a per-launch
+ *  token via FREYJA_CAPTURE_TOKEN; a request without the token
+ *  (X-Freyja-Token header, see proxyToken.ts) gets a 401, so another
+ *  local process cannot use Freyja's Screen Recording grant.
  */
 
 export interface CaptureProxy {
   url: string
+  token: string
   close(): void
 }
 
@@ -160,8 +165,14 @@ async function serveWindow(
 }
 
 export async function startCaptureProxy(): Promise<CaptureProxy> {
+  const token = newProxyToken()
   const server = http.createServer(async (req, res) => {
     try {
+      if (!hasProxyToken(req, token)) {
+        res.writeHead(401, { 'Content-Type': 'text/plain' })
+        res.end('missing or wrong token')
+        return
+      }
       if (!req.url || !req.url.startsWith('/capture')) {
         res.writeHead(404, { 'Content-Type': 'text/plain' })
         res.end('not found')
@@ -238,6 +249,7 @@ export async function startCaptureProxy(): Promise<CaptureProxy> {
 
   return {
     url,
+    token,
     close() {
       try {
         server.close()
