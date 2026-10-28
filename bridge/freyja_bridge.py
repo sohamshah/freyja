@@ -34,6 +34,7 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 import traceback
 import uuid
@@ -383,6 +384,16 @@ def unregister_session_listener(session_id: str, callback: Any) -> None:
         _SESSION_EVENT_LISTENERS.pop(session_id, None)
 
 
+# emit() runs on worker threads too: compaction runs in one (see
+# engine.runner.run_off_loop), and its log lines and summarizer metrics come
+# through here while the event loop keeps emitting. Unlocked, two events
+# interleave and split a stdout line, and Electron main, which reads one JSON
+# event per line, drops both. The lock also keeps the debug log and the
+# session mirror at one whole row per event. Nothing that can log runs under
+# it, since a log line comes back through emit().
+_EMIT_LOCK = threading.Lock()
+
+
 def emit(event: dict[str, Any]) -> None:
     """Emit a single JSON line to stdout and flush immediately.
 
@@ -397,10 +408,11 @@ def emit(event: dict[str, Any]) -> None:
         transcript and none of the engine's activity stream.
     """
     try:
-        _write_debug_log(event)
-        sys.stdout.write(json.dumps(event, ensure_ascii=False, default=str))
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+        line = json.dumps(event, ensure_ascii=False, default=str) + "\n"
+        with _EMIT_LOCK:
+            _write_debug_log(event)
+            sys.stdout.write(line)
+            sys.stdout.flush()
     except Exception:
         traceback.print_exc(file=sys.stderr)
     # Per-session JSONL persistence — keep the file handle open across
@@ -448,7 +460,8 @@ def _close_session_event_file(session_id: str) -> None:
     """Close + drop the cached handle for ``session_id``. Idempotent.
     Called when a session is removed from ``_BridgeState.sessions`` so
     descriptors don't leak across explicit resets / deletes."""
-    fp = _SESSION_EVENT_FILES.pop(session_id, None)
+    with _EMIT_LOCK:
+        fp = _SESSION_EVENT_FILES.pop(session_id, None)
     if fp is None:
         return
     try:
@@ -513,42 +526,45 @@ def _append_session_event_jsonl(session_id: str, event: dict[str, Any]) -> None:
     swallowed — losing the file-side mirror of a single event must
     never break the live event stream that's driving the agent."""
     try:
-        fp = _SESSION_EVENT_FILES.get(session_id)
-        if fp is None or fp.closed:
-            path = _session_event_path(session_id)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            fp = open(path, "a", encoding="utf-8")  # noqa: SIM115
-            _SESSION_EVENT_FILES[session_id] = fp
-            # Enforce the LRU cap. Eviction happens only on new opens,
-            # which is when an unbounded cache would otherwise grow.
-            while len(_SESSION_EVENT_FILES) > _SESSION_EVENT_FILE_CAP:
-                evict_sid, evict_fp = _SESSION_EVENT_FILES.popitem(last=False)
-                if evict_sid == session_id:
-                    # Defensive: the OrderedDict insertion above pushed
-                    # our brand-new handle to the right, but if the cap
-                    # is 0 / 1 we could still pop it. Re-insert to keep
-                    # the writer going.
-                    _SESSION_EVENT_FILES[session_id] = fp
-                    continue
-                try:
-                    if not evict_fp.closed:
-                        evict_fp.close()
-                except OSError:
-                    pass
-        else:
-            # Touch-on-access so the LRU eviction order reflects
-            # actual usage, not just open order. Cheap (O(1)).
-            _SESSION_EVENT_FILES.move_to_end(session_id)
         # Stamp the line with wall-clock ms. The live event stream doesn't
         # need it (the renderer stamps on receipt) but the file does: it
         # is what lets a branch-before-message keep only the events that
         # happened before the branch point. Never overwrite a stamp the
         # event already carries.
         row = event if "_t" in event else {**event, "_t": int(time.time() * 1000)}
+        # Outside the lock: the media store logs a failed write (see
+        # _EMIT_LOCK).
         row = _externalize_event_images(row)
-        fp.write(json.dumps(row, ensure_ascii=False, default=str))
-        fp.write("\n")
-        fp.flush()
+        line = json.dumps(row, ensure_ascii=False, default=str) + "\n"
+        with _EMIT_LOCK:
+            fp = _SESSION_EVENT_FILES.get(session_id)
+            if fp is None or fp.closed:
+                path = _session_event_path(session_id)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                fp = open(path, "a", encoding="utf-8")  # noqa: SIM115
+                _SESSION_EVENT_FILES[session_id] = fp
+                # Enforce the LRU cap. Eviction happens only on new opens,
+                # which is when an unbounded cache would otherwise grow.
+                while len(_SESSION_EVENT_FILES) > _SESSION_EVENT_FILE_CAP:
+                    evict_sid, evict_fp = _SESSION_EVENT_FILES.popitem(last=False)
+                    if evict_sid == session_id:
+                        # Defensive: the OrderedDict insertion above pushed
+                        # our brand-new handle to the right, but if the cap
+                        # is 0 / 1 we could still pop it. Re-insert to keep
+                        # the writer going.
+                        _SESSION_EVENT_FILES[session_id] = fp
+                        continue
+                    try:
+                        if not evict_fp.closed:
+                            evict_fp.close()
+                    except OSError:
+                        pass
+            else:
+                # Touch-on-access so the LRU eviction order reflects
+                # actual usage, not just open order. Cheap (O(1)).
+                _SESSION_EVENT_FILES.move_to_end(session_id)
+            fp.write(line)
+            fp.flush()
     except Exception:  # noqa: BLE001
         # Don't even traceback — this is purely a mirroring side effect.
         pass
