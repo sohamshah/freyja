@@ -37,9 +37,11 @@ def _entry(eid: str, role: str | None, ts: float, **extra) -> dict:
 
 # A tool-heavy, compacted transcript: one renderer "assistant" message
 # spans several engine entries, and the compaction entry stands in for
-# everything before it.
+# everything before it. As in a real transcript, the compaction entry
+# sits in front of the entries it kept but is stamped when the
+# compaction ran (6.8, mid-turn): after every kept entry, before a4.
 ENTRIES = [
-    _entry("c0", None, 1.0),
+    _entry("c0", None, 6.8),
     _entry("u1", "user", 2.0),
     _entry("a1", "assistant", 3.0),
     _entry("t1", "tool_result", 3.5),
@@ -82,6 +84,48 @@ def test_truncate_entries_before_keeps_everything_older_than_cutoff():
     kept, head = tp.truncate_entries_before(ENTRIES, 4.99)
     assert [e["id"] for e in kept] == ["c0", "u1", "a1", "t1", "a2"]
     assert head == "a2"
+
+
+@pytest.mark.parametrize(
+    "anchor", [e["id"] for e in ENTRIES if "message" in e]
+)
+def test_truncate_entries_before_keeps_compaction_summary_at_every_anchor(anchor):
+    # The renderer stamps a message just before the engine appends its
+    # entry. Branching at any message keeps the summary and every entry
+    # before the anchor, though the summary is stamped after most of them.
+    idx = next(i for i, e in enumerate(ENTRIES) if e["id"] == anchor)
+    kept, head = tp.truncate_entries_before(ENTRIES, ENTRIES[idx]["timestamp"] - 0.01)
+    assert [e["id"] for e in kept] == [e["id"] for e in ENTRIES[:idx]]
+    assert head == ENTRIES[idx - 1]["id"]
+
+
+def test_truncate_entries_before_after_a_real_compaction():
+    from engine.session import TranscriptManager
+    from engine.types import Message
+
+    tm = TranscriptManager()
+    for i, role in enumerate(["user", "assistant", "user", "assistant"]):
+        tm.append_message(Message(role=role, content=f"m{i}"))
+    for i, e in enumerate(tm.entries):
+        e.timestamp = 100.0 + i
+    tm.append_compaction("summary", first_kept_id=tm.entries[2].id, tokens_before=1_000)
+    tm.append_message(Message(role="user", content="m4"))
+    entries = [e.to_dict() for e in tm.entries]
+    # The engine puts the summary in front of the entries it kept and
+    # stamps it with the time of compaction, after them.
+    assert entries[0]["is_compaction"]
+    assert entries[0]["timestamp"] > entries[1]["timestamp"]
+
+    def texts(kept):
+        return [e.get("compaction_summary") or e["message"]["content"] for e in kept]
+
+    kept, _ = tp.truncate_entries_before(entries, 101.99)
+    assert texts(kept) == ["summary"]
+    kept, _ = tp.truncate_entries_before(entries, 102.99)
+    assert texts(kept) == ["summary", "m2"]
+    kept, head = tp.truncate_entries_before(entries, entries[-1]["timestamp"] - 0.001)
+    assert texts(kept) == ["summary", "m2", "m3"]
+    assert head == entries[-2]["id"]
 
 
 def test_truncate_entries_before_treats_missing_timestamp_as_old():
@@ -381,6 +425,17 @@ def test_find_message_entry_index_prefers_timestamp_over_ordinal():
     assert _find_message_entry_index(entries, 2, 99.0) is None
 
 
+@pytest.mark.parametrize(
+    "anchor", [e["id"] for e in ENTRIES if "message" in e]
+)
+def test_find_message_entry_index_after_compaction_at_every_anchor(anchor):
+    # Edit, rerun, delete and pin resolve their anchor here. The summary
+    # carries no message, so its late stamp never wins the match.
+    entries = _fake_session().transcript.entries
+    idx = next(i for i, e in enumerate(ENTRIES) if e["id"] == anchor)
+    assert _find_message_entry_index(entries, 0, ENTRIES[idx]["timestamp"] - 0.01) == idx
+
+
 def test_truncate_session_by_cutoff_drops_the_whole_later_turn():
     sess = _fake_session()
     ok, target = _truncate_session_at_message_ordinal(sess, 2, cutoff_ts=4.99)
@@ -392,8 +447,8 @@ def test_truncate_session_by_cutoff_drops_the_whole_later_turn():
 def test_truncate_session_by_cutoff_at_first_message_wipes_everything():
     sess = _fake_session()
     ok, target = _truncate_session_at_message_ordinal(sess, 0, cutoff_ts=1.99)
-    # Cutoff before the first message entry (u1); the compaction entry at
-    # 1.0 has no message so the first message-bearing entry is index 1.
+    # Cutoff before the first message entry (u1); the compaction entry
+    # has no message so the first message-bearing entry is index 1.
     assert ok and target.id == "u1"
     assert [e.id for e in sess.transcript.entries] == ["c0"]
 

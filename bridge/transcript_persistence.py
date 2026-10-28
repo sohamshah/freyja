@@ -303,7 +303,13 @@ def truncate_entries_before(
     entries) and tool-heavy turns (where one renderer message spans many
     engine entries), so it replaces ordinal counting for branch/edit/
     rerun/delete. Entries without a timestamp are treated as ancient
-    and kept. Returns ``(kept, head_id)``.
+    and kept.
+
+    Only message-bearing entries can end the walk, matching how
+    ``freyja_bridge._find_message_entry_index`` resolves the anchor. A
+    compaction entry sits in front of the older entries it kept but is
+    stamped when the compaction ran, so its stamp says nothing about the
+    branch point. Returns ``(kept, head_id)``.
     """
     kept: list[Any] = []
     head: str | None = None
@@ -313,7 +319,7 @@ def truncate_entries_before(
             ts_f = float(ts) if ts is not None else 0.0
         except (TypeError, ValueError):
             ts_f = 0.0
-        if ts_f >= cutoff_ts:
+        if entry.get("message") is not None and ts_f >= cutoff_ts:
             break
         kept.append(entry)
         entry_id = entry.get("id")
