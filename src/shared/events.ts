@@ -1805,6 +1805,8 @@ export const IPC = {
   islandPerform: 'island:perform',
   islandControl: 'island:control',
   islandToggle: 'island:toggle',
+  /** The ⌘K rows for the island's field: main renderer → main → island. */
+  islandPalette: 'island:palette',
 } as const
 
 // ── Gateway IPC result types ────────────────────────────────────

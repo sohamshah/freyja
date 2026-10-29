@@ -460,6 +460,8 @@ export interface HarnessState extends SessionSlice {
   // Derived / UI
   inputDraft: string
   commandPaletteOpen: boolean
+  /** Text the palette opens with (the island hands a sentence over); cleared once read. */
+  commandPaletteQuery: string | null
   missionDashboardOpen: boolean
   // 'swarm' / 'findings' / 'telemetry' are kept for legacy callers; the
   // live tab set is overview / tasks / activity / profiles.
@@ -618,7 +620,7 @@ export interface HarnessActions {
   setReasoningLevel(reasoningLevel: string): Promise<void>
   setCoordinationStrategy(strategy: CoordinationStrategy): Promise<void>
   openSubagent(id: string | null): void
-  toggleCommandPalette(open?: boolean): void
+  toggleCommandPalette(open?: boolean, query?: string): void
   toggleMissionDashboard(
     open?: boolean,
     tab?: HarnessState['missionDashboardTab'],
@@ -1377,6 +1379,7 @@ function emptyState(): HarnessState {
     pendingFollowups: {},
     inputDraft: '',
     commandPaletteOpen: false,
+    commandPaletteQuery: null,
     missionDashboardOpen: false,
     missionDashboardTab: 'overview',
     missionDashboardFocusTaskId: null,
@@ -4765,8 +4768,8 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     set({ activeSubagentId: id })
   },
 
-  toggleCommandPalette(open) {
-    set((prev) => ({ commandPaletteOpen: open ?? !prev.commandPaletteOpen }))
+  toggleCommandPalette(open, query) {
+    set((prev) => ({ commandPaletteOpen: open ?? !prev.commandPaletteOpen, commandPaletteQuery: query ?? null }))
   },
 
   toggleMissionDashboard(open, tab) {

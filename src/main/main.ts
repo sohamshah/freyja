@@ -53,9 +53,8 @@ import {
   saveSettings,
   type DesktopSettings,
 } from './settings.js'
-import { IslandWindow } from './island.js'
-import { loadGlass } from './glass.js'
-import type { IslandAction, IslandControl, IslandDigest } from '../shared/island.js'
+import { IslandWindow, hotkeyGlyphs } from './island.js'
+import type { IslandAction, IslandControl, IslandDigest, IslandPaletteIndex } from '../shared/island.js'
 import { GatewayLogTailer } from './gatewayLogTail.js'
 import { sendControlCommand } from './controlChannel.js'
 import { readCompactionTelemetry } from './telemetryReader.js'
@@ -568,9 +567,9 @@ function ensureIsland(enabled: boolean, notchWidth: number | null = null): void 
   island = new IslandWindow({
     preload: path.resolve(ROOT, 'dist-preload', 'island-preload.cjs'),
     load: islandLoadTarget(),
-    glass: loadGlass(ROOT),
     notchWidth,
   })
+  island.setHotkey(hotkeyGlyphs(activeIslandHotkey))
   island.open()
 }
 
@@ -599,7 +598,8 @@ function registerIslandHotkey(): string | null {
 /** Actions the island sends. Raising the app is main's job; the rest is
  *  performed by the main renderer against its store. */
 function performIslandAction(action: IslandAction): void {
-  if (action.type === 'focus-app' || action.type === 'open' || action.type === 'dashboard') raiseMainWindow()
+  const raises = action.type === 'focus-app' || action.type === 'open' || action.type === 'dashboard' || action.type === 'palette-open' || action.type === 'view'
+  if (raises) raiseMainWindow()
   if (action.type === 'focus-app') return
   mainWindow?.webContents.send(IPC.islandPerform, action)
 }
@@ -684,6 +684,10 @@ function setupIpc() {
   })
   ipcMain.handle(IPC.islandAction, (_event, action: IslandAction) => {
     performIslandAction(action)
+    return { ok: true }
+  })
+  ipcMain.handle(IPC.islandPalette, (_event, index: IslandPaletteIndex) => {
+    island?.setPalette(index)
     return { ok: true }
   })
   ipcMain.handle(IPC.islandControl, (_event, control: IslandControl) => {
@@ -1620,6 +1624,7 @@ app.whenReady().then(async () => {
   activeAppshotHotkey = registerAppshotHotkey(captureAppshotFromHotkey)
   announceAppshotHotkey()
   activeIslandHotkey = registerIslandHotkey()
+  island?.setHotkey(hotkeyGlyphs(activeIslandHotkey))
 
   if (SCREENSHOT_PATH && mainWindow) {
     const w = mainWindow

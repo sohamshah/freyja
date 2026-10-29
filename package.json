@@ -8,8 +8,7 @@
     "dev": "node scripts/dev.mjs",
     "build:renderer": "vite build",
     "build:main": "node scripts/build-main.mjs",
-    "build:native": "bash scripts/build-glass.sh",
-    "build": "npm run build:renderer && npm run build:main && npm run build:native",
+    "build": "npm run build:renderer && npm run build:main",
     "start": "npm run build && electron .",
     "package": "npm run build && electron-builder --mac --dir",
     "dist": "npm run build && electron-builder --mac --dir && node scripts/create-dmg.mjs",
@@ -47,7 +46,6 @@
       "dist-main/**/*",
       "dist-preload/**/*",
       "dist-renderer/**/*",
-      "dist-native/**/*",
       "bridge/**/*",
       "assets/**/*",
       "package.json"
@@ -70,9 +68,6 @@
         "NSAudioCaptureUsageDescription": "Freyja captures your screen for computer-use tasks. It does not record system audio."
       }
     },
-    "asarUnpack": [
-      "dist-native/**/*"
-    ],
     "afterPack": "./scripts/sign-resources.js",
     "extraResources": [
       {

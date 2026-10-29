@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/events.js'
-import type { IslandAction, IslandControl, IslandDigest, IslandGeometry } from '../shared/island.js'
+import type { JevPaletteDecision } from '../shared/events.js'
+import type { IslandAction, IslandControl, IslandDigest, IslandGeometry, IslandPaletteIndex } from '../shared/island.js'
 
 // The island's bridge is tiny on purpose: it sees a digest, not the event
 // stream, and it never calls `getMode` (that call is the main window's
@@ -30,11 +31,18 @@ const api = {
   onToggle(listener: () => void): () => void {
     return on<void>(IPC.islandToggle, () => listener())
   },
+  onPalette(listener: (index: IslandPaletteIndex) => void): () => void {
+    return on<IslandPaletteIndex>(IPC.islandPalette, listener)
+  },
   async action(action: IslandAction): Promise<{ ok: boolean }> {
     return ipcRenderer.invoke(IPC.islandAction, action)
   },
   async control(control: IslandControl): Promise<{ ok: boolean }> {
     return ipcRenderer.invoke(IPC.islandControl, control)
+  },
+  /** The same Jev classifier ⌘K uses: main asks System One which domain a sentence is about. */
+  async jevClassify(query: string): Promise<JevPaletteDecision> {
+    return ipcRenderer.invoke(IPC.jevClassify, query)
   },
 } as const
 

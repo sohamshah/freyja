@@ -22,7 +22,7 @@ import {
   type SkillReadResult,
 } from '../shared/events.js'
 import type { LedgerTurn } from '../shared/turnLedger.js'
-import type { IslandAction, IslandDigest } from '../shared/island.js'
+import type { IslandAction, IslandDigest, IslandPaletteIndex } from '../shared/island.js'
 
 type EventListener = (event: BridgeEvent) => void
 
@@ -336,6 +336,9 @@ const api = {
   // performs the actions the island sends back (shared/island.ts).
   async islandDigest(digest: IslandDigest): Promise<{ ok: boolean }> {
     return ipcRenderer.invoke(IPC.islandDigest, digest)
+  },
+  async islandPalette(index: IslandPaletteIndex): Promise<{ ok: boolean }> {
+    return ipcRenderer.invoke(IPC.islandPalette, index)
   },
   onIslandPerform(listener: (action: IslandAction) => void): () => void {
     const handler = (_e: unknown, action: IslandAction) => {

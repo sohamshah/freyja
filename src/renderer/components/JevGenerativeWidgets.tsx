@@ -7,6 +7,7 @@ import type { JevPaletteDecision, ArtifactIndexRow } from '../../shared/events'
 import {
   type PaletteSlots,
   type PaletteWidgetType,
+  instructionFor,
   requiredSlots,
   slotFilled,
   TOOL_NAMES,
@@ -102,7 +103,7 @@ function MemoryRecall({ query, slots, onClose, onToast, crumbs }: WidgetProps) {
     if (!needle) return []
     return sessions.filter((s) => s.title.toLowerCase().includes(needle)).slice(0, 4)
   }, [sessions, needle])
-  const instruction = `Recall from memory and past sessions: ${query}. Quote the exact lines, name the session or source, and give the date.`
+  const instruction = instructionFor('memory', query, slots)!
 
   return (
     <Frame
@@ -176,9 +177,7 @@ function AgentTask({ type, query, slots, onClose, onToast, crumbs }: WidgetProps
   const { filled, total, ready } = useRequired(type, slots)
   const profile = slots.profile
   const target = slots.prNumber ? `PR #${slots.prNumber}${slots.repo ? ` on ${slots.repo}` : ''}` : slots.repo
-  const instruction = `Spawn a ${profile ?? 'general'} sub-agent for: ${query}.${
-    slots.focus ? ` Focus on ${slots.focus}.` : ''
-  } Report back with findings, file:line references, and a short summary.`
+  const instruction = instructionFor('agent_task', query, slots)!
 
   return (
     <Frame
@@ -1029,7 +1028,7 @@ function QuickControls({ onClose, onToast, crumbs }: WidgetProps) {
 
 function Finance({ query, slots, onClose, onToast, crumbs }: WidgetProps) {
   const sendMessage = useHarness((s) => s.sendMessage)
-  const instruction = `${query}. Pull the transactions from my connected finance tools, total them, and break them down by merchant.`
+  const instruction = instructionFor('finance', query, slots)!
   return (
     <Frame
       crumbs={crumbs}

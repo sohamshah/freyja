@@ -1,7 +1,6 @@
 import { BrowserWindow, screen, type Display } from 'electron'
 import { IPC } from '../shared/events.js'
-import type { IslandControl, IslandDigest, IslandGeometry } from '../shared/island.js'
-import { BLUR_MATERIAL, LIQUID_STYLE, LIQUID_TINT, type Glass, type GlassKind } from './glass.js'
+import type { IslandControl, IslandDigest, IslandGeometry, IslandPaletteIndex } from '../shared/island.js'
 
 /** Every notched MacBook so far (14" and 16") has a 185pt notch. The setting
  *  `island.notchWidth` overrides it for anything Apple ships next. */
@@ -12,14 +11,12 @@ const NOTCHED_MENU_BAR_MIN = 30
  *  centre and everything else is click-through, so the island can grow into
  *  its sheet without the window ever moving or resizing. */
 const WINDOW_WIDTH = 760
-const WINDOW_HEIGHT = 480
+const WINDOW_HEIGHT = 600
 
 export interface IslandWindowOptions {
   preload: string
   load: { url: string } | { file: string }
   notchWidth?: number | null
-  /** The glass shim, when it built (src/main/glass.ts). */
-  glass?: Glass | null
 }
 
 /**
@@ -35,14 +32,10 @@ export class IslandWindow {
   private geometry: IslandGeometry | null = null
   private pageReady = false
   private notchWidth: number | null
-  private glass: Glass | null
-  private handle: Buffer | null = null
-  private glassKind: GlassKind | null = null
-  private dark = true
+  private hotkey: string | null = null
 
   constructor(private readonly opts: IslandWindowOptions) {
     this.notchWidth = opts.notchWidth ?? null
-    this.glass = opts.glass ?? null
   }
 
   get isOpen(): boolean {
@@ -80,21 +73,6 @@ export class IslandWindow {
     })
     this.win = win
     this.pageReady = false
-    // The glass: a pane of system glass behind the page, sized by the page's
-    // `shape` messages so it is exactly the drawn island and nothing else.
-    if (this.glass) {
-      try {
-        this.handle = win.getNativeWindowHandle()
-        this.glassKind = this.glass.attach(this.handle, this.dark, process.env.FREYJA_ISLAND_GLASS === 'blur')
-        if (!this.glassKind) throw new Error('attach returned null')
-        this.applyStyle()
-      } catch (err) {
-        console.warn('[island] backdrop glass unavailable:', err)
-        this.glass = null
-        this.handle = null
-        this.glassKind = null
-      }
-    }
     win.setAlwaysOnTop(true, 'screen-saver', 1)
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
     try {
@@ -110,8 +88,6 @@ export class IslandWindow {
     })
     win.on('closed', () => {
       this.win = null
-      this.handle = null
-      this.glassKind = null
       this.pageReady = false
     })
     screen.on('display-added', this.replace)
@@ -128,8 +104,6 @@ export class IslandWindow {
   close(): void {
     const win = this.win
     this.win = null
-    this.handle = null
-    this.glassKind = null
     this.pageReady = false
     screen.removeListener('display-added', this.replace)
     screen.removeListener('display-removed', this.replace)
@@ -148,8 +122,20 @@ export class IslandWindow {
     }
   }
 
+  /** The ⌘K rows the main renderer answered with; relayed to the page. */
+  setPalette(index: IslandPaletteIndex): void {
+    const win = this.win
+    if (this.pageReady && win && !win.isDestroyed()) win.webContents.send(IPC.islandPalette, index)
+  }
+
   setNotchWidth(width: number | null): void {
     this.notchWidth = width
+    this.place()
+  }
+
+  /** The registered hotkey, as glyphs, for the page's legend. */
+  setHotkey(label: string | null): void {
+    this.hotkey = label
     this.place()
   }
 
@@ -184,24 +170,7 @@ export class IslandWindow {
       case 'release':
         win.blur()
         break
-      case 'shape':
-        if (this.glass && this.handle) {
-          this.glass.setShape(this.handle, msg.x, msg.y, msg.width, msg.height, msg.radiusTop, msg.radiusBottom)
-        }
-        break
-      case 'theme':
-        this.dark = msg.dark
-        this.applyStyle()
-        break
     }
-  }
-
-  /** The glass follows the page's theme: the material (blur) or the style and tint (liquid). */
-  private applyStyle(): void {
-    if (!this.glass || !this.handle || !this.glassKind) return
-    const shell = this.dark ? 'dark' : 'light'
-    if (this.glassKind === 'liquid') this.glass.setStyle(this.handle, this.dark, LIQUID_STYLE[shell], ...LIQUID_TINT[shell])
-    else this.glass.setStyle(this.handle, this.dark, BLUR_MATERIAL[shell])
   }
 
   private readonly replace = (): void => {
@@ -212,7 +181,7 @@ export class IslandWindow {
     const win = this.win
     if (!win || win.isDestroyed()) return
     const display = pickDisplay()
-    this.geometry = geometryFor(display, this.notchWidth, this.glassKind ?? 'none')
+    this.geometry = geometryFor(display, this.notchWidth, this.hotkey)
     const x = Math.round(display.bounds.x + (display.bounds.width - WINDOW_WIDTH) / 2)
     win.setBounds({ x, y: display.bounds.y, width: WINDOW_WIDTH, height: WINDOW_HEIGHT })
     this.pushGeometry()
@@ -236,7 +205,7 @@ function pickDisplay(): Display {
   return screen.getAllDisplays().find((d) => d.internal) ?? screen.getPrimaryDisplay()
 }
 
-export function geometryFor(display: Display, notchWidth: number | null, glass: IslandGeometry['glass'] = 'none'): IslandGeometry {
+export function geometryFor(display: Display, notchWidth: number | null, hotkey: string | null = null): IslandGeometry {
   const menuBar = Math.max(0, display.workArea.y - display.bounds.y)
   const notched = !!display.internal && menuBar >= NOTCHED_MENU_BAR_MIN
   return {
@@ -247,6 +216,29 @@ export function geometryFor(display: Display, notchWidth: number | null, glass: 
     width: WINDOW_WIDTH,
     height: WINDOW_HEIGHT,
     scale: display.scaleFactor,
-    glass,
+    hotkey,
   }
+}
+
+/** An Electron accelerator as the glyphs the menu bar would print: Control+Alt+Command+I → ⌃⌥⌘I. */
+export function hotkeyGlyphs(accelerator: string | null): string | null {
+  if (!accelerator) return null
+  const glyph: Record<string, string> = {
+    control: '⌃',
+    ctrl: '⌃',
+    alt: '⌥',
+    option: '⌥',
+    shift: '⇧',
+    command: '⌘',
+    cmd: '⌘',
+    super: '⌘',
+    meta: '⌘',
+    commandorcontrol: '⌘',
+    cmdorctrl: '⌘',
+    space: '␣',
+  }
+  return accelerator
+    .split('+')
+    .map((part) => glyph[part.trim().toLowerCase()] ?? part.trim().toUpperCase())
+    .join('')
 }

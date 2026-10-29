@@ -1,16 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
-import type {
-  IslandAction,
-  IslandAttention,
-  IslandDigest,
-  IslandDone,
-  IslandGeometry,
-  IslandLive,
-  IslandSessionRow,
-  IslandTaskRow,
-  IslandVoice,
-} from '../../shared/island'
-import { islandApi, type IslandApi } from './bridge'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import type { IslandAction, IslandAttention, IslandDigest, IslandDone, IslandGeometry, IslandLive, IslandPaletteIndex, IslandVoice } from '../../shared/island'
+import { islandApi } from './bridge'
+import { Sheet } from './Sheet'
+import { Check, Elapsed, Meter, elapsed, liveDetail, liveWord, useNow } from './parts'
 import { TopographicMark } from '../components/TopographicMark'
 import { AnimatedTopographicMark } from '../components/AnimatedTopographicMark'
 import { VoiceSigil } from '../components/voice/VoiceSigil'
@@ -22,9 +14,9 @@ const FALLBACK_GEOMETRY: IslandGeometry = {
   notchWidth: 185,
   stripHeight: 33,
   width: 760,
-  height: 480,
+  height: 600,
   scale: 2,
-  glass: 'none',
+  hotkey: null,
 }
 /** How long a finished turn hangs from the notch before the island settles. */
 const DONE_BANNER_MS = 8000
@@ -38,6 +30,7 @@ const HOVER_CLOSE_MS = 420
 const ATTENTION_PEEK_MS = 6000
 /** Files over the island: the shelf state. */
 const DROP_MS = 1200
+const FOLLOW_KEY = 'freyja.island.follow'
 
 type Mode = 'quiet' | 'live' | 'attention' | 'voice'
 
@@ -45,19 +38,28 @@ export function Island() {
   const api = useMemo(islandApi, [])
   const [digest, setDigest] = useState<IslandDigest | null>(null)
   const [geometry, setGeometry] = useState<IslandGeometry>(FALLBACK_GEOMETRY)
+  const [palette, setPalette] = useState<IslandPaletteIndex | null>(null)
   const [expanded, setExpanded] = useState(false)
-  /** The composer holds focus or text: the island must not fold away under it. */
+  /** The field holds focus or text: the island must not fold away under it. */
   const [composing, setComposing] = useState(false)
-  /** The hotkey opened the island: the composer takes the keyboard. */
+  /** The hotkey opened the island: the field takes the keyboard. */
   const [wantKeyboard, setWantKeyboard] = useState(0)
   /** Something is being dragged over the island. */
   const [dropping, setDropping] = useState(false)
-  /** Text dropped on the island lands in the composer. */
+  /** Text dropped on the island lands in the field. */
   const [droppedText, setDroppedText] = useState('')
   /** Bumps when a new needs-you item arrives: the shape nudges once. */
   const [nudge, setNudge] = useState(0)
-  /** The banner's reply key aims the composer at that session. */
+  /** The banner's reply key (or a row's) aims the field at that session. */
   const [replyTo, setReplyTo] = useState<string | null>(null)
+  /** The session the strip follows while several are live. */
+  const [follow, setFollowState] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(FOLLOW_KEY)
+    } catch {
+      return null
+    }
+  })
   const now = useNow(1000)
   const openTimer = useRef<number | null>(null)
   const closeTimer = useRef<number | null>(null)
@@ -65,13 +67,12 @@ export function Island() {
   const hovering = useRef(false)
   const seenAttention = useRef<Set<string> | null>(null)
   const islandRef = useRef<HTMLDivElement>(null)
-  useGlassShape(islandRef, api, geometry.glass !== 'none')
-  useGlassTheme(api)
 
   useEffect(() => {
     const offs = [
       api.onState(setDigest),
       api.onGeometry(setGeometry),
+      api.onPalette(setPalette),
       api.onToggle(() => {
         setExpanded((open) => {
           if (!open) setWantKeyboard((n) => n + 1)
@@ -83,6 +84,16 @@ export function Island() {
     return () => offs.forEach((off) => off())
   }, [api])
 
+  const setFollow = useCallback((id: string | null) => {
+    setFollowState(id)
+    try {
+      if (id) localStorage.setItem(FOLLOW_KEY, id)
+      else localStorage.removeItem(FOLLOW_KEY)
+    } catch {
+      /* no storage: the follow lasts the session */
+    }
+  }, [])
+
   const release = useCallback(() => {
     setExpanded(false)
     setComposing(false)
@@ -93,7 +104,7 @@ export function Island() {
 
   // Esc folds the island and hands the keyboard back. So does the keyboard
   // leaving on its own (a click into another app while the caret sat in
-  // the reply), unless the pointer is still over the island.
+  // the field), unless the pointer is still over the island.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') release()
@@ -133,7 +144,7 @@ export function Island() {
   useEffect(() => {
     if (!expanded && !hovering.current) void api.control({ type: 'hover', over: false })
     if (expanded) void api.control({ type: 'hover', over: true })
-    // The composer unmounts with the sheet, and an unmount fires no blur.
+    // The field unmounts with the sheet, and an unmount fires no blur.
     if (!expanded) setComposing(false)
   }, [expanded, api])
   useEffect(() => () => {
@@ -169,7 +180,7 @@ export function Island() {
   }, [nudge])
 
   // The shelf: files dropped on the island go to the composer's tray, text
-  // goes into the reply.
+  // goes into the field.
   const onDragOver = (e: React.DragEvent) => {
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
@@ -217,6 +228,9 @@ export function Island() {
   const done = digest?.done && now - digest.done.at < DONE_STALE_MS ? digest.done : null
   const banner = !!done && now - done.at < DONE_BANNER_MS && !expanded
   const justDone = digest?.tasks.justDone && now - digest.tasks.justDone.at < STAMP_MS ? digest.tasks.justDone : null
+  // The strip's one live row: the followed session while it runs, else the only one.
+  const followed = follow ? (live.find((row) => row.id === follow) ?? null) : null
+  const focusRow = followed ?? (live.length === 1 ? live[0] : null)
 
   const style = {
     '--notch-w': `${geometry.notched ? geometry.notchWidth : 0}px`,
@@ -224,7 +238,7 @@ export function Island() {
   } as CSSProperties
 
   return (
-    <div className="island-root" data-glass={geometry.glass}>
+    <div className="island-root">
       <div
         ref={islandRef}
         className="island"
@@ -239,127 +253,70 @@ export function Island() {
         onDragOver={onDragOver}
         onDragLeave={() => setDropping(false)}
         onDrop={onDrop}
-        onClick={() => {
-          if (!expanded) setExpanded(true)
-        }}
       >
-        <div className="island-strip">
-          <div className="island-ear island-ear-l">
-            <Leading mode={mode} voice={voice} banner={banner} bloomKey={done?.at ?? 0} />
+        <div className="island-pane">
+          <div
+            className="island-strip"
+            onClick={() => {
+              if (expanded) release()
+              else setExpanded(true)
+            }}
+            title={expanded ? 'fold' : undefined}
+          >
+            <div className="island-ear island-ear-l">
+              <Leading mode={mode} voice={voice} banner={banner} bloomKey={done?.at ?? 0} live={live} focusRow={focusRow} />
+            </div>
+            <div className="island-notch" aria-hidden="true" />
+            <div className="island-ear island-ear-r" aria-live="polite">
+              <Trailing mode={mode} digest={digest} voice={voice} live={live} focusRow={focusRow} attention={attention} banner={banner} done={done} now={now} dropping={dropping} />
+            </div>
           </div>
-          <div className="island-notch" aria-hidden="true" />
-          <div className="island-ear island-ear-r" aria-live="polite">
-            <Trailing mode={mode} digest={digest} voice={voice} live={live} attention={attention} banner={banner} done={done} now={now} expanded={expanded} dropping={dropping} />
+          <div className="island-body">
+            {expanded && digest ? (
+              <Sheet
+                api={api}
+                digest={digest}
+                geometry={geometry}
+                palette={palette}
+                now={now}
+                done={done}
+                justDone={justDone}
+                follow={follow}
+                onFollow={setFollow}
+                act={act}
+                onComposing={setComposing}
+                onFold={release}
+                wantKeyboard={wantKeyboard}
+                onKeyboardTaken={() => setWantKeyboard(0)}
+                replyTo={replyTo}
+                droppedText={droppedText}
+                onDroppedTextTaken={() => setDroppedText('')}
+                onFocus={() => void api.control({ type: 'focus' })}
+              />
+            ) : banner && done ? (
+              <Banner
+                done={done}
+                onOpen={() => act({ type: 'open', sessionId: done.sessionId })}
+                onReply={() => {
+                  setReplyTo(done.sessionId)
+                  setExpanded(true)
+                  setWantKeyboard((n) => n + 1)
+                }}
+              />
+            ) : null}
           </div>
-        </div>
-        <div className="island-body">
-          {expanded && digest ? (
-            <Sheet
-              digest={digest}
-              now={now}
-              done={done}
-              justDone={justDone}
-              act={act}
-              onComposing={setComposing}
-              onSent={release}
-              wantKeyboard={wantKeyboard}
-              onKeyboardTaken={() => setWantKeyboard(0)}
-              replyTo={replyTo}
-              droppedText={droppedText}
-              onDroppedTextTaken={() => setDroppedText('')}
-              onFocus={() => void api.control({ type: 'focus' })}
-            />
-          ) : banner && done ? (
-            <Banner
-              done={done}
-              onOpen={() => act({ type: 'open', sessionId: done.sessionId })}
-              onReply={() => {
-                setReplyTo(done.sessionId)
-                setExpanded(true)
-                setWantKeyboard((n) => n + 1)
-              }}
-            />
-          ) : null}
         </div>
       </div>
     </div>
   )
 }
 
-// ── The glass ──────────────────────────────────────────────────────────
-
-/**
- * The blur behind the window follows the drawn island: its rect and corner
- * radii go to main whenever they change, every frame while the shape is in
- * motion, so the frosted area is the island and nothing else.
- */
-function useGlassShape(ref: RefObject<HTMLDivElement>, api: IslandApi, enabled: boolean) {
-  useEffect(() => {
-    const el = ref.current
-    if (!el || !enabled) return
-    let last = ''
-    let raf = 0
-    let settle = 0
-    const send = () => {
-      const r = el.getBoundingClientRect()
-      const cs = getComputedStyle(el)
-      const radiusTop = parseFloat(cs.borderTopLeftRadius) || 0
-      const radiusBottom = parseFloat(cs.borderBottomLeftRadius) || 0
-      const shape = { x: r.left, y: r.top, width: r.width, height: r.height, radiusTop, radiusBottom }
-      const key = Object.values(shape)
-        .map((n) => Math.round(n * 2) / 2)
-        .join(',')
-      if (key === last) return
-      last = key
-      void api.control({ type: 'shape', ...shape })
-    }
-    const tick = () => {
-      send()
-      if (el.getAnimations({ subtree: false }).length > 0) {
-        settle = 2
-        raf = requestAnimationFrame(tick)
-      } else if (settle > 0) {
-        settle -= 1
-        raf = requestAnimationFrame(tick)
-      } else {
-        raf = 0
-      }
-    }
-    const kick = () => {
-      if (!raf) raf = requestAnimationFrame(tick)
-    }
-    const sizes = new ResizeObserver(kick)
-    sizes.observe(el)
-    const attrs = new MutationObserver(kick)
-    attrs.observe(el, { attributes: true })
-    el.addEventListener('transitionrun', kick)
-    el.addEventListener('animationstart', kick)
-    kick()
-    return () => {
-      sizes.disconnect()
-      attrs.disconnect()
-      el.removeEventListener('transitionrun', kick)
-      el.removeEventListener('animationstart', kick)
-      if (raf) cancelAnimationFrame(raf)
-    }
-  }, [ref, api, enabled])
-}
-
-/** The blur material follows the page's theme (`<html data-theme>`, written by initTheme). */
-function useGlassTheme(api: IslandApi) {
-  useEffect(() => {
-    const root = document.documentElement
-    const send = () => void api.control({ type: 'theme', dark: root.dataset.theme !== 'light' })
-    send()
-    const watch = new MutationObserver(send)
-    watch.observe(root, { attributes: true, attributeFilter: ['data-theme'] })
-    return () => watch.disconnect()
-  }, [api])
-}
-
 // ── The strip ──────────────────────────────────────────────────────────
+// Both ears have a fixed width per mode, so the shape never moves while the
+// words inside it change: the detail runs in a fixed box that fades at its
+// leading edge, like tape, with the newest characters at the right.
 
-function Leading({ mode, voice, banner, bloomKey }: { mode: Mode; voice: IslandVoice | null; banner: boolean; bloomKey: number }) {
+function Leading({ mode, voice, banner, bloomKey, live, focusRow }: { mode: Mode; voice: IslandVoice | null; banner: boolean; bloomKey: number; live: IslandLive[]; focusRow: IslandLive | null }) {
   if (banner) {
     return (
       <span className="island-mark island-swap" key={`bloom-${bloomKey}`}>
@@ -369,15 +326,37 @@ function Leading({ mode, voice, banner, bloomKey }: { mode: Mode; voice: IslandV
   }
   if (mode === 'voice' && voice) {
     return (
-      <span className="island-swap" key="voice">
+      <span className="island-swap island-ear-text" key={`voice-${voice.state}`}>
         <VoiceSigil size={18} state={voice.state} level={voice.level} className="island-sigil" />
+        <span className="island-ear-clip island-dim">{voiceWord(voice)}</span>
       </span>
     )
   }
-  if (mode === 'live' && !banner) {
+  if (mode === 'attention') {
     return (
-      <span className="island-mark island-swap" key="live">
-        <AnimatedTopographicMark size={18} intensity={0.55} className="island-mark-svg" />
+      <span className="island-swap island-ear-text" key="attention">
+        <span className="island-mark">
+          <TopographicMark size={18} />
+        </span>
+        <span className="island-tag island-tag-warn">needs you</span>
+      </span>
+    )
+  }
+  if (mode === 'live') {
+    const others = focusRow ? live.length - 1 : 0
+    return (
+      <span className="island-swap island-ear-text" key={`live-${focusRow?.id ?? 'many'}-${live.length}`}>
+        <span className="island-mark">
+          <AnimatedTopographicMark size={18} intensity={0.55} className="island-mark-svg" />
+        </span>
+        {focusRow ? (
+          <>
+            <span className="island-ear-clip">{focusRow.title}</span>
+            {others > 0 && <span className="island-tag island-tag-dim">+{others}</span>}
+          </>
+        ) : (
+          <span className="island-ear-clip">{live.length} live</span>
+        )}
       </span>
     )
   }
@@ -393,22 +372,22 @@ function Trailing({
   digest,
   voice,
   live,
+  focusRow,
   attention,
   banner,
   done,
   now,
-  expanded,
   dropping,
 }: {
   mode: Mode
   digest: IslandDigest | null
   voice: IslandVoice | null
   live: IslandLive[]
+  focusRow: IslandLive | null
   attention: IslandAttention[]
   banner: boolean
   done: IslandDone | null
   now: number
-  expanded: boolean
   dropping: boolean
 }) {
   if (dropping) {
@@ -423,47 +402,55 @@ function Trailing({
     return (
       <span className="island-swap island-ear-text" key={`done-${done.at}`}>
         <Check ok={done.success} /> {done.success ? 'done' : 'stopped'}
+        <span className="island-clock">{elapsed(done.durationMs)}</span>
       </span>
     )
   }
   if (mode === 'attention') {
     const first = attention[0]
     return (
-      <span className="island-swap island-ear-text" key={`att-${first.id}-${expanded}`}>
-        <span className="island-tag island-tag-warn">needs you</span>
-        {!expanded && <span className="island-ear-clip">{attentionLine(first)}</span>}
+      <span className="island-swap island-ear-text" key={`att-${first.id}`}>
+        <Tape text={attentionLine(first)} />
+        {attention.length > 1 && <span className="island-tag island-tag-dim">+{attention.length - 1}</span>}
       </span>
     )
   }
   if (mode === 'voice' && voice) {
+    const line = voice.state === 'listening' ? voice.userLine : voice.state === 'speaking' ? voice.assistantLine : ''
     return (
       <span className="island-swap island-ear-text" key={`voice-${voice.state}`}>
-        <span className="island-ear-clip">{voiceWord(voice)}</span>
+        <Tape text={line} />
         <Meter level={voice.level} live={voice.state === 'listening'} />
       </span>
     )
   }
   if (mode === 'live') {
-    if (live.length > 1) {
-      const oldest = live.reduce((a, b) => (a.startedAt < b.startedAt ? a : b))
+    if (focusRow) {
+      const word = liveWord(focusRow)
       return (
-        <span className="island-swap island-ear-text" key={`multi-${live.length}`}>
-          <span className="island-ear-clip">{live.length} live</span>
-          <Elapsed since={oldest.startedAt} now={now} />
+        <span className="island-swap island-ear-text" key={`live-${focusRow.id}-${word}`}>
+          <b className="island-word">{word}</b>
+          <Tape text={liveDetail(focusRow)} />
+          <Elapsed since={focusRow.startedAt} now={now} />
         </span>
       )
     }
-    const row = live[0]
-    const word = row.thinking ? 'thinking' : row.tool ? toolWord(row.tool.name) : 'writing'
-    // The sneak peek: the tail of the reply as it is written.
-    const detail = expanded || row.thinking ? '' : row.tool ? row.tool.summary : peek(row.text)
+    // Several live and none followed: the activity most of them share, and the oldest clock.
+    const oldest = live.reduce((a, b) => (a.startedAt < b.startedAt ? a : b))
+    const tools = live.filter((row) => row.tool && !row.thinking).length
+    const thinking = live.filter((row) => row.thinking).length
+    const writing = live.length - tools - thinking
+    const top = [
+      [writing, 'writing'],
+      [tools, 'on tools'],
+      [thinking, 'thinking'],
+    ].sort((a, b) => (b[0] as number) - (a[0] as number))[0]
     return (
-      <span className="island-swap island-ear-text" key={`live-${row.id}-${word}-${expanded}`}>
-        <span className="island-ear-clip">
-          <b>{word}</b>
-          {detail ? ` ${detail}` : ''}
+      <span className="island-swap island-ear-text" key={`multi-${top[1]}`}>
+        <span className="island-ear-clip island-dim">
+          {top[0] === live.length ? 'all' : top[0]} {top[1]}
         </span>
-        <Elapsed since={row.startedAt} now={now} />
+        <Elapsed since={oldest.startedAt} now={now} />
       </span>
     )
   }
@@ -478,345 +465,12 @@ function Trailing({
   return null
 }
 
-// ── The sheet ──────────────────────────────────────────────────────────
-
-function Sheet({
-  digest,
-  now,
-  done,
-  justDone,
-  act,
-  onComposing,
-  onSent,
-  wantKeyboard,
-  onKeyboardTaken,
-  replyTo,
-  droppedText,
-  onDroppedTextTaken,
-  onFocus,
-}: {
-  digest: IslandDigest
-  now: number
-  done: IslandDone | null
-  justDone: { id: string; title: string; at: number } | null
-  act: (action: IslandAction) => void
-  onComposing: (on: boolean) => void
-  onSent: () => void
-  wantKeyboard: number
-  onKeyboardTaken: () => void
-  replyTo: string | null
-  droppedText: string
-  onDroppedTextTaken: () => void
-  onFocus: () => void
-}) {
-  const { attention, live, tasks, voice, sessions, active, appshotLabel, schedule, costToday } = digest
+/** Text in a fixed box, newest characters at the right, the start fading out: the words change, the shape does not. */
+function Tape({ text }: { text: string }) {
   return (
-    <div className="island-sheet">
-      {attention.map((item) => (
-        <AttentionCard key={item.id} item={item} act={act} />
-      ))}
-      {live.length > 0 && (
-        <section className="island-section">
-          <h3 className="island-h">live</h3>
-          {live.map((row) => (
-            <LiveRow key={row.id} row={row} now={now} act={act} />
-          ))}
-        </section>
-      )}
-      {done && (
-        <section className="island-section">
-          <h3 className="island-h">just finished</h3>
-          <DoneRow done={done} act={act} />
-        </section>
-      )}
-      <section className="island-section">
-        <h3 className="island-h">
-          tasks
-          <span className="island-counts">
-            <span className="island-glyph-now">◐</span> {tasks.now} · <span className="island-glyph-next">○</span> {tasks.next} ·{' '}
-            <span className="island-glyph-blocked">⊘</span> {tasks.blocked} · <span className="island-glyph-done">✓</span> {tasks.done}
-          </span>
-        </h3>
-        {tasks.latest.length === 0 ? (
-          <div className="island-empty">no tasks on the board</div>
-        ) : (
-          tasks.latest.map((task) => <TaskRow key={task.id} task={task} stamped={justDone?.id === task.id} act={act} />)
-        )}
-      </section>
-      <Composer
-        sessions={sessions}
-        active={active}
-        act={act}
-        onComposing={onComposing}
-        onSent={onSent}
-        wantKeyboard={wantKeyboard}
-        onKeyboardTaken={onKeyboardTaken}
-        preferred={replyTo}
-        droppedText={droppedText}
-        onDroppedTextTaken={onDroppedTextTaken}
-        onFocus={onFocus}
-      />
-      <div className="island-keys">
-        <button
-          type="button"
-          className={`island-key ${voice.active ? 'island-key-live' : ''}`}
-          title={voice.available ? 'start a voice conversation' : 'voice is off or has no key (settings)'}
-          onClick={() => act({ type: 'voice', on: !voice.active })}
-        >
-          {voice.active ? 'hang up' : 'talk'}
-          {voice.hotkeyLabel && <kbd>{voice.hotkeyLabel}</kbd>}
-        </button>
-        <button type="button" className="island-key" title="capture the frontmost window into the composer" onClick={() => act({ type: 'capture' })}>
-          capture
-          {appshotLabel && <kbd>{appshotLabel}</kbd>}
-        </button>
-        <button type="button" className="island-key" onClick={() => act({ type: 'dashboard', tab: 'tasks' })}>
-          board
-        </button>
-        <button type="button" className="island-key island-key-end" onClick={() => act({ type: 'focus-app' })}>
-          open Freyja
-        </button>
-      </div>
-      {(costToday > 0 || schedule) && (
-        <div className="island-readout">
-          {costToday > 0 && <span>${costToday.toFixed(2)} today</span>}
-          {schedule && (
-            <span>
-              next · {schedule.name} · {clock(schedule.at)}
-            </span>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function AttentionCard({ item, act }: { item: IslandAttention; act: (action: IslandAction) => void }) {
-  if (item.kind === 'permission') {
-    const tone = item.level === 'dangerous' ? 'danger' : item.level === 'high' || item.level === 'medium' ? 'warn' : 'info'
-    return (
-      <div className={`island-card island-card-${tone}`}>
-        <div className="island-card-head">
-          <span className={`island-tag island-tag-${tone}`}>{item.level}</span>
-          <span className="island-card-session">{item.sessionTitle}</span>
-        </div>
-        <div className="island-card-text">{item.prompt}</div>
-        {item.reason && <div className="island-card-sub">{item.reason}</div>}
-        <div className="island-card-keys">
-          <button type="button" className="island-key" onClick={() => act({ type: 'permission', requestId: item.id, approved: false })}>
-            deny
-          </button>
-          <button
-            type="button"
-            className={`island-key island-key-primary ${tone === 'danger' ? 'island-key-danger' : ''}`}
-            onClick={() => act({ type: 'permission', requestId: item.id, approved: true })}
-          >
-            allow
-          </button>
-        </div>
-      </div>
-    )
-  }
-  if (item.kind === 'elicitation') {
-    return (
-      <div className="island-card island-card-info">
-        <div className="island-card-head">
-          <span className="island-tag island-tag-info">{item.server}</span>
-          <span className="island-card-session">asks</span>
-        </div>
-        <div className="island-card-text">{item.message}</div>
-        <div className="island-card-keys">
-          <button type="button" className="island-key" onClick={() => act({ type: 'elicitation', requestId: item.id, action: 'decline' })}>
-            decline
-          </button>
-          <button type="button" className="island-key island-key-primary" onClick={() => act({ type: 'focus-app' })}>
-            answer in Freyja
-          </button>
-        </div>
-      </div>
-    )
-  }
-  return (
-    <div className="island-card island-card-warn">
-      <div className="island-card-head">
-        <span className="island-tag island-tag-warn">voice</span>
-        <span className="island-card-session">confirm</span>
-      </div>
-      <div className="island-card-text">{item.summary}</div>
-      <div className="island-card-keys">
-        <button type="button" className="island-key" onClick={() => act({ type: 'voice-confirm', approve: false })}>
-          no
-        </button>
-        <button type="button" className="island-key island-key-primary" onClick={() => act({ type: 'voice-confirm', approve: true })}>
-          yes
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function LiveRow({ row, now, act }: { row: IslandLive; now: number; act: (action: IslandAction) => void }) {
-  const word = row.thinking ? 'thinking' : row.tool ? toolWord(row.tool.name) : 'writing'
-  return (
-    <button type="button" className="island-row" onClick={() => act({ type: 'open', sessionId: row.id })} title="open in Freyja">
-      <span className={`island-row-kind island-row-kind-${row.kind}`}>{row.kind === 'sub' ? '↳' : row.kind === 'voice' ? '◉' : '●'}</span>
-      <span className="island-row-title">{row.title}</span>
-      <span className="island-row-tool">
-        {word}
-        {row.tool && !row.thinking && row.tool.summary ? <span className="island-row-detail"> {row.tool.summary}</span> : null}
-      </span>
-      <Elapsed since={row.startedAt} now={now} />
-      {row.text && <span className="island-row-peek">{row.text}</span>}
-    </button>
-  )
-}
-
-function DoneRow({ done, act }: { done: IslandDone; act: (action: IslandAction) => void }) {
-  return (
-    <button type="button" className="island-row island-row-done" onClick={() => act({ type: 'open', sessionId: done.sessionId })} title="open in Freyja">
-      <span className="island-row-kind">
-        <Check ok={done.success} />
-      </span>
-      <span className="island-row-title">{done.title}</span>
-      <span className="island-row-tool">{done.success ? 'done' : 'stopped'}</span>
-      <span className="island-elapsed">{elapsed(done.durationMs)}</span>
-      {done.text && <span className="island-row-peek island-row-peek-wrap">{done.text}</span>}
-    </button>
-  )
-}
-
-function TaskRow({ task, stamped, act }: { task: IslandTaskRow; stamped: boolean; act: (action: IslandAction) => void }) {
-  const glyph = task.bucket === 'now' ? '◐' : task.bucket === 'next' ? '○' : task.bucket === 'blocked' ? '⊘' : '✓'
-  return (
-    <button type="button" className="island-row island-row-task" onClick={() => act({ type: 'dashboard', tab: 'tasks' })} title="open the board">
-      <span className={`island-row-kind island-glyph-${task.bucket}`}>{glyph}</span>
-      <span className={`island-row-title ${task.bucket === 'done' ? 'island-dim' : ''}`}>{task.title}</span>
-      <span className="island-row-tool island-dim">{task.bucket === 'next' ? 'up next' : task.bucket}</span>
-      {stamped && (
-        <span className="island-stamp-slot">
-          <span className="ticket-stamp ticket-stamp-ok island-stamp">done</span>
-        </span>
-      )}
-    </button>
-  )
-}
-
-function Composer({
-  sessions,
-  active,
-  act,
-  onComposing,
-  onSent,
-  wantKeyboard,
-  onKeyboardTaken,
-  preferred,
-  droppedText,
-  onDroppedTextTaken,
-  onFocus,
-}: {
-  sessions: IslandSessionRow[]
-  active: IslandDigest['active']
-  act: (action: IslandAction) => void
-  onComposing: (on: boolean) => void
-  onSent: () => void
-  wantKeyboard: number
-  onKeyboardTaken: () => void
-  preferred: string | null
-  droppedText: string
-  onDroppedTextTaken: () => void
-  onFocus: () => void
-}) {
-  const [text, setText] = useState('')
-  const [chosen, setChosen] = useState<string | null>(preferred)
-  useEffect(() => {
-    if (preferred) setChosen(preferred)
-  }, [preferred])
-  const inputRef = useRef<HTMLInputElement>(null)
-  // The hotkey opened the sheet: take the keyboard and put the caret in the reply.
-  useEffect(() => {
-    if (wantKeyboard === 0) return
-    onKeyboardTaken()
-    onFocus()
-    const id = window.setTimeout(() => inputRef.current?.focus(), 60)
-    return () => window.clearTimeout(id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wantKeyboard])
-  useEffect(() => {
-    if (!droppedText) return
-    setText((cur) => (cur ? `${cur} ${droppedText}` : droppedText))
-    onComposing(true)
-    onDroppedTextTaken()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [droppedText])
-  const options = useMemo(() => {
-    const rows: IslandSessionRow[] = []
-    const seen = new Set<string>()
-    if (active) {
-      rows.push({ id: active.id, title: active.title, updatedAt: Date.now(), streaming: active.streaming })
-      seen.add(active.id)
-    }
-    for (const row of sessions) {
-      if (!seen.has(row.id)) {
-        rows.push(row)
-        seen.add(row.id)
-      }
-    }
-    return rows
-  }, [sessions, active])
-  const target = options.find((row) => row.id === chosen) ?? options[0] ?? null
-  const send = (cutIn: boolean) => {
-    const body = text.trim()
-    if (!body || !target) return
-    act({ type: 'send', sessionId: target.id, text: body, cutIn })
-    setText('')
-    onComposing(false)
-    onSent()
-  }
-  const hint = !target ? 'no session yet' : target.streaming ? `reply to ${target.title} · queues after the turn, ⌘↵ cuts in` : `reply to ${target.title}`
-  return (
-    <form
-      className={`island-composer ${options.length > 1 ? '' : 'island-composer-single'}`}
-      onSubmit={(e) => {
-        e.preventDefault()
-        send(false)
-      }}
-    >
-      {options.length > 1 && (
-        <select className="island-select" value={target?.id ?? ''} onChange={(e) => setChosen(e.target.value)} title="which session">
-          {options.map((row) => (
-            <option key={row.id} value={row.id}>
-              {row.streaming ? '● ' : ''}
-              {row.title}
-            </option>
-          ))}
-        </select>
-      )}
-      <input
-        ref={inputRef}
-        className="island-input"
-        value={text}
-        placeholder={hint}
-        disabled={!target}
-        onChange={(e) => {
-          setText(e.target.value)
-          onComposing(true)
-        }}
-        onFocus={() => {
-          onComposing(true)
-          onFocus()
-        }}
-        onBlur={() => onComposing(text.trim().length > 0)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault()
-            send(true)
-          }
-        }}
-      />
-      <button type="submit" className="island-key island-key-primary" disabled={!text.trim() || !target}>
-        send
-      </button>
-    </form>
+    <span className="island-tape" data-empty={text ? 'false' : 'true'}>
+      <span>{text}</span>
+    </span>
   )
 }
 
@@ -833,10 +487,9 @@ function Banner({ done, onOpen, onReply }: { done: IslandDone; onOpen: () => voi
       title="open in Freyja"
     >
       <span className="island-banner-title">{done.title}</span>
-      <span className="island-banner-meta">{elapsed(done.durationMs)}</span>
       <button
         type="button"
-        className="island-key island-banner-reply"
+        className="island-key island-key-sm"
         onClick={(e) => {
           e.stopPropagation()
           onReply()
@@ -866,90 +519,16 @@ function BloomMark() {
   return <AnimatedTopographicMark size={18} intensity={0.25} expandProgressRef={progress} className="island-mark-svg" />
 }
 
-// ── Small parts ────────────────────────────────────────────────────────
-
-function Elapsed({ since, now }: { since: number; now: number }) {
-  return <span className="island-elapsed">{elapsed(now - since)}</span>
-}
-
-function Check({ ok }: { ok: boolean }) {
-  return (
-    <svg className={`island-check ${ok ? '' : 'island-check-bad'}`} viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
-      {ok ? (
-        <path d="M2.5 7.5 L5.8 10.6 L11.5 3.8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      ) : (
-        <path d="M3.5 3.5 L10.5 10.5 M10.5 3.5 L3.5 10.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      )}
-    </svg>
-  )
-}
-
-/** Three bars that follow the mic. Driven by the level, so it is a meter, not a decoration. */
-function Meter({ level, live }: { level: number; live: boolean }) {
-  const l = Math.max(0, Math.min(1, level))
-  const heights = [0.35 + l * 0.65, 0.2 + l * 0.8, 0.45 + l * 0.55]
-  return (
-    <span className={`island-meter ${live ? 'island-meter-live' : ''}`} aria-hidden="true">
-      {heights.map((h, i) => (
-        <span key={i} style={{ transform: `scaleY(${h.toFixed(2)})` }} />
-      ))}
-    </span>
-  )
-}
-
-function useNow(everyMs: number): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), everyMs)
-    return () => window.clearInterval(id)
-  }, [everyMs])
-  return now
-}
-
-function pad(n: number): string {
-  return String(n).padStart(2, '0')
-}
-
-export function elapsed(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000))
-  const m = Math.floor(s / 60)
-  const h = Math.floor(m / 60)
-  if (h > 0) return `${h}:${pad(m % 60)}:${pad(s % 60)}`
-  return `${m}:${pad(s % 60)}`
-}
-
-function toolWord(name: string): string {
-  return name.replace(/^mcp__/, '').replace(/[_-]+/g, ' ')
-}
-
-/** The tail of the reply, for the ear: about as much as fits beside the clock. */
-function peek(text: string): string {
-  const t = text.trim()
-  if (!t) return ''
-  return t.length > 22 ? `…${t.slice(-21).trimStart()}` : t
-}
-
-function clock(ts: number): string {
-  const d = new Date(ts)
-  const today = new Date()
-  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`
-  if (d.toDateString() === today.toDateString()) return time
-  const tomorrow = new Date(today)
-  tomorrow.setDate(today.getDate() + 1)
-  if (d.toDateString() === tomorrow.toDateString()) return `tomorrow ${time}`
-  return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`
-}
-
 function voiceWord(voice: IslandVoice): ReactNode {
   switch (voice.state) {
     case 'listening':
-      return voice.userLine ? voice.userLine : 'listening'
+      return 'listening'
     case 'thinking':
       return 'thinking'
     case 'acting':
       return 'doing it'
     case 'speaking':
-      return voice.assistantLine ? voice.assistantLine : 'speaking'
+      return 'speaking'
     case 'minting':
     case 'connecting':
       return 'connecting'

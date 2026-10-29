@@ -1,22 +1,13 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useHarness } from '../state/store'
-import { getEffectiveTheme, oppositeTheme } from '../lib/theme'
 import { useSchedulerStore } from '../state/scheduler-store'
-import { SLASH_COMMANDS } from '../lib/slash'
 import { scrollToReveal, stepSelection } from '../lib/listNavigation'
+import { buildPaletteItems, type PaletteItem } from '../lib/paletteItems'
 import { JevWidget } from './JevGenerativeWidgets'
 import type { Handoff } from './palette/chrome'
 import { DOMAIN_LABEL, chooseWidget, parseSlots, widgetForDomain, type PaletteSlots, type PaletteWidgetType } from '../lib/paletteIntent'
 import { openExternal, readClipboard } from '../lib/paletteData'
 import type { JevPaletteDecision, PaletteClipboard } from '../../shared/events'
-interface PaletteItem {
-  id: string
-  title: string
-  subtitle?: string
-  group: 'Clipboard' | 'Command' | 'Skill' | 'Subagent' | 'Session'
-  action: () => void
-}
-
 interface StackEntry extends Handoff {
   queryBefore: string
 }
@@ -127,16 +118,10 @@ export function CommandPalette() {
   const skills = useHarness((s) => s.skills)
   const subagents = useHarness((s) => s.subagents)
   const sessions = useHarness((s) => s.sessions)
-  const openSubagent = useHarness((s) => s.openSubagent)
-  const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
-  const toggleArtifactsBrowser = useHarness((s) => s.toggleArtifactsBrowser)
-  const openScheduler = useSchedulerStore((s) => s.openDashboard)
   const schedulerJobCount = useSchedulerStore((s) => s.jobs.length)
-  const openSessionPane = useHarness((s) => s.openSessionPane)
   const setDraft = useHarness((s) => s.setInputDraft)
-  const burst = useHarness((s) => s.requestDemoBurst)
 
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(() => useHarness.getState().commandPaletteQuery ?? '')
   const [selected, setSelected] = useState(0)
   // ── Jev generative mode ──────────────────────────────────────────
   // Two clocks. Slots (who / when / which) are parsed synchronously on
@@ -161,6 +146,18 @@ export function CommandPalette() {
   // mouseenter and yanks the selection back. Ignore hover until the pointer
   // actually moves again.
   const suppressHover = useRef(false)
+  // The island hands a sentence over ("open in Freyja" on a card it cannot
+  // show): the palette takes it as if it had been typed here, on open and
+  // again while it is already open.
+  const handed = useHarness((s) => s.commandPaletteQuery)
+  useEffect(() => {
+    if (handed == null) return
+    setQuery(handed)
+    setStack([])
+    setPinnedDomain(null)
+    useHarness.setState({ commandPaletteQuery: null })
+    inputRef.current?.focus()
+  }, [handed])
 
   // Widget actions usually close the palette, so their confirmation goes
   // through the app-level toast rather than one that unmounts with us.
@@ -197,208 +194,11 @@ export function CommandPalette() {
   const items: PaletteItem[] = useMemo(() => {
     const out: PaletteItem[] = []
     if (clip) out.push(...clipboardItems(clip, handoff, say, (t) => { setDraft(t); close(false) }, showToast))
-    out.push(
-      {
-        id: 'morning-room',
-        title: 'Morning Room',
-        subtitle: "Today's briefing — projects, decisions, and a staged plan (⌘⇧B)",
-        group: 'Command',
-        action: () => {
-          useHarness.getState().toggleMorningRoom(true)
-          close(false)
-        },
-      },
-      {
-        id: 'mission:overview',
-        title: 'Mission Dashboard',
-        subtitle: 'Overview of session health, active agents, findings, changes, and artifacts',
-        group: 'Command',
-        action: () => {
-          toggleMissionDashboard(true, 'overview')
-          close(false)
-        },
-      },
-      {
-        id: 'mission:swarm',
-        title: 'Swarm Monitor',
-        subtitle: 'Agent lanes, collaboration state, and live multi-agent activity',
-        group: 'Command',
-        action: () => {
-          toggleMissionDashboard(true, 'overview')
-          close(false)
-        },
-      },
-      {
-        id: 'mission:findings',
-        title: 'Findings Board',
-        subtitle: 'Message-bus findings grouped by source, topic, and reuse potential',
-        group: 'Command',
-        action: () => {
-          toggleMissionDashboard(true, 'findings')
-          close(false)
-        },
-      },
-      {
-        id: 'mission:telemetry',
-        title: 'Session Telemetry',
-        subtitle: 'Screenshots, media pruning, compaction, and context pressure events',
-        group: 'Command',
-        action: () => {
-          toggleMissionDashboard(true, 'telemetry')
-          close(false)
-        },
-      },
-      {
-        id: 'mission:profiles',
-        title: 'Agent Profiles',
-        subtitle: 'Browse built-in sub-agent profiles, tools, models, and iteration caps',
-        group: 'Command',
-        action: () => {
-          toggleMissionDashboard(true, 'profiles')
-          close(false)
-        },
-      },
-      {
-        id: 'artifacts:browse',
-        title: 'Artifacts',
-        subtitle: 'Every file every session ever produced — search, read, edit, comment (⌘⇧A)',
-        group: 'Command',
-        action: () => {
-          toggleArtifactsBrowser(true)
-          close(false)
-        },
-      },
-      {
-        id: 'scheduler:open',
-        title: 'Scheduled Jobs',
-        subtitle: schedulerJobCount > 0
-          ? `${schedulerJobCount} schedule${schedulerJobCount === 1 ? '' : 's'} · past runs · daemon status (⌘⇧S)`
-          : 'Create a schedule, browse past runs, daemon status (⌘⇧S)',
-        group: 'Command',
-        action: () => {
-          openScheduler()
-          close(false)
-        },
-      },
-      {
-        id: 'appshot:capture',
-        title: 'Appshot',
-        subtitle: 'Capture the window behind Freyja, picture and text, into the composer',
-        group: 'Command',
-        action: () => {
-          close(false)
-          void useHarness.getState().captureAppshot('palette')
-        },
-      },
-      {
-        id: 'island:toggle',
-        title: `Island: ${(useHarness.getState().settings.island?.enabled ?? true) ? 'hide' : 'show'}`,
-        subtitle: 'The notch mini view: live sessions, what needs you, a reply box (⌃⌥⌘I opens it)',
-        group: 'Command',
-        action: () => {
-          close(false)
-          void useHarness.getState().setIslandEnabled(!(useHarness.getState().settings.island?.enabled ?? true))
-        },
-      },
-      {
-        id: 'appearance:toggle',
-        title: `Appearance: switch to ${oppositeTheme(getEffectiveTheme())} mode`,
-        subtitle: 'Flip between the dark and light shells (⌘⇧L)',
-        group: 'Command',
-        action: () => {
-          close(false)
-          void useHarness.getState().setAppearanceTheme(oppositeTheme(getEffectiveTheme()))
-        },
-      },
-      {
-        id: 'appearance:system',
-        title: 'Appearance: follow system',
-        subtitle: 'Let macOS decide, including its sunset schedule',
-        group: 'Command',
-        action: () => {
-          close(false)
-          void useHarness.getState().setAppearanceTheme('system')
-        },
-      },
-    )
-    {
-      const st = useHarness.getState()
-      const current = st.sessions.find((sess) => sess.id === st.activeSessionId)
-      const runtime = st.runtime ?? current?.runtime ?? 'native'
-      if (current && runtime === 'native') {
-        out.push({
-          id: 'session:fork',
-          title: 'Fork session',
-          subtitle: 'Copy this session as it stands — context, sub-agents, artifacts, task board',
-          group: 'Command',
-          action: () => {
-            void useHarness.getState().branchSessionFrom(null, `${current.title} (fork)`)
-            close(false)
-          },
-        })
-      }
-    }
-    for (const c of SLASH_COMMANDS.filter((command) => !command.hidden)) {
-      out.push({
-        id: `cmd:${c.name}`,
-        title: c.name,
-        subtitle: c.description,
-        group: 'Command',
-        action: () => {
-          if (c.name === '/burst') {
-            burst()
-          } else if (c.name === '/schedule'
-                     || c.name === '/schedules'
-                     || c.name === '/jobs'
-                     || c.name === '/cron') {
-            // Skip the slash-prefill round-trip — these all just open
-            // the modal directly.
-            openScheduler()
-          } else {
-            setDraft(c.name + ' ')
-          }
-          close(false)
-        },
-      })
-    }
-    for (const s of Object.values(skills)) {
-      out.push({
-        id: `skill:${s.id}`,
-        title: s.name,
-        subtitle: `${s.skillType} · ${s.confidence} · ${s.retrievalCount}↑ · ${s.description}`,
-        group: 'Skill',
-        action: () => {
-          setDraft(`/skills ${s.name}`)
-          close(false)
-        },
-      })
-    }
-    for (const sub of Object.values(subagents)) {
-      out.push({
-        id: `sub:${sub.id}`,
-        title: sub.label,
-        subtitle: `${sub.state} · ${sub.mode} · ${sub.task}`,
-        group: 'Subagent',
-        action: () => {
-          openSubagent(sub.id)
-          close(false)
-        },
-      })
-    }
-    for (const s of sessions) {
-      out.push({
-        id: `session:${s.id}`,
-        title: s.title,
-        subtitle: `${s.model} · ${s.workspace}`,
-        group: 'Session',
-        action: () => {
-          openSessionPane(s.id, 'replace').catch(() => {})
-          close(false)
-        },
-      })
-    }
+    out.push(...buildPaletteItems(() => close(false)))
     return out
-  }, [skills, subagents, sessions, setDraft, close, openSubagent, burst, toggleMissionDashboard, toggleArtifactsBrowser, openSessionPane, openScheduler, schedulerJobCount, clip, handoff, say, showToast])
+    // The rows read the store at build time; these are the slices whose change should rebuild them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skills, subagents, sessions, schedulerJobCount, setDraft, close, clip, handoff, say, showToast])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()

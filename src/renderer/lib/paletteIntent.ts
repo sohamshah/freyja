@@ -449,3 +449,22 @@ export const DOMAIN_LABEL: Record<string, string> = {
   context_budget: 'Context',
   palette_command: 'Commands',
 }
+
+/**
+ * The instruction a card sends when its primary action is a prompt (memory,
+ * delegate, spend): the card is the form, the agent is the executor. Shared
+ * with the island, which sends the same text without opening the app.
+ * Null for the cards whose action needs the app (calendar, PRs, Slack…).
+ */
+export function instructionFor(type: PaletteWidgetType, query: string, slots: PaletteSlots): string | null {
+  switch (type) {
+    case 'memory':
+      return `Recall from memory and past sessions: ${query}. Quote the exact lines, name the session or source, and give the date.`
+    case 'agent_task':
+      return `Spawn a ${slots.profile ?? 'general'} sub-agent for: ${query}.${slots.focus ? ` Focus on ${slots.focus}.` : ''} Report back with findings, file:line references, and a short summary.`
+    case 'finance':
+      return `${query}. Pull the transactions from my connected finance tools, total them, and break them down by merchant.`
+    default:
+      return null
+  }
+}

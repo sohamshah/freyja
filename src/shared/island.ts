@@ -12,12 +12,14 @@ export interface IslandLive {
   title: string
   kind: IslandLiveKind
   parentId?: string
+  /** The parent's title, so helpers can be grouped under it. */
+  parentTitle?: string
   /** When the turn (or the helper) started, ms. */
   startedAt: number
   /** The tool call in flight, if any. */
   tool: { name: string; summary: string; startedAt: number } | null
   thinking: boolean
-  /** Tail of the reply being written (≤ 160 chars), the sneak peek. */
+  /** Tail of the reply being written (≤ 320 chars), the sneak peek. */
   text: string
 }
 
@@ -113,6 +115,23 @@ export interface IslandDigest {
   veil: boolean
 }
 
+/** One row of the ⌘K palette, as the island sees it: the main renderer keeps the action. */
+export interface IslandPaletteRow {
+  id: string
+  title: string
+  subtitle?: string
+  group: 'Command' | 'Skill' | 'Subagent' | 'Session'
+}
+
+/** The palette's rows, sent to the island when it asks (the sheet opening). */
+export interface IslandPaletteIndex {
+  at: number
+  rows: IslandPaletteRow[]
+}
+
+/** Views the island can open in Freyja. */
+export type IslandView = 'morning-room' | 'artifacts' | 'scheduler' | 'dashboard:overview' | 'dashboard:tasks' | 'dashboard:activity' | 'dashboard:scheduler'
+
 /** Island → main → main renderer. */
 export type IslandAction =
   | { type: 'open'; sessionId: string; mode?: 'replace' | 'split' }
@@ -124,9 +143,18 @@ export type IslandAction =
   | { type: 'capture' }
   | { type: 'focus-app' }
   | { type: 'dashboard'; tab: 'overview' | 'tasks' | 'activity' | 'scheduler' }
-  | { type: 'cancel'; sessionId: string }
+  /** Stop a turn (`turn`) or every helper under a session (`subagents`). */
+  | { type: 'stop'; sessionId: string; scope: 'turn' | 'subagents' }
   /** Files dropped on the island go to the composer's tray (images and videos). */
   | { type: 'attach'; files: Array<{ name: string; mimeType: string; dataBase64: string }> }
+  /** The sheet opened: send the palette's rows. */
+  | { type: 'palette-index' }
+  /** Run a palette row by its id. */
+  | { type: 'palette-run'; id: string }
+  /** Open ⌘K in Freyja with this query typed, for the cards the island cannot show. */
+  | { type: 'palette-open'; query: string }
+  | { type: 'appearance'; theme: 'dark' | 'light' | 'system' }
+  | { type: 'view'; view: IslandView }
 
 /** Island → main, about the window itself. */
 export type IslandControl =
@@ -137,10 +165,6 @@ export type IslandControl =
   | { type: 'focus' }
   /** Give keyboard focus back to whatever had it. */
   | { type: 'release' }
-  /** Where the island is drawn, in CSS px from the window's top-left: the backdrop blur follows it. */
-  | { type: 'shape'; x: number; y: number; width: number; height: number; radiusTop: number; radiusBottom: number }
-  /** The page's effective theme, so the blur material matches. */
-  | { type: 'theme'; dark: boolean }
 
 export interface IslandGeometry {
   displayId: number
@@ -153,7 +177,6 @@ export interface IslandGeometry {
   width: number
   height: number
   scale: number
-  /** The window has a real backdrop blur behind the island (macOS, with the native shim built). */
-  /** The backdrop behind the pane: system Liquid Glass, a frosted blur, or nothing (the page paints a solid pane). */
-  glass: 'liquid' | 'blur' | 'none'
+  /** The hotkey that opens the island with the keyboard, as glyphs (⌃⌥⌘I), or null when none registered. */
+  hotkey: string | null
 }

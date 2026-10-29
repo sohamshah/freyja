@@ -110,3 +110,7 @@ filter by the person as the name is typed.
 - `readPaletteClipboard()`: classifies the clipboard (url, json, stack, path,
   diff, code, text) once per palette open; the empty palette proposes actions
   for it.
+
+## In the island
+
+The island ([ISLAND.md](ISLAND.md)) is ⌘K in the notch. Its field searches the same rows (`src/renderer/lib/paletteItems.ts` builds them for both; the island gets titles and runs a row by id through the main renderer) and asks the same Jev classifier, with the same slot parser, hysteresis and secondary candidates. Its card (`src/renderer/island/Intent.tsx`) is the generic form of the ⌘K cards: the slots as they fill in, the required ones as a progress bar, and one primary action. Cards whose action is a prompt (memory, delegate, spend; `instructionFor()` in `paletteIntent.ts` is the shared template) or a switch (voice, appearance, Morning Room, swarm) act from the island; the data cards hand the sentence to ⌘K here (`toggleCommandPalette(true, query)` opens the palette with it typed), so the full card appears with the app's data.

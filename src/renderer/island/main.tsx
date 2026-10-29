@@ -1,14 +1,14 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { initTheme } from '../lib/theme'
+import { applyEffectiveTheme } from '../lib/theme'
 import { Island } from './Island'
 import '../styles/globals.css'
 import '../styles/island.css'
 
-// The island follows the app's theme through `prefers-color-scheme`, which
-// mirrors nativeTheme.themeSource, so the same init as the app gives the
-// right `data-theme` before the first paint.
-initTheme()
+// The island is pitch black in both shells, so it fuses with the notch: it
+// pins the dark tokens whatever the app's appearance is, and never follows
+// the media query the app follows.
+applyEffectiveTheme('dark')
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

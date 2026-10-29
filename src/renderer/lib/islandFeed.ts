@@ -3,6 +3,7 @@ import { useVoiceStore } from '../state/voice-store'
 import { useSchedulerStore } from '../state/scheduler-store'
 import { summarizeArgs } from '../components/ToolCallChip'
 import { bucketFor } from '../components/views/taskBuckets'
+import { buildPaletteItems, runPaletteItem } from './paletteItems'
 import type { Message } from '../../shared/events'
 import type {
   IslandAction,
@@ -10,6 +11,8 @@ import type {
   IslandDigest,
   IslandDone,
   IslandLive,
+  IslandPaletteIndex,
+  IslandPaletteRow,
   IslandTaskRow,
 } from '../../shared/island'
 
@@ -20,14 +23,19 @@ import type {
  * See src/shared/island.ts for the shapes and docs/ISLAND.md for the design.
  */
 const PUSH_DELAY_MS = 120
-const TEXT_TAIL = 160
+const TEXT_TAIL = 320
+const TOOL_SUMMARY = 120
 const DONE_TEXT = 220
 const DONE_KEEP_MS = 30000
 const STAMP_KEEP_MS = 10000
+/** Rows the island's field searches: every command and skill, the helpers, and this many recent sessions. */
+const PALETTE_SESSIONS = 80
 
 interface IslandHarnessApi {
   islandDigest(digest: IslandDigest): Promise<{ ok: boolean }>
+  islandPalette?(index: IslandPaletteIndex): Promise<{ ok: boolean }>
   onIslandPerform?(listener: (action: IslandAction) => void): () => void
+  sendCommand?(command: Record<string, unknown>): Promise<unknown>
 }
 
 export function startIslandFeed(api: Partial<IslandHarnessApi> | null | undefined): () => void {
@@ -68,14 +76,16 @@ export function startIslandFeed(api: Partial<IslandHarnessApi> | null | undefine
           .find((rec) => rec && rec.status === 'running')
         const row = sessionById.get(id)
         const toolName = running ? running.invokes || running.name : ''
+        const parentId = row?.parentSessionId
         live.push({
           id,
           title: titleOf(id),
-          kind: row?.agentType === 'voice' ? 'voice' : row?.parentSessionId ? 'sub' : 'root',
-          parentId: row?.parentSessionId,
+          kind: row?.agentType === 'voice' ? 'voice' : parentId ? 'sub' : 'root',
+          parentId,
+          parentTitle: parentId ? titleOf(parentId) : undefined,
           startedAt: msg?.createdAt ?? nowMs,
           tool: running
-            ? { name: toolName, summary: summarizeArgs(toolName, running.arguments).slice(0, 80), startedAt: running.startedAt }
+            ? { name: toolName, summary: summarizeArgs(toolName, running.arguments).slice(0, TOOL_SUMMARY), startedAt: running.startedAt }
             : null,
           thinking: last?.type === 'thinking' && !last.endedAt,
           text: tail(plain(textOf(msg)), TEXT_TAIL),
@@ -98,11 +108,13 @@ export function startIslandFeed(api: Partial<IslandHarnessApi> | null | undefine
       for (const sub of Object.values(slice.subagents)) {
         if ((sub.state === 'running' || sub.state === 'pending') && !seen.has(sub.id)) {
           seen.add(sub.id)
+          const parentId = sub.parentId ?? id
           live.push({
             id: sub.id,
             title: sub.label || titleOf(sub.id),
             kind: 'sub',
-            parentId: sub.parentId ?? id,
+            parentId,
+            parentTitle: titleOf(parentId),
             startedAt: sub.startedAt || nowMs,
             tool: null,
             thinking: false,
@@ -219,6 +231,18 @@ export function startIslandFeed(api: Partial<IslandHarnessApi> | null | undefine
     if (timer == null) timer = window.setTimeout(flush, PUSH_DELAY_MS)
   }
 
+  /** The ⌘K rows, minus the clipboard suggestions (the island is not where the clipboard is read). */
+  const paletteIndex = (): IslandPaletteIndex => {
+    const rows: IslandPaletteRow[] = []
+    let sessionsKept = 0
+    for (const item of buildPaletteItems(() => {})) {
+      if (item.group === 'Clipboard') continue
+      if (item.group === 'Session' && sessionsKept++ >= PALETTE_SESSIONS) continue
+      rows.push({ id: item.id, title: item.title, subtitle: item.subtitle, group: item.group })
+    }
+    return { at: Date.now(), rows }
+  }
+
   const perform = (action: IslandAction) => {
     const st = useHarness.getState()
     switch (action.type) {
@@ -250,8 +274,13 @@ export function startIslandFeed(api: Partial<IslandHarnessApi> | null | undefine
       case 'dashboard':
         st.toggleMissionDashboard(true, action.tab)
         break
-      case 'cancel':
-        if (action.sessionId === st.activeSessionId) void st.cancelTurn()
+      case 'stop':
+        // The active session's turn goes through the store, which also
+        // stops its spinners; any other turn, and a session's helpers, go
+        // straight to the bridge.
+        if (action.scope === 'turn' && action.sessionId === st.activeSessionId) void st.cancelTurn()
+        else if (action.scope === 'subagents' && action.sessionId === st.activeSessionId) void st.stopSubagents()
+        else void api.sendCommand?.({ type: 'force_cancel', sessionId: action.sessionId, scope: action.scope })
         break
       case 'attach': {
         // Dropped on the island: into the composer's tray, as a paste would.
@@ -269,6 +298,33 @@ export function startIslandFeed(api: Partial<IslandHarnessApi> | null | undefine
         if (skipped > 0) st.showToast(skipped === 1 ? 'Only images and videos attach' : `${skipped} files skipped: only images and videos attach`, 'warn')
         break
       }
+      case 'palette-index':
+        void api.islandPalette?.(paletteIndex()).catch(() => {})
+        break
+      case 'palette-run':
+        if (!runPaletteItem(action.id)) st.showToast('That row is gone', 'warn')
+        break
+      case 'palette-open':
+        st.toggleCommandPalette(true, action.query)
+        break
+      case 'appearance':
+        void st.setAppearanceTheme(action.theme)
+        break
+      case 'view':
+        switch (action.view) {
+          case 'morning-room':
+            st.toggleMorningRoom(true)
+            break
+          case 'artifacts':
+            st.toggleArtifactsBrowser(true)
+            break
+          case 'scheduler':
+            useSchedulerStore.getState().openDashboard()
+            break
+          default:
+            st.toggleMissionDashboard(true, action.view.slice('dashboard:'.length) as 'overview' | 'tasks' | 'activity' | 'scheduler')
+        }
+        break
       case 'focus-app':
         break
     }

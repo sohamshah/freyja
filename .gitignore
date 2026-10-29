@@ -6,7 +6,6 @@ node_modules/
 dist-main/
 dist-renderer/
 dist-preload/
-dist-native/
 out/
 python-bundle/
 # Stray copy of the main bundle that occasionally drops at repo root
