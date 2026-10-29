@@ -24,7 +24,7 @@ const FALLBACK_GEOMETRY: IslandGeometry = {
   width: 760,
   height: 480,
   scale: 2,
-  glass: false,
+  glass: 'none',
 }
 /** How long a finished turn hangs from the notch before the island settles. */
 const DONE_BANNER_MS = 8000
@@ -65,7 +65,7 @@ export function Island() {
   const hovering = useRef(false)
   const seenAttention = useRef<Set<string> | null>(null)
   const islandRef = useRef<HTMLDivElement>(null)
-  useGlassShape(islandRef, api, geometry.glass)
+  useGlassShape(islandRef, api, geometry.glass !== 'none')
   useGlassTheme(api)
 
   useEffect(() => {
@@ -224,7 +224,7 @@ export function Island() {
   } as CSSProperties
 
   return (
-    <div className="island-root" data-glass={geometry.glass ? 'native' : 'css'}>
+    <div className="island-root" data-glass={geometry.glass}>
       <div
         ref={islandRef}
         className="island"

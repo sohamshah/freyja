@@ -1,15 +1,31 @@
-// The island's backdrop: a masked NSVisualEffectView behind the web view,
-// so a transparent Electron window can carry real frosted glass in any shape.
+// The island's backdrop: a pane of system glass behind the web view, so a
+// transparent Electron window can carry real glass in exactly the island's
+// shape. On macOS 26 it is NSGlassEffectView (Liquid Glass: the content
+// behind the window bends at the rim and lights the pane); earlier systems
+// get a masked NSVisualEffectView blur.
 #import <Cocoa/Cocoa.h>
+#import <objc/runtime.h>
 #define NAPI_VERSION 8
 #include <node_api.h>
 
-@interface FreyjaGlassView : NSVisualEffectView
-@property (nonatomic) CGFloat radiusTop;
-@property (nonatomic) CGFloat radiusBottom;
+#if !__has_include(<AppKit/NSGlassEffectView.h>)
+// An older SDK: the class is looked up at runtime, this only names its API.
+typedef NS_ENUM(NSInteger, NSGlassEffectViewStyle) { NSGlassEffectViewStyleRegular, NSGlassEffectViewStyleClear };
+@interface NSGlassEffectView : NSView
+@property CGFloat cornerRadius;
+@property (nullable, copy) NSColor *tintColor;
+@property NSGlassEffectViewStyle style;
 @end
-@implementation FreyjaGlassView
+#endif
+
+/* The legacy blur, for macOS before 26. */
+@interface FreyjaBlurView : NSVisualEffectView
+@property (nonatomic) NSString *maskKey;
 @end
+@implementation FreyjaBlurView
+@end
+
+static const void *kGlassKey = &kGlassKey;
 
 static NSView *contentViewFrom(napi_env env, napi_value handle) {
   void *data = NULL;
@@ -22,47 +38,81 @@ static NSView *contentViewFrom(napi_env env, napi_value handle) {
   return (NSView *)obj;
 }
 
-static FreyjaGlassView *findGlass(NSView *content) {
-  for (NSView *v in content.subviews) {
-    if ([v isKindOfClass:[FreyjaGlassView class]]) return (FreyjaGlassView *)v;
-  }
-  return nil;
+static NSView *findGlass(NSView *content) {
+  NSView *g = objc_getAssociatedObject(content, kGlassKey);
+  return (g && g.superview == content) ? g : nil;
 }
 
-/* A 9-slice mask: square or round top corners, round bottom corners. */
-static NSImage *maskFor(CGFloat rt, CGFloat rb) {
-  CGFloat R = MAX(rt, rb);
-  CGFloat w = 2 * R + 3, h = rt + rb + 3;
+static BOOL liquidAvailable(void) {
+  return NSClassFromString(@"NSGlassEffectView") != nil;
+}
+
+/* The exact mask for the legacy blur: square or round top corners, round
+   bottom corners, drawn at the view's size (a nine-slice image did not
+   survive AppKit's slicing: it left the sheet's sides un-blurred). */
+static NSImage *maskFor(CGFloat w, CGFloat h, CGFloat rt, CGFloat rb) {
   NSImage *img = [NSImage imageWithSize:NSMakeSize(w, h) flipped:NO drawingHandler:^BOOL(NSRect rect) {
     [[NSColor blackColor] setFill];
-    // Bottom corners: a rounded rect of radius rb covers the whole box.
-    if (rb > 0) [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(0, 0, w, h) xRadius:rb yRadius:rb] fill];
-    else NSRectFill(NSMakeRect(0, 0, w, h - rt));
-    // The band between the corner rows is always solid.
-    NSRectFill(NSMakeRect(0, rb, w, h - rb - rt));
-    // Top corners.
-    if (rt > 0) [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(0, h - 2 * rt - 1, w, 2 * rt + 1) xRadius:rt yRadius:rt] fill];
-    else NSRectFill(NSMakeRect(0, rb, w, h - rb));
+    NSBezierPath *p = [NSBezierPath bezierPath];
+    // Clockwise from the top-left, y up: the top edge is at h.
+    [p moveToPoint:NSMakePoint(rt, h)];
+    [p lineToPoint:NSMakePoint(w - rt, h)];
+    if (rt > 0) [p appendBezierPathWithArcWithCenter:NSMakePoint(w - rt, h - rt) radius:rt startAngle:90 endAngle:0 clockwise:YES];
+    [p lineToPoint:NSMakePoint(w, rb)];
+    if (rb > 0) [p appendBezierPathWithArcWithCenter:NSMakePoint(w - rb, rb) radius:rb startAngle:0 endAngle:-90 clockwise:YES];
+    [p lineToPoint:NSMakePoint(rb, 0)];
+    if (rb > 0) [p appendBezierPathWithArcWithCenter:NSMakePoint(rb, rb) radius:rb startAngle:-90 endAngle:-180 clockwise:YES];
+    [p lineToPoint:NSMakePoint(0, h - rt)];
+    if (rt > 0) [p appendBezierPathWithArcWithCenter:NSMakePoint(rt, h - rt) radius:rt startAngle:180 endAngle:90 clockwise:YES];
+    [p closePath];
+    [p fill];
     return YES;
   }];
-  img.capInsets = NSEdgeInsetsMake(rt + 1, R + 1, rb + 1, R + 1);
-  img.resizingMode = NSImageResizingModeStretch;
   return img;
 }
 
-static FreyjaGlassView *ensureGlass(NSView *content) {
-  FreyjaGlassView *g = findGlass(content);
-  if (g) return g;
-  g = [[FreyjaGlassView alloc] initWithFrame:NSZeroRect];
-  g.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-  g.state = NSVisualEffectStateActive;
-  g.material = NSVisualEffectMaterialHUDWindow;
+static NSAppearance *appearanceFor(BOOL dark) {
+  return [NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+}
+
+/* Liquid Glass fixes its light or dark material when the view joins the
+   window; a later appearance change does not restyle it. So the view is
+   made under the appearance it should have, and remade on a theme change. */
+static NSView *makeGlass(NSView *content, BOOL dark, BOOL preferBlur) {
+  NSView *g = nil;
+  if (!preferBlur && liquidAvailable()) {
+    if (@available(macOS 26.0, *)) {
+      NSGlassEffectView *lg = [[NSClassFromString(@"NSGlassEffectView") alloc] initWithFrame:NSZeroRect];
+      lg.style = NSGlassEffectViewStyleRegular;
+      g = lg;
+    }
+  }
+  if (!g) {
+    FreyjaBlurView *b = [[FreyjaBlurView alloc] initWithFrame:NSZeroRect];
+    b.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    b.state = NSVisualEffectStateActive;
+    b.material = dark ? NSVisualEffectMaterialHUDWindow : NSVisualEffectMaterialPopover;
+    g = b;
+  }
+  g.appearance = appearanceFor(dark);
+  // The island window always matches its page's shell, so the glass cannot
+  // resolve a stale appearance from the window as it joins it.
+  content.window.appearance = appearanceFor(dark);
   g.wantsLayer = YES;
   g.autoresizingMask = NSViewNotSizable;
-  g.radiusTop = -1;
-  g.radiusBottom = -1;
+  g.hidden = YES;
   [content addSubview:g positioned:NSWindowBelow relativeTo:nil];
+  objc_setAssociatedObject(content, kGlassKey, g, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   return g;
+}
+
+static NSView *ensureGlass(NSView *content) {
+  NSView *g = findGlass(content);
+  return g ? g : makeGlass(content, YES, NO);
+}
+
+static BOOL isBlur(NSView *g) {
+  return [g isKindOfClass:[FreyjaBlurView class]];
 }
 
 static double num(napi_env env, napi_value v, double fallback) {
@@ -77,15 +127,30 @@ static napi_value boolOut(napi_env env, bool ok) {
   return out;
 }
 
-// attach(handle) -> bool
+static napi_value strOut(napi_env env, NSString *s) {
+  napi_value out;
+  napi_create_string_utf8(env, s.UTF8String, NAPI_AUTO_LENGTH, &out);
+  return out;
+}
+
+// attach(handle, dark?, preferBlur?) -> 'liquid' | 'blur' | null
 static napi_value Attach(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value argv[1];
+  size_t argc = 3;
+  napi_value argv[3];
   napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
   NSView *content = argc >= 1 ? contentViewFrom(env, argv[0]) : nil;
-  if (!content) return boolOut(env, false);
-  ensureGlass(content);
-  return boolOut(env, true);
+  if (!content) {
+    napi_value out;
+    napi_get_null(env, &out);
+    return out;
+  }
+  bool dark = true, preferBlur = false;
+  if (argc >= 2) napi_get_value_bool(env, argv[1], &dark);
+  if (argc >= 3) napi_get_value_bool(env, argv[2], &preferBlur);
+  NSView *g = findGlass(content);
+  if (g) [g removeFromSuperview];
+  g = makeGlass(content, dark, preferBlur);
+  return strOut(env, isBlur(g) ? @"blur" : @"liquid");
 }
 
 // detach(handle) -> bool
@@ -94,9 +159,10 @@ static napi_value Detach(napi_env env, napi_callback_info info) {
   napi_value argv[1];
   napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
   NSView *content = argc >= 1 ? contentViewFrom(env, argv[0]) : nil;
-  FreyjaGlassView *g = content ? findGlass(content) : nil;
+  NSView *g = content ? findGlass(content) : nil;
   if (!g) return boolOut(env, false);
   [g removeFromSuperview];
+  objc_setAssociatedObject(content, kGlassKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   return boolOut(env, true);
 }
 
@@ -107,37 +173,70 @@ static napi_value SetShape(napi_env env, napi_callback_info info) {
   napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
   NSView *content = argc >= 5 ? contentViewFrom(env, argv[0]) : nil;
   if (!content) return boolOut(env, false);
-  FreyjaGlassView *g = ensureGlass(content);
+  NSView *g = ensureGlass(content);
   CGFloat x = num(env, argv[1], 0), y = num(env, argv[2], 0), w = num(env, argv[3], 0), h = num(env, argv[4], 0);
   CGFloat rt = argc >= 6 ? num(env, argv[5], 0) : 0;
   CGFloat rb = argc >= 7 ? num(env, argv[6], 0) : 0;
   rt = MAX(0, MIN(rt, MIN(w, h) / 2));
   rb = MAX(0, MIN(rb, MIN(w, h) / 2));
   CGFloat fy = content.isFlipped ? y : (NSHeight(content.bounds) - y - h);
-  if (g.radiusTop != rt || g.radiusBottom != rb) {
-    g.maskImage = maskFor(rt, rb);
-    g.radiusTop = rt;
-    g.radiusBottom = rb;
+  if (isBlur(g)) {
+    FreyjaBlurView *b = (FreyjaBlurView *)g;
+    NSString *key = [NSString stringWithFormat:@"%.1f,%.1f,%.1f,%.1f", w, h, rt, rb];
+    if (![key isEqualToString:b.maskKey]) {
+      b.maskImage = maskFor(w, h, rt, rb);
+      b.maskKey = key;
+    }
+    b.frame = NSMakeRect(x, fy, w, h);
+  } else if (@available(macOS 26.0, *)) {
+    // Liquid Glass rounds all four corners alike. The island's top corners
+    // sit flush under the screen edge, so the pane runs on above the window
+    // (where nothing is drawn) and only the bottom corners show.
+    NSGlassEffectView *lg = (NSGlassEffectView *)g;
+    CGFloat extend = MAX(0, rb - rt);
+    lg.cornerRadius = rb;
+    lg.frame = NSMakeRect(x, fy, w, h + extend);
   }
-  g.frame = NSMakeRect(x, fy, w, h);
   g.hidden = (w <= 0 || h <= 0);
   return boolOut(env, true);
 }
 
-// setStyle(handle, dark, material) -> bool. material: an NSVisualEffectMaterial raw value, or -1 for the default.
+// setStyle(handle, dark, material, tintR?, tintG?, tintB?, tintA?) -> bool.
+// Liquid: `material` is the NSGlassEffectViewStyle (0 regular, 1 clear) and the tint washes the glass.
+// Blur: `material` is an NSVisualEffectMaterial raw value, -1 for the default; the tint is ignored.
 static napi_value SetStyle(napi_env env, napi_callback_info info) {
-  size_t argc = 3;
-  napi_value argv[3];
+  size_t argc = 7;
+  napi_value argv[7];
   napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
   NSView *content = argc >= 2 ? contentViewFrom(env, argv[0]) : nil;
   if (!content) return boolOut(env, false);
-  FreyjaGlassView *g = ensureGlass(content);
+  NSView *g = ensureGlass(content);
   bool dark = true;
   napi_get_value_bool(env, argv[1], &dark);
   double material = argc >= 3 ? num(env, argv[2], -1) : -1;
-  g.appearance = [NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
-  if (material >= 0) g.material = (NSVisualEffectMaterial)(long)material;
-  else g.material = dark ? NSVisualEffectMaterialHUDWindow : NSVisualEffectMaterialPopover;
+  if (!isBlur(g) && ![g.appearance.name isEqualToString:appearanceFor(dark).name]) {
+    // Remade under the new appearance, in the same place.
+    NSRect frame = g.frame;
+    BOOL hidden = g.hidden;
+    CGFloat radius = 0;
+    if (@available(macOS 26.0, *)) radius = ((NSGlassEffectView *)g).cornerRadius;
+    [g removeFromSuperview];
+    g = makeGlass(content, dark, NO);
+    if (@available(macOS 26.0, *)) ((NSGlassEffectView *)g).cornerRadius = radius;
+    g.frame = frame;
+    g.hidden = hidden;
+  }
+  g.appearance = appearanceFor(dark);
+  if (isBlur(g)) {
+    FreyjaBlurView *b = (FreyjaBlurView *)g;
+    if (material >= 0) b.material = (NSVisualEffectMaterial)(long)material;
+    else b.material = dark ? NSVisualEffectMaterialHUDWindow : NSVisualEffectMaterialPopover;
+  } else if (@available(macOS 26.0, *)) {
+    NSGlassEffectView *lg = (NSGlassEffectView *)g;
+    lg.style = material == 1 ? NSGlassEffectViewStyleClear : NSGlassEffectViewStyleRegular;
+    double a = argc >= 7 ? num(env, argv[6], 0) : 0;
+    lg.tintColor = a > 0 ? [NSColor colorWithSRGBRed:num(env, argv[3], 0) / 255.0 green:num(env, argv[4], 0) / 255.0 blue:num(env, argv[5], 0) / 255.0 alpha:a] : nil;
+  }
   return boolOut(env, true);
 }
 
@@ -147,12 +246,21 @@ static napi_value Describe(napi_env env, napi_callback_info info) {
   napi_value argv[1];
   napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
   NSView *content = argc >= 1 ? contentViewFrom(env, argv[0]) : nil;
-  NSString *s = content
-    ? [NSString stringWithFormat:@"%@ flipped=%d bounds=%@ window=%@ subviews=%lu glass=%@", NSStringFromClass([content class]), content.isFlipped, NSStringFromRect(content.bounds), NSStringFromClass([content.window class]), (unsigned long)content.subviews.count, findGlass(content) ? NSStringFromRect(findGlass(content).frame) : @"none"]
-    : @"no view";
-  napi_value out;
-  napi_create_string_utf8(env, s.UTF8String, NAPI_AUTO_LENGTH, &out);
-  return out;
+  if (!content) return strOut(env, @"no view");
+  NSView *g = findGlass(content);
+  NSMutableArray *kinds = [NSMutableArray array];
+  for (NSView *v in content.subviews) [kinds addObject:NSStringFromClass([v class])];
+  NSString *extra = @"";
+  if (g && !isBlur(g)) {
+    if (@available(macOS 26.0, *)) {
+      NSGlassEffectView *lg = (NSGlassEffectView *)g;
+      extra = [NSString stringWithFormat:@" radius=%.1f style=%ld tint=%@", lg.cornerRadius, (long)lg.style, lg.tintColor ? lg.tintColor.description : @"none"];
+    }
+  }
+  return strOut(env, [NSString stringWithFormat:@"%@ flipped=%d bounds=%@ window=%@ subviews=%@ glass=%@%@ appearance: app=%@ window=%@/%@ view=%@/%@",
+    NSStringFromClass([content class]), content.isFlipped, NSStringFromRect(content.bounds), NSStringFromClass([content.window class]),
+    [kinds componentsJoinedByString:@","], g ? [NSString stringWithFormat:@"%@ %@", NSStringFromClass([g class]), NSStringFromRect(g.frame)] : @"none", extra,
+    NSApp.effectiveAppearance.name, content.window.appearance.name ?: @"nil", content.window.effectiveAppearance.name, g ? (g.appearance.name ?: @"nil") : @"-", g ? g.effectiveAppearance.name : @"-"]);
 }
 
 NAPI_MODULE_INIT() {

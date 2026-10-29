@@ -154,5 +154,6 @@ export interface IslandGeometry {
   height: number
   scale: number
   /** The window has a real backdrop blur behind the island (macOS, with the native shim built). */
-  glass: boolean
+  /** The backdrop behind the pane: system Liquid Glass, a frosted blur, or nothing (the page paints a solid pane). */
+  glass: 'liquid' | 'blur' | 'none'
 }

@@ -2,10 +2,13 @@
    The notch-hugging mini view (src/renderer/island/, src/main/island.ts,
    docs/ISLAND.md). The window is transparent and oversized; only `.island`
    is drawn, at the top centre, hanging from the notch. It is a pane of
-   glass in both shells: a native blur sits behind it in exactly its shape
-   (native/island-glass), and these rules add the tint, the rim and the
-   type on top. Without the blur (`data-glass="css"`) the tint goes nearly
-   solid so the words still have a ground. */
+   glass in both shells. Behind it, in exactly its shape, sits system glass
+   (native/island-glass): Liquid Glass on macOS 26, which bends what is
+   behind the window at its rim and lights the pane, or a frosted blur
+   before that. These rules draw the type and the chips on top; the chips
+   are lenses of thicker glass. `.island-root[data-glass]` says which ground
+   the page has: `liquid`, `blur`, or `none` (the tint goes nearly solid so
+   the words still have a ground). */
 
 :root {
   --island-spring: linear(
@@ -41,7 +44,9 @@
   --island-well-hi-a: 0.17;
   --island-card-a: 0.06;
   --island-key-rim-a: 0.14;
+  --island-key-shade-a: 0.18;
   --island-key-line-a: 0.35;
+  --island-key-lift-a: 0.25;
   --island-accent: 168 212 252;
   --island-on-accent: 12 18 28;
   --island-ring: 0 0 0 0 transparent;
@@ -68,13 +73,46 @@
   --island-well-hi-a: 0.75;
   --island-card-a: 0.42;
   --island-key-rim-a: 0.9;
+  --island-key-shade-a: 0.06;
   --island-key-line-a: 0.14;
+  --island-key-lift-a: 0.1;
   --island-accent: 40 100 180;
   --island-on-accent: 255 255 255;
 }
-/* No native blur behind the window: the tint carries the ground. */
-.island-root[data-glass='css'] {
+/* No glass behind the window: the tint carries the ground. */
+.island-root[data-glass='none'] {
   --island-tint-a: var(--island-tint-solid);
+}
+/* Liquid Glass behind the window: the system pane brings its own rim and
+   light, so the page adds only a faint ground for the words (the glass
+   adapts to what is behind it, and goes mid-grey over a bright window), a
+   shadow to lift the pane, and chips cut a little deeper. */
+.island-root[data-glass='liquid'] {
+  --island-tint-a: 0.1;
+  --island-sheen: 0;
+  --island-rim-a: 0;
+  --island-rim-lo-a: 0;
+  --island-line-a: 0;
+  --island-shadow-a: 0.45;
+  --island-well-a: 0.11;
+  --island-well-hi-a: 0.2;
+  --island-card-a: 0.08;
+  --island-key-rim-a: 0.3;
+  --island-key-line-a: 0.3;
+}
+:root[data-theme='light'] .island-root[data-glass='liquid'] {
+  --island-tint-a: 0.18;
+  --island-shadow-a: 0.22;
+  --island-well-a: 0.45;
+  --island-well-hi-a: 0.85;
+  --island-card-a: 0.4;
+  --island-key-rim-a: 1;
+  --island-key-line-a: 0.1;
+}
+/* Any native glass: the page's own backdrop filter has nothing to blur. */
+.island-root:not([data-glass='none']) .island {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 html,
@@ -355,7 +393,7 @@ body,
   width: 100%;
   padding: 6px 9px;
   border: 0;
-  border-radius: 9px;
+  border-radius: 10px;
   background: transparent;
   color: inherit;
   font: inherit;
@@ -411,16 +449,18 @@ body,
   color: rgb(var(--ok-rgb));
 }
 
-/* Cards: something that needs the operator. A chip of thicker glass. */
+/* Cards: something that needs the operator. A slab of thicker glass. */
 .island-card {
   display: grid;
   gap: 6px;
   padding: 10px 12px;
-  border-radius: 12px;
-  background: rgb(var(--island-well) / var(--island-card-a));
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgb(var(--island-well) / calc(var(--island-card-a) * 1.5)), rgb(var(--island-well) / var(--island-card-a)));
   box-shadow:
-    inset 0 0.5px 0 rgb(var(--island-rim) / var(--island-key-rim-a)),
-    0 0 0 0.5px rgb(var(--island-line) / var(--island-key-line-a));
+    inset 0 1px 0 rgb(var(--island-rim) / var(--island-key-rim-a)),
+    inset 0 -1px 0 rgb(var(--island-shade) / var(--island-key-shade-a)),
+    0 0 0 0.5px rgb(var(--island-line) / var(--island-key-line-a)),
+    0 1px 2px rgb(var(--island-shade) / var(--island-key-lift-a));
 }
 .island-card-warn {
   background: rgb(var(--warn-rgb) / 0.12);
@@ -458,34 +498,36 @@ body,
   margin-top: 2px;
 }
 
-/* Keys: chips of glass. */
+/* Keys: lenses of thicker glass. A capsule lit along its top edge, shaded
+   along its bottom edge, standing a hair off the pane. */
 .island-key {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   height: 27px;
-  padding: 0 11px;
+  padding: 0 12px;
   border: 0;
-  border-radius: 9px;
-  background: rgb(var(--island-well) / var(--island-well-a));
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgb(var(--island-well) / var(--island-well-hi-a)), rgb(var(--island-well) / var(--island-well-a)));
   box-shadow:
-    inset 0 0.5px 0 rgb(var(--island-rim) / var(--island-key-rim-a)),
-    inset 0 0 0 0.5px rgb(var(--island-rim) / calc(var(--island-key-rim-a) * 0.5)),
+    inset 0 1px 0 rgb(var(--island-rim) / var(--island-key-rim-a)),
+    inset 0 -1px 0 rgb(var(--island-shade) / var(--island-key-shade-a)),
     0 0 0 0.5px rgb(var(--island-line) / var(--island-key-line-a)),
-    0 1px 2px rgb(var(--island-shade) / 0.12);
+    0 1px 2px rgb(var(--island-shade) / var(--island-key-lift-a));
   color: rgb(var(--island-fg));
   font: 500 12px/1 var(--island-font);
   white-space: nowrap;
   cursor: default;
   transition:
-    background-color 0.15s,
+    filter 0.15s,
     transform 0.15s var(--island-ease);
 }
 .island-key:hover {
-  background: rgb(var(--island-well) / var(--island-well-hi-a));
+  filter: brightness(1.12);
 }
 .island-key:active {
   transform: translateY(0.5px);
+  filter: brightness(0.96);
 }
 .island-key:disabled {
   opacity: 0.45;
@@ -497,25 +539,20 @@ body,
   color: rgb(var(--island-dim));
 }
 .island-key-primary {
-  background: rgb(var(--island-accent));
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.22), rgb(255 255 255 / 0) 55%), rgb(var(--island-accent));
   color: rgb(var(--island-on-accent));
   box-shadow:
-    inset 0 0.5px 0 rgb(255 255 255 / 0.35),
+    inset 0 1px 0 rgb(255 255 255 / 0.45),
+    inset 0 -1px 0 rgb(0 0 0 / 0.12),
     0 0 0 0.5px rgb(var(--island-line) / var(--island-key-line-a)),
-    0 1px 2px rgb(var(--island-shade) / 0.2);
-}
-.island-key-primary:hover {
-  background: rgb(var(--island-accent) / 0.88);
+    0 1px 2px rgb(var(--island-shade) / var(--island-key-lift-a));
 }
 .island-key-primary kbd {
   color: rgb(var(--island-on-accent) / 0.7);
 }
 .island-key-danger {
-  background: rgb(var(--danger-rgb));
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.18), rgb(255 255 255 / 0) 55%), rgb(var(--danger-rgb));
   color: #fff;
-}
-.island-key-danger:hover {
-  background: rgb(var(--danger-rgb) / 0.88);
 }
 .island-key-live {
   color: rgb(var(--ok-rgb));
@@ -555,30 +592,34 @@ body,
 .island-select {
   height: 29px;
   border: 0;
-  border-radius: 9px;
-  background: rgb(var(--island-well) / var(--island-well-a));
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgb(var(--island-well) / var(--island-well-hi-a)), rgb(var(--island-well) / var(--island-well-a)));
   box-shadow:
-    inset 0 0.5px 0 rgb(var(--island-rim) / var(--island-key-rim-a)),
-    0 0 0 0.5px rgb(var(--island-line) / var(--island-key-line-a));
+    inset 0 1px 0 rgb(var(--island-rim) / var(--island-key-rim-a)),
+    inset 0 -1px 0 rgb(var(--island-shade) / var(--island-key-shade-a)),
+    0 0 0 0.5px rgb(var(--island-line) / var(--island-key-line-a)),
+    0 1px 2px rgb(var(--island-shade) / var(--island-key-lift-a));
   color: rgb(var(--island-fg));
   font: 500 12.5px/1 var(--island-font);
   outline: none;
 }
 .island-input {
   min-width: 0;
-  padding: 0 10px;
+  padding: 0 12px;
 }
 .island-input::placeholder {
   color: rgb(var(--island-dim));
 }
 .island-input:focus {
   box-shadow:
-    inset 0 0.5px 0 rgb(var(--island-rim) / var(--island-key-rim-a)),
-    0 0 0 1px rgb(var(--island-accent) / 0.8);
+    inset 0 1px 0 rgb(var(--island-rim) / var(--island-key-rim-a)),
+    inset 0 -1px 0 rgb(var(--island-shade) / var(--island-key-shade-a)),
+    0 0 0 1px rgb(var(--island-accent) / 0.8),
+    0 1px 2px rgb(var(--island-shade) / var(--island-key-lift-a));
 }
 .island-select {
   max-width: 140px;
-  padding: 0 9px;
+  padding: 0 11px;
   appearance: none;
   -webkit-appearance: none;
   text-overflow: ellipsis;
@@ -599,7 +640,7 @@ body,
 }
 .island-banner-reply {
   height: 23px;
-  padding: 0 9px;
+  padding: 0 10px;
   font-size: 11.5px;
 }
 .island-banner-title {
