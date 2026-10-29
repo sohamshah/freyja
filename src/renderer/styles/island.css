@@ -18,11 +18,13 @@
   --island-mono: var(--font-mono);
   --island-ear-min: 46px;
 
-  /* Dark glass: a smoked pane. */
+  /* Dark glass: a smoked pane. The material passes about a third of what
+     is behind it, so the tint is dense and a touch cool: over a bright or
+     warm window the pane stays dark and neutral instead of going brown. */
   --island-fg: 242 240 236;
   --island-dim: 188 184 178;
-  --island-tint: 12 12 14;
-  --island-tint-a: 0.3;
+  --island-tint: 12 14 20;
+  --island-tint-a: 0.45;
   --island-tint-solid: 0.9;
   --island-sheen: 0.07;
   --island-rim: 255 255 255;
