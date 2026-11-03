@@ -281,12 +281,15 @@ export function Sheet(p: SheetProps) {
     }
     if (key === 'send') return send(inFreyja)
     if (key === 'card') {
-      if (inFreyja) {
-        act({ type: 'palette-open', query: trimmed })
-        onFold()
+      // The card's own key when it has one and it is ready; otherwise the
+      // sentence goes to ⌘K in Freyja, which is what the hint promised.
+      const primary = inFreyja ? null : scrollRef.current?.querySelector<HTMLButtonElement>('.island-intent [data-primary]:not(:disabled)')
+      if (primary) {
+        primary.click()
         return
       }
-      scrollRef.current?.querySelector<HTMLButtonElement>('.island-intent [data-primary]:not(:disabled)')?.click()
+      act({ type: 'palette-open', query: trimmed })
+      onFold()
       return
     }
     const [kind, id] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)]
@@ -384,7 +387,8 @@ export function Sheet(p: SheetProps) {
           },
         }
       : null
-  const cardVerb = intentProps ? (intentPlan(intentProps).primary?.label ?? 'open in Freyja') : ''
+  const cardPlan = intentProps ? intentPlan(intentProps) : null
+  const cardVerb = cardPlan ? (cardPlan.primary && !cardPlan.primary.disabled ? cardPlan.primary.label : 'open in Freyja') : ''
   const verb = !sel
     ? trimmed
       ? 'send'
