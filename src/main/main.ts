@@ -568,6 +568,10 @@ function ensureIsland(enabled: boolean, notchWidth: number | null = null): void 
     preload: path.resolve(ROOT, 'dist-preload', 'island-preload.cjs'),
     load: islandLoadTarget(),
     notchWidth,
+    // Taking the keyboard activated the app: keep the main window behind the app the person was in.
+    keepBack: () => {
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) mainWindow.blur()
+    },
   })
   island.setHotkey(hotkeyGlyphs(activeIslandHotkey))
   island.open()

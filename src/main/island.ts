@@ -1,4 +1,4 @@
-import { BrowserWindow, screen, type Display } from 'electron'
+import { app, BrowserWindow, screen, type Display } from 'electron'
 import { IPC } from '../shared/events.js'
 import type { IslandControl, IslandDigest, IslandGeometry, IslandPaletteIndex } from '../shared/island.js'
 
@@ -12,11 +12,17 @@ const NOTCHED_MENU_BAR_MIN = 30
  *  its sheet without the window ever moving or resizing. */
 const WINDOW_WIDTH = 760
 const WINDOW_HEIGHT = 600
+/** How long after taking the keyboard the page is asked whether it really has it. */
+const KEYBOARD_CHECK_MS = 250
+/** A page that is repaired once is not repaired again this soon, so a stuck one cannot loop. */
+const REPAIR_COOLDOWN_MS = 15_000
 
 export interface IslandWindowOptions {
   preload: string
   load: { url: string } | { file: string }
   notchWidth?: number | null
+  /** Called when taking the keyboard also activated the app: the caller sends the app's other windows back. */
+  keepBack?: () => void
 }
 
 /**
@@ -33,6 +39,9 @@ export class IslandWindow {
   private pageReady = false
   private notchWidth: number | null
   private hotkey: string | null = null
+  private repairedAt = 0
+  /** The page is reloading to repair its keyboard; reopen the sheet once it is back. */
+  private reopenAfterReady = false
 
   constructor(private readonly opts: IslandWindowOptions) {
     this.notchWidth = opts.notchWidth ?? null
@@ -158,15 +167,26 @@ export class IslandWindow {
         this.pageReady = true
         this.pushGeometry()
         this.pushState()
+        if (this.reopenAfterReady) {
+          this.reopenAfterReady = false
+          win.webContents.send(IPC.islandToggle)
+        }
         break
       case 'hover':
         win.setIgnoreMouseEvents(!msg.over, { forward: true })
         break
-      case 'focus':
+      case 'focus': {
         // A non-activating panel can become the key window without the
         // app coming forward, so typing lands here and Freyja stays back.
+        // When the window server activates the app anyway, the caller
+        // sends Freyja's other windows back so they do not cover the app
+        // the person was in.
+        const wasActive = app.isActive()
         win.focus()
+        if (!wasActive && app.isActive()) this.opts.keepBack?.()
+        this.verifyKeyboard(win)
         break
+      }
       case 'release':
         win.blur()
         break
@@ -175,6 +195,33 @@ export class IslandWindow {
 
   private readonly replace = (): void => {
     this.place()
+  }
+
+  /**
+   * The page asked for the keyboard and the window is the key window; make
+   * sure the page was told. A panel that has lived for days can become key
+   * with its first responder in place while its renderer is never told it has
+   * focus (seen live on 2026-11-03: `isFocused()` true, the caret in the
+   * field, `document.hasFocus()` false, every key swallowed between the
+   * browser and the page). Nothing short of a reload mends it; a reload
+   * does, and the sheet is reopened with the keyboard once the page is back.
+   */
+  private verifyKeyboard(win: BrowserWindow): void {
+    const at = Date.now()
+    setTimeout(() => {
+      if (this.win !== win || win.isDestroyed() || !win.isFocused()) return
+      win.webContents
+        .executeJavaScript('document.hasFocus()', true)
+        .then((has: unknown) => {
+          if (has !== false || this.win !== win || win.isDestroyed() || !win.isFocused()) return
+          if (at - this.repairedAt < REPAIR_COOLDOWN_MS) return
+          this.repairedAt = at
+          console.warn('[island] the page never received the keyboard; reloading it')
+          this.reopenAfterReady = true
+          win.webContents.reload()
+        })
+        .catch(() => {})
+    }, KEYBOARD_CHECK_MS)
   }
 
   private place(): void {
