@@ -12453,23 +12453,36 @@ class _BridgeSession:
         except Exception:  # noqa: BLE001
             pass
 
+    def _own_log_path(self, name: str, sidecar_path: Any) -> Path:
+        """Where this session's own log ``name`` goes: its project dir when
+        the dir is its own, else ``sidecar_path(self.id)``, beside its
+        sidecars. A sub-agent saved without a .subagent.json (before
+        a6e600f) is opened as a root and takes its parent's project dir from
+        its transcript; its rows in the parent's log would read as the
+        parent's. It logs where a sub-agent run does."""
+        if self.project_session_id == self.id:
+            return Path(self.project_output_dir) / name
+        return sidecar_path(self.id)
+
     def _append_compaction_log(self, payload: dict[str, Any]) -> None:
         """Per-session compaction history with FULL summary text.
 
-        Path: ``<project_output_dir>/compactions.jsonl``. Source of
-        truth for the "compactions[]" view in the session export bundle.
-        Both runtime-driven (from ``_on_system_event``) and agent-driven
-        (from ``_emit_summarize_event``) compactions write here.
+        Path: ``<project_output_dir>/compactions.jsonl``, or beside the
+        session's sidecars when that dir is another session's (see
+        ``_own_log_path``). Source of truth for the "compactions[]" view
+        in the session export bundle. Both runtime-driven (from
+        ``_on_system_event``) and agent-driven (from
+        ``_emit_summarize_event``) compactions write here.
 
         Defensive: telemetry must never break the agent loop.
         """
         try:
-            from pathlib import Path
             import json as _json
 
-            base = self.project_output_dir
-            Path(base).mkdir(parents=True, exist_ok=True)
-            target = Path(base) / "compactions.jsonl"
+            from bridge.transcript_persistence import compactions_path
+
+            target = self._own_log_path("compactions.jsonl", compactions_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
             row = {
                 "session_id": self.id,
                 "model": self.model_id,
@@ -12485,22 +12498,22 @@ class _BridgeSession:
     def _append_raw_message_log(self, message: Any) -> None:
         """Persist every appended message to a per-session JSONL log.
 
-        Path: ``<project_output_dir>/raw_messages.jsonl``. Append-only,
-        outside the engine transcript, so compaction never touches it.
-        This file is the source of truth for the "raw_transcript" view
-        in session exports — everything the user and agent ever
-        exchanged, even after summarization folded the live transcript.
+        Path: ``<project_output_dir>/raw_messages.jsonl``, or beside the
+        session's sidecars when that dir is another session's (see
+        ``_own_log_path``). Append-only, outside the engine transcript, so
+        compaction never touches it. This file is the source of truth for
+        the "raw_transcript" view in session exports — everything the
+        user and agent ever exchanged, even after summarization folded
+        the live transcript.
 
         Defensive: telemetry must never break the agent loop, so all
         exceptions are caught and logged but not raised.
         """
         try:
-            from pathlib import Path
-
-            from bridge.transcript_persistence import append_raw_message
+            from bridge.transcript_persistence import append_raw_message, raw_messages_path
 
             append_raw_message(
-                Path(self.project_output_dir) / "raw_messages.jsonl",
+                self._own_log_path("raw_messages.jsonl", raw_messages_path),
                 session_id=self.id,
                 turn_id=self.current_turn_id,
                 message=message,

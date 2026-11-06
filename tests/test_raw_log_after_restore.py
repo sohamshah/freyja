@@ -78,3 +78,49 @@ async def test_a_bridge_session_logs_the_messages_after_its_restore(tmp_path):
     rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert [r["message"]["content"] for r in rows] == ["after the restart"]
     assert rows[0]["session_id"] == "test-raw-log"
+
+
+async def test_a_sub_agent_opened_as_a_root_logs_beside_its_sidecars(tmp_path):
+    """A sub-agent saved without a .subagent.json (before a6e600f) is opened
+    as a root session, and takes its parent's project dir from its
+    transcript. Its rows go to its own logs, not into the parent's."""
+    import bridge.transcript_persistence as tp
+    from bridge.freyja_bridge import _BridgeSession, _BridgeState
+
+    saved = Session.create(system_prompt="t")
+    saved.add_user_message("before the restart")
+    tp.save_transcript("sub_old_1", {
+        **saved.serialize_transcript(),
+        "metadata": {"parent_session_id": "parent-1", "project_session_id": "parent-1"},
+    })
+
+    state = _BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    sess = _BridgeSession("sub_old_1", workspace=str(tmp_path), model_id="claude-sonnet-5-5",
+                          reasoning_level="auto", coordination_strategy="bus", state=state)
+
+    async def _initialize():
+        sess.session = Session.create(system_prompt="t", session_id=sess.id,
+                                      on_message_appended=sess._append_raw_message_log)
+        sess.provider = SimpleNamespace(name="anthropic", model_id="claude-sonnet-5-5",
+                                        context_window=200_000)
+        sess._bridge_loop = asyncio.get_running_loop()
+
+    sess.initialize = _initialize
+    sess._restore_goal_state = lambda: False
+    sess._restore_inbox = lambda: None
+
+    with patch("bridge.freyja_bridge.emit"):
+        assert await sess.try_restore_transcript()
+    # It still shares the parent's project dir for what it makes.
+    assert sess.project_output_dir == tmp_path / ".freyja" / "projects" / "parent-1"
+    sess.session.add_user_message("after the restart")
+    sess._append_compaction_log({"ts": 1.0, "subtype": "compaction_complete", "summary_text": "S"})
+
+    parent_dir = tmp_path / ".freyja" / "projects" / "parent-1"
+    assert not (parent_dir / "raw_messages.jsonl").exists()
+    assert not (parent_dir / "compactions.jsonl").exists()
+    log = tmp_path / "sessions" / "sub_old_1.raw_messages.jsonl"
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [r["message"]["content"] for r in rows] == ["after the restart"]
+    compactions = tmp_path / "sessions" / "sub_old_1.compactions.jsonl"
+    assert json.loads(compactions.read_text(encoding="utf-8"))["summary_text"] == "S"
