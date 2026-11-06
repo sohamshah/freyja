@@ -1613,8 +1613,24 @@ Parameters:
         agent_type_name = agent_type.name
         parent_session_id_local = self._spec.parent_session_id
         turn_counter = {"n": 0}
+        child_loop = asyncio.get_running_loop()
 
         def _on_sub_llm_call(payload: dict[str, Any]) -> None:
+            # Compaction reports its summary calls from worker threads (late,
+            # when a summary outlives its deadline), while the loop reports
+            # the child's own calls. The counts below read, add and write
+            # back, so they are kept on the loop, as the parent's are.
+            if child_loop.is_running():
+                try:
+                    running = asyncio.get_running_loop()
+                except RuntimeError:
+                    running = None
+                if running is not child_loop:
+                    try:
+                        child_loop.call_soon_threadsafe(_on_sub_llm_call, payload)
+                        return
+                    except RuntimeError:  # closed while we looked
+                        pass
             try:
                 from bridge.compaction_telemetry import append_telemetry
                 from engine.providers import compute_cost
