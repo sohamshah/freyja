@@ -6684,7 +6684,10 @@ class _BridgeSession:
             safe_id = "".join(
                 c for c in self.id if c.isalnum() or c in ("-", "_", ".")
             )[:120]
-            root = Path.home() / ".freyja" / "sessions" / "compactions"
+            # Where transcript_persistence reads them back (forks).
+            from bridge.transcript_persistence import SESSIONS_DIR
+
+            root = SESSIONS_DIR / "compactions"
             root.mkdir(parents=True, exist_ok=True)
             stamp = int(time.time() * 1000)
             base = root / f"{safe_id}-{stamp}-{phase}"
@@ -11147,28 +11150,7 @@ class _BridgeSession:
                     self._compaction_in_flight = True
                 elif subtype in ("compaction_complete", "compaction_skipped"):
                     self._compaction_in_flight = False
-                # Snapshot the transcript on the boundary events so the
-                # operator can always inspect what got summarized.
-                # Universal across triggers (Gap 3).
-                if subtype in ("compaction_start", "compaction_complete"):
-                    try:
-                        from engine.compaction import SummaryCompaction
-
-                        phase = "before" if subtype == "compaction_start" else "after"
-                        request_tokens = int(
-                            details.get("tokens_before")
-                            if phase == "before"
-                            else details.get("tokens_after")
-                            or 0
-                        )
-                        self._write_compaction_snapshot(
-                            phase=phase,
-                            compactor=SummaryCompaction(),
-                            request_tokens=request_tokens,
-                            provider_context_tokens=self._last_provider_context_tokens(),
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
+                self._snapshot_compaction_boundary(subtype, details)
                 # Gap 6: persist the transcript IMMEDIATELY after a
                 # successful compaction so the on-disk view matches
                 # the JSONL row we just wrote. Without this, a crash
@@ -11188,6 +11170,32 @@ class _BridgeSession:
                     self._last_compaction_turn_id = self.current_turn_id
         except Exception as exc:  # noqa: BLE001
             log("error", f"on_system_event error: {exc}")
+
+    def _snapshot_compaction_boundary(self, subtype: Any, details: dict[str, Any]) -> None:
+        """Snapshot the transcript on a compaction's start and end events, so
+        the operator can always inspect what got summarized and a fork at a
+        summarized message is cut from the messages as written. Universal
+        across triggers (Gap 3)."""
+        if subtype not in ("compaction_start", "compaction_complete"):
+            return
+        try:
+            from engine.compaction import SummaryCompaction
+
+            phase = "before" if subtype == "compaction_start" else "after"
+            request_tokens = int(
+                details.get("tokens_before")
+                if phase == "before"
+                else details.get("tokens_after")
+                or 0
+            )
+            self._write_compaction_snapshot(
+                phase=phase,
+                compactor=SummaryCompaction(),
+                request_tokens=request_tokens,
+                provider_context_tokens=self._last_provider_context_tokens(),
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def _mirror_compaction_event(
         self, subtype: str, details: dict[str, Any]
@@ -12454,6 +12462,11 @@ class _BridgeSession:
                 self._compaction_in_flight = False
         except Exception:  # noqa: BLE001
             pass
+        # Snapshot the transcript as the runtime's compactions do. The
+        # cheap scopes summarize nothing.
+        details = event.get("details") or {}
+        if details.get("scope") not in ("tool_results_only", "exploration_only"):
+            self._snapshot_compaction_boundary(event.get("subtype"), details)
         # If this is a compaction system_event, mirror to the existing
         # telemetry path so the dashboard's trigger/savings surfaces
         # pick it up (matches the existing _on_system_event mirror).

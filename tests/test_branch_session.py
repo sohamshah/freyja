@@ -744,6 +744,67 @@ async def test_branch_at_a_summarized_message_without_a_snapshot_says_why(sessio
     assert not [p for p in sessions_dir.iterdir() if "-branch-" in p.name]
 
 
+class _SummaryProvider:
+    name = "anthropic"
+    model_id = "claude-sonnet-5-5"
+    context_window = 200_000
+
+    def complete(self, messages, **_kw):
+        from engine.providers import APIUsage, ProviderResponse
+
+        return ProviderResponse(
+            content="<summary>We read the files.</summary>",
+            stop_reason="end_turn",
+            usage=APIUsage(input_tokens=20_000, output_tokens=800),
+        )
+
+
+async def test_fork_at_a_message_summarize_context_folded_in_is_cut_from_its_snapshot(monkeypatch, tmp_path):
+    # The agent's own compaction snapshots the transcript as the
+    # runtime's do, so a fork at a message it summarized has it as written.
+    import sys
+    import time
+    from types import ModuleType
+
+    import bridge.freyja_bridge as fb
+    from bridge.tools.summarize_context_tool import SummarizeContextTool
+    from engine.compaction import SummaryCompaction
+    from engine.session import Session, TranscriptManager
+    from engine.types import Message
+
+    monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path / "sessions")
+    telemetry = ModuleType("bridge.compaction_telemetry")
+    telemetry.append_telemetry = lambda *_a, **_k: None
+    monkeypatch.setitem(sys.modules, "bridge.compaction_telemetry", telemetry)
+    monkeypatch.setattr(fb, "emit", lambda _ev: None)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    sess = fb._BridgeSession("s", workspace=str(tmp_path), model_id="claude-sonnet-5-5",
+                             reasoning_level="auto", coordination_strategy="bus", state=state)
+    sess._append_compaction_log = lambda _row: None
+    transcript = TranscriptManager()
+    for i in range(16):
+        transcript.append_message(Message(role=("user", "assistant")[i % 2], content=f"m{i} " + "x" * 2_000))
+    t0 = time.time() - 100
+    for i, e in enumerate(transcript.entries):
+        e.timestamp = t0 + i
+    sess.session = Session(id="s", transcript=transcript, system_prompt="")
+    tool = SummarizeContextTool(
+        get_session=lambda: sess.session,
+        get_provider=_SummaryProvider,
+        get_compactor=SummaryCompaction,
+        on_system_event=sess._emit_summarize_event,
+    )
+
+    result = await tool.execute("sc1", {"scope": "all"})
+
+    assert not result.is_error, result.content
+    assert transcript.entries[0].summarized_through >= t0 + 1
+    sess._save_transcript()
+    # A fork before m1, which the summary folded in.
+    assert tp.clone_transcript("s", "f1", cutoff_ts=t0 + 0.99)
+    assert [e["message"]["content"][:3] for e in tp.load_transcript("f1")["transcript"]["entries"]] == ["m0 "]
+
+
 # ── compaction records a fork keeps ────────────────────────────────────
 
 
