@@ -251,3 +251,28 @@ async def test_a_run_stopped_as_its_turn_is_dispatched_is_cancelled(operator_ses
     run = await asyncio.wait_for(fire, 10)
 
     assert (run.status, run.output_text, run.delivery_reports) == ("cancelled", "", [])
+
+
+# ─── a turn that fails before its prompt reaches the transcript ───────
+
+
+async def test_a_run_whose_turn_fails_before_its_prompt_is_added_has_no_earlier_reply(operator_session):
+    # The run read the last reply in the transcript as its turn ended: the
+    # turn before its own, which it delivered as its output.
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.session.add_user_message("how is the build?")
+    sess.session.add_assistant_message("The build is green")
+
+    class _Broken:
+        usage = sess.runner.usage
+
+        async def run(self, session, message, stream=True):
+            raise RuntimeError("the request could not be built")
+
+    sess.runner = _Broken()
+
+    run = await asyncio.wait_for(fire_job(_Service({"s1": sess}), _job()), 10)
+
+    assert (run.status, run.output_text, run.delivery_reports) == ("failed", "", [])

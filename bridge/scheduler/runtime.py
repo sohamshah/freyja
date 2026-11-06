@@ -1080,14 +1080,16 @@ def _load_skill_bodies(service: "SchedulerService", skill_names: list[str]) -> l
 # ─── Output capture ────────────────────────────────────────────────────
 
 
-def _extract_last_assistant_text(sess: Any) -> tuple[str, int]:
+def _extract_last_assistant_text(sess: Any, before: set[str] | None = None) -> tuple[str, int]:
     """Pull the agent's final response off the session transcript.
 
     Walks back from the tail until we find an assistant message. The
     text is concatenated content of all TextBlocks in that message.
     Returns ``(text, iteration_count)`` where iteration_count is the
     number of assistant messages emitted during the trailing scheduled
-    fire (a proxy for runner iterations within this turn)."""
+    fire (a proxy for runner iterations within this turn). The walk
+    stops at the entries in ``before``, the transcript as the turn
+    started: a turn that added no reply has none."""
     inner = getattr(sess, "session", None)
     if inner is None:
         return "", 0
@@ -1101,6 +1103,8 @@ def _extract_last_assistant_text(sess: Any) -> tuple[str, int]:
     assistant_count = 0
     final_text = ""
     for e in reversed(entries):
+        if before is not None and getattr(e, "id", None) in before:
+            break
         msg = getattr(e, "message", None)
         if msg is None:
             continue
@@ -1164,6 +1168,7 @@ class _RunCost:
         self.stopped = False
         self.error: str | None = None
         self._sess = sess
+        self._entries_before: set[str] | None = None
         self.reply: tuple[str, int] | None = None
 
     def our_turn_starts(self) -> None:
@@ -1208,6 +1213,10 @@ class _RunCost:
         if kind == "turn_start":
             if ours or (self._turns and event.get("automatic")):
                 self._turns.add(event.get("turnId"))
+                # Its reply is what it adds. A turn that failed before its
+                # prompt reached the transcript has none: the last reply
+                # there was the turn's before it, delivered as the run's.
+                self._entries_before = _entry_ids(self._sess)
             if ours:
                 self._prompt_runs = False
         elif kind == "turn_complete" and event.get("stopped") and event.get("turnId") in self._turns:
@@ -1218,7 +1227,7 @@ class _RunCost:
             self.stopped = True
             stop_run_now(self._run_id)
         elif kind == "turn_complete" and event.get("turnId") in self._turns:
-            self.reply = _extract_last_assistant_text(self._sess)
+            self.reply = _extract_last_assistant_text(self._sess, self._entries_before)
         elif kind == "turn_stopped" and ours and self._prompt_runs:
             # The run's turn was stopped before it said turn_start, so it said
             # nothing (turn_stopped comes from the task that ran it). The run
