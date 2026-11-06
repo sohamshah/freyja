@@ -196,6 +196,20 @@ await check("a Slack session's events keep the stamps the gateway gave them", as
   assert.deepEqual(systemEvents.map((e) => e.at), [1788996060123])
 })
 
+await check("a Slack session's activity keeps its newest events", async () => {
+  // It shows at most 200; a long thread has more, and the newest matter.
+  const sessionsDir = path.join(home, '.freyja', 'sessions')
+  const line = (i) => JSON.stringify({ type: 'system_event', sessionId: 'freyja:slack:T1:channel:C1:1.0', subtype: 'note', message: `event ${i}`, _t: 1788996000000 + i })
+  fs.writeFileSync(
+    path.join(sessionsDir, 'freyja_slack_T1_channel_C1_1.0.events.jsonl'),
+    Array.from({ length: 250 }, (_, i) => line(i)).join('\n') + '\n',
+  )
+  const { loadSession } = await import('./src/main/persistence.ts')
+  const { systemEvents } = loadSession('freyja:slack:T1:channel:C1:1.0').slice
+  assert.equal(systemEvents.length, 200)
+  assert.deepEqual([systemEvents[0].message, systemEvents.at(-1).message], ['event 50', 'event 249'])
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

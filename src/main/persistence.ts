@@ -807,8 +807,8 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
   // understands. We surface log + system_event + error events as
   // narrator lines; skip the high-volume stream events (text_delta,
   // thinking_delta) because they're already captured in messages
-  // and would flood the activity feed. Cap to a reasonable rolling
-  // window so the JSON payload sent to the renderer stays manageable.
+  // and would flood the activity feed. Keep a rolling window of the
+  // newest so the JSON payload sent to the renderer stays manageable.
   const systemEvents: Array<{
     id: string
     subtype: string
@@ -855,8 +855,8 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
       at: Number(ev._t ? ev._t : Date.now()),
       ...(details ? { details } : {}),
     })
-    if (systemEvents.length >= SYSTEM_EVENT_CAP) break
   }
+  systemEvents.splice(0, Math.max(0, systemEvents.length - SYSTEM_EVENT_CAP))
 
   // Build a slice containing ALL fields required by SessionSlice
   // (see ``src/renderer/state/store.ts:73``). Missing required fields
