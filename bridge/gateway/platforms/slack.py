@@ -614,25 +614,9 @@ class SlackAdapter:
         # `assistant_thread_context_changed` pair, which Slack no longer
         # sends now that the app is on agent_view.
         @self._app.event("app_context_changed")
-        async def _on_app_context_changed(event, say):  # noqa: ARG001
+        async def _on_app_context_changed(event, body, say):  # noqa: ARG001
             try:
-                context = (event or {}).get("context") or {}
-                entities = context.get("entities") or []
-                team_id = (event or {}).get("team_id") or self._bot_user_id or "_"
-                user_id = (event or {}).get("user") or "_"
-                if entities:
-                    if (
-                        len(self._app_context) >= self._APP_CONTEXT_MAX
-                        and (team_id, user_id) not in self._app_context
-                    ):
-                        # Bounded cache: this runs for the life of the
-                        # daemon, so evict rather than grow forever.
-                        self._app_context.pop(next(iter(self._app_context)), None)
-                    self._app_context[(team_id, user_id)] = entities
-                else:
-                    # Empty context == user focused nothing we can name.
-                    # Drop the stale entry rather than keep a lie around.
-                    self._app_context.pop((team_id, user_id), None)
+                self._handle_app_context_changed(event or {}, body)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[slack] app_context_changed ignored: %s", exc)
 
@@ -2663,6 +2647,35 @@ class SlackAdapter:
         if method == "archive":
             self.bindings.remove_code_channel(channel_id)
         return SendResult(ok=bool(data.get("ok", True)), message_id=channel_id, raw=data)
+
+    def _handle_app_context_changed(
+        self, event: dict[str, Any], body: dict[str, Any] | None = None
+    ) -> None:
+        """Remember what someone on the allowlist is looking at. Only the
+        operator's turns read it, and the cache drops its oldest entry
+        when full, so anyone else's view would only push theirs out."""
+        entities = (event.get("context") or {}).get("entities") or []
+        # Keyed like the readers look it up: by workspace, never by the
+        # bot's user id when the event names no team.
+        team_id = self._team_for(event, "") or "_"
+        user_id = str(event.get("user") or "")
+        if not self.slack_config.user_allowed(
+            team_id, user_id, self._user_team(event, body)
+        ):
+            return
+        if entities:
+            if (
+                len(self._app_context) >= self._APP_CONTEXT_MAX
+                and (team_id, user_id) not in self._app_context
+            ):
+                # Bounded cache: this runs for the life of the
+                # daemon, so evict rather than grow forever.
+                self._app_context.pop(next(iter(self._app_context)), None)
+            self._app_context[(team_id, user_id)] = entities
+        else:
+            # Empty context == user focused nothing we can name.
+            # Drop the stale entry rather than keep a lie around.
+            self._app_context.pop((team_id, user_id), None)
 
     def describe_app_context(self, team_id: str, user_id: str) -> str:
         """Render what this operator last had open, for the prompt.
