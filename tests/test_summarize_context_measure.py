@@ -201,3 +201,44 @@ def _wired_tool(sess):
         summarize_context_on_system_event=sess._emit_summarize_event,
     )
     return registry._tools["summarize_context"]  # noqa: SLF001
+
+
+async def test_the_agents_summary_event_and_rows_carry_the_summary_fields(telemetry_rows, tmp_path, monkeypatch):
+    """The runtime's compaction events carry summary_tokens and
+    summarizer_duration_ms (Runner._compaction_event_details), and their rows
+    keep them with resumed_from_previous. The agent's event left out the first
+    two and its telemetry row all three, though the compactor's result has
+    them."""
+    import bridge.freyja_bridge as fb
+    from bridge.tools.summarize_context_tool import SummarizeContextTool
+
+    dispatch = SummarizeContextTool._dispatch
+    results = []
+
+    def _dispatch(self, *args, **kwargs):
+        result = dispatch(self, *args, **kwargs)
+        result.summarizer_duration_ms = 4_321
+        result.resumed_from_previous = True
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(SummarizeContextTool, "_dispatch", _dispatch)
+    sess = _bridge_session(tmp_path)
+    logged: list[dict] = []
+    sess._append_compaction_log = logged.append
+
+    with patch.object(fb, "emit") as emitted:
+        result = await _tool(sess, []).execute("sc1", {"scope": "all"})
+
+    assert not result.is_error, result.content
+    [compacted] = results
+    assert compacted.summary_tokens > 0
+    fields = (compacted.summary_tokens, 4_321)
+    [done] = [c.args[0]["details"] for c in emitted.call_args_list
+              if c.args[0].get("subtype") == "compaction_complete"]
+    assert (done.get("summary_tokens"), done.get("summarizer_duration_ms")) == fields
+    [row] = [r for r in telemetry_rows if r.get("subtype") == "compaction_complete"]
+    assert (row.get("summary_tokens"), row.get("summarizer_duration_ms"),
+            row.get("resumed_from_previous")) == (*fields, True)
+    [log_row] = [r for r in logged if r.get("subtype") == "compaction_complete"]
+    assert (log_row.get("summary_tokens"), log_row.get("resumed_from_previous")) == (fields[0], True)

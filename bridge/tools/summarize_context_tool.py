@@ -495,7 +495,9 @@ class SummarizeContextTool:
                 "summarizer_input_tokens": getattr(result, "summarizer_input_tokens", 0),
                 "summarizer_cache_read_tokens": getattr(result, "summarizer_cache_read_tokens", 0),
                 "summarizer_output_tokens": getattr(result, "summarizer_output_tokens", 0),
+                "summarizer_duration_ms": getattr(result, "summarizer_duration_ms", 0),
                 "summarizer_cost_usd": getattr(result, "summarizer_cost_usd", None),
+                "summary_tokens": getattr(result, "summary_tokens", 0),
                 "reason": reason or None,
                 # Excerpt for the inline glance, FULL text for the
                 # expand panel and dashboard detail view.

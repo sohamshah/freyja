@@ -48,10 +48,9 @@ when the writer leaves it out):
     compactions) and append_subagent_compaction (a sub-agent's) write all
     but ineffective_run: null, or 0 for a count, where the event carried
     none. _emit_summarize_event (the agent's summarize_context) also leaves
-    out trigger_tokens, trigger_pressure_pct, omitted_images, summary_tokens,
-    resumed_from_previous and summarizer_duration_ms. The runner's thrash
-    detector writes session_id, subtype, mechanism, trigger, tokens_before,
-    tokens_after and ineffective_run.
+    out trigger_tokens, trigger_pressure_pct and omitted_images. The
+    runner's thrash detector writes session_id, subtype, mechanism, trigger,
+    tokens_before, tokens_after and ineffective_run.
 
   type: 'llm_call_metric'
     session_id, turn_id, agent_type, parent_session_id, model,

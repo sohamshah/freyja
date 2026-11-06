@@ -233,7 +233,7 @@ summary_text               <full text, or null>
 ts                         <unix epoch float>
 ```
 
-Path C writes a shorter row from `_emit_summarize_event`, without `trigger_tokens`, `trigger_pressure_pct`, `summary_tokens`, `resumed_from_previous` and `summarizer_duration_ms`. Before 2026-11-06 it had no window or pressure fields either.
+Path C writes a shorter row from `_emit_summarize_event`, without `trigger_tokens`, `trigger_pressure_pct` and `omitted_images`. Before 2026-11-06 it had no window or pressure fields, and no `summary_tokens`, `resumed_from_previous` or `summarizer_duration_ms`: the agent's event carried neither the summary's size nor the summary call's duration.
 
 ### `pressure_signal`
 
