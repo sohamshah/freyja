@@ -711,6 +711,108 @@ await check('a sub-agent with only recovered rows has them in its recall drawer'
   assert.deepEqual(persistence.readRecall(only, 'read it').rows.map((row) => row.text), ['the child read it'])
 })
 
+console.log('\nthe recall drawer on a long log')
+// The largest raw log is 96 MB, and the drawer read every log whole. It reads
+// one line at a time now, and a single log from the end, stopping at the rows
+// it shows.
+await check('it reads a single log from the end and stops at the rows it shows', () => {
+  const longId = 'session-long'
+  const dir = path.join(home, '.freyja', 'projects', longId)
+  fs.mkdirSync(dir, { recursive: true })
+  const log = path.join(dir, 'raw_messages.jsonl')
+  const fd = fs.openSync(log, 'w')
+  for (let i = 0; i < 2_000; i++) {
+    const row = { ts: 1_700_000_000 + i, session_id: longId, turn_id: null, message: { role: 'user', content: `<row ${i}> ` + 'x'.repeat(10_000) } }
+    fs.writeSync(fd, JSON.stringify(row) + '\n')
+  }
+  fs.closeSync(fd)
+  const size = fs.statSync(log).size
+  let read = 0
+  const readSync = fs.readSync
+  fs.readSync = (...args) => {
+    const n = readSync(...args)
+    read += n
+    return n
+  }
+  try {
+    const recent = persistence.readRecall(longId)
+    assert.equal(recent.rows.length, 200)
+    assert.deepEqual([recent.rows[0].text.slice(0, 10), recent.rows[199].text.slice(0, 10)], ['<row 1800>', '<row 1999>'])
+    assert.ok(read < size / 4, `read ${read} of ${size} bytes`)
+    read = 0
+    // The newest 200 rows match. A query fewer rows match reads all of the log.
+    const found = persistence.readRecall(longId, '<row 1')
+    assert.deepEqual([found.rows.length, found.rows[0].ts], [200, 1_700_001_800_000])
+    assert.ok(read < size / 4, `read ${read} of ${size} bytes`)
+  } finally {
+    fs.readSync = readSync
+  }
+})
+
+// What the drawer showed when it read every row: the live logs and the
+// recovered rows merged by time, a recovered row with a call or result a live
+// row has left out, the matching rows, the newest 200.
+function recallByReadingEveryRow(id, query) {
+  const logs = record.rawLogPathsFor(id).map((p) => record.readJsonl(p))
+  const live = new Set(logs.flatMap((log) => log.flatMap(record.messageKeys)))
+  const recovered = record.recoveredRows(id).filter((row) => !record.messageKeys(row).some((k) => live.has(k)))
+  const q = (query ?? '').trim().toLowerCase()
+  const out = []
+  for (const row of record.mergeByTime([...logs, recovered])) {
+    const msg = row?.message ?? {}
+    const text = typeof msg.content === 'string' ? msg.content
+      : Array.isArray(msg.content) ? msg.content.map((b) => b?.text).filter(Boolean).join('\n') : ''
+    if (q && !text.toLowerCase().includes(q)) continue
+    out.push([typeof msg.role === 'string' ? msg.role : '', row?.turn_id ?? null, text])
+  }
+  return out.slice(-200)
+}
+await check('what it shows is what reading every row showed', () => {
+  let seed = 1
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31)
+  const pickOne = (xs) => xs[Math.floor(rnd() * xs.length)]
+  const words = ['Needle', 'needle', 'hay', 'K' + String.fromCharCode(0x212a), 'stra' + String.fromCharCode(0xdf) + 'e',
+    'q"uote', 'back\\slash', 'line\nbreak', 'sep' + String.fromCharCode(0x2028) + 'arator', 'a/b', 'NEEDLE in']
+  // As Python writes a row with a lone surrogate: every character past ASCII escaped.
+  const asciiOnly = (s) => s.replace(/[^\x00-\x7f]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))
+  const row = (i, recovered) => {
+    const text = Array.from({ length: Math.floor(rnd() * 6) }, () => pickOne(words)).join(' ')
+    const call = `c${Math.floor(rnd() * 30)}`
+    const kind = rnd()
+    const message = kind < 0.3 ? { role: 'assistant', content: [{ type: 'text', text }], tool_calls: [{ id: call, name: 'bash', arguments: {} }] }
+      : kind < 0.6 ? { role: 'tool_result', tool_call_id: call, content: text }
+      : { role: pickOne(['user', 'assistant']), content: text }
+    const json = JSON.stringify({ ts: Math.floor(rnd() * 40) + pickOne([0, 0.5]), turn_id: `t${i}`, message, ...(recovered ? { recovered: true } : {}) })
+    return rnd() < 0.2 ? asciiOnly(json) : json
+  }
+  const logText = (n, recovered = false) => {
+    const lines = Array.from({ length: n }, (_, i) => row(i, recovered))
+    if (!recovered && rnd() < 0.8) lines.sort((a, b) => JSON.parse(a).ts - JSON.parse(b).ts)
+    for (const odd of ['{"ts": 3, "cut short', '{}', '[1, 2]', '']) {
+      if (rnd() < 0.2) lines.splice(Math.floor(rnd() * (lines.length + 1)), 0, odd)
+    }
+    return lines.join('\n') + (rnd() < 0.7 ? '\n' : '')
+  }
+  for (let n = 0; n < 150; n++) {
+    const id = `sub_19e00000rnd_${n}`
+    const sidecar = path.join(sessionsDir, `${id}.raw_messages.jsonl`)
+    const projectLog = path.join(home, '.freyja', 'projects', id, 'raw_messages.jsonl')
+    const recovered = path.join(sessionsDir, `${id}.raw_messages.recovered.jsonl`)
+    const shape = pickOne(['one', 'one', 'two', 'recovered', 'only recovered'])
+    if (shape !== 'only recovered') fs.writeFileSync(sidecar, logText(Math.floor(rnd() * 400)))
+    if (shape === 'two') {
+      fs.mkdirSync(path.dirname(projectLog), { recursive: true })
+      fs.writeFileSync(projectLog, logText(Math.floor(rnd() * 200)))
+    }
+    if (shape.includes('recovered')) fs.writeFileSync(recovered, logText(1 + Math.floor(rnd() * 30), true))
+    for (const query of ['', 'needle', 'NEEDLE in', 'k', 'a/b', 'q"u', 'back\\s', String.fromCharCode(0x212a), 'line\nbr', 'zz']) {
+      const shown = persistence.readRecall(id, query || undefined)
+      assert.equal(shown.ok, true, JSON.stringify(shown))
+      assert.deepEqual(shown.rows.map((r) => [r.role, r.turn_id, r.text]), recallByReadingEveryRow(id, query), `${shape} ${n} ${JSON.stringify(query)}`)
+    }
+  }
+})
+
 console.log('\nthe download button')
 await check('it saves the live session first, then asks main to write the file', async () => {
   const calls = []

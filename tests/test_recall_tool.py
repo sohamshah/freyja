@@ -232,3 +232,178 @@ async def test_a_sub_agent_with_only_recovered_rows_is_searched(_home):
     res = json.loads((await tool.execute("c1", {"action": "search", "query": "needle"})).content)
     assert [r["snippet"] for r in res["results"]] == ["the child's recovered needle"]
     assert "sub_r_3.raw_messages.recovered.jsonl" in res["archive"]
+
+
+# ─── A long log is read a line at a time ──────────────────────────────
+#
+# The largest raw log is 96 MB, and recall read every log whole, on every
+# call. It reads one line at a time now, and a search of a single log reads
+# it from the end and stops at the newest matches.
+
+
+async def test_recall_reads_a_long_log_a_line_at_a_time(tmp_path):
+    import tracemalloc
+
+    rows = [_said(i, f"<row {i}> " + "x" * 10_000) for i in range(1_000)]
+    _jsonl(tmp_path / "raw_messages.jsonl", rows)
+    tool = RecallTool(session_id="s1", project_output_dir=tmp_path)
+    for args, first in (
+        ({"action": "search", "query": "<row 999>"}, "<row 999>"),
+        ({"action": "search", "query": "<row 3>"}, "<row 3>"),
+        ({"action": "timeline", "limit": 2}, "<row 998>"),
+    ):
+        tracemalloc.start()
+        res = await tool.execute("c1", args)
+        peak = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+        results = json.loads(res.content)["results"]
+        assert (results[0].get("snippet") or results[0].get("first_line")).startswith(first)
+        # The log is 10 MB.
+        assert peak < 4 * 2**20, (args, peak)
+
+
+async def test_a_row_holding_a_line_separator_is_found(tmp_path):
+    # Text from web pages can hold U+2028. The bridge writes it as it is
+    # (ensure_ascii=False), and splitting the file on it cut the row in two.
+    row = json.dumps(_said(1, "a page\u2028with the needle"), ensure_ascii=False)
+    (tmp_path / "raw_messages.jsonl").write_text(row + "\n", encoding="utf-8")
+    tool = RecallTool(session_id="s1", project_output_dir=tmp_path)
+    assert await _search(tool, "needle") == ["a page\u2028with the needle"]
+
+
+def _reference(logs, recovered, action, query, limit):
+    """What recall returns, from every row held in memory: each log in its
+    own order and the recovered rows sorted, merged by time, a live row first
+    on a tie, and a recovered row with a call or result a live row has left
+    out."""
+    import heapq
+
+    from bridge.tools.recall_tool import _snippet
+
+    def rows(text):
+        out = []
+        for line in text.split("\n"):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                out.append(row)
+        return out
+
+    def msg(row):
+        return row.get("message") or {}
+
+    def keys(row):
+        out = {f"call:{c['id']}" for c in msg(row).get("tool_calls") or []}
+        if msg(row).get("role") == "tool_result":
+            out.add(f"result:{msg(row)['tool_call_id']}")
+        return out
+
+    def text(row):
+        return _message_text(msg(row))
+
+    def ts(row):
+        return row.get("ts") if isinstance(row.get("ts"), (int, float)) else 0
+
+    logs = [rows(t) for t in logs]
+    live = set().union(*(keys(r) for log in logs for r in log))
+    kept = [r for r in sorted(rows(recovered), key=ts) if not keys(r) & live]
+    timeline = list(heapq.merge(*logs, kept, key=ts))
+    if action == "timeline":
+        return len(timeline), [
+            (r.get("turn_id"), msg(r).get("role"),
+             (text(r).strip().splitlines() or [""])[0][:160])
+            for r in timeline[-limit:]
+        ]
+    hits = [
+        (r.get("turn_id"), msg(r).get("role"), r.get("ts"), _snippet(text(r), query))
+        for r in timeline
+        if query.lower() in text(r).lower()
+    ]
+    return len(hits[-limit:]), hits[-limit:]
+
+
+@pytest.mark.parametrize("seed", range(40))
+async def test_a_streamed_recall_returns_what_reading_every_row_returns(
+    tmp_path, monkeypatch, seed
+):
+    import random
+
+    rnd = random.Random(seed)
+    words = [
+        "Needle", "needle", "hay", "K\u212a", "stra\u00dfe", 'q"uote', "back\\slash",
+        "line\nbreak", "sep\u2028arator", "\ud835", "a/b", "NEEDLE in",
+    ]
+
+    def row(ts, i, recovered=False):
+        text = " ".join(rnd.choice(words) for _ in range(rnd.randint(0, 6)))
+        kind = rnd.random()
+        call = f"c{rnd.randint(0, 30)}"
+        if kind < 0.3:
+            msg = {"role": "assistant", "content": [{"type": "text", "text": text}],
+                   "tool_calls": [{"id": call, "name": "bash", "arguments": {}}]}
+        elif kind < 0.6:
+            msg = {"role": "tool_result", "tool_call_id": call, "content": text}
+        else:
+            msg = {"role": rnd.choice(["user", "assistant"]), "content": text}
+        out = {"ts": ts, "turn_id": f"t{i}", "message": msg}
+        if recovered:
+            out["recovered"] = True
+        return json.dumps(out, ensure_ascii=rnd.random() < 0.2)
+
+    def log(n, recovered=False):
+        # Stamps that tie, and now and then go backward.
+        stamps = [rnd.choice([rnd.randint(0, 40), rnd.randint(0, 40) + 0.5]) for _ in range(n)]
+        lines = [row(ts, i, recovered) for i, ts in enumerate(stamps)]
+        if not recovered:
+            lines.sort(key=lambda line: json.loads(line)["ts"] if rnd.random() < 0.8 else 0)
+        for odd in ('{"ts": 3, "cut short', "{}", "[1, 2]", ""):
+            if rnd.random() < 0.2:
+                lines.insert(rnd.randint(0, len(lines)), odd)
+        return "\n".join(lines) + ("\n" if rnd.random() < 0.7 else "")
+
+    import bridge.tools.recall_tool as recall_tool
+
+    texts = {}
+    shape = rnd.choice(["one", "one", "two", "recovered", "only recovered"])
+    sidecar = tmp_path / "sessions" / "s1.raw_messages.jsonl"
+    project = tmp_path / "p" / "raw_messages.jsonl"
+    recovered_path = project.with_name("raw_messages.recovered.jsonl")
+    if shape != "only recovered":
+        texts[project] = log(rnd.randint(0, 60))
+    if shape == "two":
+        texts[sidecar] = log(rnd.randint(0, 30))
+    if shape in ("recovered", "only recovered"):
+        texts[recovered_path] = log(rnd.randint(1, 20), recovered=True)
+    for path, text in texts.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", errors="surrogatepass")
+    # Small blocks, so lines cross them.
+    monkeypatch.setattr(recall_tool, "_BLOCK", rnd.choice([7, 64, 1 << 20]), raising=False)
+    tool = RecallTool(session_id="s1")
+    tool._archive_paths = lambda _sid: [sidecar, project]
+
+    def read(path):
+        return path.read_bytes().decode("utf-8", "replace") if path.exists() else ""
+
+    logs = [read(p) for p in (sidecar, project) if p.exists()]
+    recovered = read(recovered_path)
+    for action, query, limit in [
+        ("search", "needle", 12), ("search", "NEEDLE in", 3), ("search", "k", 5),
+        ("search", "a/b", 50), ("search", "q\"u", 4), ("search", "back\\s", 4),
+        ("search", "\u212a", 4), ("search", "line\nbr", 4),
+        ("search", "zz", 4), ("search", "needle", -2), ("timeline", "", 7), ("timeline", "", -3),
+    ]:
+        args = {"action": action, "query": query, "limit": limit}
+        payload = json.loads((await tool.execute("c1", args)).content)
+        count, expected = _reference(logs, recovered, action, query, limit)
+        if "note" in payload:  # nothing archived
+            assert (payload["results"], expected) == ([], []), (shape, action, query)
+            continue
+        if action == "timeline":
+            got = [(r["turn_id"], r["role"], r["first_line"]) for r in payload["results"]]
+            assert (payload["turn_count"], got) == (count, expected), (shape, action, limit)
+        else:
+            got = [(r["turn_id"], r["role"], r["ts"], r["snippet"]) for r in payload["results"]]
+            assert got == expected, (shape, action, query, limit)

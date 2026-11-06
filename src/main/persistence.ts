@@ -8,13 +8,10 @@ import { stripAppshotBlocks } from '../shared/appshot.js'
 import { readCompactionTelemetry } from './telemetryReader.js'
 import {
   LazyObject,
-  mergeByTime,
-  messageKeys,
-  rawLogPathsFor,
+  newestRows,
   readCompactions,
   readJsonl,
   readRawRecord,
-  recoveredRows,
   sanitizeForFsId,
   writeJsonFile,
   writeTextFile,
@@ -1469,38 +1466,32 @@ export function readRecall(
   | { ok: true; rows: Array<{ role: string; turn_id: string | null; ts: number; text: string; snippet: string }> }
   | { ok: false; error: string } {
   try {
-    const logs = rawLogPathsFor(id).map((p) => readJsonl(p))
-    const live = new Set(logs.flatMap((log) => log.flatMap(messageKeys)))
-    const recovered = recoveredRows(id).filter((row) => !messageKeys(row).some((k) => live.has(k)))
-    // Two logs (a sub-agent once opened as a root has both): one timeline.
-    const raw = [...mergeByTime([...logs, recovered])] as Array<{
-      ts: number
-      session_id: string
-      turn_id: string | null
-      message: any
-    }>
     const q = (query ?? '').trim()
-    const out: Array<{ role: string; turn_id: string | null; ts: number; text: string; snippet: string }> = []
-    for (const row of raw) {
-      const msg = row?.message ?? {}
-      const text = flattenMessageContent(msg)
-      if (q && !text.toLowerCase().includes(q.toLowerCase())) continue
-      // raw_messages.jsonl writes ts via Python time.time() = epoch SECONDS,
-      // but the renderer's relativeTime()/Date treats it as epoch MS (matching
-      // the ledger + working memory). Normalize seconds → ms here so the spine
-      // datelines read correctly (a 10-digit ts is seconds; 13-digit is ms).
-      const rawTs = typeof row?.ts === 'number' ? row.ts : 0
-      const ts = rawTs > 0 && rawTs < 1e12 ? Math.round(rawTs * 1000) : rawTs
-      out.push({
-        role: typeof msg.role === 'string' ? msg.role : '',
-        turn_id: row?.turn_id ?? null,
-        ts,
-        text,
-        snippet: recallSnippet(text, q),
-      })
-    }
-    // Keep the most recent matches/turns, newest-last.
-    const rows = out.slice(-RECALL_MAX_ROWS)
+    // Keep the most recent matches/turns, newest-last. A log is read a line at
+    // a time, and only what is returned is kept.
+    const rows = newestRows(
+      id,
+      (raw) => {
+        const row = raw as { ts?: unknown; turn_id?: string | null; message?: any } | null
+        const msg = row?.message ?? {}
+        const text = flattenMessageContent(msg)
+        if (q && !text.toLowerCase().includes(q.toLowerCase())) return undefined
+        // raw_messages.jsonl writes ts via Python time.time() = epoch SECONDS,
+        // but the renderer's relativeTime()/Date treats it as epoch MS (matching
+        // the ledger + working memory). Normalize seconds → ms here so the spine
+        // datelines read correctly (a 10-digit ts is seconds; 13-digit is ms).
+        const rawTs = typeof row?.ts === 'number' ? row.ts : 0
+        const ts = rawTs > 0 && rawTs < 1e12 ? Math.round(rawTs * 1000) : rawTs
+        return {
+          role: typeof msg.role === 'string' ? msg.role : '',
+          turn_id: row?.turn_id ?? null,
+          ts,
+          text,
+          snippet: recallSnippet(text, q),
+        }
+      },
+      RECALL_MAX_ROWS,
+    )
     return { ok: true, rows }
   } catch (err) {
     return { ok: false, error: String(err) }

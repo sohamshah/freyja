@@ -20,6 +20,10 @@ The messages a log is missing (a restore stopped it before 2026-11-06, and a
 sub-agent had none) are in ``raw_messages.recovered.jsonl`` beside it, which
 ``scripts/backfill_raw_messages.py`` writes. recall reads them among the live
 rows, by time, and a live row wins, as exports do (src/main/sessionRecord.ts).
+
+A log can be tens of MB, so it is read a line at a time and only what is
+returned is kept. A search of one log reads it from the end and stops at the
+newest matches.
 """
 
 from __future__ import annotations
@@ -27,6 +31,9 @@ from __future__ import annotations
 import heapq
 import json
 import logging
+import os
+from collections import deque
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 _MAX_SNIPPET = 280
 _DEFAULT_LIMIT = 12
+# A log read from the end is read this many bytes at a time.
+_BLOCK = 1 << 20
 
 
 def _message_text(message: dict[str, Any] | None) -> str:
@@ -88,16 +97,108 @@ def _recovered_path(log: Path) -> Path:
     return log.with_name(log.name.removesuffix(".jsonl") + ".recovered.jsonl")
 
 
-def _by_time(
-    logs: list[list[dict[str, Any]]], recovered: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """One timeline: each live log in its own order, and the recovered rows
+def _parse(line: str) -> dict[str, Any] | None:
+    """A log line's row. None for a blank line, a line an interrupted write
+    cut short, or one that is not an object."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return row if isinstance(row, dict) else None
+
+
+def _lines(path: Path) -> Iterator[str]:
+    """A log's lines, oldest first, one at a time."""
+    with path.open("rb") as fh:
+        for line in fh:
+            yield line.decode("utf-8", "replace")
+
+
+def _lines_newest_first(path: Path) -> Iterator[str]:
+    """A log's lines, newest first, read from the end a block at a time."""
+    with path.open("rb") as fh:
+        end = fh.seek(0, os.SEEK_END)
+        line_end: list[bytes] = []  # the end of the line being read, its last block first
+        while end > 0:
+            start = max(0, end - _BLOCK)
+            fh.seek(start)
+            pieces = fh.read(end - start).split(b"\n")
+            end = start
+            if len(pieces) > 1:
+                yield (pieces[-1] + b"".join(reversed(line_end))).decode("utf-8", "replace")
+                for piece in reversed(pieces[1:-1]):
+                    yield piece.decode("utf-8", "replace")
+                line_end = []
+            line_end.append(pieces[0])
+        yield b"".join(reversed(line_end)).decode("utf-8", "replace")
+
+
+def _newest(
+    logs: list[Path],
+    recovered: list[dict[str, Any]],
+    pick: Callable[[dict[str, Any]], Any],
+    limit: int,
+    *,
+    count_all: bool = False,
+) -> tuple[list[Any], int]:
+    """What ``pick`` makes of the newest ``limit`` rows it takes (``[-limit:]``
+    of them all when ``limit`` < 1), oldest first, and how many of the
+    timeline's rows were read (all of them with ``count_all``).
+
+    The timeline is each live log in its own order and the recovered rows
     sorted, merged by time; on a tie the live row goes first. A recovered row
     whose message a live row also has (the same call, or its result) is left
-    out: the live one stands."""
-    live = set().union(*(_message_keys(row) for log in logs for row in log))
-    kept = [row for row in sorted(recovered, key=_ts) if not (_message_keys(row) & live)]
-    return list(heapq.merge(*logs, kept, key=_ts))
+    out: the live one stands. One log with no recovered rows is the timeline
+    as written, so it is read from the end and the read stops at the
+    ``limit``-th row taken, unless ``count_all``. Otherwise every row is
+    read, a line at a time.
+    """
+    bound = limit if limit > 0 else None
+    items: list[Any] = []
+    count = 0
+    if len(logs) == 1 and not recovered:
+        for line in _lines_newest_first(logs[0]):
+            row = _parse(line)
+            if row is None:
+                continue
+            count += 1
+            if len(items) != bound and (item := pick(row)) is not None:
+                items.append(item)
+                if len(items) == bound and not count_all:
+                    break
+        items.reverse()
+        return items[-limit:], count
+
+    keys = set().union(*map(_message_keys, recovered))
+    held: set[str] = set()  # the ones a live row has too
+    newest: deque[tuple[int, Any]] = deque(maxlen=bound)
+    # Recovered rows a live row may turn out to have, with their keys.
+    held_back: list[tuple[int, Any, set[str]]] = []
+    sources: list[Iterator[tuple[dict[str, Any], bool]]] = [
+        ((row, False) for row in map(_parse, _lines(p)) if row is not None) for p in logs
+    ]
+    sources.append((row, True) for row in sorted(recovered, key=_ts))
+    for position, (row, is_recovered) in enumerate(
+        heapq.merge(*sources, key=lambda pair: _ts(pair[0]))
+    ):
+        own = _message_keys(row)
+        if not is_recovered:
+            held |= own & keys
+        count += 1
+        item = pick(row)
+        if item is None:
+            continue
+        if is_recovered and own:
+            held_back.append((position, item, own))
+        else:
+            newest.append((position, item))
+    count -= sum(1 for row in recovered if _message_keys(row) & held)
+    kept = [(position, item) for position, item, own in held_back if not own & held]
+    items = [item for _position, item in heapq.merge(newest, kept)]
+    return items[-limit:], count
 
 
 def _snippet(text: str, query: str) -> str:
@@ -195,45 +296,43 @@ class RecallTool:
         archives = self._archive_paths(session_id)
         paths = [p for p in archives if p.exists()]
         recovered = [p for p in map(_recovered_path, archives) if p.exists()]
+        path = ", ".join(str(p) for p in paths + recovered) or str(archives[-1])
+        query = str(arguments.get("query") or "").strip()
         try:
-            rows = _by_time(
-                [self._load(p) for p in paths], [row for p in recovered for row in self._load(p)]
-            )
+            # The recovered rows are a transcript's worth at most.
+            recovered_rows = [
+                row for p in recovered for row in map(_parse, _lines(p)) if row is not None
+            ]
+            if action == "timeline":
+                rows, count = _newest(paths, recovered_rows, lambda row: row, limit, count_all=True)
+                empty = not count
+            else:
+                rows = []
+                if query:
+                    rows, _ = _newest(paths, recovered_rows, _hit(query), limit)
+                empty = not rows and not recovered_rows and not any(
+                    _parse(line) is not None for p in paths for line in _lines(p)
+                )
         except Exception as exc:  # noqa: BLE001
             logger.debug("recall load failed", exc_info=True)
             return _err(call_id, f"recall failed to read archive: {exc}")
-        paths += recovered
-        path = ", ".join(str(p) for p in paths) or str(archives[-1])
 
-        if not rows:
+        if empty:
             return _ok(call_id, {
                 "action": action,
                 "archive": path,
-                "exists": bool(paths),
+                "exists": bool(paths or recovered),
                 "results": [],
                 "note": "No archived history found for this session yet.",
             })
 
         if action == "timeline":
-            return self._timeline(call_id, path, rows, limit)
-        return self._search(call_id, path, rows, arguments, limit)
+            return self._timeline(call_id, path, rows, count)
+        return self._search(call_id, path, query, rows)
 
-    def _search(self, call_id, path, rows, arguments, limit) -> ToolResult:
-        query = str(arguments.get("query") or "").strip()
+    def _search(self, call_id, path, query, hits) -> ToolResult:
         if not query:
             return _err(call_id, "search requires a non-empty `query`")
-        hits: list[dict[str, Any]] = []
-        for row in rows:
-            msg = row.get("message") or {}
-            text = _message_text(msg)
-            if query.lower() in text.lower():
-                hits.append({
-                    "turn_id": row.get("turn_id"),
-                    "role": msg.get("role"),
-                    "ts": row.get("ts"),
-                    "snippet": _snippet(text, query),
-                })
-        hits = hits[-limit:]  # most recent matches
         return _ok(call_id, {
             "action": "search",
             "query": query,
@@ -242,9 +341,9 @@ class RecallTool:
             "results": hits,
         })
 
-    def _timeline(self, call_id, path, rows, limit) -> ToolResult:
+    def _timeline(self, call_id, path, rows, count) -> ToolResult:
         out = []
-        for row in rows[-limit:]:
+        for row in rows:
             msg = row.get("message") or {}
             text = _message_text(msg).strip().splitlines()
             out.append({
@@ -255,26 +354,28 @@ class RecallTool:
         return _ok(call_id, {
             "action": "timeline",
             "archive": path,
-            "turn_count": len(rows),
+            "turn_count": count,
             "results": out,
         })
 
-    @staticmethod
-    def _load(path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(row, dict):
-                rows.append(row)
-        return rows
+
+def _hit(query: str) -> Callable[[dict[str, Any]], dict[str, Any] | None]:
+    """A row as a search result, when its text holds ``query``, case aside."""
+    q = query.lower()
+
+    def hit(row: dict[str, Any]) -> dict[str, Any] | None:
+        msg = row.get("message") or {}
+        text = _message_text(msg)
+        if q not in text.lower():
+            return None
+        return {
+            "turn_id": row.get("turn_id"),
+            "role": msg.get("role"),
+            "ts": row.get("ts"),
+            "snippet": _snippet(text, query),
+        }
+
+    return hit
 
 
 def _err(call_id: str, message: str) -> ToolResult:

@@ -116,6 +116,43 @@ export function readJsonl(filePath: string): unknown[] {
   return [...jsonlRows(filePath)]
 }
 
+// A file read from the end is read this many bytes at a time.
+const BLOCK = 1024 * 1024
+
+/** The lines of a file, newest first, read from the end a block at a time. A
+ *  missing file has none. */
+export function* linesNewestFirst(filePath: string): Generator<string> {
+  let fd: number
+  try {
+    fd = fs.openSync(filePath, 'r')
+  } catch {
+    return
+  }
+  try {
+    const block = Buffer.allocUnsafe(BLOCK)
+    // The end of the line being read, a block at a time, in file order.
+    let lineEnd: Buffer[] = []
+    for (let end = fs.fstatSync(fd).size; end > 0; ) {
+      const start = Math.max(0, end - BLOCK)
+      const chunk = block.subarray(0, fs.readSync(fd, block, 0, end - start, start))
+      let stop = chunk.length
+      for (let nl = stop > 0 ? chunk.lastIndexOf(0x0a, stop - 1) : -1; nl !== -1; ) {
+        yield lineEnd.length
+          ? Buffer.concat([chunk.subarray(nl + 1, stop), ...lineEnd]).toString('utf8')
+          : chunk.toString('utf8', nl + 1, stop)
+        lineEnd = []
+        stop = nl
+        nl = stop > 0 ? chunk.lastIndexOf(0x0a, stop - 1) : -1
+      }
+      lineEnd.unshift(Buffer.from(chunk.subarray(0, stop)))
+      end = start
+    }
+    yield Buffer.concat(lineEnd).toString('utf8')
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
 // ─── Cut tool results ───────────────────────────────────────────────
 
 // What the engine appends to a result it cut (engine/tools.py,
@@ -263,6 +300,53 @@ export function messageKeys(row: unknown): string[] {
     keys.push(`result:${message.tool_call_id}`)
   }
   return keys
+}
+
+/**
+ * What `pick` makes of the newest `limit` rows of a session's raw log it
+ * takes, oldest first. The timeline is rawRows', but a recovered row with a
+ * call or result a live row also has is left out: the live one stands.
+ *
+ * One log with no recovered rows is the timeline as written, so it is read
+ * from the end and the read stops at the `limit`-th row taken. Otherwise every
+ * row is read, one at a time.
+ */
+export function newestRows<T>(id: string, pick: (row: unknown) => T | undefined, limit: number): T[] {
+  const logs = rawLogPathsFor(id).filter((p) => fs.existsSync(p))
+  const recovered = recoveredRows(id)
+  if (logs.length === 1 && recovered.length === 0) {
+    const items: T[] = []
+    for (const line of linesNewestFirst(logs[0])) {
+      const row = parseLine(line)
+      const item = row === undefined ? undefined : pick(row)
+      if (item !== undefined && items.push(item) === limit) break
+    }
+    return items.reverse()
+  }
+  const keys = new Set(recovered.flatMap(messageKeys))
+  const isRecovered = new Set(recovered)
+  // Keys of recovered rows a live row has too.
+  const held = new Set<string>()
+  // [position, item]: the newest live rows (at most twice `limit`), and the
+  // recovered rows a live row may turn out to have, with their keys.
+  let newest: Array<[number, T]> = []
+  const heldBack: Array<[number, T, string[]]> = []
+  let position = 0
+  for (const row of mergeByTime([...logs.map((p) => jsonlRows(p)), recovered])) {
+    position++
+    const own = messageKeys(row)
+    const fromRecovered = isRecovered.has(row)
+    if (!fromRecovered) for (const key of own) if (keys.has(key)) held.add(key)
+    const item = pick(row)
+    if (item === undefined) continue
+    if (fromRecovered && own.length) heldBack.push([position, item, own])
+    else if (newest.push([position, item]) >= 2 * limit) newest = newest.slice(-limit)
+  }
+  const kept = heldBack.filter(([, , own]) => !own.some((key) => held.has(key)))
+  return [...newest, ...kept]
+    .sort((a, b) => a[0] - b[0])
+    .slice(-limit)
+    .map(([, item]) => item)
 }
 
 /** Index a session's raw transcript. It keeps each call's arguments and the
