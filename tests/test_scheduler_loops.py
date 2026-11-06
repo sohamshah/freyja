@@ -376,11 +376,12 @@ async def test_a_success_between_failures_keeps_the_job(monkeypatch) -> None:
     assert load_job(job.id).enabled
 
 
-@pytest.mark.parametrize("status", ["expired", "not_started", "cancelled", "interrupted"])
+@pytest.mark.parametrize("status", ["expired", "not_started", "cancelled", "interrupted", "queued"])
 async def test_a_run_without_an_outcome_between_failed_runs_is_passed_over(monkeypatch, status) -> None:
     # It does not count as a failure, and it did not show the job works
     # either: counted as a success, it reset the count, and a job whose
-    # every run failed ran on with a run now that expired between them.
+    # every run failed ran on with a run now that expired between them,
+    # or one whose prompt was queued behind the turn that started it.
     import bridge.scheduler.sinks as sinks
     from bridge.scheduler.service import SchedulerService
 

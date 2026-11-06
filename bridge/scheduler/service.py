@@ -156,11 +156,12 @@ _DID_NOT_COMPLETE_STATUSES = _FAILED_RUN_STATUSES | {"interrupted"}
 
 # Runs that came to no outcome of the job's own: a run now handed over and
 # never started (expired, not_started), one stopped from outside
-# (cancelled), one whose process exited under it (interrupted). None
-# failed, and none showed the job works either, so the count of failed
-# runs in a row passes over them. Taken for a success, each began the
-# count again.
-_RUNS_WITHOUT_AN_OUTCOME = frozenset({"expired", "not_started", "cancelled", "interrupted"})
+# (cancelled), one whose process exited under it (interrupted), one whose
+# prompt was queued behind the turn that started it (queued: the record is
+# the dispatch, and the turn that runs it later has no run). None failed,
+# and none showed the job works either, so the count of failed runs in a
+# row passes over them. Taken for a success, each began the count again.
+_RUNS_WITHOUT_AN_OUTCOME = frozenset({"expired", "not_started", "cancelled", "interrupted", "queued"})
 
 # A run that failed for a passing reason (no network, a timeout, an
 # overloaded provider) says nothing about the job and does not count
