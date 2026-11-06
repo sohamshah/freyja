@@ -83,12 +83,6 @@ async def fire_job(
         details={"jobId": job.id, "runId": run.run_id, "fireNumber": run.fire_number},
     )
 
-    # Snapshot tier for this job onto the bridge tier global. The bridge
-    # session inherits this when it initializes; restoring afterwards
-    # keeps interactive sessions untouched.
-    original_tier = getattr(service.state, "permission_tier", "low")
-    service.state.permission_tier = job.permission_snapshot or original_tier
-
     try:
         sess, sess_id, owns_session = await _resolve_execution_session(service, job)
     except Exception as exc:  # noqa: BLE001
@@ -97,7 +91,6 @@ async def fire_job(
         run.finished_at = time.time()
         run.duration_seconds = run.finished_at - run.started_at
         save_run(run)
-        service.state.permission_tier = original_tier
         service.emit_event(
             subtype="scheduler_run_failed",
             message=f"Scheduled job '{job.name}' failed (execution context)",
@@ -212,7 +205,6 @@ async def fire_job(
             run.finished_at = time.time()
             run.duration_seconds = run.finished_at - run.started_at
             save_run(run)
-            service.state.permission_tier = original_tier
             return run
         if pending is not None:
             # Poll the run JSON for cancel_requested while we wait. A
@@ -323,7 +315,6 @@ async def fire_job(
         run.status = "failed"
         run.error = f"agent turn failed: {exc}"
     finally:
-        service.state.permission_tier = original_tier
         # Clean up loop-control tools so they don't dangle. unregister()
         # drops the catalog entry too: the request's tool list is built
         # from the catalog, so popping only the tool table left them in
@@ -534,6 +525,9 @@ async def _resolve_execution_session(
                 coordination_strategy=job.coordination_strategy,
                 model_id=job.model_id,
             )
+            # A live session keeps its own tier; one this fire brings
+            # back runs at the job's.
+            _apply_job_tier(sess, job)
         return sess, spec.session_id, False
 
     if isinstance(spec, PersistentJobSession):
@@ -546,6 +540,7 @@ async def _resolve_execution_session(
             coordination_strategy=spec.coordination_strategy,
             model_id=spec.model_id or job.model_id,
         )
+        _apply_job_tier(sess, job)
         return sess, spec.session_id, False
 
     # NewSession — use a deterministic id but reset its transcript so
@@ -569,7 +564,21 @@ async def _resolve_execution_session(
             await sess.try_restore_transcript()  # no-op since we just reset
     except Exception:  # noqa: BLE001
         pass
+    _apply_job_tier(sess, job)
     return sess, sess_id, True
+
+
+def _apply_job_tier(sess: Any, job: JobRecord) -> None:
+    """Run ``sess`` at the job's permission tier. Set on the session
+    alone: the process-wide tier is what every other new session takes,
+    and a run used to hold the job's tier there for its whole length."""
+    tier = job.permission_snapshot
+    if not tier:
+        return
+    sess.permission_tier = tier
+    handler = getattr(sess, "permission_handler", None)
+    if handler is not None:
+        handler.set_policy(tier)
 
 
 # ─── Prompt composition ────────────────────────────────────────────────
