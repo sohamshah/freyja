@@ -376,7 +376,7 @@ class SchedulerService:
         # A slot missed while no process ticked is left due when the
         # job's misfire policy catches up, so the tick fires it; under
         # "skip" the recompute moves past it. A slot that waited for the
-        # Mac was not missed and stays due.
+        # Mac was not missed and stays due, as does a resumed one-shot's.
         boot_count = 0
         now = time.time()
         for job in load_all_jobs():
@@ -1426,6 +1426,9 @@ class SchedulerService:
             return
         job.retry_attempt = 0
         job.next_fire_at = slot
+        # Not missed: the user asked for it now. Under skip, a new owner's
+        # boot moved past it, and the one-shot was used up without running.
+        job.waiting_slot = slot
 
     def _recompute_next_fire(
         self,
@@ -1599,7 +1602,8 @@ def _catches_up(job: JobRecord, now: float) -> bool:
 
 def _waits_for_the_mac(job: JobRecord, now: float) -> bool:
     """True when ``job`` is due on a slot that came due while a scheduler
-    ran and waited for the Mac (``waiting_slot``), so it was not missed."""
+    ran and waited for the Mac, or that a resumed one-shot runs late
+    (``waiting_slot``), so it was not missed."""
     return (
         job.enabled
         and job.status == "active"

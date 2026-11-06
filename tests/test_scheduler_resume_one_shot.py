@@ -165,6 +165,22 @@ async def test_a_one_shot_stopped_for_failing_runs_late_when_resumed(service, ho
 
 
 @pytest.mark.parametrize("how", ["resume_job", "enabled=True"])
+async def test_a_resumed_one_shot_under_skip_runs_after_an_owner_restart(service, monkeypatch, how):
+    # Under skip, the boot of a new owner moved past a due slot it took for
+    # one missed while no scheduler ran: the resumed one-shot was used up.
+    job = _reminder(enabled=False, status="paused", misfire_policy="skip")
+    await _resume(service, job.id, how)
+
+    restarted = SchedulerService(service.state)
+    monkeypatch.setattr(restarted, "emit_event", lambda **_kw: None)
+    await restarted.start()
+    assert restarted._is_owner
+    await restarted.stop()
+
+    await _runs_late_once(service, job.id)
+
+
+@pytest.mark.parametrize("how", ["resume_job", "enabled=True"])
 async def test_a_one_shot_that_ran_is_not_resumed_and_says_when_it_ran(service, how):
     job = _reminder()
     job.next_fire_at = DUE

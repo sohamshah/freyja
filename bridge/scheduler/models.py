@@ -445,8 +445,9 @@ class JobRecord:
     next_fire_at: float | None = None
     last_fire_at: float | None = None
     # The slot a due run of the job waits on because the Mac cannot run
-    # it (DarkWake, offline). It was not missed: when the next fire is
-    # still this slot, a restart leaves it due, whatever the misfire policy.
+    # it (DarkWake, offline), or a resumed one-shot's slot, run late. It
+    # was not missed: when the next fire is still this slot, a restart
+    # leaves it due, whatever the misfire policy.
     waiting_slot: float | None = None
     # When the job was last resumed from a pause or a stop. Runs from
     # before do not count toward a stop for failing: counted, the runs
