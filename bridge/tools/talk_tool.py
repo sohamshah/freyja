@@ -22,6 +22,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from engine.tools import Tool, ToolDefinition, ToolResult, ToolTier
@@ -55,6 +56,25 @@ def _gateway_owner_pid() -> int | None:
         return get_running_pid()
     except Exception:  # noqa: BLE001
         return None
+
+
+def _send_talk_deliver(target_id: str, msg: InboxMessage, path: Path | None = None) -> None:
+    """Hand ``msg`` to the process that owns ``target_id``: one talk_deliver
+    line in its control file (the gateway's, or ``path``). Raises when the
+    line is longer than the reader there takes (MAX_LINE_BYTES): it skips
+    such a line, so the message would never arrive while the sender was
+    told it was forwarded."""
+    from bridge.gateway.control_channel import MAX_LINE_BYTES, append_command
+
+    cmd = {"type": "talk_deliver", "to": target_id, "message": msg.to_dict(), "origin_pid": os.getpid()}
+    size = len(json.dumps(cmd, ensure_ascii=False).encode("utf-8"))
+    if size >= MAX_LINE_BYTES:
+        raise ValueError(
+            f"the message is {size / MAX_LINE_BYTES:.2f} MiB, and the control channel "
+            "carries up to 1 MiB. Send a shorter message, or write it to a file "
+            "and send the file's path"
+        )
+    append_command(cmd, path=path)
 
 
 def _session_exists_on_disk(session_id: str) -> bool:
@@ -310,14 +330,7 @@ class TalkRouter:
                 return None  # we are the authority — deliver locally
             if owner is not None:
                 try:
-                    from bridge.gateway.control_channel import append_command
-
-                    append_command({
-                        "type": "talk_deliver",
-                        "to": target_id,
-                        "message": msg.to_dict(),
-                        "origin_pid": os.getpid(),
-                    })
+                    _send_talk_deliver(target_id, msg)
                 except Exception as exc:  # noqa: BLE001
                     return f"forward to gateway daemon failed: {exc}"
                 return (
@@ -352,34 +365,16 @@ class TalkRouter:
         self, target_id: str, msg: InboxMessage, owner: int
     ) -> str:
         try:
-            from bridge.gateway.control_channel import append_command
-
-            append_command({
-                "type": "talk_deliver",
-                "to": target_id,
-                "message": msg.to_dict(),
-                "origin_pid": os.getpid(),
-            })
+            _send_talk_deliver(target_id, msg)
         except Exception as exc:  # noqa: BLE001
             return f"forward to gateway daemon failed: {exc}"
         return f"forwarded to the gateway daemon (pid {owner}) which hosts it"
 
     def _forward_to_desktop(self, target_id: str, msg: InboxMessage) -> str:
         try:
-            from bridge.gateway.control_channel import (
-                append_command,
-                desktop_commands_path,
-            )
+            from bridge.gateway.control_channel import desktop_commands_path
 
-            append_command(
-                {
-                    "type": "talk_deliver",
-                    "to": target_id,
-                    "message": msg.to_dict(),
-                    "origin_pid": os.getpid(),
-                },
-                path=desktop_commands_path(),
-            )
+            _send_talk_deliver(target_id, msg, path=desktop_commands_path())
         except Exception as exc:  # noqa: BLE001
             return f"forward to desktop bridge failed: {exc}"
         return (
