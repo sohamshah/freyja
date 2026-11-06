@@ -631,6 +631,26 @@ async def test_kanban_autopilot_turned_off_stays_off_after_a_gateway_restart(gat
     assert thread.coordination_strategy == "kanban" and not thread.auto_dispatch_enabled
 
 
+async def test_kanban_autopilot_set_before_a_threads_first_message_comes_back_after_a_gateway_restart(
+    gateway, tmp_path,
+):
+    # Saved with a transcript only, and restored from one with entries,
+    # so a thread put in kanban before its first message came back with
+    # autopilot off.
+    daemon, state, _events = gateway
+    await _slash_mode(daemon, "kanban")
+    assert state.sessions[SLACK].auto_dispatch_enabled
+    thread = await _after_a_restart(tmp_path)
+    try:
+        assert thread.coordination_strategy == "kanban" and thread.auto_dispatch_enabled
+    finally:
+        thread._stop_kanban_dispatcher()
+    # Turned off, it stays off.
+    await daemon._on_kanban_command({"type": "kanban_autopilot", "sessionId": SLACK, "enabled": False})
+    thread = await _after_a_restart(tmp_path)
+    assert thread.coordination_strategy == "kanban" and not thread.auto_dispatch_enabled
+
+
 async def test_a_model_change_leaves_a_kanban_threads_autopilot_on(gateway):
     # The change rebuilds the session (reset, then a load from disk), and
     # the reset turned autopilot off.

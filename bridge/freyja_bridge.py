@@ -5879,6 +5879,25 @@ class _BridgeSession:
                     "details": {},
                 }
             )
+            # A thread's settings saved alone, before its first message
+            # (_save_settings_alone): its autopilot comes back with them,
+            # as with a transcript (Step 2d below). Its first turn builds
+            # the board. A copy of the thread has none, and no autopilot.
+            from bridge.tools.coordination import strategy_uses_kanban
+
+            if (
+                metadata.get("auto_dispatch_enabled")
+                and strategy_uses_kanban(self.coordination_strategy)
+                and not self._held_elsewhere
+                and not self.auto_dispatch_enabled
+            ):
+                self.auto_dispatch_enabled = True
+                self._start_kanban_dispatcher()
+                self._emit_kanban_event(
+                    "kanban_autopilot_enabled",
+                    "Kanban auto-dispatch restored",
+                    details={"reason": "restored_from_disk"},
+                )
             return False
 
         log("info", f"restoring transcript for session {self.id}")
@@ -6953,6 +6972,7 @@ class _BridgeSession:
                 model_id=self.model_id,
                 reasoning_level=self.reasoning_level,
                 coordination_strategy=self.coordination_strategy,
+                auto_dispatch_enabled=self.auto_dispatch_enabled,
             )
             save_transcript(self.id, data)
         except Exception as exc:  # noqa: BLE001
@@ -9254,8 +9274,11 @@ class _BridgeSession:
                 chat_visible=True,
             )
         # Saved now, as a model or mode change is, so a restart before the
-        # next turn ends keeps it.
-        self._save_transcript()
+        # next turn ends keeps it: alone on a thread with no transcript yet.
+        if self.session is None:
+            self._save_settings_alone()
+        else:
+            self._save_transcript()
 
     def _start_kanban_dispatcher(self) -> None:
         if self._kanban_dispatcher_task is not None and not self._kanban_dispatcher_task.done():
