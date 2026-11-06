@@ -3039,7 +3039,7 @@ class GatewayDaemon:
         first, then ensure_session, which parks it while a turn runs. The
         app's bridge changed only its copy, so the app showed the new model
         while the thread kept the old one."""
-        from bridge.freyja_bridge import _normalize_reasoning_level, emit
+        from bridge.freyja_bridge import _is_gateway_session_id, _normalize_reasoning_level, emit
         from bridge.gateway.session_router import source_from_session_key
         from engine.providers import MODEL_REGISTRY, resolve_retired_model
 
@@ -3048,13 +3048,20 @@ class GatewayDaemon:
         if not session_id or not asked or self.state is None:
             return
         target = resolve_retired_model(asked)
-        if target not in MODEL_REGISTRY:
+        refused = None
+        if not _is_gateway_session_id(session_id):
+            # A sub-agent's pane was in view. A session built on its id
+            # would be a second, parentless copy of it, saving over its files.
+            refused = "A sub-agent keeps the model it was started with."
+        elif target not in MODEL_REGISTRY:
+            refused = f"Unknown model `{target}`: the session stays on its current model."
+        if refused:
             emit(
                 {
                     "type": "system_event",
                     "sessionId": session_id,
                     "subtype": "model_change_refused",
-                    "message": f"Unknown model `{target}`: the session stays on its current model.",
+                    "message": refused,
                     "details": {"model": target, "chatVisible": True},
                 }
             )

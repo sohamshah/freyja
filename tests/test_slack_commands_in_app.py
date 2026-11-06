@@ -383,3 +383,15 @@ async def test_the_gateway_stops_a_sub_agent_from_its_pane(app, monkeypatch):
     # The thread's own turn goes on.
     assert not task.done()
     task.cancel()
+
+
+async def test_the_gateway_builds_no_session_on_a_sub_agents_id_for_a_model_change(app, monkeypatch):
+    # The model menu sends the id of the pane in view, which may be a
+    # sub-agent under the thread; a session built on that id would be a
+    # second, parentless copy of the sub-agent, saving over its files.
+    _state, events = app
+    daemon, _thread, calls = _gateway_state(monkeypatch)
+    await daemon._on_set_model({"type": "set_model", "sessionId": SUB, "model": "claude-opus-5-5"})
+    assert calls == []
+    (note,) = [e for e in events if e.get("subtype") == "model_change_refused"]
+    assert note["sessionId"] == SUB
