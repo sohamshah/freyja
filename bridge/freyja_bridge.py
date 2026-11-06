@@ -12884,7 +12884,9 @@ def _refuse_summarized_anchor(sess: Any, cmd: dict[str, Any], verb: str) -> bool
         return False
     from bridge.transcript_persistence import anchor_summarized
 
-    summarized = anchor_summarized(sess.id, sess.session.transcript.entries, cutoff_ts)
+    summarized = anchor_summarized(
+        sess.id, sess.session.transcript.entries, cutoff_ts, cmd.get("messageFingerprint")
+    )
     if summarized is False:
         return False
     if summarized:
@@ -15382,6 +15384,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 cutoff_ts=cutoff_ts,
                 id_remap=id_remap,
                 metadata_overrides=parent_overrides,
+                fingerprint=cmd.get("messageFingerprint"),
             )
         except SummarizedAnchorError as exc:
             emit_error(str(exc), recoverable=True)

@@ -15,6 +15,7 @@ import type {
   MemoMeta,
   MemoryRecord,
   Message,
+  MessageFingerprint,
   MessagePart,
   PendingFollowup,
   PermissionTier,
@@ -830,6 +831,47 @@ function messageOrdinalById(messages: Message[], messageId: string): number {
     if (m.id === messageId) return ordinal
   }
   return -1
+}
+
+/** What tells the bridge that the first engine entry a compaction summary
+ *  kept is this message's own, when the summary did not record how far it
+ *  reaches (see `anchor_summarized` in bridge/transcript_persistence.py).
+ *  Without it, edit, rerun, pin, delete and fork refuse that message. */
+function messageFingerprint(
+  messages: Message[],
+  messageId: string,
+): MessageFingerprint | undefined {
+  const m = messages.find((x) => x.id === messageId)
+  if (!m || (m.role !== 'user' && m.role !== 'assistant')) return undefined
+  const toolCallId =
+    m.role === 'assistant'
+      ? m.parts.find((p) => p.type === 'tool_call' && p.toolCallId)?.toolCallId
+      : undefined
+  const chars = Array.from(
+    m.parts
+      .filter((p) => p.type === 'text')
+      .map((p) => p.text ?? '')
+      .join(' ')
+      .split(/\s+/)
+      .filter(Boolean)
+      .join(' '),
+  )
+  // Messages are not always in createdAt order (a follow-up is placed
+  // where it landed): the next user message is the earliest later one.
+  let nextUserCreatedAt: number | undefined
+  for (const x of messages) {
+    if (x.role === 'user' && x.createdAt > m.createdAt) {
+      nextUserCreatedAt = Math.min(nextUserCreatedAt ?? Infinity, x.createdAt)
+    }
+  }
+  return {
+    role: m.role,
+    ...(toolCallId ? { toolCallId } : {}),
+    ...(chars.length > 0
+      ? { textHead: chars.slice(0, 100).join(''), textTail: chars.slice(-100).join('') }
+      : {}),
+    ...(nextUserCreatedAt != null ? { nextUserCreatedAt } : {}),
+  }
 }
 
 interface SessionTreeIndex {
@@ -5330,6 +5372,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       sessionId,
       messageOrdinal: ordinal,
       messageCreatedAt: anchor?.createdAt,
+      messageFingerprint: messageFingerprint(state.messages, messageId),
       content: trimmed,
     })
   },
@@ -5362,6 +5405,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       sessionId,
       messageOrdinal: ordinal,
       messageCreatedAt: target.createdAt,
+      messageFingerprint: messageFingerprint(state.messages, messageId),
     })
   },
 
@@ -5389,6 +5433,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       sessionId,
       messageOrdinal: ordinal,
       messageCreatedAt: anchor?.createdAt,
+      messageFingerprint: messageFingerprint(state.messages, messageId),
     })
   },
 
@@ -5411,6 +5456,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       sessionId,
       messageOrdinal: ordinal,
       messageCreatedAt: anchor?.createdAt,
+      messageFingerprint: messageFingerprint(state.messages, messageId),
       pinned,
     })
   },
@@ -5442,11 +5488,13 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     const slice = sliceForSession(fresh, sessionId)
     let ordinal = -1
     let messageCreatedAt: number | undefined
+    let fingerprint: MessageFingerprint | undefined
     if (messageId) {
       if (!slice) return
       ordinal = messageOrdinalById(slice.messages, messageId)
       if (ordinal < 0) return
       messageCreatedAt = slice.messages.find((m) => m.id === messageId)?.createdAt
+      fingerprint = messageFingerprint(slice.messages, messageId)
     }
     // Walk every descendant of the source in the in-memory snapshot
     // graph so the bridge can clone every subagent alongside the parent
@@ -5465,6 +5513,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       sessionId,
       messageOrdinal: ordinal,
       messageCreatedAt,
+      messageFingerprint: fingerprint,
       newName,
       childSessionIds: childIds,
       cloneProject: true,

@@ -405,6 +405,23 @@ export interface Message {
   attemptMark?: { parts: number; lastLen: number }
 }
 
+/** Sent with a command anchored on a message (edit, rerun, delete, pin,
+ *  fork). When an old compaction summary does not say how far it reached,
+ *  the bridge acts on the first entry it kept only if that entry is this
+ *  message's own: a user message whose text holds `textHead` and
+ *  `textTail`, or a reply whose first step makes `toolCallId` (or holds
+ *  its text), landed before `nextUserCreatedAt`. */
+export interface MessageFingerprint {
+  role: 'user' | 'assistant'
+  /** First tool call the reply shows. */
+  toolCallId?: string
+  /** First and last 100 characters of the text, whitespace collapsed. */
+  textHead?: string
+  textTail?: string
+  /** `createdAt` of the next user message, if there is one. */
+  nextUserCreatedAt?: number
+}
+
 /** Which execution runtime drives the session.
  *
  *   - 'native'            : Freyja's own loop calls the model provider directly.
@@ -799,6 +816,7 @@ export type BridgeCommand =
        *  entry by timestamp — the only mapping that survives compaction
        *  and tool-heavy turns. `messageOrdinal` is the legacy fallback. */
       messageCreatedAt?: number
+      messageFingerprint?: MessageFingerprint
       content: string
       attachments?: CommandAttachment[]
     }
@@ -814,6 +832,7 @@ export type BridgeCommand =
        *  entry by timestamp — the only mapping that survives compaction
        *  and tool-heavy turns. `messageOrdinal` is the legacy fallback. */
       messageCreatedAt?: number
+      messageFingerprint?: MessageFingerprint
     }
   | {
       // Delete the message at `messageOrdinal` and every message after
@@ -826,6 +845,7 @@ export type BridgeCommand =
        *  entry by timestamp — the only mapping that survives compaction
        *  and tool-heavy turns. `messageOrdinal` is the legacy fallback. */
       messageCreatedAt?: number
+      messageFingerprint?: MessageFingerprint
     }
   | {
       // Deep-clone a session into a new one. Two anchors:
@@ -845,6 +865,7 @@ export type BridgeCommand =
       /** Legacy anchor; -1 (or absent) means "whole session". */
       messageOrdinal: number
       messageCreatedAt?: number
+      messageFingerprint?: MessageFingerprint
       newName?: string
       /** Descendant session ids to clone alongside the parent (the
        *  renderer sends only those that existed before the branch
@@ -892,6 +913,7 @@ export type BridgeCommand =
        *  entry by timestamp — the only mapping that survives compaction
        *  and tool-heavy turns. `messageOrdinal` is the legacy fallback. */
       messageCreatedAt?: number
+      messageFingerprint?: MessageFingerprint
       pinned: boolean
     }
   | { type: 'memory_restore'; sessionId: string; id: string; note?: string }

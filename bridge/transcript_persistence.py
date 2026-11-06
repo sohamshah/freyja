@@ -426,7 +426,70 @@ def _snapshot_summarized_through(
     )
 
 
-def anchor_summarized(session_id: str, entries: list[Any], cutoff_ts: float) -> bool | None:
+def _message_view(entry: Any) -> tuple[Any, str, list[Any]]:
+    """Role, text and tool call ids of an entry's message, read off a dict
+    from disk or a live engine Message."""
+    msg = _field(entry, "message")
+    content = _field(msg, "content")
+    if isinstance(content, str):
+        text = content
+    else:
+        text = " ".join(
+            _field(block, "text") or ""
+            for block in content or []
+            if _field(block, "type") == "text"
+        )
+    calls = [_field(call, "id") for call in _field(msg, "tool_calls") or []]
+    return _field(msg, "role"), text, calls
+
+
+def _holds_anchor(entries: list[Any], index: int, fingerprint: Any) -> bool:
+    """Whether the message at ``entries[index]``, the first one a summary
+    kept, is where the renderer message ``fingerprint`` describes begins,
+    rather than a later one its anchor resolves to because its own went
+    into the summary.
+
+    The renderer sends the message's role, its first tool call or the
+    ends of its text (whitespace collapsed), and the stamp of the next
+    user message (store.ts, ``messageFingerprint``). A user message is
+    one entry. A reply begins at its first step, which a memo the turn
+    opened with may precede. Either way the entry lands before the next
+    user message, so an earlier message that said the same thing does
+    not pass for it.
+    """
+    if not isinstance(fingerprint, dict):
+        return False
+    role = fingerprint.get("role")
+    if role == "assistant":
+        index = next(
+            (i for i in range(index, len(entries)) if _message_view(entries[i])[0] == "assistant"),
+            len(entries),
+        )
+    if index >= len(entries):
+        return False
+    entry_role, text, calls = _message_view(entries[index])
+    if entry_role != role:
+        return False
+    next_user = fingerprint.get("nextUserCreatedAt")
+    if (
+        isinstance(next_user, (int, float))
+        and not isinstance(next_user, bool)
+        and _entry_ts(entries[index]) * 1000 >= next_user
+    ):
+        return False
+    call_id = fingerprint.get("toolCallId")
+    if call_id:
+        return call_id in calls
+    head, tail = fingerprint.get("textHead"), fingerprint.get("textTail")
+    if not head or not isinstance(head, str) or not isinstance(tail, str):
+        return False
+    body = " ".join(text.split())
+    return head in body and tail in body
+
+
+def anchor_summarized(
+    session_id: str, entries: list[Any], cutoff_ts: float, fingerprint: Any = None
+) -> bool | None:
     """Whether the renderer message stamped ``cutoff_ts`` was folded into
     the transcript's compaction summary.
 
@@ -435,14 +498,18 @@ def anchor_summarized(session_id: str, entries: list[Any], cutoff_ts: float) -> 
     kept message instead, which is a different message, and the summary
     describes what came after the anchor. Only an anchor that resolves to
     the first message after the summary can be one: a later anchor has a
-    kept message before it. None when that summary predates
-    ``summarized_through`` and no snapshot tells.
+    kept message before it. When that summary predates
+    ``summarized_through`` and no snapshot tells, the renderer's
+    ``fingerprint`` of the message can still show the first kept message
+    is the anchor's own (see ``_holds_anchor``); None when it does not.
     """
     summaries: list[Any] = []
-    for entry in entries:
+    first: int | None = None
+    for i, entry in enumerate(entries):
         if _field(entry, "message") is not None:
             if _entry_ts(entry) < cutoff_ts:
                 return False
+            first = i
             break
         if _field(entry, "is_compaction"):
             summaries.append(entry)
@@ -450,17 +517,22 @@ def anchor_summarized(session_id: str, entries: list[Any], cutoff_ts: float) -> 
     for summary in summaries:
         covered = summarized_through(session_id, summary, entries)
         if covered is None:
+            if first is not None and _holds_anchor(entries, first, fingerprint):
+                return False
             return None
         through = max(through, covered)
     return bool(summaries) and cutoff_ts <= through
 
 
-def fork_entries(session_id: str, entries: list[Any], cutoff_ts: float) -> list[Any]:
+def fork_entries(
+    session_id: str, entries: list[Any], cutoff_ts: float, fingerprint: Any = None
+) -> list[Any]:
     """The entries a fork before ``cutoff_ts`` is cut from: the
     transcript's own, or, when compaction summarized the anchor away, the
     newest compaction snapshot that still holds it as written. Raises
-    SummarizedAnchorError when none does."""
-    if anchor_summarized(session_id, entries, cutoff_ts) is False:
+    SummarizedAnchorError when none does. ``fingerprint``: see
+    ``anchor_summarized``."""
+    if anchor_summarized(session_id, entries, cutoff_ts, fingerprint) is False:
         return entries
     for _stamp, path in reversed(_before_snapshots(session_id)):
         snap = _snapshot_entries(path)
@@ -471,7 +543,7 @@ def fork_entries(session_id: str, entries: list[Any], cutoff_ts: float) -> list[
         ):
             # Taken before the anchor was written; older ones are too.
             break
-        if anchor_summarized(session_id, snap, cutoff_ts) is False:
+        if anchor_summarized(session_id, snap, cutoff_ts, fingerprint) is False:
             return snap
     raise SummarizedAnchorError(
         "Can't fork from this message: it is part of a compaction summary now, "
@@ -523,6 +595,7 @@ def clone_transcript(
     cutoff_ts: float | None = None,
     id_remap: dict[str, str] | None = None,
     metadata_overrides: dict[str, Any] | None = None,
+    fingerprint: Any = None,
 ) -> bool:
     """Deep-copy a transcript on disk under a new session id.
 
@@ -532,6 +605,8 @@ def clone_transcript(
       UNIX timestamp; see ``truncate_entries_before``. When compaction
       summarized the anchor away they come from a snapshot (see
       ``fork_entries``), which raises SummarizedAnchorError if none has it.
+      ``fingerprint`` is the renderer's of the anchor message (see
+      ``anchor_summarized``).
     - ``truncate_to_message_ordinal`` (legacy): keep the first N
       message-bearing entries. Only consulted when no ``cutoff_ts`` is
       given. Note this counts ``tool_result`` entries too, so it does
@@ -555,7 +630,7 @@ def clone_transcript(
     entries = transcript.get("entries") or []
     if cutoff_ts is not None:
         kept, new_head = truncate_entries_before(
-            fork_entries(old_id, entries, cutoff_ts), cutoff_ts
+            fork_entries(old_id, entries, cutoff_ts, fingerprint), cutoff_ts
         )
         transcript["entries"] = kept
         transcript["head_id"] = new_head

@@ -612,6 +612,65 @@ def test_anchor_summarized_is_unknown_for_an_old_summary_without_a_snapshot(sess
     assert tp.anchor_summarized("s", entries, ON_U2) is None
 
 
+def _fingerprint(role: str, text: str, next_user_s: float | None = None) -> dict:
+    """What the renderer sends about the message it anchors on (store.ts,
+    ``messageFingerprint``)."""
+    fp: dict = {"role": role, "textHead": text, "textTail": text}
+    if next_user_s is not None:
+        fp["nextUserCreatedAt"] = next_user_s * 1000
+    return fp
+
+
+# u2 as the renderer shows it; u3 is the next user message.
+ON_U2_FP = _fingerprint("user", "user@102.0", 159.99)
+
+
+def test_old_summary_without_a_snapshot_still_acts_on_the_first_message_it_kept(sessions_dir):
+    entries = _old_style(AFTER)
+    # u2 holds the anchor's text and lands before the next user message.
+    assert tp.anchor_summarized("s", entries, ON_U2, ON_U2_FP) is False
+    # u1 and a1 went into the summary: u2 is not theirs.
+    assert tp.anchor_summarized("s", entries, ON_U1, _fingerprint("user", "user@100.0", ON_U2)) is None
+    assert tp.anchor_summarized("s", entries, ON_A1, _fingerprint("assistant", "assistant@101.0", ON_U2)) is None
+    # A summarized message that said what u2 says comes before u2.
+    assert tp.anchor_summarized("s", entries, ON_U1, _fingerprint("user", "user@102.0", ON_U2)) is None
+
+
+def _calls(eid: str, ts: float, call_id: str) -> dict:
+    return {
+        "id": eid, "is_compaction": False, "timestamp": ts,
+        "message": {"role": "assistant", "content": "", "tool_calls": [{"id": call_id, "name": "bash", "arguments": {}}]},
+    }
+
+
+# One reply on screen, stamped 100.4: a memo opened the turn, then two
+# tool steps and the answer.
+TURN = [
+    _entry("u1", "user", 100.0),
+    _entry("m1", "user", 100.5),
+    _calls("a1", 101.0, "t1"),
+    _entry("r1", "tool_result", 101.5),
+    _calls("a2", 102.0, "t2"),
+    _entry("r2", "tool_result", 102.5),
+    _entry("a3", "assistant", 103.0),
+]
+ON_REPLY, REPLY_FP = 100.4, {"role": "assistant", "toolCallId": "t1"}
+
+
+def test_fingerprint_of_a_reply_names_the_step_it_starts_with(sessions_dir):
+    summary = _entry("c1", None, 150.0)
+    # Kept from the memo: the whole reply is there.
+    assert tp.anchor_summarized("s", [summary] + TURN[1:], ON_REPLY, REPLY_FP) is False
+    # Kept from its second step: its first went into the summary.
+    assert tp.anchor_summarized("s", [summary] + TURN[4:], ON_REPLY, REPLY_FP) is None
+
+
+def test_fork_at_the_first_message_an_old_summary_kept(sessions_dir):
+    tp.save_transcript("old", _transcript("old", _old_style(AFTER)))
+    assert tp.clone_transcript("old", "f1", cutoff_ts=ON_U2, fingerprint=ON_U2_FP)
+    assert [e["id"] for e in tp.load_transcript("f1")["transcript"]["entries"]] == ["c1"]
+
+
 def test_old_summary_that_only_folded_an_older_one_reads_the_older_snapshot(sessions_dir):
     # c2 replaced c1 and nothing else, so c2's own snapshot holds no
     # message it summarized: c1's snapshot does.
@@ -725,6 +784,22 @@ async def test_live_commands_still_act_on_the_first_kept_message(sessions_dir, m
     await _send(fb, sess, state, {"type": "rerun_user_message", "messageCreatedAt": ON_U2 * 1000})
     assert sess.turns == ["user@102.0"]
     assert [e.id for e in sess.session.transcript.entries] == ["c1"]
+    assert not [e for e in events if e["type"] == "error"]
+
+
+async def test_live_commands_act_on_the_first_message_an_old_summary_kept(sessions_dir, monkeypatch):
+    import bridge.project_paths as pp
+
+    monkeypatch.setattr(pp, "project_output_dir", lambda sid: sessions_dir / "projects" / str(sid))
+    fb, sess, state, events = _live(monkeypatch, _old_style(AFTER))
+    tp.save_transcript("s", _transcript("s", _old_style(AFTER)))
+    anchor = {"messageCreatedAt": ON_U2 * 1000, "messageFingerprint": ON_U2_FP}
+    await fb._handle_command(state, {"type": "branch_session", "sessionId": "s", "messageOrdinal": 2, **anchor})
+    assert [e["type"] for e in events if e["type"] in ("session_branched", "error")] == ["session_branched"]
+    await _send(fb, sess, state, {"type": "toggle_entry_pin", "pinned": True, **anchor})
+    assert [e.id for e in sess.session.transcript.entries if e.compaction_excluded] == ["u2"]
+    await _send(fb, sess, state, {"type": "rerun_user_message", **anchor})
+    assert sess.turns == ["user@102.0"]
     assert not [e for e in events if e["type"] == "error"]
 
 
