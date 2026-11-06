@@ -106,3 +106,22 @@ async def test_a_summary_call_from_a_worker_and_a_call_on_the_loop_both_count(mo
         await asyncio.sleep(0)
 
     assert record.input_tokens == 1_000
+
+
+async def test_a_sub_agents_call_rows_say_what_kind_of_call_each_was(monkeypatch, tmp_path):
+    # The parent's rows carry call_kind ("main", "summarizer", ...), so the
+    # dashboard can tell a compaction's summary call from the agent's own.
+    # A sub-agent's rows carried none.
+    record, on_llm_call = await _child_llm_hook(monkeypatch, tmp_path)
+    rows: list[dict] = []
+    telemetry = ModuleType("bridge.compaction_telemetry")
+    telemetry.append_telemetry = rows.append
+    monkeypatch.setitem(sys.modules, "bridge.compaction_telemetry", telemetry)
+
+    on_llm_call({"model": "claude-sonnet-5-5", "input_tokens": 100})
+    on_llm_call({"model": "claude-sonnet-5-5", "input_tokens": 900, "call_kind": "summarizer", "iterative": True})
+
+    assert [(r.get("call_kind"), r.get("iterative_summarizer")) for r in rows] == [
+        ("main", None),
+        ("summarizer", True),
+    ]

@@ -230,7 +230,7 @@ Written from the bridge's `on_llm_call` when the band changes. Fields: `session_
 
 ### `llm_call_metric`
 
-One row per model call. Fields: `session_id`, `turn_id`, `agent_type`, `parent_session_id`, `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd`, `duration_ms`, `call_kind`, `iterative_summarizer`, `ts`. `call_kind` is `main`, `summarizer`, `working_memory_extraction` or `cache_keepalive`. `iterative_summarizer` is set on summarizer rows only. A sub-agent's rows come from `_on_sub_llm_call` and carry no `call_kind`.
+One row per model call. Fields: `session_id`, `turn_id`, `agent_type`, `parent_session_id`, `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd`, `duration_ms`, `call_kind`, `iterative_summarizer`, `ts`. `call_kind` is `main`, `summarizer`, `working_memory_extraction` or `cache_keepalive`. `iterative_summarizer` is set on summarizer rows only. A sub-agent's rows come from `_on_sub_llm_call` and carry the same two fields.
 
 ### `summarize_context_call`
 

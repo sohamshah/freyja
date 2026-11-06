@@ -1657,6 +1657,9 @@ Parameters:
                     cache_read_tokens=cr_tok,
                     cache_write_tokens=cw_tok,
                 )
+                # Tagged as the parent's rows are, so the dashboard can tell
+                # a compaction's summary calls from the child's own.
+                call_kind = payload.get("call_kind") or "main"
                 append_telemetry({
                     "type": "llm_call_metric",
                     "session_id": sub_id_local,
@@ -1670,6 +1673,12 @@ Parameters:
                     "cache_write_tokens": cw_tok,
                     "cost_usd": float(cost) if cost is not None else None,
                     "duration_ms": int(payload.get("duration_ms", 0) or 0),
+                    "call_kind": call_kind,
+                    "iterative_summarizer": (
+                        bool(payload.get("iterative"))
+                        if call_kind == "summarizer"
+                        else None
+                    ),
                 })
             except Exception:
                 pass
