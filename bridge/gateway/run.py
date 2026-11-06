@@ -644,10 +644,10 @@ class GatewayDaemon:
 
         try:
             # Pass in_mode through as-is (None when no --mode flag).
-            # route_message seeds the "bus" default only on NEW
-            # sessions — for EXISTING sessions, None means
-            # "don't touch the current strategy", which preserves
-            # kanban/goal across follow-up messages.
+            # None means "don't touch the current strategy": a loaded
+            # session keeps it, one loaded from disk takes the one it was
+            # saved with, and only a NEW session starts as bus, which
+            # preserves kanban/goal across follow-ups and restarts.
             key, session = await route_message(
                 message,
                 self.state,
@@ -3099,14 +3099,28 @@ class GatewayDaemon:
         dispatch or reassign a card; autopilot) for a Slack session. Its
         board is this process's: the app's bridge ran these on a copy,
         whose board wrote the same journal and could start workers there.
-        A thread not loaded here has no board to run it on, so the app is
-        told it did not run."""
-        from bridge.freyja_bridge import _handle_command, _install_talk_wake_hook, emit
+        A saved thread not loaded here is loaded, in the mode it was saved
+        in, so its board is there. Anything else (a sub-agent's id) has no
+        board to run it on, so the app is told it did not run."""
+        from bridge.freyja_bridge import (
+            _cold_load_session,
+            _handle_command,
+            _install_talk_wake_hook,
+            _is_closed_root_session,
+            _is_gateway_session_id,
+            emit,
+        )
 
         session_id = str(cmd.get("sessionId") or "")
         sess = (getattr(self.state, "sessions", None) or {}).get(session_id)
+        if (
+            sess is None
+            and _is_gateway_session_id(session_id)
+            and _is_closed_root_session(session_id)
+        ):
+            sess = await _cold_load_session(self.state, session_id)
         if sess is None:
-            logger.info("control: %s — session %s not loaded", cmd.get("type"), session_id)
+            logger.info("control: %s — no thread %s here", cmd.get("type"), session_id)
             if session_id:
                 emit(
                     {
@@ -3114,9 +3128,8 @@ class GatewayDaemon:
                         "sessionId": session_id,
                         "subtype": "control_command_skipped",
                         "message": (
-                            "The kanban change was not made: the gateway has not "
-                            "loaded this thread since it started. Send a message "
-                            "in the thread, then try again."
+                            "The kanban change was not made: the gateway has no "
+                            "Slack thread with this session's board."
                         ),
                         "details": {"command": cmd.get("type"), "chatVisible": True},
                     }

@@ -118,3 +118,106 @@ async def test_a_copy_of_the_thread_in_the_app_gets_no_slack_source(gateway, mon
     _thread_saved()
     sess = await state.ensure_session(SLACK)
     assert getattr(sess, "gateway_source", None) is None
+
+
+# ── its mode ─────────────────────────────────────────────────────────
+#
+# A thread's coordination strategy is saved with its transcript, and
+# nothing else tells the gateway what it was: no renderer sends it, as
+# the app's does for its own sessions. Loaded as bus, a kanban thread had
+# no board after a restart, so its cards stopped and the app's board
+# commands were refused, and a goal thread lost its loop.
+
+
+def _inbound(text: str = "how is it going?"):
+    from bridge.gateway.platforms.base import IncomingMessage
+
+    source = MessageSource(
+        platform=Platform.SLACK, workspace_id="T1", chat_type="channel", chat_id="C1",
+        user_id="U0OPERATOR", thread_id="1.0",
+    )
+    return IncomingMessage(source=source, text=text)
+
+
+async def _load_by_message(state):
+    from bridge.gateway.session_router import route as route_message
+
+    _key, sess = await route_message(_inbound(), state)
+    return sess
+
+
+async def _load_by_talk(state):
+    await fb.deliver_talk_message_locally(state, SLACK, _talk())
+    return state.sessions[SLACK]
+
+
+async def _load_for_a_memo(state):
+    return await fb._cold_load_session(state, SLACK)
+
+
+@pytest.mark.parametrize("load", [_load_by_message, _load_by_talk, _load_for_a_memo])
+@pytest.mark.parametrize("strategy", ["kanban", "goal"])
+async def test_a_thread_comes_back_in_the_mode_it_was_saved_in(gateway, load, strategy):
+    state, _events = gateway
+    _thread_saved(strategy)
+    sess = await load(state)
+    assert sess.coordination_strategy == strategy
+    assert (sess.kanban_board is not None) == (strategy == "kanban")
+
+
+async def test_a_mode_asked_for_on_a_thread_not_loaded_wins_over_the_saved_one(gateway):
+    from bridge.gateway.session_router import route as route_message
+
+    state, _events = gateway
+    _thread_saved("kanban")
+    _key, sess = await route_message(_inbound("--mode bus go"), state, default_strategy="bus")
+    assert sess.coordination_strategy == "bus"
+
+
+async def test_a_new_thread_starts_as_bus(gateway):
+    state, _events = gateway
+    sess = await _load_by_message(state)
+    assert sess.coordination_strategy == "bus"
+
+
+def _daemon(state):
+    from bridge.gateway.run import GatewayDaemon
+
+    daemon = GatewayDaemon()
+    daemon.state = state
+    state.talk_wake_hook_factory = lambda _sess: "hook"
+    return daemon
+
+
+async def test_a_kanban_command_for_a_thread_not_loaded_loads_it_and_runs_on_its_board(gateway):
+    from bridge.kanban_journal import KanbanJournal, journal_path
+    from bridge.tools.kanban_board import SessionKanbanBoard
+
+    state, events = gateway
+    _thread_saved("kanban")
+    board = SessionKanbanBoard(journal=KanbanJournal(journal_path(SLACK)))
+    card = await board.create(title="ship it", actor="parent")
+    daemon = _daemon(state)
+
+    await daemon._on_kanban_command(
+        {"type": "kanban_operator_cancel", "sessionId": SLACK, "cardId": card.id},
+    )
+
+    sess = state.sessions[SLACK]
+    assert (await sess.kanban_board.get(card.id)).status == "cancelled"
+    rows = KanbanJournal(journal_path(SLACK)).read_all()
+    assert (rows[-1]["kind"], rows[-1]["task"]["status"]) == ("update", "cancelled")
+    # A worker's memo wakes the thread; its turn streams to the thread.
+    assert sess.talk_wake_hook == "hook"
+    assert not [e for e in events if e.get("subtype") == "control_command_skipped"]
+
+
+async def test_a_kanban_command_for_a_sub_agent_builds_no_session_on_its_id(gateway):
+    state, events = gateway
+    daemon = _daemon(state)
+    await daemon._on_kanban_command(
+        {"type": "kanban_operator_cancel", "sessionId": "sub_19d8b53e6f0_1", "cardId": "c"},
+    )
+    assert state.sessions == {}
+    (note,) = [e for e in events if e.get("subtype") == "control_command_skipped"]
+    assert note["sessionId"] == "sub_19d8b53e6f0_1"

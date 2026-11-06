@@ -1253,19 +1253,29 @@ def _live_model_id(model_id: str, *, where: str) -> str:
     return live
 
 
-def _saved_model(session_id: str) -> tuple[str | None, str | None]:
+def _saved_metadata(session_id: str) -> dict[str, Any]:
+    """The metadata a persisted session was last saved with: {} without
+    a transcript."""
+    from bridge.transcript_persistence import load_transcript
+
+    persisted = load_transcript(session_id)
+    meta = persisted.get("metadata") if isinstance(persisted, dict) else None
+    return meta if isinstance(meta, dict) else {}
+
+
+def _saved_model(
+    session_id: str, meta: dict[str, Any] | None = None
+) -> tuple[str | None, str | None]:
     """The model and reasoning level a persisted session was last saved
     with: (None, None) without a transcript, or when that model is no
     longer offered. A retired model comes back as its replacement, so a
     thread saved on gemini-3.7-flash or kimi-k2.6 resumes on what serves
-    it now instead of falling to the process default."""
-    from bridge.transcript_persistence import load_transcript
+    it now instead of falling to the process default. ``meta`` is the
+    saved metadata, when the caller has read it already."""
     from engine.providers import MODEL_REGISTRY
 
-    persisted = load_transcript(session_id)
-    meta = persisted.get("metadata") if isinstance(persisted, dict) else None
-    if not isinstance(meta, dict):
-        return None, None
+    if meta is None:
+        meta = _saved_metadata(session_id)
     model_id = str(meta.get("model_id") or "")
     if not model_id:
         return None, None
@@ -13138,14 +13148,21 @@ class _BridgeState:
             self.active_session_id = session_id
             return existing
 
+        # A session loaded from disk keeps the model and the mode it was
+        # saved with. The process default put a Slack thread started on GPT
+        # onto Opus after a gateway restart, and a provider-family change
+        # also strips every thinking block from the transcript. Nothing
+        # sends the gateway a thread's mode, so a kanban thread came back
+        # as bus, without its board, and a goal thread without its loop.
+        saved: dict[str, Any] = {}
+        if model_id is None or coordination_strategy is None:
+            saved = _saved_metadata(session_id)
         if model_id is None:
-            # A session loaded from disk keeps the model it was saved with.
-            # The process default put a Slack thread started on GPT onto
-            # Opus after a gateway restart, and a provider-family change
-            # also strips every thinking block from the transcript.
-            model_id, saved_reasoning = _saved_model(session_id)
+            model_id, saved_reasoning = _saved_model(session_id, saved)
             if reasoning_level is None:
                 reasoning_level = saved_reasoning
+        if coordination_strategy is None:
+            coordination_strategy = str(saved.get("coordination_strategy") or "") or None
         s = _BridgeSession(
             session_id,
             workspace=self.workspace,

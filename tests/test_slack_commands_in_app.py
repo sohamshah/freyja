@@ -183,7 +183,7 @@ async def test_the_gateway_adds_the_card_on_its_board_and_dispatches_it(app, mon
     assert any(e.get("subtype") == "kanban_task_created" and e["sessionId"] == SLACK for e in events)
 
 
-async def test_the_gateway_says_so_when_the_thread_is_not_loaded(app, monkeypatch):
+async def test_the_gateway_says_so_when_it_has_no_such_thread(app, monkeypatch):
     _state, events = app
     daemon = _gateway_with(monkeypatch, None)
     await daemon._on_kanban_command({"type": "kanban_operator_create", "sessionId": SLACK, "title": "t"})

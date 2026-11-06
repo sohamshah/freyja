@@ -559,14 +559,13 @@ async def route(
     task on the session. The adapter's stream consumer reads events
     from the bridge's emit stream filtered by session id.
 
-    ``default_strategy`` semantics: seeded as ``"bus"`` only when this
-    is a brand-new session AND the caller didn't pass one. For an
-    EXISTING session with no caller-supplied strategy, ``None`` flows
-    through to ``ensure_session`` and the existing
-    ``coordination_strategy`` is left alone. Without this, every
-    inbound message without an explicit ``--mode`` flag (or `/mode`
-    slash) would silently overwrite a prior ``kanban``/``goal``
-    session back to ``bus``.
+    ``default_strategy`` semantics: with no caller-supplied strategy,
+    ``None`` flows through to ``ensure_session``. A loaded session keeps
+    its ``coordination_strategy``, one loaded from disk takes the one it
+    was saved with, and a brand-new one starts as ``bus``. Without this,
+    every inbound message without an explicit ``--mode`` flag (or `/mode`
+    slash) would silently overwrite a prior ``kanban``/``goal`` session
+    back to ``bus``.
     """
     key = session_key_for(message.source)
     logger.info(
@@ -575,15 +574,6 @@ async def route(
         key,
         (message.text or "")[:80],
     )
-
-    # Seed the "bus" default only on brand-new sessions. For existing
-    # sessions, leave coordination_strategy alone unless the caller
-    # explicitly passed one (via /mode slash or --mode inline flag).
-    strategy_for_call = default_strategy
-    if strategy_for_call is None:
-        existing = getattr(bridge_state, "sessions", {}).get(key)
-        if existing is None:
-            strategy_for_call = "bus"
 
     # ensure_session is the existing bridge entry point that creates
     # or restores a session by id. ``gateway_source`` is only used for
@@ -599,7 +589,7 @@ async def route(
     session = await bridge_state.ensure_session(
         session_id=key,
         model_id=default_model,
-        coordination_strategy=strategy_for_call,
+        coordination_strategy=default_strategy,
         gateway_source=message.source,
         restore_notice=restore_notice,
     )
