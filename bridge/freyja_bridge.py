@@ -8624,6 +8624,18 @@ class _BridgeSession:
             }
         )
 
+    def _emit_kanban_card(self, task: Any, *, source: str) -> None:
+        """Send a card the bridge moved on the board itself, in the shape
+        the kanban tool's own events carry. Board writes emit nothing, and
+        the renderer only learns a card's state from these payloads."""
+        if task is None:
+            return
+        self._emit_kanban_event(
+            "kanban_update",
+            f"Kanban update: {task.id} {task.title}",
+            details={"action": "update", "task": task.to_dict(), "source": source},
+        )
+
     # ---- Auto-rename via Haiku ----------------------------------------
 
     def _maybe_auto_rename_session(self) -> None:
@@ -9425,12 +9437,13 @@ class _BridgeSession:
 
         if verdict.done:
             try:
-                await self.kanban_board.update(
+                task = await self.kanban_board.update(
                     card.id,
                     actor="kanban-judge",
                     status="done",
                     summary=verdict.reason[:4000],
                 )
+                self._emit_kanban_card(task, source="kanban_judge")
             except Exception as exc:  # noqa: BLE001
                 log("warn", f"kanban_handle_verdict done update failed for {card.id}: {exc}")
             return
@@ -9438,7 +9451,7 @@ class _BridgeSession:
         at_cap = card.review_iteration >= self.KANBAN_MAX_REVIEW_ITERATIONS
         if at_cap:
             try:
-                await self.kanban_board.update(
+                task = await self.kanban_board.update(
                     card.id,
                     actor="kanban-judge",
                     status="blocked",
@@ -9447,6 +9460,7 @@ class _BridgeSession:
                         f"Last verdict: {verdict.reason[:2000]}"
                     ),
                 )
+                self._emit_kanban_card(task, source="kanban_judge")
             except Exception as exc:  # noqa: BLE001
                 log("warn", f"kanban_handle_verdict blocked update failed for {card.id}: {exc}")
             self._emit_kanban_event(
@@ -9481,7 +9495,7 @@ class _BridgeSession:
                 f"requeuing review->ready for fresh dispatch",
             )
             try:
-                await self.kanban_board.update(
+                task = await self.kanban_board.update(
                     card.id,
                     actor="kanban-judge",
                     status="ready",
@@ -9492,6 +9506,7 @@ class _BridgeSession:
                         f"Last verdict: {verdict.reason[:1500]}"
                     ),
                 )
+                self._emit_kanban_card(task, source="kanban_judge")
             except Exception as exc:  # noqa: BLE001
                 log(
                     "warn",
@@ -9510,12 +9525,13 @@ class _BridgeSession:
             )
             return
         try:
-            await self.kanban_board.update(
+            task = await self.kanban_board.update(
                 card.id,
                 actor="kanban-judge",
                 status="running",
                 summary=f"Rework iteration {card.review_iteration}: {verdict.reason[:2000]}",
             )
+            self._emit_kanban_card(task, source="kanban_judge")
         except Exception as exc:  # noqa: BLE001
             log("warn", f"kanban_handle_verdict rework status update failed for {card.id}: {exc}")
             return

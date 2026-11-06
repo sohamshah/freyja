@@ -454,3 +454,52 @@ async def test_sweep_skips_reclaim_when_worker_still_live() -> None:
     # Not reclaimed — still running, no breaker charge.
     assert refreshed.status == "running"
     assert refreshed.consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("done", "review_iteration", "status"),
+    [(True, 1, "done"), (False, 1, "running"), (False, 3, "blocked")],
+)
+async def test_judge_verdict_sends_the_card_it_moved(
+    monkeypatch, done: bool, review_iteration: int, status: str,
+) -> None:
+    """The verdict moves the card on the board directly, so the bridge
+    sends the moved card the way the kanban tool does. Without it the
+    renderer kept the card in `review` until a later event carried it."""
+    from bridge import freyja_bridge
+    from bridge.tools.goal_loop import GoalVerdict
+
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(freyja_bridge, "emit", sent.append)
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    create = await tool.execute("c1", {"action": "create", "title": "judge me"})
+    card_id = json.loads(create.content)["task"]["id"]
+    worker = KanbanTool(
+        board, actor_id="sub_w", actor_label="worker", owned_task_id=card_id
+    )
+    await tool.execute(
+        "c2", {"action": "update", "task_id": card_id, "status": "running"},
+    )
+    await worker.execute("c3", {"action": "complete", "summary": "done"})
+    card = await board.get(card_id)
+    assert card is not None and card.status == "review"
+    card.review_iteration = review_iteration
+
+    session = _make_session(board=board, sub_tool=_StubSubAgentTool())
+
+    async def _wake(*args: Any, **kwargs: Any) -> bool:
+        return True
+
+    session._wake_subagent_with_task = _wake
+    await session._handle_kanban_verdict(card, GoalVerdict(done=done, reason="r"))
+
+    moved = [
+        event["details"]["task"]
+        for event in sent
+        if event.get("subtype") == "kanban_update"
+    ]
+    assert [task["status"] for task in moved] == [status]
+    assert moved[0]["id"] == card_id
+    assert moved[0]["events"][-1]["actor"] == "kanban-judge"
