@@ -380,3 +380,79 @@ async def test_cancel_run_stops_a_run_of_this_process_at_once(monkeypatch):
     assert (run.status, run.cancel_requested) == ("cancelled", True)
     assert run.finished_at is not None
     assert delivered == []
+
+
+# ─── the operator's stop of a run's turn cancels the run ──────────────
+
+
+async def _a_run_whose_turn_writes_half_a_report(monkeypatch, tmp_path):
+    """A fire into the operator's session, run by the real run_turn: its
+    turn writes half a report, then works on. Returns the bridge's state,
+    the session, the fire's job, its task and the deliveries made."""
+    import bridge.freyja_bridge as fb
+    import bridge.gateway.pid as gp
+    import bridge.scheduler.runtime as runtime
+    from bridge.scheduler.runtime import fire_job
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "_SESSION_EVENT_DIR", tmp_path / "events")
+    monkeypatch.setattr(gp, "holds_desktop_lock", lambda: True)  # this is the app's bridge
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("s1")
+    await sess.initialize()
+    writing = asyncio.Event()
+
+    class _Runner:
+        usage = SimpleNamespace(input=0, output=0, cache_read=0, cache_write=0,
+                                effective_context_tokens=lambda: 0)
+
+        async def run(self, session, message, stream=True):
+            session.add_user_message(message)
+            if "[Scheduled run" not in str(message):
+                session.add_assistant_message("The build is green")
+                return SimpleNamespace(success=True, response="The build is green", stop_reason="end_turn")
+            session.add_assistant_message("Half of the report")
+            writing.set()
+            await asyncio.sleep(60)
+
+    sess.runner = _Runner()
+    delivered: list[str] = []
+
+    async def deliver_all(job, run, output, ctx):
+        delivered.append(output.text)
+        return []
+
+    monkeypatch.setattr(runtime, "deliver_all", deliver_all)
+    job = _report_job()
+    fire = asyncio.create_task(fire_job(_Service({"s1": sess}), job))
+    await asyncio.wait_for(writing.wait(), 5)
+    return state, sess, job, fire, delivered
+
+
+async def test_a_run_whose_turn_the_operator_stops_is_cancelled_and_not_delivered(monkeypatch, tmp_path):
+    """Stopped, its turn ended, and the run went on as a finished one: its
+    partial answer went to the job's sinks, as the emergency stop's did
+    before 8cc6623."""
+    import bridge.freyja_bridge as fb
+
+    state, sess, job, fire, delivered = await _a_run_whose_turn_writes_half_a_report(monkeypatch, tmp_path)
+    await fb._handle_command(state, {"type": "cancel", "sessionId": "s1", "scope": "turn"})
+    run = await asyncio.wait_for(fire, 10)
+
+    assert delivered == []
+    assert run.status == "cancelled"
+    assert load_runs_for_job(job.id, limit=1)[0].status == "cancelled"
+
+
+async def test_a_turn_queued_behind_the_stopped_run_still_runs(monkeypatch, tmp_path):
+    """A normal stop lets the queue run: only the run is over."""
+    import bridge.freyja_bridge as fb
+
+    state, sess, job, fire, delivered = await _a_run_whose_turn_writes_half_a_report(monkeypatch, tmp_path)
+    fb._schedule_or_queue_turn(sess, "how is the build?")
+    await fb._handle_command(state, {"type": "cancel", "sessionId": "s1", "scope": "turn"})
+    run = await asyncio.wait_for(fire, 10)
+    await asyncio.wait_for(asyncio.gather(sess.pending_task, return_exceptions=True), timeout=5)
+
+    assert run.status == "cancelled" and delivered == []
+    assert sess.session.transcript.entries[-1].message.content == "The build is green"

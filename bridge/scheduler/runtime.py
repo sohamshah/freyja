@@ -1131,7 +1131,9 @@ class _RunCost:
 
     ``dropped``: the emergency stop dropped the fire's prompt from the
     session's queue before it ran. ``unqueued``: the run was stopped while
-    its prompt was queued, and took it back out (take_prompt_back)."""
+    its prompt was queued, and took it back out (take_prompt_back).
+    ``stopped``: a turn of the run was stopped (the app's Stop, Slack's,
+    /stop), which ends the run cancelled."""
 
     def __init__(self, run_id: str, budget: BudgetSpec | None) -> None:
         self.cost = 0.0
@@ -1148,6 +1150,7 @@ class _RunCost:
         self._prompt_left_queue = False
         self.dropped = False
         self.unqueued = False
+        self.stopped = False
 
     def our_turn_starts(self) -> None:
         """The on_turn_start hook of the fire's prompt: the session's next
@@ -1170,7 +1173,12 @@ class _RunCost:
         """Whether the session's running turn is the fire's: its prompt's,
         or one that started on its own after it (a wake for its sub-agents'
         memos), not one the operator started after it. Before the fire's
-        turn has started, a prompt that is not queued is running."""
+        turn has started, a prompt that is not queued is running. A stop of
+        the run's turn ended the run: the turn the drain starts next (a
+        queued one, a wake for agents' messages) is not the run's, and may
+        not have said so yet."""
+        if self.stopped:
+            return False
         if self._turns and not self._next_turn_is_ours:
             return getattr(sess, "current_turn_id", None) in self._turns
         return not self.dropped
@@ -1181,6 +1189,13 @@ class _RunCost:
             if self._next_turn_is_ours or (self._turns and event.get("automatic")):
                 self._turns.add(event.get("turnId"))
             self._next_turn_is_ours = False
+        elif kind == "turn_complete" and event.get("stopped") and event.get("turnId") in self._turns:
+            # The run is cancelled, as the emergency stop's runs are. It went
+            # on as a finished run, took the stopped turn's partial answer
+            # for its output and delivered it. Stopped here, from the turn's
+            # task, the run sees its stop before it sees its turn end.
+            self.stopped = True
+            stop_run_now(self._run_id)
         elif kind == "system_event" and event.get("subtype") == "queued_turns_dropped":
             # The whole queue goes, so a prompt still in it went too.
             self.dropped = self.dropped or not self._prompt_left_queue

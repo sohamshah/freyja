@@ -11539,6 +11539,9 @@ class _BridgeSession:
                     "sessionId": self.id,
                     "turnId": self.current_turn_id,
                     "success": False,
+                    # A scheduled run whose turn was stopped ends cancelled
+                    # (_RunCost).
+                    "stopped": True,
                 }
             )
             self._save_transcript()
