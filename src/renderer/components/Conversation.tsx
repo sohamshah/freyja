@@ -44,6 +44,7 @@ import { BranchSessionDialog } from './BranchSessionDialog'
 import { CalibrationCard } from './shared/CalibrationCard'
 import { InlineForgetting, InlineCompactionReceipt } from './MemorySystemCards'
 import { McpResultBlock } from './mcp/McpResultBlock'
+import { KANBAN_MAX_REVIEW_ITERATIONS } from './views/KanbanBridgeView'
 import {
   StructuredJsonView,
   tryParseCompleteJson,
@@ -1327,7 +1328,7 @@ function InboxChip({
   )
 }
 
-function formatNarratorEvent(event: SystemEventRecord): string {
+export function formatNarratorEvent(event: SystemEventRecord): string {
   const details = (event.details ?? {}) as Record<string, unknown>
   switch (event.subtype) {
     case 'kanban_dispatched': {
@@ -1373,11 +1374,18 @@ function formatNarratorEvent(event: SystemEventRecord): string {
       const card = typeof details.cardId === 'string' ? details.cardId : ''
       const iter = typeof details.reviewIteration === 'number' ? details.reviewIteration : 0
       if (!card) return 'reworking a card'
-      return `reworking ${card}${iter ? ` · iter ${iter}/5` : ''}`
+      return `reworking ${card}${iter ? ` · iter ${iter}/${KANBAN_MAX_REVIEW_ITERATIONS}` : ''}`
     }
     case 'kanban_blocked': {
       const card = typeof details.cardId === 'string' ? details.cardId : ''
-      return card ? `blocked ${card} (5 rework attempts exhausted)` : 'card blocked at iteration cap'
+      // The dispatcher parks a card that has no worker and no artifacts
+      // before any review; otherwise the judge blocked it at the cap.
+      if (details.reason === 'empty_review_card') {
+        return card ? `blocked ${card} — nothing to review` : 'card blocked — nothing to review'
+      }
+      return card
+        ? `blocked ${card} after ${KANBAN_MAX_REVIEW_ITERATIONS} failed reviews`
+        : 'card blocked at the review cap'
     }
     case 'kanban_judge_failed': {
       const card = typeof details.cardId === 'string' ? details.cardId : ''

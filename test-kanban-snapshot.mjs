@@ -1,5 +1,6 @@
 // Checks for src/renderer/lib/kanbanSnapshot.ts, which tells a worker's
-// sub-agent card where its kanban card stands in review. The event shapes
+// sub-agent card where its kanban card stands in review, and for the chat
+// lines Conversation.tsx writes for the review loop. The event shapes
 // and actor strings are the bridge's: a worker writes as
 // "<label> (<session id>)", the judge as "kanban-judge" (from the kanban
 // journal in ~/.freyja/sessions). Run from the repo root:
@@ -8,6 +9,7 @@
 import assert from 'node:assert/strict'
 
 const { deriveKanbanCardSnapshot, deriveSnapshotFromTask } = await import('./src/renderer/lib/kanbanSnapshot.ts')
+const { formatNarratorEvent } = await import('./src/renderer/components/Conversation.tsx')
 
 let failures = 0
 function check(name, fn) {
@@ -183,6 +185,26 @@ check("a newer list that sends the card without history keeps the older event's 
   const snapshot = deriveKanbanCardSnapshot(events, 'card_002')
   assert.equal(snapshot.status, 'done')
   assert.equal(snapshot.verifierActor, JUDGE)
+})
+
+// The bridge's kanban_blocked and kanban_rework_started details
+// (freyja_bridge.py, _kanban_tick and _handle_kanban_verdict). The cap is
+// three judge reviews.
+const narrate = (subtype, details) => formatNarratorEvent({ id: subtype, subtype, message: '', at: 0, details })
+
+check('a card parked with nothing to review says so, not that reworks ran out', () => {
+  const line = narrate('kanban_blocked', { cardId: 'card_002', reason: 'empty_review_card', chatVisible: true })
+  assert.equal(line, 'blocked card_002 — nothing to review')
+})
+
+check('a card blocked at the review cap names the cap of three reviews', () => {
+  const line = narrate('kanban_blocked', { cardId: 'card_002', reviewIteration: 3, verdict: {}, chatVisible: true })
+  assert.equal(line, 'blocked card_002 after 3 failed reviews')
+})
+
+check('a rework counts its review against the cap of three', () => {
+  const line = narrate('kanban_rework_started', { cardId: 'card_002', reviewIteration: 2, chatVisible: true })
+  assert.equal(line, 'reworking card_002 · iter 2/3')
 })
 
 if (failures) {

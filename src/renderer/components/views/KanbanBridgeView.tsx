@@ -28,7 +28,7 @@ interface Props {
 }
 
 const STALE_THRESHOLD_MS = 12 * 60 * 1000
-const KANBAN_MAX_REVIEW_ITERATIONS = 3
+export const KANBAN_MAX_REVIEW_ITERATIONS = 3
 
 // Shape we read from the most recent kanban_tick event so the
 // autopilot countdown + the running-column empty state can both show
