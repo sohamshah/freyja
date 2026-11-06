@@ -595,8 +595,13 @@ def set_transcript_aside(session_id: str) -> Path | None:
     ):
         _set_aside(sidecar, stamp)
     with _inbox_lock():  # another process queues into it under the lock
-        _set_aside(_inbox_path(session_id), stamp)
-    return _set_aside(_transcript_path(session_id), stamp)
+        inbox = _set_aside(_inbox_path(session_id), stamp)
+    aside = _set_aside(_transcript_path(session_id), stamp)
+    if inbox is None and aside is None and project_output_dir(session_id).is_dir():
+        # A conversation was started under the id (its project directory
+        # is made then), and had saved neither: a new session has neither.
+        _mark_reset(session_id, stamp)
+    return aside
 
 
 def keep_settings(session_id: str, aside: Path) -> Path | None:
@@ -618,6 +623,7 @@ def keep_settings(session_id: str, aside: Path) -> Path | None:
     if not (data.get("transcript") or {}).get("entries"):
         if _link_unless_there(aside, path):
             aside.unlink()  # back under its own name only: a rename
+            _mark_reset(session_id, int(aside.name.rpartition(".reset-")[2]))
         return None
     meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
     settings = {
@@ -651,6 +657,19 @@ def _set_aside(path: Path, stamp: int) -> Path | None:
     return aside
 
 
+def _mark_reset(session_id: str, stamp: int) -> None:
+    """Leave the time of a reset that set none of the conversation's
+    files aside under it, where reset_at reads it: one during a thread's
+    first turn, before its transcript or inbox was saved (or with only
+    its model and mode, which go back as they were). The sub-agents that
+    turn started were saved before the reset all the same."""
+    try:
+        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        (SESSIONS_DIR / f"{_sanitize_session_id(session_id)}.reset-{stamp}").touch()
+    except OSError:
+        logger.exception("Failed to mark the reset of %s", session_id)
+
+
 def _link_unless_there(src: Path, dest: Path) -> bool:
     """Give ``src`` the name ``dest`` too, unless a file has it: one a
     session saved there is newer."""
@@ -663,9 +682,13 @@ def _link_unless_there(src: Path, dest: Path) -> bool:
 
 def reset_at(session_id: str) -> int:
     """When set_transcript_aside last set the session's conversation aside,
-    in ms: the stamp in the names it gave its transcript and inbox. 0 when
-    it never did."""
-    names = {_transcript_path(session_id).name, _inbox_path(session_id).name}
+    in ms: the stamp in the names it gave its transcript and inbox, or in
+    its marker (_mark_reset). 0 when it never did."""
+    names = {
+        _transcript_path(session_id).name,
+        _inbox_path(session_id).name,
+        _sanitize_session_id(session_id),
+    }
     stamps = [0]
     try:
         for name in os.listdir(SESSIONS_DIR):

@@ -351,7 +351,7 @@ async def test_reset_of_a_thread_with_no_message_yet_keeps_its_settings_file(mon
 
     await _gateway(state)._reset_session(KEY)
 
-    assert list(tp.SESSIONS_DIR.glob("*.reset-*")) == []
+    assert list(tp.SESSIONS_DIR.glob("*.transcript.json.reset-*")) == []
     assert tp.load_transcript(KEY)["metadata"]["model_id"] == "claude-sonnet-5-5"
 
 
@@ -396,3 +396,45 @@ async def test_a_message_while_reset_reads_the_settings_starts_on_them(monkeypat
 
     assert "old" not in _texts(fresh)
     assert (fresh.model_id, fresh.coordination_strategy) == ("claude-sonnet-5-5", "goal")
+
+
+@pytest.mark.parametrize("saved", ["nothing", "settings"])
+async def test_a_reset_during_the_threads_first_turn_leaves_that_turns_sub_agents_out(monkeypatch, tmp_path, saved):
+    # Nothing of the thread was saved to set aside with the reset's time
+    # in its name (or only its model and mode, which go back as they
+    # were): reset_at found no reset, and the sub-agents its first turn
+    # started were the fresh conversation's children.
+    import json
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "emit", lambda _e: None)
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
+    monkeypatch.setattr(fb, "_SUBAGENT_PARENTS", {})
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    await state.ensure_session(KEY, model_id="claude-sonnet-5-5" if saved == "settings" else None)
+    assert (tp.load_transcript(KEY) is not None) == (saved == "settings")
+    old = _subagent(KEY, "sub_old_1")  # its first turn's, which is still running
+
+    await _gateway(state)._reset_session(KEY)
+    await asyncio.sleep(0.01)
+    new = _subagent(KEY, "sub_new_1")
+    fresh = await state.ensure_session(KEY)
+    await fresh.initialize()
+    listing = fresh.tool_registry._tools["list_agent_sessions"]
+    out = json.loads((await listing.execute("c1", {})).content)
+
+    assert tp.predates_reset(tp.load_subagent_state(old), tp.reset_at(KEY))
+    assert [(s["id"], s["relationship"]) for s in out["sessions"]] == [(new, "child")]
+
+
+async def test_a_new_session_in_the_app_marks_no_reset(monkeypatch, tmp_path):
+    # new_session sets aside whatever is saved under its id: a new id has
+    # nothing, and no conversation ran under it to mark the reset of.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "emit", lambda _e: None)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+
+    await fb._handle_command(state, {"type": "new_session", "sessionId": "desktop-19f0"})
+
+    assert list(tp.SESSIONS_DIR.glob("*.reset-*")) == []
+    assert tp.reset_at("desktop-19f0") == 0
