@@ -11,7 +11,9 @@
 // The tail saves its offset for the app's next start, but not which .1 it
 // had read: one made while the app was closed was taken as read, so the
 // events written before it were lost and the log was read on from the old
-// offset, in the middle of its first lines.
+// offset, in the middle of its first lines. Rotated twice while the app was
+// closed, the offset was in a log gzipped since, and the tail read the newest
+// .1 on from it: from the middle of a line, or past events it never read.
 // Run from the repo root:
 //   npx tsx test-gateway-log-rotation.mjs
 import assert from 'node:assert/strict'
@@ -149,6 +151,24 @@ write(22)
 await sleep(400)
 await check('an app that opens in the middle of a rotation reads each event once', () => {
   assert.deepEqual(forwarded, events(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22))
+})
+
+tailer.stop()
+write(23, 24) // Not read yet when the gateway rotates its log twice.
+rotate()
+write(25, 26, 27)
+rotate() // 23 and 24 are gzipped now.
+write(28)
+const warned = []
+const warn = console.warn
+console.warn = (...args) => warned.push(args.join(' '))
+tailer = open()
+await sleep(400)
+console.warn = warn
+await check('after two rotations while the app was closed, the newest .1 is read from its start, and the skip is logged', () => {
+  assert.deepEqual(forwarded.slice(22), events(25, 26, 27, 28))
+  assert.equal(warned.length, 1)
+  assert.match(warned[0], /skipped/)
 })
 
 tailer.stop()

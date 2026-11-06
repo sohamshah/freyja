@@ -33,7 +33,11 @@ import os from 'node:os'
  *   those of a rotation while the app was closed: a .1 that is not the one
  *   we had read is read on from the offset, then the log from its start. A
  *   bare offset (written before the inode was saved) takes the .1 there
- *   now as read.
+ *   now as read. The last bytes read before the offset are saved with it:
+ *   a new .1 whose bytes there differ is not the log the offset was in, but
+ *   a later one (the log rotated twice or more while the app was closed,
+ *   and the events the tail had not read are gzipped). That .1 is read
+ *   from its start, and the skip is logged.
  *
  * Rotation:
  *   The gateway rotates its log in place (rotate_log_if_large in
@@ -57,6 +61,8 @@ const POLL_INTERVAL_MS = 250
 // Cap each batch read so an idle desktop process can't suddenly try to
 // parse 50MB at once after the daemon's been busy for an hour without us.
 const MAX_BATCH_BYTES = 1 * 1024 * 1024
+// How many of the bytes read before the saved offset are saved with it.
+const BEFORE_BYTES = 256
 
 export class GatewayLogTailer {
   private offset = 0
@@ -68,8 +74,11 @@ export class GatewayLogTailer {
   // The inode of the .1 the tail has read to its end, or that was there
   // when it first started; saved with the offset.
   private segment: number | null = null
-  // The offset and .1 at the end of the last whole line read: what is saved.
-  private lineEnd: { offset: number, segment: number | null } = { offset: 0, segment: null }
+  // The offset and .1 at the end of the last whole line read, and the bytes
+  // before it (base64): what is saved.
+  private lineEnd: { offset: number, segment: number | null, before: string | null } = {
+    offset: 0, segment: null, before: null,
+  }
   // Every sessionId we've seen emit a daemon-side event. Includes both
   // gateway root sessions (``freyja:<platform>:...``) and sub-agents
   // spawned beneath them (``sub_<hex>_<n>``). Used by the desktop main
@@ -139,7 +148,18 @@ export class GatewayLogTailer {
       if (Number.isFinite(n) && n >= 0) {
         this.offset = n
         this.segment = 'segment' in saved ? saved.segment : statOf(GATEWAY_LOG_SEGMENT)?.ino ?? null
-        this.lineEnd = { offset: this.offset, segment: this.segment }
+        const segment = statOf(GATEWAY_LOG_SEGMENT)
+        if (segment && segment.ino !== this.segment && typeof saved.before === 'string') {
+          const before = Buffer.from(saved.before, 'base64')
+          if (!bytesBefore(GATEWAY_LOG_SEGMENT, n, before.length)?.equals(before)) {
+            console.warn(
+              '[gatewayLogTail] gateway.log rotated more than once while the app was closed: '
+              + 'the events the tail had not read are in a gzipped log, and are skipped; reading gateway.log.1 from its start',
+            )
+            this.offset = 0
+          }
+        }
+        this.lineEnd = { offset: this.offset, segment: this.segment, before: this.offset ? saved.before ?? null : null }
         return
       }
     } catch {
@@ -151,7 +171,8 @@ export class GatewayLogTailer {
       this.offset = 0
     }
     this.segment = statOf(GATEWAY_LOG_SEGMENT)?.ino ?? null
-    this.lineEnd = { offset: this.offset, segment: this.segment }
+    const before = bytesBefore(GATEWAY_LOG, this.offset, Math.min(this.offset, BEFORE_BYTES))
+    this.lineEnd = { offset: this.offset, segment: this.segment, before: before?.toString('base64') ?? null }
     this.persistOffset()
   }
 
@@ -194,12 +215,12 @@ export class GatewayLogTailer {
       }
       this.segment = segment.ino
       this.offset = 0
-      if (!this.partial.length) this.lineEnd = { offset: 0, segment: this.segment }
+      if (!this.partial.length) this.lineEnd = { offset: 0, segment: this.segment, before: null }
     } else if (size < this.offset) {
       // Truncated by hand: read it again from its start.
       this.offset = 0
       this.partial = Buffer.alloc(0)
-      this.lineEnd = { offset: 0, segment: this.segment }
+      this.lineEnd = { offset: 0, segment: this.segment, before: null }
     }
     if (size > this.offset) this.read(GATEWAY_LOG, size)
   }
@@ -228,9 +249,15 @@ export class GatewayLogTailer {
     const end = buf.lastIndexOf(0x0a, read - 1) + 1
     let lines: string[] = []
     if (end > 0) {
-      lines = Buffer.concat([this.partial, buf.subarray(0, end)]).toString('utf8').split('\n')
+      const whole = Buffer.concat([this.partial, buf.subarray(0, end)])
+      lines = whole.toString('utf8').split('\n')
       this.partial = Buffer.from(buf.subarray(end, read))
-      this.lineEnd = { offset: this.offset + end, segment: this.segment }
+      this.lineEnd = {
+        offset: this.offset + end,
+        segment: this.segment,
+        // Of this file's bytes only: a line that began in .1 began before them.
+        before: whole.subarray(whole.length - Math.min(whole.length, this.offset + end, BEFORE_BYTES)).toString('base64'),
+      }
     } else {
       this.partial = Buffer.concat([this.partial, buf.subarray(0, read)])
     }
@@ -279,6 +306,23 @@ export class GatewayLogTailer {
 function statOf(file: string): fs.Stats | null {
   try {
     return fs.statSync(file)
+  } catch {
+    return null
+  }
+}
+
+/** The ``length`` bytes of ``file`` before ``offset``, or null when it does
+ *  not have them. */
+function bytesBefore(file: string, offset: number, length: number): Buffer | null {
+  if (offset < length) return null
+  const buf = Buffer.alloc(length)
+  try {
+    const fd = fs.openSync(file, 'r')
+    try {
+      return fs.readSync(fd, buf, 0, length, offset - length) === length ? buf : null
+    } finally {
+      fs.closeSync(fd)
+    }
   } catch {
     return null
   }
