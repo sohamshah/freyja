@@ -655,6 +655,9 @@ export type BridgeCommand =
       /** Tab / ⌥↵: leave the running turn alone; run this as its own turn
        *  once it ends. */
       afterTurn?: boolean
+      /** A sub-agent pane's parent. A gateway sub-agent's first run has
+       *  saved nothing the bridge could read it from. */
+      parentSessionId?: string
     }
   | {
       type: 'followup_control'
@@ -758,6 +761,8 @@ export type BridgeCommand =
        *  a restart; without this, ``auto_dispatch_enabled`` defaults to
        *  False in memory even when the slice on disk says it was on. */
       autoDispatchEnabled?: boolean
+      /** A sub-agent pane's parent (see send_message). */
+      parentSessionId?: string
     }
   | { type: 'usage'; sessionId?: string }
   | { type: 'list_files'; sessionId?: string; query: string; limit?: number }

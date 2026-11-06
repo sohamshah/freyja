@@ -315,6 +315,33 @@ await check('a message the bridge refused to send gives its attachments back to 
   assert.deepEqual(useHarness.getState().pendingAttachments, [shot, card])
 })
 
+await check("a sub-agent pane's message and switch name its parent", async () => {
+  // A gateway sub-agent's first run has saved nothing the bridge can read
+  // its parent from: without it the bridge built a root copy on its id.
+  const slack = 'freyja:slack:T1:channel:C1:3.0'
+  const sub = 'sub_19f0first_1'
+  const S = useHarness.getState()
+  useHarness.setState({
+    sessions: [...S.sessions, { ...S.sessions[0], id: sub, title: 'worker', parentSessionId: slack }],
+    activeSessionId: sub, messages: [], isStreaming: false,
+  })
+  await useHarness.getState().sendMessage('focus on X')
+  assert.equal(sent.at(-1).type, 'send_message')
+  assert.equal(sent.at(-1).parentSessionId, slack)
+  // Its pane opened from elsewhere: the switch loads the slice it saved.
+  const saved = {
+    messages: [], currentStreamingMessageId: null, currentTurnId: null, thinking: '', isStreaming: false,
+    toolCalls: {}, toolCallOrder: [], fileChanges: [], subagents: {}, subagentOrder: [],
+    usage: { ...useHarness.getState().usage }, systemEvents: [], kanbanCards: {}, busMessages: [],
+    inboxEvents: [], artifacts: [], widgets: {}, autoDispatchEnabled: false,
+  }
+  useHarness.setState({ activeSessionId: sid, sessionArchive: { ...S.sessionArchive, [sub]: saved } })
+  await useHarness.getState().switchSession(sub)
+  const sw = sent.filter((c) => c.type === 'switch_session').at(-1)
+  assert.equal(sw.sessionId, sub)
+  assert.equal(sw.parentSessionId, slack)
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

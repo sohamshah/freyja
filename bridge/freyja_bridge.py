@@ -13422,10 +13422,20 @@ def _gateway_holds(session_id: str) -> bool:
     return not _process_owns_gateway() and _is_gateway_session_id(_root_session_id(session_id))
 
 
-# A sub-agent's parent, as its saved files name it. A parent never changes,
-# and the files that name it hold the sub-agent's whole transcript, so each
-# is read once.
+# A sub-agent's parent, as its saved files or the app's pane name it. A
+# parent never changes, and the files that name it hold the sub-agent's
+# whole transcript, so each is read once.
 _SUBAGENT_PARENTS: dict[str, str] = {}
+
+
+def _note_subagent_parent(session_id: str, parent: Any) -> None:
+    """The parent the app names for a sub-agent's pane (the renderer has it
+    from session_spawned). On its first run a gateway sub-agent has saved
+    no sidecar or transcript, so nothing here told it from a desktop one,
+    and the app built a root copy on its id when its pane was opened or
+    typed into."""
+    if session_id.startswith("sub_") and isinstance(parent, str) and parent and parent != session_id:
+        _SUBAGENT_PARENTS.setdefault(session_id, parent)
 
 
 def _root_session_id(session_id: str) -> str:
@@ -14403,6 +14413,8 @@ async def _run_appshot_capture(cmd: dict[str, Any]) -> None:
 async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
     ctype = cmd.get("type")
     session_id = cmd.get("sessionId") or state.active_session_id
+    if cmd.get("parentSessionId") and isinstance(cmd.get("sessionId"), str):
+        _note_subagent_parent(cmd["sessionId"], cmd["parentSessionId"])
 
     if ctype == "hello":
         return

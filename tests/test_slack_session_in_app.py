@@ -537,6 +537,29 @@ def test_a_sub_agent_whose_first_run_is_going_is_not_a_closed_root_session(app_b
     assert not fb._is_closed_root_session("sub_19f0desk_1")
 
 
+async def test_a_slack_sub_agents_first_run_pane_builds_no_copy_and_its_messages_go_to_the_gateway(
+    app_bridge, monkeypatch
+):
+    # Its first run has saved nothing yet, so only the renderer, which got
+    # its session_spawned, knows its parent. Opening its pane and typing
+    # into it built a root copy on its id, which wrote its transcript.
+    state, _events, built = app_bridge
+    monkeypatch.setattr(fb, "_SUBAGENT_PARENTS", {})
+    _gateway_running(monkeypatch, os.getpid() + 1)
+    sub = "sub_19f0first_1"
+
+    await fb._handle_command(state, {"type": "switch_session", "sessionId": sub, "parentSessionId": SLACK})
+    await fb._handle_command(
+        state,
+        {"type": "send_message", "sessionId": sub, "parentSessionId": SLACK, "content": "focus on X", "clientId": "m9"},
+    )
+
+    assert built == [] and state.sessions == {}
+    (cmd,) = _forwarded()
+    assert (cmd["type"], cmd["to"], cmd["message"]["content"]) == ("talk_deliver", sub, "focus on X")
+    assert tp.load_transcript(sub) is None
+
+
 async def test_a_copy_of_a_slack_sub_agent_saves_nothing_over_its_files(app_bridge, tmp_path):
     # compact, set_model, goal_control and the like build a root session
     # on the id they are given, here a Slack thread's sub-agent.

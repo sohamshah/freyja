@@ -4722,6 +4722,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       cmd.afterTurn = afterTurn
     }
     const activeSnapshot = state.sessions.find((s) => s.id === sessionId)
+    // A sub-agent's pane names its parent: a gateway sub-agent's first run
+    // has saved nothing the bridge could read it from.
+    if (activeSnapshot?.parentSessionId) cmd.parentSessionId = activeSnapshot.parentSessionId
     if (activeSnapshot?.parentSessionId && state.messages.length > 0) {
       const contextSummary = extractConversationSummary(state.messages, state.toolCalls)
       if (contextSummary) {
@@ -5309,6 +5312,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         harnessSessionId: harnessSessionIdForBridge,
         ...(autoDispatchForBridge !== undefined
           ? { autoDispatchEnabled: autoDispatchForBridge }
+          : {}),
+        ...(sessionSnapshot?.parentSessionId
+          ? { parentSessionId: sessionSnapshot.parentSessionId }
           : {}),
       })
       // The switch above is a silent no-op when the bridge already has
