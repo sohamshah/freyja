@@ -2061,15 +2061,19 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         messages = [...messages, { id: segmentId, role: 'assistant', parts: [], createdAt: t }]
         next.currentStreamingMessageId = segmentId
       } else if (followups.length > 0) {
-        // Landed at a turn's first step: show it just ahead of that
-        // turn's reply.
-        const streaming = messages.find((m) => m.id === streamingId)
-        let t = (streaming?.createdAt ?? at) - followups.length
+        // Landed at a turn's first step, ahead of its reply. They take
+        // the bridge's stamps as mid-turn ones do, since branch, edit and
+        // rerun resolve a message by its createdAt, and the reply, which
+        // has streamed nothing yet, moves below them.
+        let t = at
         for (const item of followups) {
           messages = placeFollowupMessage(
             messages, item, pendingFor(ev.pending, item.clientId), t++, false,
           )
         }
+        messages = messages.map((m) =>
+          m.id === streamingId && m.createdAt < t ? { ...m, createdAt: t } : m,
+        )
       }
       next.messages = messages
       return next

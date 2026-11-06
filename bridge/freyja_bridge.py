@@ -5790,10 +5790,13 @@ class _BridgeSession:
             return
         if session is None:
             return
-        # Timestamp BEFORE the transcript writes: edit/rerun anchors a
-        # renderer message to the first transcript entry at/after its
-        # createdAt, and this is the createdAt the renderer will use.
-        at_ms = int(time.time() * 1000)
+        # Branch, edit, rerun and delete anchor a renderer message on the
+        # first entry stamped at/after its createdAt. The renderer shows
+        # the j-th follow-up here at at_ms + j and the rest of the turn at
+        # at_ms + n, so each entry below is stamped to resolve to its own
+        # message. at_ms is past the step's last entry, which often landed
+        # in this same ms.
+        at_ms = int(time.time() * 1000) + 1
         # Messages queued for AFTER the turn stay put; _drain_after_turn
         # runs each as its own turn.
         msgs = self.inbox.drain_injectable()
@@ -5810,18 +5813,29 @@ class _BridgeSession:
                 note = None
         mid_turn = iteration > 1
         items: list[dict[str, Any]] = []
+        followups = 0
         for m in msgs:
             try:
                 if m.kind == KIND_FOLLOWUP:
-                    session.add_user_message(
+                    entry_id = session.add_user_message(
                         self._followup_user_message(m, mid_turn=mid_turn, interrupt=note)
                     )
                     note = None  # the first follow-up explains the cut
+                    # Half a ms past its own slot.
+                    stamp_ms = at_ms + followups + 0.5
+                    followups += 1
                 else:
-                    session.add_user_message(m.as_user_block())
+                    entry_id = session.add_user_message(m.as_user_block())
+                    # Memos and talk show as chips, not messages: just
+                    # before the next follow-up's slot.
+                    stamp_ms = at_ms + followups - 0.5
             except Exception as exc:  # noqa: BLE001
                 log("warn", f"failed to inject inbox msg {m.id[:8]}: {exc}")
                 continue
+            try:
+                session.transcript.get_entry(entry_id).timestamp = stamp_ms / 1000
+            except AttributeError:
+                pass  # no engine transcript, or the entry was trimmed
             items.append(
                 {
                     "messageId": m.id,

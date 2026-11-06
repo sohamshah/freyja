@@ -233,6 +233,26 @@ await check('stop-agents is its own scope', async () => {
   assert.equal(sent.at(-1).scope, 'subagents')
 })
 
+await check("a follow-up that lands at a turn's first step takes the bridge's stamp, and the reply moves below it", async () => {
+  ev({ type: 'turn_start', turnId: 'turn-9' })
+  await useHarness.getState().sendMessage('one more thing')
+  const c = sent.at(-1).clientId
+  // Branch, edit and rerun resolve a message by its createdAt: the bridge
+  // stamps the injected entry to match `at`, not the renderer's clock.
+  const at = Date.now() + 20
+  ev({
+    type: 'inbox_injected', at, midTurn: false,
+    items: [{ messageId: 'm9', kind: 'followup', clientId: c, force: false, content: 'one more thing' }],
+  })
+  ev({ type: 'text_delta', text: 'Doing both.' })
+  ev({ type: 'turn_complete', turnId: 'turn-9', success: true })
+  const msgs = useHarness.getState().messages
+  assert.equal(msgs.find((m) => m.id === c).createdAt, at)
+  const reply = msgs.find((m) => m.parts.some((p) => p.text === 'Doing both.'))
+  assert.ok(reply.createdAt > at)
+  assert.deepEqual(timeline().slice(-2), ['user:one more thing', 'assistant:Doing both.'])
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

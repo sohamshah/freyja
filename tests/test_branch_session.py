@@ -855,3 +855,102 @@ async def test_fork_from_a_snapshot_keeps_no_records_of_the_summary_it_left_out(
     assert [e["id"] for e in tp.load_transcript(new)["transcript"]["entries"]] == ["u1"]
     assert branched["compactionRecordsUntil"] == branched["messageCreatedAt"]
     assert not [p for p in (sessions_dir / "compactions").iterdir() if p.name.startswith(f"{new}-")]
+
+
+# ── follow-ups slid into a running turn ────────────────────────────────
+#
+# The renderer shows the j-th follow-up of an ``inbox_injected`` event
+# at ``at + j`` ms (store.ts, ``inbox_injected``) and the rest of the
+# turn at ``at + n``. Branch, edit, rerun and delete anchor on those
+# stamps, so each must resolve to the follow-up's own entry.
+
+
+class _Clock:
+    """``time`` for the bridge module with a fixed ``time()``."""
+
+    def __init__(self, now: float):
+        self.now = now
+
+    def time(self) -> float:
+        return self.now
+
+    def __getattr__(self, name):
+        import time as _time
+
+        return getattr(_time, name)
+
+
+def _injecting_session(monkeypatch):
+    import time as _time
+
+    import bridge.freyja_bridge as fb
+    from bridge.inbox import SessionInbox
+    from engine.session import Session
+    from engine.types import ToolCall
+
+    events: list[dict] = []
+    monkeypatch.setattr(fb, "emit", events.append)
+    session = Session.create(system_prompt="t")
+    session.add_user_message("run the checks")
+    session.add_assistant_message("", tool_calls=[ToolCall(id="t1", name="bash", arguments={})])
+    session.add_tool_result("t1", "ok")
+    # The step's tool result landed a fraction of a ms before the
+    # drain, in the same ms, as it does when the next step starts.
+    base = float(int(_time.time()) - 60)
+    for entry, stamp in zip(session.transcript.entries, (base - 10, base - 5, base + 0.0002)):
+        entry.timestamp = stamp
+    monkeypatch.setattr(fb, "time", _Clock(base + 0.0004))
+    sess = fb._BridgeSession.__new__(fb._BridgeSession)
+    sess.id = "s"
+    sess.inbox = SessionInbox(session_id="s")
+    sess.runner = None
+    sess._save_inbox = lambda: None
+    sess._clear_tool_yield = lambda: None
+    return fb, sess, session, events
+
+
+def _followup(text):
+    from bridge.inbox import KIND_FOLLOWUP, InboxMessage, new_message_id
+
+    return InboxMessage(
+        id=new_message_id(), from_session="operator", from_label="operator",
+        from_role="operator", content=text, kind=KIND_FOLLOWUP,
+    )
+
+
+def _memo(text):
+    from bridge.inbox import KIND_MEMO, InboxMessage, new_message_id
+
+    return InboxMessage(
+        id=new_message_id(), from_session="sub_a", from_label="researcher",
+        from_role="agent", content=text, kind=KIND_MEMO,
+    )
+
+
+def _text(entry) -> str:
+    content = entry.message.content
+    return content if isinstance(content, str) else ""
+
+
+@pytest.mark.parametrize("iteration", [3, 1])
+async def test_anchors_on_injected_followups_resolve_to_them(monkeypatch, iteration):
+    fb, sess, session, events = _injecting_session(monkeypatch)
+    sess.inbox.push(_memo("[sub-agent memo] done"))
+    sess.inbox.push(_followup("use postgres"))
+    sess.inbox.push(_followup("and add tests"))
+    await sess._drain_inbox_into_session(session, iteration)
+    # The next step's reply, after a provider call.
+    session.add_assistant_message("on it")
+    session.transcript.entries[-1].timestamp = fb.time.now + 2.0
+
+    (injected,) = [e for e in events if e["type"] == "inbox_injected"]
+    at = injected["at"]
+    entries = session.transcript.entries
+    for j, text in enumerate(["use postgres", "and add tests"]):
+        idx = fb._find_message_entry_index(entries, 0, (at + j) / 1000)
+        assert _text(entries[idx]).endswith(text)
+        kept, _ = tp.truncate_entries_before([e.to_dict() for e in entries], (at + j) / 1000)
+        assert [e["id"] for e in kept] == [e.id for e in entries[:idx]]
+    # The rest of the turn shows at at + 2: it resolves to the reply.
+    idx = fb._find_message_entry_index(entries, 0, (at + 2) / 1000)
+    assert _text(entries[idx]) == "on it"
