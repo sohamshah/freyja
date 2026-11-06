@@ -4,12 +4,16 @@ with tool re-registration diff, and permanent-failure classification.
 All timers are constructor-injected so the suite runs in seconds. All
 catalogs/pid paths live in tmp_path; the real ~/.freyja is never touched.
 The watchdog wrapper is disabled here (covered by test_mcp_watchdog.py)
-so kill/SIGSTOP tests act on the SDK's direct child.
+so kill tests act on the SDK's direct child. SIGSTOP tests keep it on:
+on Python 3.14 macOS, asyncio reaps a STOPPED direct child with a
+blocking waitpid on the loop thread, which freezes the whole test until
+that child exits. Behind the watchdog the stopped server is a grandchild.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import random
 import signal
@@ -194,7 +198,7 @@ async def test_kill_backoff_park_revive_rewires_tools(tmp_path):
                 assert key in event, (key, event)
             assert event["server"] == "flappy"
     finally:
-        await manager.stop()
+        await asyncio.wait_for(manager.stop(), timeout=30)
 
 
 async def test_parked_probe_keeps_parking_while_server_down(tmp_path):
@@ -217,18 +221,25 @@ async def test_parked_probe_keeps_parking_while_server_down(tmp_path):
         assert conn.state in (State.PARKED, State.CONNECTING, State.BACKOFF)
         assert "active" not in recorder.states()
     finally:
-        await manager.stop()
+        await asyncio.wait_for(manager.stop(), timeout=30)
 
 
 # ---------------------------------------------------------------------------
 # Keepalive: hung server -> degraded (tools stay), recovery -> active
 # ---------------------------------------------------------------------------
 
+def _resume(pid: int) -> None:
+    """SIGCONT a server this test stopped; it may already be gone (a
+    confirmed death walks the backoff ladder, which kills it)."""
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, signal.SIGCONT)
+
+
 async def test_sigstop_hang_degrades_then_recovers(tmp_path):
     spec, _gate = _spec(tmp_path, gate=False)
     manager = _manager(
         spec, keepalive_interval_s=0.3, keepalive_timeout_s=0.3,
-        backoff_base_s=0.05, backoff_max_retries=5,
+        backoff_base_s=0.05, backoff_max_retries=5, watchdog=True,
     )
     registry = ToolRegistry()
     degraded_kept_tools: list[bool] = []
@@ -249,14 +260,14 @@ async def test_sigstop_hang_degrades_then_recovers(tmp_path):
         result = await _call(registry, "mcp__flappy__pid", {})
         pid = int(str(result.content).strip())
         os.kill(pid, signal.SIGSTOP)
-
-        hit_degraded = await _wait_until(
-            lambda: len(degraded_kept_tools) > 0, timeout_s=15
-        )
-        assert hit_degraded, f"never degraded: {conn.state} ({conn.reason})"
-        assert degraded_kept_tools[0] is True, "degraded unregistered tools"
-
-        os.kill(pid, signal.SIGCONT)
+        try:
+            hit_degraded = await _wait_until(
+                lambda: len(degraded_kept_tools) > 0, timeout_s=15
+            )
+            assert hit_degraded, f"never degraded: {conn.state} ({conn.reason})"
+            assert degraded_kept_tools[0] is True, "degraded unregistered tools"
+        finally:
+            _resume(pid)
         # Recovers to ACTIVE — either directly (keepalive recovered) or,
         # if a second probe already confirmed death, via the backoff
         # ladder reconnect. Both paths must land with usable tools.
@@ -270,13 +281,15 @@ async def test_sigstop_hang_degrades_then_recovers(tmp_path):
         assert result.is_error is False
         assert "still here" in str(result.content)
     finally:
-        await manager.stop()
+        await asyncio.wait_for(manager.stop(), timeout=30)
 
 
 async def test_degraded_connection_still_serves_calls(tmp_path):
     """A degraded server (one missed ping) keeps serving tool calls."""
     spec, _gate = _spec(tmp_path, gate=False)
-    manager = _manager(spec, keepalive_interval_s=0.3, keepalive_timeout_s=0.3)
+    manager = _manager(
+        spec, keepalive_interval_s=0.3, keepalive_timeout_s=0.3, watchdog=True,
+    )
     registry = ToolRegistry()
     try:
         await asyncio.wait_for(manager.start(), timeout=30)
@@ -285,17 +298,17 @@ async def test_degraded_connection_still_serves_calls(tmp_path):
         result = await _call(registry, "mcp__flappy__pid", {})
         pid = int(str(result.content).strip())
         os.kill(pid, signal.SIGSTOP)
-        await _wait_until(lambda: conn.state is State.DEGRADED, timeout_s=15)
         try:
+            await _wait_until(lambda: conn.state is State.DEGRADED, timeout_s=15)
             assert conn.state in ACTIVE_LIKE
             # proxy_tools still includes the degraded server's tools.
             assert any(
                 p.definition.name == "mcp__flappy__echo" for p in manager.proxy_tools()
             )
         finally:
-            os.kill(pid, signal.SIGCONT)
+            _resume(pid)
     finally:
-        await manager.stop()
+        await asyncio.wait_for(manager.stop(), timeout=30)
 
 
 # ---------------------------------------------------------------------------
