@@ -605,6 +605,7 @@ RunStatus = Literal[
                       # from that session's tool call); the record is the dispatch
     "interrupted",    # the process that ran it exited before it ended
     "expired",        # a run now handed to the gateway or the app, read too late to run
+    "not_started",    # a run now handed to the gateway or the app, which could not start it
 ]
 
 

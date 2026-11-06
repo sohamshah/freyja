@@ -1610,13 +1610,16 @@ class SchedulerService:
         no retries, and the cadence is left alone. When it cannot start, or
         it was sent more than _HANDED_RUN_NOW_EXPIRES_SECONDS ago, its
         record says why, so the run the other process answered with does
-        not stay "claimed" or vanish. Returns False then."""
+        not stay "claimed" or vanish. Returns False then. Such a run never
+        ran, so it is "not_started" or "expired", not "failed": saved as
+        failed, two run nows pressed while a run went on, and that run
+        failing, stopped the job for three failed runs in a row."""
         job = load_job(job_id)
         if job is None:
             logger.warning("job %s: handed a run now, but the job is gone", job_id)
             return False
         lock = FileLock(job_run_lock_path(job_id))
-        status = "failed"
+        status = "not_started"
         waited = time.time() - sent_at if sent_at is not None else 0.0
         if waited > _HANDED_RUN_NOW_EXPIRES_SECONDS:
             status = "expired"

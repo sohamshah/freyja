@@ -333,7 +333,7 @@ async def test_the_gateway_runs_a_run_now_it_was_handed_under_the_apps_run_id(da
     run_lock.release()
 
 
-async def test_a_run_now_the_gateway_cannot_start_is_recorded_as_failed(daemon, monkeypatch):
+async def test_a_run_now_the_gateway_cannot_start_is_recorded_as_not_started(daemon, monkeypatch):
     from bridge.scheduler.persistence import load_run
 
     service, _built = daemon
@@ -350,9 +350,35 @@ async def test_a_run_now_the_gateway_cannot_start_is_recorded_as_failed(daemon, 
 
     assert not gateway_service._in_flight_runs
     recorded = load_run(job.id, run.run_id)
-    assert recorded.status == "failed" and "a run of it goes on" in recorded.error
+    assert recorded.status == "not_started" and "a run of it goes on" in recorded.error
     assert recorded.finished_at is not None
     assert load_job(job.id).next_fire_at == job.next_fire_at
+
+
+async def test_run_nows_that_could_not_start_do_not_count_toward_stopping_the_job(daemon, monkeypatch):
+    # Saved as failed, two run nows pressed while a run went on, and that
+    # run failing, made three failed runs in a row: the job was stopped
+    # although only one of them ran.
+    from bridge.scheduler.persistence import save_run
+
+    _service, _built = daemon
+    job = _slack_thread_job()
+    _gateway, gateway_service = _gateway_service(monkeypatch)
+    busy = FileLock(job_run_lock_path(job.id))
+    assert busy.acquire()  # a run of it goes on
+    try:
+        for i in range(2):
+            assert not await gateway_service.run_now_handed_over(job.id, f"run_now_{i}", time.time())
+            await asyncio.sleep(0.01)  # runs are ordered by file mtime
+    finally:
+        busy.release()
+    failed = RunRecord(run_id="run_going_on", job_id=job.id, job_name=job.name,
+                       started_at=time.time(), finished_at=time.time(), status="failed",
+                       error="agent turn failed: the deploy board is gone")
+    save_run(failed)
+
+    assert not await gateway_service._stop_if_failing(job, failed)
+    assert (load_job(job.id).enabled, load_job(job.id).status) == (True, "active")
 
 
 async def test_a_run_now_the_gateway_reads_too_late_is_recorded_as_expired_and_not_run(daemon, monkeypatch):
