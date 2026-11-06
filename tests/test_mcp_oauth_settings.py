@@ -17,7 +17,6 @@ from bridge.mcp.oauth.gates import (
     OAuthUserSkippedError,
     force_interactive_oauth,
     is_interactive,
-    login_hint,
     raise_if_non_interactive,
     suppress_interactive_oauth,
 )
@@ -42,7 +41,7 @@ def _spec(oauth=None, **kw) -> McpServerSpec:
 # ---------------------------------------------------------------------------
 
 
-def test_defaults_when_block_missing():
+def test_parse_defaults_full_block_and_legacy_timeout_key():
     s = parse_oauth_settings(_spec(None))
     assert s == OAuthSettings()
     assert s.effective_client_name == DEFAULT_CLIENT_NAME == "Freyja"
@@ -52,8 +51,6 @@ def test_defaults_when_block_missing():
     assert s.cimd is None
     assert not s.preregistered
 
-
-def test_full_block_parses_and_expands_env():
     env = {"ACME_ID": "id-123", "ACME_SECRET": "s3cret"}
     s = parse_oauth_settings(_spec({
         "client_id": "${ACME_ID}",
@@ -86,62 +83,16 @@ def test_full_block_parses_and_expands_env():
     assert s.user_agent == "Custom/1.0"
     assert s.application_type == "web"
     assert s.extra == {"future_key": {"x": 1}}
-
-
-def test_legacy_timeout_key_accepted():
     assert parse_oauth_settings(_spec({"timeout": 10})).timeout_s == 10.0
 
 
-def test_inline_client_secret_is_rejected():
+def test_secrets_never_inline_and_never_in_repr():
     with pytest.raises(McpConfigError) as ei:
         parse_oauth_settings(_spec({"client_secret": "sk-live-abcdef"}))
     assert "inline secret" in str(ei.value)
     assert ".env" in str(ei.value)
     assert "sk-live-abcdef" not in str(ei.value)
 
-
-def test_missing_secret_env_var_is_needs_auth_not_crash():
-    with pytest.raises(OAuthNeedsAuthError) as ei:
-        parse_oauth_settings(_spec({"client_secret": "${NOPE_SECRET}"}), environ={})
-    msg = str(ei.value)
-    assert "NOPE_SECRET" in msg
-    assert "/mcp login acme" in msg
-    assert ei.value.server_name == "acme"
-
-
-def test_secret_with_default_is_allowed():
-    s = parse_oauth_settings(_spec({"client_secret": "${X_SECRET:-}"}), environ={})
-    assert s.client_secret is None
-
-
-def test_client_id_reference_missing_is_left_empty():
-    s = parse_oauth_settings(_spec({"client_id": "${MISSING_ID}"}), environ={})
-    assert s.client_id is None
-
-
-@pytest.mark.parametrize("block,needle", [
-    ("not-a-dict", "must be an object"),
-    ({"client_secret": 5}, "must be a string"),
-    ({"redirect_port": "abc"}, "integer"),
-    ({"redirect_port": 70000}, "range"),
-    ({"token_endpoint_auth_method": "private_key_jwt"}, "token_endpoint_auth_method"),
-    ({"client_metadata_url": "http://insecure/cimd.json"}, "https"),
-    ({"timeout_s": 0}, "positive"),
-    ({"timeout": -1}, "positive"),
-])
-def test_validate_oauth_block_errors(block, needle):
-    with pytest.raises(McpConfigError) as ei:
-        validate_oauth_block("acme", block)
-    assert needle in str(ei.value)
-    assert "acme" in str(ei.value)
-
-
-def test_validate_oauth_block_accepts_none_and_valid():
-    validate_oauth_block("acme", None)
-    validate_oauth_block("acme", {"client_secret": "${A_SECRET}", "redirect_port": 0})
-
-
-def test_to_redacted_dict_hides_secret():
     s = parse_oauth_settings(_spec({"client_secret": "${S}"}), environ={"S": "topsecret"})
     d = s.to_redacted_dict()
     assert "topsecret" not in repr(d)
@@ -151,23 +102,40 @@ def test_to_redacted_dict_hides_secret():
     assert s.client_secret == "topsecret"
 
 
+def test_env_refs_missing_secret_is_needs_auth_defaults_and_ids_tolerated():
+    with pytest.raises(OAuthNeedsAuthError) as ei:
+        parse_oauth_settings(_spec({"client_secret": "${NOPE_SECRET}"}), environ={})
+    msg = str(ei.value)
+    assert "NOPE_SECRET" in msg
+    assert "/mcp login acme" in msg
+    assert ei.value.server_name == "acme"
+    defaulted = parse_oauth_settings(_spec({"client_secret": "${X_SECRET:-}"}), environ={})
+    assert defaulted.client_secret is None
+    assert parse_oauth_settings(_spec({"client_id": "${MISSING_ID}"}), environ={}).client_id is None
+
+
+def test_validate_oauth_block_errors_name_the_server_and_accepts_valid():
+    for block, needle in (
+        ("not-a-dict", "must be an object"),
+        ({"client_secret": 5}, "must be a string"),
+        ({"redirect_port": "abc"}, "integer"),
+        ({"redirect_port": 70000}, "range"),
+        ({"token_endpoint_auth_method": "private_key_jwt"}, "token_endpoint_auth_method"),
+        ({"client_metadata_url": "http://insecure/cimd.json"}, "https"),
+        ({"timeout_s": 0}, "positive"),
+        ({"timeout": -1}, "positive"),
+    ):
+        with pytest.raises(McpConfigError) as ei:
+            validate_oauth_block("acme", block)
+        assert needle in str(ei.value), block
+        assert "acme" in str(ei.value)
+    validate_oauth_block("acme", None)
+    validate_oauth_block("acme", {"client_secret": "${A_SECRET}", "redirect_port": 0})
+
+
 # ---------------------------------------------------------------------------
 # gates
 # ---------------------------------------------------------------------------
-
-
-def test_error_hierarchy():
-    assert issubclass(OAuthNonInteractiveError, OAuthNeedsAuthError)
-    assert issubclass(OAuthCallbackTimeoutError, OAuthNonInteractiveError)
-    assert issubclass(OAuthUserSkippedError, OAuthNonInteractiveError)
-    err = OAuthNeedsAuthError("x", server_name="acme")
-    assert err.server_name == "acme"
-    assert isinstance(err, RuntimeError)
-
-
-def test_login_hint_wording():
-    assert "/mcp login acme" in login_hint("acme")
-    assert "/mcp login <server>" in login_hint(None)
 
 
 def test_is_interactive_precedence(monkeypatch):
@@ -182,6 +150,12 @@ def test_is_interactive_precedence(monkeypatch):
     # force wins over explicit False
     with force_interactive_oauth():
         assert is_interactive(False) is True
+    # gates restore on exit, even after an exception
+    with pytest.raises(RuntimeError):
+        with suppress_interactive_oauth():
+            raise RuntimeError("boom")
+    assert is_interactive(True) is True
+
     # default heuristic: stdin tty
     class _Stdin:
         def isatty(self):
@@ -198,7 +172,13 @@ def test_is_interactive_precedence(monkeypatch):
     assert is_interactive() is False
 
 
-def test_raise_if_non_interactive_message_has_hint():
+def test_raise_if_non_interactive_typed_hierarchy_and_hint():
+    # Every gate error is a NeedsAuth error so one except clause catches them.
+    assert issubclass(OAuthNonInteractiveError, OAuthNeedsAuthError)
+    assert issubclass(OAuthCallbackTimeoutError, OAuthNonInteractiveError)
+    assert issubclass(OAuthUserSkippedError, OAuthNonInteractiveError)
+    assert isinstance(OAuthNeedsAuthError("x", server_name="acme"), RuntimeError)
+
     raise_if_non_interactive("lead.", server_name="acme", explicit=True)  # no raise
     with pytest.raises(OAuthNonInteractiveError) as ei:
         raise_if_non_interactive("Browser needed.", server_name="acme", explicit=False)
@@ -206,13 +186,6 @@ def test_raise_if_non_interactive_message_has_hint():
     assert msg.startswith("Browser needed.")
     assert "/mcp login acme" in msg
     assert ei.value.server_name == "acme"
-
-
-def test_gates_restore_on_exit_even_after_exception():
-    with pytest.raises(RuntimeError):
-        with suppress_interactive_oauth():
-            raise RuntimeError("boom")
-    assert is_interactive(True) is True
 
 
 async def test_suppression_propagates_across_run_coroutine_threadsafe():

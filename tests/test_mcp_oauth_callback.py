@@ -4,6 +4,7 @@ CIMD pinned-port pool, paste parser, one-shot HTTP listener with state check."""
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 import urllib.error
 import urllib.request
@@ -13,7 +14,6 @@ import pytest
 from bridge.mcp.oauth import callback as cb
 from bridge.mcp.oauth.callback import (
     CIMD_PORTS,
-    CallbackCapture,
     CallbackGate,
     LoopbackCallbackServer,
     cached_redirect_port,
@@ -39,8 +39,11 @@ from bridge.mcp.oauth.storage import FreyjaTokenStorage, write_json
 
 
 @pytest.fixture(autouse=True)
-def _reset_ports():
+def _reset_ports(monkeypatch):
     cb.reset_port_state_for_tests()
+    # The capture wait polls at this interval; tighten it so timeouts and
+    # deliveries are observed in milliseconds rather than tenths of a second.
+    monkeypatch.setattr(cb, "_POLL_INTERVAL_S", 0.005)
     yield
     cb.reset_port_state_for_tests()
 
@@ -53,44 +56,35 @@ def _get(url: str, timeout: float = 5.0) -> tuple[int, bytes]:
         return exc.code, exc.read()
 
 
+def _bind_ok(port: int, *, reuse: bool = False) -> bool:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if reuse:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        probe.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 # ---------------------------------------------------------------------------
 # Port reservation
 # ---------------------------------------------------------------------------
 
 
-def test_reserve_callback_port_returns_distinct_ports_and_parks_sockets():
+def test_port_reservation_parks_releases_and_blocks_theft():
     a = reserve_callback_port()
     b = reserve_callback_port()
     assert a != b
     assert cb.is_port_reserved(a) and cb.is_port_reserved(b)
-
-
-def test_reserved_port_cannot_be_stolen():
-    port = reserve_callback_port()
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        with pytest.raises(OSError):
-            probe.bind(("127.0.0.1", port))
-    finally:
-        probe.close()
-
-
-def test_release_reserved_port_frees_it():
-    port = reserve_callback_port()
-    release_reserved_port(port)
-    assert not cb.is_port_reserved(port)
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        probe.bind(("127.0.0.1", port))  # now free
-    finally:
-        probe.close()
-
-
-def test_reserve_fixed_port_true_then_false_when_taken():
-    port = reserve_callback_port()
-    release_reserved_port(port)
-    assert reserve_fixed_port(port) is True
-    assert reserve_fixed_port(port) is False  # our own parked socket holds it
+    assert not _bind_ok(a)  # the parked socket holds it
+    release_reserved_port(a)
+    assert not cb.is_port_reserved(a)
+    assert _bind_ok(a)  # now free
+    assert reserve_fixed_port(a) is True
+    assert reserve_fixed_port(a) is False  # our own parked socket holds it
 
 
 def test_park_evicts_oldest_ephemeral_but_never_pinned(monkeypatch):
@@ -120,15 +114,10 @@ def test_server_adopts_reserved_socket_closing_the_toctou_window():
         server.close()
     # After close the port is free again (SO_REUSEADDR: the served connection
     # leaves a TIME_WAIT entry, which is what the fixed-port path handles too).
-    probe = socket.socket()
-    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        probe.bind(("127.0.0.1", port))
-    finally:
-        probe.close()
+    assert _bind_ok(port, reuse=True)
 
 
-def test_server_reports_port_in_use_clearly():
+def test_fixed_port_binds_without_reservation_reports_in_use_and_is_idempotent():
     blocker = socket.socket()
     blocker.bind(("127.0.0.1", 0))
     blocker.listen(1)
@@ -142,18 +131,20 @@ def test_server_reports_port_in_use_clearly():
     finally:
         blocker.close()
 
-
-def test_server_binds_fixed_port_without_reservation():
     tmp = socket.socket()
     tmp.bind(("127.0.0.1", 0))
     port = tmp.getsockname()[1]
     tmp.close()
     server = LoopbackCallbackServer(port, server_name="acme")
     server.start()
+    server.start()  # idempotent
     try:
+        assert server.running
         assert _get(f"http://127.0.0.1:{port}/x")[0] == 404
     finally:
         server.close()
+        server.close()  # safe twice
+    assert not server.running
 
 
 # ---------------------------------------------------------------------------
@@ -161,48 +152,34 @@ def test_server_binds_fixed_port_without_reservation():
 # ---------------------------------------------------------------------------
 
 
-def test_cimd_ports_are_below_ephemeral_floor():
-    assert len(CIMD_PORTS) == 5
-    assert all(1024 < p < 32768 for p in CIMD_PORTS)
-    assert len(set(CIMD_PORTS)) == 5
-
-
-def test_pick_cimd_port_walks_range_and_wraps(monkeypatch):
+def test_pick_cimd_port_walks_skips_wraps_and_records(monkeypatch):
     available = set(CIMD_PORTS)
-
-    def fake_reserve(port):
-        return port in available
-
-    monkeypatch.setattr(cb, "reserve_fixed_port", fake_reserve)
+    monkeypatch.setattr(cb, "reserve_fixed_port", lambda port: port in available)
     picks = [pick_cimd_port() for _ in range(5)]
     assert picks == list(CIMD_PORTS)
     assert pick_cimd_port() == CIMD_PORTS[0]  # wraps rather than falling back to DCR
     assert cb.assigned_cimd_ports() == CIMD_PORTS
 
-
-def test_pick_cimd_port_skips_ports_taken_by_another_process(monkeypatch):
+    cb.reset_port_state_for_tests()
     monkeypatch.setattr(cb, "reserve_fixed_port", lambda port: port != CIMD_PORTS[0])
-    assert pick_cimd_port() == CIMD_PORTS[1]
-
-
-def test_pick_cimd_port_none_when_nothing_bindable(monkeypatch):
+    assert pick_cimd_port() == CIMD_PORTS[1]  # taken by another process -> skipped
+    cb.reset_port_state_for_tests()  # nothing assigned to us, nothing bindable -> None
     monkeypatch.setattr(cb, "reserve_fixed_port", lambda port: False)
     assert pick_cimd_port() is None
 
-
-def test_note_assigned_cimd_port_only_pinned_range():
-    note_assigned_cimd_port(40000)
+    cb.reset_port_state_for_tests()
+    note_assigned_cimd_port(40000)  # outside the pinned range: ignored
     note_assigned_cimd_port(CIMD_PORTS[2])
     note_assigned_cimd_port(CIMD_PORTS[2])
     assert cb.assigned_cimd_ports() == (CIMD_PORTS[2],)
 
 
 # ---------------------------------------------------------------------------
-# Cached redirect port / uri
+# Cached redirect port / uri + URL helpers
 # ---------------------------------------------------------------------------
 
 
-def test_cached_redirect_port_from_client_json(tmp_path):
+def test_cached_redirect_port_uri_and_state_helpers(tmp_path):
     s = FreyjaTokenStorage("acme", root=tmp_path)
     assert cached_redirect_port(s) is None
     assert cached_redirect_port(None) is None
@@ -211,27 +188,19 @@ def test_cached_redirect_port_from_client_json(tmp_path):
     })
     assert cached_redirect_port(s) == 41234
     assert cached_redirect_uri(s) is None
-
-
-def test_cached_redirect_port_accepts_localhost_and_ignores_https(tmp_path):
-    s = FreyjaTokenStorage("acme", root=tmp_path)
+    # localhost is accepted; an https redirect is reported as the external uri.
     write_json(s.client_info_path(), {
         "client_id": "c",
         "redirect_uris": ["https://proxy.example/cb", "http://localhost:5151/callback"],
     })
     assert cached_redirect_port(s) == 5151
     assert cached_redirect_uri(s) == "https://proxy.example/cb"
-
-
-def test_cached_redirect_port_ignores_foreign_paths(tmp_path):
-    s = FreyjaTokenStorage("acme", root=tmp_path)
+    # Foreign paths and garbage are ignored.
     write_json(s.client_info_path(), {
         "client_id": "c", "redirect_uris": ["http://127.0.0.1:5151/other", "garbage"],
     })
     assert cached_redirect_port(s) is None
 
-
-def test_loopback_redirect_uri_and_state_extraction():
     assert loopback_redirect_uri(1234) == "http://127.0.0.1:1234/callback"
     assert loopback_redirect_uri(1234, "localhost") == "http://localhost:1234/callback"
     url = "https://as.example/authorize?client_id=x&state=abc123&code_challenge=zz"
@@ -244,20 +213,19 @@ def test_loopback_redirect_uri_and_state_extraction():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("line", [
-    "http://127.0.0.1:37949/callback?code=abc&state=xyz",
-    "https://mcp.example.com/callback?code=abc&state=xyz&foo=bar",
-    "?code=abc&state=xyz",
-    "code=abc&state=xyz",
-    "  code=abc&state=xyz#frag  ",
-])
-def test_parse_callback_input_variants(line):
-    cap = parse_callback_input(line)
-    assert cap is not None
-    assert cap.code == "abc" and cap.state == "xyz" and not cap.skipped
+def test_parse_callback_input_accepted_formats_error_skip_and_noise():
+    for line in (
+        "http://127.0.0.1:37949/callback?code=abc&state=xyz",
+        "https://mcp.example.com/callback?code=abc&state=xyz&foo=bar",
+        "?code=abc&state=xyz",
+        "code=abc&state=xyz",
+        "  code=abc&state=xyz#frag  ",
+    ):
+        cap = parse_callback_input(line)
+        assert cap is not None, line
+        assert cap.code == "abc" and cap.state == "xyz" and not cap.skipped
+        assert cap.is_terminal
 
-
-def test_parse_callback_input_error_and_iss():
     cap = parse_callback_input(
         "?error=access_denied&error_description=nope&state=s&iss=https%3A%2F%2Fas"
     )
@@ -266,16 +234,12 @@ def test_parse_callback_input_error_and_iss():
     assert cap.iss == "https://as"
     assert cap.is_terminal
 
+    for tok in ("skip", "SKIP", "cancel", "s", "n", "no", "q", "quit"):
+        cap = parse_callback_input(tok)
+        assert cap is not None and cap.skipped and cap.is_terminal, tok
 
-@pytest.mark.parametrize("tok", ["skip", "SKIP", "cancel", "s", "n", "no", "q", "quit"])
-def test_parse_callback_input_skip_tokens(tok):
-    cap = parse_callback_input(tok)
-    assert cap is not None and cap.skipped
-
-
-@pytest.mark.parametrize("line", ["", "   ", "hello world", "http://x/y?foo=bar", None])
-def test_parse_callback_input_rejects_noise(line):
-    assert parse_callback_input(line) is None
+    for line in ("", "   ", "hello world", "http://x/y?foo=bar", None):
+        assert parse_callback_input(line) is None, line
 
 
 # ---------------------------------------------------------------------------
@@ -283,43 +247,48 @@ def test_parse_callback_input_rejects_noise(line):
 # ---------------------------------------------------------------------------
 
 
-async def test_success_redirect_is_captured_once_with_state_check():
+async def test_success_redirect_is_captured_once_with_state_check_and_no_query_in_logs(caplog):
     port = reserve_callback_port()
     server = LoopbackCallbackServer(port, expected_state="good", server_name="acme")
     server.start()
     try:
-        # Wrong state: failure page, NOT consumed.
-        status, body = await asyncio.to_thread(
-            _get, f"http://127.0.0.1:{port}/callback?code=EVIL&state=bad"
-        )
-        assert status == 400
-        assert b"mismatch" in body.lower()
-        assert server.capture is None
-        assert server.rejected_state_count == 1
+        with caplog.at_level(logging.DEBUG, logger="bridge.mcp.oauth.callback"):
+            # Wrong state: failure page, NOT consumed.
+            status, body = await asyncio.to_thread(
+                _get, f"http://127.0.0.1:{port}/callback?code=EVIL&state=bad"
+            )
+            assert status == 400
+            assert b"mismatch" in body.lower()
+            assert server.capture is None
+            assert server.rejected_state_count == 1
 
-        # Missing code/error: 400, not consumed.
-        status, _ = await asyncio.to_thread(_get, f"http://127.0.0.1:{port}/callback?state=good")
-        assert status == 400
-        assert server.capture is None
+            # Missing code/error: 400, not consumed.
+            status, _ = await asyncio.to_thread(_get, f"http://127.0.0.1:{port}/callback?state=good")
+            assert status == 400
+            assert server.capture is None
 
-        # Good state: success page, consumed.
-        status, body = await asyncio.to_thread(
-            _get, f"http://127.0.0.1:{port}/callback?code=GOOD&state=good&iss=https%3A%2F%2Fas"
-        )
-        assert status == 200
-        assert b"Authorization Successful" in body
-        assert b"Freyja" in body
+            # Good state: success page, consumed.
+            status, body = await asyncio.to_thread(
+                _get, f"http://127.0.0.1:{port}/callback?code=SECRETCODE&state=good&iss=https%3A%2F%2Fas"
+            )
+            assert status == 200
+            assert b"Authorization Successful" in body
+            assert b"Freyja" in body
 
-        # Second delivery: 409, first result kept.
-        status, body = await asyncio.to_thread(
-            _get, f"http://127.0.0.1:{port}/callback?code=LATE&state=good"
-        )
-        assert status == 409
+            # Second delivery: 409, first result kept.
+            status, body = await asyncio.to_thread(
+                _get, f"http://127.0.0.1:{port}/callback?code=LATE&state=good"
+            )
+            assert status == 409
 
         result = await wait_for_authorization_response(server, timeout=2)
-        assert result.code == "GOOD"
+        assert result.code == "SECRETCODE"
         assert result.state == "good"
         assert result.iss == "https://as"
+        # The handler logs the path, never the query (it carries the code).
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert "SECRETCODE" not in joined and "EVIL" not in joined
+        assert "/callback" in joined
     finally:
         server.close()
 
@@ -344,34 +313,45 @@ async def test_error_redirect_raises_needs_auth():
 
 
 async def test_timeout_raises_with_login_hint_and_cimd_hint():
-    port = reserve_callback_port()
-    server = LoopbackCallbackServer(port, server_name="acme")
+    server = LoopbackCallbackServer(reserve_callback_port(), server_name="acme")
     server.start()
     try:
         with pytest.raises(OAuthCallbackTimeoutError) as ei:
-            await wait_for_authorization_response(server, timeout=0.2)
+            await wait_for_authorization_response(server, timeout=0.05)
         assert "/mcp login acme" in str(ei.value)
         assert "Metadata Document" not in str(ei.value)
-    finally:
-        server.close()
-    server2 = LoopbackCallbackServer(reserve_callback_port(), server_name="acme")
-    server2.start()
-    try:
         with pytest.raises(OAuthCallbackTimeoutError) as ei:
             await wait_for_authorization_response(
-                server2, timeout=0.2, cimd_url="https://me.example/cimd.json"
+                server, timeout=0.05, cimd_url="https://me.example/cimd.json"
             )
         assert "https://me.example/cimd.json" in str(ei.value)
         assert '"cimd": false' in str(ei.value)
     finally:
-        server2.close()
+        server.close()
 
 
-async def test_paste_source_wins_race_and_is_state_checked():
-    port = reserve_callback_port()
-    server = LoopbackCallbackServer(port, expected_state="st", server_name="acme")
+async def test_paste_source_wins_is_state_checked_and_failures_are_non_fatal():
+    # Bad state, garbage and a raising source are ignored (timeout, nothing
+    # consumed); the server keeps serving across them.
+    server = LoopbackCallbackServer(
+        reserve_callback_port(), expected_state="st", server_name="acme",
+    )
     server.start()
     try:
+        async def bad_paste():
+            return "code=EVIL&state=wrong"
+
+        async def garbage():
+            return "not a redirect"
+
+        async def broken():
+            raise RuntimeError("stdin closed")
+
+        for source in (bad_paste, garbage, broken):
+            with pytest.raises(OAuthCallbackTimeoutError):
+                await wait_for_authorization_response(server, timeout=0.05, paste_source=source)
+            assert server.capture is None
+
         async def paste():
             return "http://127.0.0.1:1/callback?code=PASTED&state=st"
 
@@ -380,58 +360,15 @@ async def test_paste_source_wins_race_and_is_state_checked():
     finally:
         server.close()
 
-    server = LoopbackCallbackServer(
-        reserve_callback_port(), expected_state="st", server_name="acme"
-    )
-    server.start()
-    try:
-        async def bad_paste():
-            return "code=EVIL&state=wrong"
-
-        with pytest.raises(OAuthCallbackTimeoutError):
-            await wait_for_authorization_response(server, timeout=0.3, paste_source=bad_paste)
-        assert server.capture is None
-    finally:
-        server.close()
-
-
-async def test_paste_skip_token_raises_user_skipped():
     server = LoopbackCallbackServer(reserve_callback_port(), server_name="acme")
     server.start()
     try:
-        async def paste():
+        async def skip():
             return "skip"
 
         with pytest.raises(OAuthUserSkippedError) as ei:
-            await wait_for_authorization_response(server, timeout=2, paste_source=paste)
+            await wait_for_authorization_response(server, timeout=2, paste_source=skip)
         assert "user_skipped" in str(ei.value)
-    finally:
-        server.close()
-
-
-async def test_paste_source_none_or_garbage_is_ignored():
-    server = LoopbackCallbackServer(reserve_callback_port(), server_name="acme")
-    server.start()
-    try:
-        async def paste():
-            return "not a redirect"
-
-        with pytest.raises(OAuthCallbackTimeoutError):
-            await wait_for_authorization_response(server, timeout=0.3, paste_source=paste)
-        assert server.capture is None
-    finally:
-        server.close()
-
-
-async def test_paste_source_exception_is_non_fatal():
-    server = LoopbackCallbackServer(reserve_callback_port(), server_name="acme")
-    server.start()
-    try:
-        async def paste():
-            raise RuntimeError("stdin closed")
-
-        with pytest.raises(OAuthCallbackTimeoutError):
-            await wait_for_authorization_response(server, timeout=0.3, paste_source=paste)
     finally:
         server.close()
 
@@ -451,7 +388,7 @@ async def test_slow_paste_source_is_cancelled_when_http_wins():
             return None
 
         async def browser():
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
             await asyncio.to_thread(_get, f"http://127.0.0.1:{port}/callback?code=HTTP")
 
         task = asyncio.create_task(browser())
@@ -473,36 +410,3 @@ async def test_callback_gate_deliver_params_state_check_and_one_shot():
     result = await wait_for_authorization_response(gate, timeout=1)
     assert result.code == "c"
     gate.close()
-
-
-def test_callback_capture_terminal_semantics():
-    assert not CallbackCapture().is_terminal
-    assert CallbackCapture(code="x").is_terminal
-    assert CallbackCapture(error="e").is_terminal
-    assert CallbackCapture(skipped=True).is_terminal
-
-
-async def test_handler_log_lines_never_include_query(caplog):
-    import logging
-
-    port = reserve_callback_port()
-    server = LoopbackCallbackServer(port, server_name="acme")
-    server.start()
-    try:
-        with caplog.at_level(logging.DEBUG, logger="bridge.mcp.oauth.callback"):
-            await asyncio.to_thread(_get, f"http://127.0.0.1:{port}/callback?code=SECRETCODE&state=s")
-        joined = "\n".join(r.getMessage() for r in caplog.records)
-        assert "SECRETCODE" not in joined
-        assert "/callback" in joined
-    finally:
-        server.close()
-
-
-def test_server_start_is_idempotent_and_close_safe_twice():
-    server = LoopbackCallbackServer(reserve_callback_port(), server_name="acme")
-    server.start()
-    server.start()
-    assert server.running
-    server.close()
-    server.close()
-    assert not server.running

@@ -111,23 +111,7 @@ def test_child_exit_code_propagates(tmp_path):
     assert watchdog.wait(timeout=10) == 7
 
 
-def test_sigterm_to_watchdog_kills_server_group(tmp_path):
-    # This is the clean-shutdown path the MCP SDK drives (terminate on
-    # context exit): SIGTERM to the watchdog must take the server down.
-    watchdog, pid_file = _spawn_watchdog(
-        tmp_path, parent_pid=os.getpid(), child_cmd=SLEEPER
-    )
-    child_pid = _child_pid(pid_file)
-    assert _alive(child_pid)
-
-    watchdog.terminate()
-    assert watchdog.wait(timeout=10) is not None
-    assert _wait_until(lambda: not _alive(child_pid), 5), (
-        "server survived watchdog SIGTERM"
-    )
-
-
-def test_pid_file_contents_and_wrap_helper(tmp_path):
+def test_wrap_helper_pid_file_contents_and_sigterm_kills_server_group(tmp_path):
     command, args = wrap_with_watchdog(
         "/usr/bin/true", ["--flag"], parent_pid=1234,
         poll_interval_s=0.5, pid_file=tmp_path / "x.pid",
@@ -142,16 +126,21 @@ def test_pid_file_contents_and_wrap_helper(tmp_path):
     watchdog, pid_file = _spawn_watchdog(
         tmp_path, parent_pid=os.getpid(), child_cmd=SLEEPER
     )
-    try:
-        child_pid = _child_pid(pid_file)
-        record = json.loads(pid_file.read_text())
-        assert record["pid"] == child_pid
-        assert record["owner_pid"] == os.getpid()
-        assert record["watchdog_pid"] == watchdog.pid
-        assert "time.sleep(120)" in record["cmdline"]
-    finally:
-        watchdog.terminate()
-        watchdog.wait(timeout=10)
+    child_pid = _child_pid(pid_file)
+    assert _alive(child_pid)
+    record = json.loads(pid_file.read_text())
+    assert record["pid"] == child_pid
+    assert record["owner_pid"] == os.getpid()
+    assert record["watchdog_pid"] == watchdog.pid
+    assert "time.sleep(120)" in record["cmdline"]
+
+    # This is the clean-shutdown path the MCP SDK drives (terminate on
+    # context exit): SIGTERM to the watchdog must take the server down.
+    watchdog.terminate()
+    assert watchdog.wait(timeout=10) is not None
+    assert _wait_until(lambda: not _alive(child_pid), 5), (
+        "server survived watchdog SIGTERM"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +153,15 @@ def _spawn_dummy() -> subprocess.Popen:
 
 
 def test_sweep_kills_stale_pid_with_matching_cmdline(tmp_path):
+    assert sweep_stale_pidfiles(tmp_path / "does-not-exist") == []
     run_dir = tmp_path / "mcp-run"
+    run_dir.mkdir()
+    # Garbage pid files are removed, never acted on.
+    (run_dir / "junk.pid").write_text("not json", encoding="utf-8")
+    (run_dir / "wrongshape.pid").write_text('{"pid": "nope"}', encoding="utf-8")
+    assert sweep_stale_pidfiles(run_dir) == []
+    assert list(run_dir.glob("*.pid")) == []
+
     dummy = _spawn_dummy()
     try:
         live_cmd = process_cmdline(dummy.pid)
@@ -249,13 +246,3 @@ async def test_manager_start_sweeps_run_dir(tmp_path):
         if dummy.poll() is None:
             dummy.kill()
         dummy.wait(timeout=5)
-
-
-def test_sweep_ignores_garbage_and_missing_dir(tmp_path):
-    assert sweep_stale_pidfiles(tmp_path / "does-not-exist") == []
-    run_dir = tmp_path / "mcp-run"
-    run_dir.mkdir()
-    (run_dir / "junk.pid").write_text("not json", encoding="utf-8")
-    (run_dir / "wrongshape.pid").write_text('{"pid": "nope"}', encoding="utf-8")
-    assert sweep_stale_pidfiles(run_dir) == []
-    assert list(run_dir.glob("*.pid")) == []

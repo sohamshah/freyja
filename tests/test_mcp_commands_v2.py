@@ -24,7 +24,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "fixtures"))
 
-from test_mcp_http_transport import _wait_until, http_server  # noqa: E402
+from test_mcp_http_transport import _shared_server, _wait_until  # noqa: E402
 
 from bridge.mcp.commands import (  # noqa: E402
     BACKGROUND_ACTIONS,
@@ -62,6 +62,17 @@ V2_KEYS = {
 def _isolate(monkeypatch, tmp_path):
     monkeypatch.setenv("FREYJA_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("FREYJA_MCP_CATALOG_DIR", raising=False)
+
+
+@pytest.fixture(scope="module")
+def normal_server(tmp_path_factory):
+    """One normal-mode fixture MCP server shared by the add tests here."""
+    yield from _shared_server(tmp_path_factory)
+
+
+@pytest.fixture(scope="module")
+def sse_server(tmp_path_factory):
+    yield from _shared_server(tmp_path_factory, "--transport", "sse")
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +174,9 @@ class StubHttp:
         self._httpd.daemon_threads = True
         self.port = self._httpd.server_address[1]
         self.url = f"http://127.0.0.1:{self.port}/mcp"
-        self._t = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        self._t = threading.Thread(
+            target=self._httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True,
+        )
         self._t.start()
 
     def stop(self) -> None:
@@ -308,38 +321,38 @@ async def test_probe_classifies_open_oauth_bearer_sse_and_unreachable():
             s.stop()
 
 
-async def test_add_open_http_server_connects_when_enabled(tmp_path):
+async def test_add_open_http_server_connects_when_enabled(tmp_path, normal_server):
     path = _write_catalog(tmp_path, {})
     manager = _manager(path, tmp_path)
     registry = ToolRegistry()
     manager.register_into(registry)
     events: list[dict] = []
+    url = normal_server.url
     try:
-        async with http_server(tmp_path) as fx:
-            result = await handle_mcp_command(
-                manager, {"action": "add", "args": [fx.url, "--enable", "--trust", "trusted"]},
-                emit=events.append,
-            )
-            assert result["ok"] is True, result["message"]
-            assert result["server"] == "127-0-0-1"
-            spec = manager.specs["127-0-0-1"]
-            assert spec.transport == "http" and spec.auth is None and spec.enabled is True
-            assert spec.trust == "trusted"
-            on_disk = _on_disk(path)["127-0-0-1"]
-            assert on_disk["url"] == fx.url and on_disk["enabled"] is True
-            assert result["data"]["probe"]["status"] == 200
-            assert result["data"]["probe"]["auth"] == "none"
-            assert result["servers"][0]["state"] == "active"
-            assert result["servers"][0]["tool_count"] > 0
-            assert "state: active" in result["message"]
-            assert "/mcp test 127-0-0-1" in result["message"]
-            assert await _wait_until(lambda: registry.get("mcp__127_0_0_1__echo") is not None, 5)
-            assert [e["type"] for e in events].count("mcp_status") == 1
-            assert isinstance(events[-1]["servers"], list)
+        result = await handle_mcp_command(
+            manager, {"action": "add", "args": [url, "--enable", "--trust", "trusted"]},
+            emit=events.append,
+        )
+        assert result["ok"] is True, result["message"]
+        assert result["server"] == "127-0-0-1"
+        spec = manager.specs["127-0-0-1"]
+        assert spec.transport == "http" and spec.auth is None and spec.enabled is True
+        assert spec.trust == "trusted"
+        on_disk = _on_disk(path)["127-0-0-1"]
+        assert on_disk["url"] == url and on_disk["enabled"] is True
+        assert result["data"]["probe"]["status"] == 200
+        assert result["data"]["probe"]["auth"] == "none"
+        assert result["servers"][0]["state"] == "active"
+        assert result["servers"][0]["tool_count"] > 0
+        assert "state: active" in result["message"]
+        assert "/mcp test 127-0-0-1" in result["message"]
+        assert await _wait_until(lambda: registry.get("mcp__127_0_0_1__echo") is not None, 5)
+        assert [e["type"] for e in events].count("mcp_status") == 1
+        assert isinstance(events[-1]["servers"], list)
 
-            # Duplicate name is refused (no second write).
-            dup = await handle_mcp_command(manager, {"action": "add", "args": [fx.url]})
-            assert dup["ok"] is False and "already exists" in dup["message"]
+        # Duplicate name is refused (no second write).
+        dup = await handle_mcp_command(manager, {"action": "add", "args": [url]})
+        assert dup["ok"] is False and "already exists" in dup["message"]
     finally:
         await asyncio.wait_for(manager.stop(), timeout=30)
 
@@ -405,21 +418,20 @@ async def test_add_bearer_401_without_metadata_warns_about_api_key(tmp_path):
         stub.stop()
 
 
-async def test_add_404_falls_back_to_sse_transport(tmp_path):
+async def test_add_404_falls_back_to_sse_transport(tmp_path, sse_server):
     path = _write_catalog(tmp_path, {})
     manager = _manager(path, tmp_path)
     try:
-        async with http_server(tmp_path, "--transport", "sse") as fx:
-            result = await handle_mcp_command(
-                manager, {"action": "add", "args": [fx.url, "--name", "legacy", "--enable"]},
-            )
-            assert result["ok"] is True, result["message"]
-            assert manager.specs["legacy"].transport == "sse"
-            assert _on_disk(path)["legacy"]["transport"] == "sse"
-            assert result["data"]["probe"]["transport"] == "sse"
-            assert any("legacy SSE" in w for w in result["data"]["warnings"])
-            assert result["servers"][0]["state"] == "active"
-            assert result["servers"][0]["transport_in_use"] == "sse"
+        result = await handle_mcp_command(
+            manager, {"action": "add", "args": [sse_server.url, "--name", "legacy", "--enable"]},
+        )
+        assert result["ok"] is True, result["message"]
+        assert manager.specs["legacy"].transport == "sse"
+        assert _on_disk(path)["legacy"]["transport"] == "sse"
+        assert result["data"]["probe"]["transport"] == "sse"
+        assert any("legacy SSE" in w for w in result["data"]["warnings"])
+        assert result["servers"][0]["state"] == "active"
+        assert result["servers"][0]["transport_in_use"] == "sse"
     finally:
         await asyncio.wait_for(manager.stop(), timeout=30)
 
@@ -594,36 +606,38 @@ async def test_test_stdio_server_report_shape_and_no_orphans(tmp_path):
 
 
 async def test_test_reports_needs_auth_and_unreachable(tmp_path):
+    """A missing secret header var is classified before any network I/O, so
+    'locked' never needs a live server behind its URL."""
     path = _write_catalog(tmp_path, {})
     manager = _manager(path, tmp_path)
-    async with http_server(tmp_path, "--mode", "auth", "--token", "t0k") as fx:
-        servers = {
-            "locked": {"transport": "http", "url": fx.url, "enabled": False,
-                       "headers": {"Authorization": "Bearer ${LOCKED_TOKEN}"},
-                       "timeouts": {"connect_s": 10}},
-            "ghost": {"transport": "http", "url": f"http://127.0.0.1:{_free_port()}/mcp",
-                      "enabled": False, "timeouts": {"connect_s": 5}},
-        }
-        path.write_text(json.dumps({"version": 1, "servers": servers}))
-        await manager.reload()
-        result = await asyncio.wait_for(
-            handle_mcp_command(manager, {"action": "test", "server": "locked"}, environ={}),
-            timeout=60,
-        )
-        assert result["ok"] is False
-        report = result["data"]
-        assert report["state"] == "needs-auth"
-        assert report["auth"]["kind"] == "header" and report["auth"]["needs_auth"] is True
-        assert ".env" in report["auth"]["login_hint"]
-        assert report["steps"][0]["name"] == "connect" and report["steps"][0]["ok"] is False
-        assert "needs-auth" in result["message"]
+    servers = {
+        "locked": {"transport": "http", "url": f"http://127.0.0.1:{_free_port()}/mcp",
+                   "enabled": False,
+                   "headers": {"Authorization": "Bearer ${LOCKED_TOKEN}"},
+                   "timeouts": {"connect_s": 10}},
+        "ghost": {"transport": "http", "url": f"http://127.0.0.1:{_free_port()}/mcp",
+                  "enabled": False, "timeouts": {"connect_s": 5}},
+    }
+    path.write_text(json.dumps({"version": 1, "servers": servers}))
+    await manager.reload()
+    result = await asyncio.wait_for(
+        handle_mcp_command(manager, {"action": "test", "server": "locked"}, environ={}),
+        timeout=60,
+    )
+    assert result["ok"] is False
+    report = result["data"]
+    assert report["state"] == "needs-auth"
+    assert report["auth"]["kind"] == "header" and report["auth"]["needs_auth"] is True
+    assert ".env" in report["auth"]["login_hint"]
+    assert report["steps"][0]["name"] == "connect" and report["steps"][0]["ok"] is False
+    assert "needs-auth" in result["message"]
 
-        result = await asyncio.wait_for(
-            handle_mcp_command(manager, {"action": "test", "server": "ghost"}), timeout=60,
-        )
-        assert result["ok"] is False
-        assert result["data"]["state"] in ("failed", "backoff", "timeout")
-        assert result["message"].startswith("test 'ghost': FAILED")
+    result = await asyncio.wait_for(
+        handle_mcp_command(manager, {"action": "test", "server": "ghost"}), timeout=60,
+    )
+    assert result["ok"] is False
+    assert result["data"]["state"] in ("failed", "backoff", "timeout")
+    assert result["message"].startswith("test 'ghost': FAILED")
     await asyncio.wait_for(manager.stop(), timeout=30)
 
 
@@ -705,20 +719,21 @@ async def test_status_extended_keys_keep_v1_keys_stable(tmp_path):
         assert missing["ok"] is False
 
         # needs-auth rows carry the reason + login hint (oauth) or .env hint.
-        async with http_server(tmp_path, "--mode", "auth", "--token", "t0k") as fx_http:
-            servers = _on_disk(path)
-            servers["locked"] = {"transport": "http", "url": fx_http.url, "auth": "oauth",
-                                 "enabled": True, "timeouts": {"connect_s": 10}}
-            path.write_text(json.dumps({"version": 1, "servers": servers}))
-            await manager.reload()
-            rows = {r["server"]: r for r in extended_status_rows(manager)}
-            locked = rows["locked"]
-            assert locked["state"] == "needs-auth" and locked["needs_auth"] is True
-            assert locked["needs_auth_reason"] and locked["last_error"] == locked["reason"]
-            assert locked["login_hint"] == "/mcp login locked"
-            assert locked["has_tokens"] is False
-            text = (await handle_mcp_command(manager, {"action": "status"}))["message"]
-            assert "needs-auth → /mcp login locked" in text
+        # An OAuth server with no stored tokens is classified by the auth
+        # factory before any network I/O, so no live server is needed.
+        servers = _on_disk(path)
+        servers["locked"] = {"transport": "http", "url": f"http://127.0.0.1:{_free_port()}/mcp",
+                             "auth": "oauth", "enabled": True, "timeouts": {"connect_s": 10}}
+        path.write_text(json.dumps({"version": 1, "servers": servers}))
+        await manager.reload()
+        rows = {r["server"]: r for r in extended_status_rows(manager)}
+        locked = rows["locked"]
+        assert locked["state"] == "needs-auth" and locked["needs_auth"] is True
+        assert locked["needs_auth_reason"] and locked["last_error"] == locked["reason"]
+        assert locked["login_hint"] == "/mcp login locked"
+        assert locked["has_tokens"] is False
+        text = (await handle_mcp_command(manager, {"action": "status"}))["message"]
+        assert "needs-auth → /mcp login locked" in text
     finally:
         await asyncio.wait_for(manager.stop(), timeout=30)
 
@@ -847,8 +862,15 @@ async def test_login_and_logout_guards_on_non_oauth_specs(tmp_path):
     manager = _manager(path, tmp_path)
     res = await handle_mcp_command(manager, {"action": "login", "server": "tokeny"}, environ={})
     assert res["ok"] is False and res["missing_env"] == ["MISSING_T_TOKEN"]
+    assert "MISSING_T_TOKEN" in res["message"] and ".env" in res["message"]
+    # With the var present the env-token login reports nothing missing.
+    res = await handle_mcp_command(
+        manager, {"action": "login", "server": "tokeny"}, environ={"MISSING_T_TOKEN": "xoxb-1"},
+    )
+    assert res["ok"] is True and res["missing_env"] == []
     res = await handle_mcp_command(manager, {"action": "login", "server": "half"})
     assert res["ok"] is False and "not configured for OAuth" in res["message"]
+    assert '"auth": "oauth"' in res["message"] and "/mcp login half" in res["message"]
     res = await handle_mcp_command(manager, {"action": "logout", "server": "tokeny"})
     assert res["ok"] is False and "not an OAuth server" in res["message"]
     res = await handle_mcp_command(manager, {"action": "login"})
@@ -866,9 +888,16 @@ async def test_login_and_logout_guards_on_non_oauth_specs(tmp_path):
     res = await handle_mcp_command(manager, {"action": "logout", "server": "nourl"})
     assert res["ok"] is True and "was already empty" in res["message"]
     assert "/mcp login nourl" in res["message"]
-    # Unknown action still reports the valid set.
+    # Unknown action still reports the valid set; a missing action means status;
+    # enable without a server or with an unknown one is a clean usage error.
     res = await handle_mcp_command(manager, {"action": "detonate"})
     assert res["ok"] is False and "unknown mcp_command action" in res["message"]
+    res = await handle_mcp_command(manager, {})
+    assert res["ok"] is True and res["action"] == "status"
+    res = await handle_mcp_command(manager, {"action": "enable"})
+    assert res["ok"] is False and "usage" in res["message"]
+    res = await handle_mcp_command(manager, {"action": "enable", "server": "nope"})
+    assert res["ok"] is False and "unknown MCP server" in res["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -907,14 +936,15 @@ async def test_token_watch_task_runs_with_manager_lifecycle(tmp_path):
     try:
         await asyncio.wait_for(manager.start(), timeout=10)
         assert manager._token_watch_task is not None  # noqa: SLF001
-        await asyncio.sleep(0.2)  # baseline recorded
+        # The first tick records the baseline (no file yet).
+        assert await _wait_until(lambda: "s" in manager._token_mtimes, 5)  # noqa: SLF001
         token_file = manager.token_file_for(spec)
         token_file.parent.mkdir(parents=True)
         token_file.write_text(json.dumps({"access_token": "x", "expires_at": 4102444800}))
         assert await _wait_until(lambda: manager.token_reconnects == 1, 5)
         assert reconnects == ["token file changed on disk"]
-        # Unchanged afterwards: no reconnect storm.
-        await asyncio.sleep(0.3)
+        # Unchanged afterwards: no reconnect storm (three more ticks pass).
+        await asyncio.sleep(0.15)
         assert manager.token_reconnects == 1
         os.utime(token_file, (2, 2))
         assert await _wait_until(lambda: manager.token_reconnects == 2, 5)

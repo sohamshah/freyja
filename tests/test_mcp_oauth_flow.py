@@ -4,13 +4,14 @@
 Covers: full login (DCR -> PKCE authorize -> token -> 200), persistence +
 0600, expires_at-driven refresh on cold start, metadata reuse (no discovery
 on warm start), refresh-token rotation/carry-forward, invalid_client poison
-recovery, pre-registered clients (not poisoned; client-change invalidation),
-non-interactive gates (typed errors + login hint), Supabase-style
-client_secret_post coercion, token UA stamping, BrowserFlow/HandoffFlow/
-external-redirect/paste/skip/timeout, CIMD accept + reject fallback,
-state-mismatch attack, concurrent servers, 401-after-fresh-token typed
-error, run_login restore-on-failure, and a caplog "no secrets logged"
-assertion.
+recovery, pre-registered clients (never poisoned), non-interactive gates
+(typed errors + login hint), Supabase-style client_secret_post coercion,
+token UA stamping, BrowserFlow/HandoffFlow/external-redirect/paste/skip/
+timeout, CIMD accept + reject fallback, state-mismatch attack, concurrent
+servers, 401-after-fresh-token typed error, run_login restore-on-failure,
+a caplog "no secrets logged" assertion, and the cross-process refresh
+(flock + disk adoption). Client-change invalidation is unit-tested in
+tests/test_mcp_oauth_provider.py.
 """
 
 from __future__ import annotations
@@ -64,6 +65,8 @@ from bridge.mcp.oauth.storage import FreyjaTokenStorage, read_json, write_json  
 def _isolate(monkeypatch, tmp_path):
     monkeypatch.setenv("FREYJA_HOME", str(tmp_path / "fake-home"))
     cb.reset_port_state_for_tests()
+    # Every login waits on the loopback capture, which polls at this interval.
+    monkeypatch.setattr(cb, "_POLL_INTERVAL_S", 0.005)
     yield
     cb.reset_port_state_for_tests()
 
@@ -157,6 +160,7 @@ async def test_full_login_roundtrip_persists_state_with_0600(fake, root):
     assert fake.hits["authorize"] == 1
     assert fake.hits["token"] == 1
     assert fake.hits["resource_ok"] == 1
+    assert fake.token_requests[-1]["user_agent"] == "Freyja"
     assert len(browser.urls) == 1
     assert "code_challenge=" in browser.urls[0]
 
@@ -216,13 +220,15 @@ async def test_expired_by_expires_at_refreshes_before_first_request(fake, root):
     _expire_tokens_on_disk(storage)
     fake.reset_hits()
 
-    auth = build_httpx_auth(_spec(fake), interactive=False, storage_root=root)
+    auth = build_httpx_auth(_spec(fake, {"user_agent": "Freyja/2.0 (+test)"}), interactive=False,
+                            storage_root=root)
     resp = await _authed_post(auth, fake.resource_url)
     assert resp.status_code == 200
     assert fake.hits["token"] == 1
     assert fake.hits["resource_401"] == 0  # stale bearer never hit the resource
     assert fake.hits["authorize"] == 0  # no browser
     assert fake.token_requests[-1]["grant_type"] == "refresh_token"
+    assert fake.token_requests[-1]["user_agent"] == "Freyja/2.0 (+test)"  # oauth.user_agent stamps
     new = json.loads(storage.tokens_path().read_text())
     assert new["access_token"] != old_access
     assert new["refresh_token"] != old_refresh  # rotation persisted
@@ -275,7 +281,7 @@ async def test_refresh_without_rotation_carries_refresh_token_forward(root):
 # ---------------------------------------------------------------------------
 
 
-async def test_non_interactive_refresh_failure_raises_typed_error_with_hint(fake, root):
+async def test_non_interactive_refresh_failure_typed_error_and_suppression_gate(fake, root):
     browser = AutoBrowser()
     assert (await run_login(_spec(fake), flow=browser.flow, storage_root=root, timeout=10)).ok
     await browser.drain()
@@ -292,20 +298,15 @@ async def test_non_interactive_refresh_failure_raises_typed_error_with_hint(fake
     assert fake.hits["authorize"] == 0
     assert fake.hits["register"] == 0  # cached registration reused, no re-register
 
-
-async def test_suppression_gate_blocks_browser_even_if_flag_true(fake, root):
-    browser = AutoBrowser()
-    assert (await run_login(_spec(fake), flow=browser.flow, storage_root=root, timeout=10)).ok
-    await browser.drain()
-    storage = FreyjaTokenStorage("acme", root=root)
+    # The suppression gate blocks the browser even when the caller says interactive.
     _expire_tokens_on_disk(storage)
-    fake.refresh_tokens.clear()
     browser2 = AutoBrowser()
     auth = build_httpx_auth(_spec(fake), interactive=True, flow=browser2.flow, storage_root=root)
     with suppress_interactive_oauth():
         with pytest.raises(OAuthNonInteractiveError):
             await _authed_post(auth, fake.resource_url)
     assert browser2.urls == []
+    assert fake.hits["authorize"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -370,36 +371,8 @@ async def test_preregistered_client_is_never_poisoned(fake, root):
     assert auth.last_poisoned is False
 
 
-async def test_client_id_change_in_config_drops_tokens(fake, root):
-    port = _free_port()
-    fake.preregister("pre-1", redirect_uris=[f"http://127.0.0.1:{port}/callback"])
-    fake.preregister("pre-2", redirect_uris=[f"http://127.0.0.1:{port}/callback"])
-    browser = AutoBrowser()
-    assert (await run_login(
-        _spec(fake, {"client_id": "pre-1", "redirect_port": port}), flow=browser.flow,
-        storage_root=root, timeout=10,
-    )).ok
-    await browser.drain()
-    storage = FreyjaTokenStorage("acme", root=root)
-    assert storage.has_cached_tokens()
-
-    # Operator edits mcp.json to pre-2: build (non-interactive is fine, tokens
-    # exist at check time) must invalidate the pre-1 tokens.
-    browser2 = AutoBrowser()
-    auth = build_httpx_auth(
-        _spec(fake, {"client_id": "pre-2", "redirect_port": port}), interactive=True,
-        flow=browser2.flow, storage_root=root,
-    )
-    assert not storage.has_cached_tokens()
-    assert read_json(storage.client_info_path())["client_id"] == "pre-2"
-    resp = await _authed_post(auth, fake.resource_url)
-    await browser2.drain()
-    assert resp.status_code == 200
-    assert fake.authorize_requests[-1]["client_id"] == "pre-2"
-
-
 # ---------------------------------------------------------------------------
-# Provider quirks: Supabase secret coercion, UA
+# Provider quirks: Supabase secret coercion
 # ---------------------------------------------------------------------------
 
 
@@ -423,25 +396,14 @@ async def test_supabase_style_secret_without_method_uses_client_secret_post(root
         assert fake.token_requests[-1]["has_client_secret"] is True
 
 
-async def test_token_requests_carry_user_agent(fake, root):
-    browser = AutoBrowser()
-    assert (await run_login(_spec(fake), flow=browser.flow, storage_root=root, timeout=10)).ok
-    await browser.drain()
-    assert fake.token_requests[-1]["user_agent"] == "Freyja"
-    storage = FreyjaTokenStorage("acme", root=root)
-    _expire_tokens_on_disk(storage)
-    auth = build_httpx_auth(_spec(fake, {"user_agent": "Freyja/2.0 (+test)"}), interactive=False,
-                            storage_root=root)
-    assert (await _authed_post(auth, fake.resource_url)).status_code == 200
-    assert fake.token_requests[-1]["user_agent"] == "Freyja/2.0 (+test)"
-
-
 # ---------------------------------------------------------------------------
 # Flows
 # ---------------------------------------------------------------------------
 
 
-async def test_browser_flow_with_injected_opener(fake, root):
+async def test_browser_flow_opener_fallback_and_ssh_no_op(fake, root, monkeypatch):
+    from bridge.mcp.oauth.flow import can_open_browser, default_open_url
+
     loop = asyncio.get_running_loop()
     opened: list[str] = []
     pending: list[asyncio.Future] = []
@@ -463,8 +425,7 @@ async def test_browser_flow_with_injected_opener(fake, root):
     assert flow.last_url == opened[0]
     assert isinstance(flow, LoginFlow)
 
-
-async def test_browser_flow_fallback_when_browser_cannot_open(fake, root):
+    # When the browser cannot open, the fallback presenter gets the URL once.
     fallback_urls: list[str] = []
     tasks: list[asyncio.Task] = []
 
@@ -473,23 +434,20 @@ async def test_browser_flow_fallback_when_browser_cannot_open(fake, root):
         tasks.append(asyncio.create_task(asyncio.to_thread(visit_authorization_url, url)))
 
     flow = BrowserFlow(opener=lambda url: False, fallback=fallback)
-    result = await run_login(_spec(fake), flow=flow, storage_root=root, timeout=10)
+    result = await run_login(_spec(fake, name="beta"), flow=flow, storage_root=root, timeout=10)
     for t in tasks:
         await t
     assert result.ok, result.error
     assert flow.opened is False
     assert len(fallback_urls) == 1
 
-
-async def test_default_opener_is_no_op_in_ssh_session(monkeypatch):
-    from bridge.mcp.oauth.flow import can_open_browser, default_open_url
-
+    # The default opener never tries in an SSH session.
     monkeypatch.setenv("SSH_TTY", "/dev/pts/1")
     assert can_open_browser() is False
     assert default_open_url("https://example.invalid") is False
 
 
-async def test_paste_fallback_completes_login_without_loopback_hit(fake, root):
+async def test_paste_fallback_completes_login_and_skip_token_yields_skipped(fake, root):
     """Headless: the surface fetches the authorize URL elsewhere and pastes the
     redirect back. The loopback listener never receives a request."""
     pasted: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -507,20 +465,18 @@ async def test_paste_fallback_completes_login_without_loopback_hit(fake, root):
     assert result.ok, result.error
     assert flow.status == "authorization_required"
 
-
-async def test_paste_skip_token_yields_skipped_result(fake, root):
-    async def present(url: str) -> None:
+    async def present_nothing(url: str) -> None:
         return None
 
-    async def paste_source() -> str | None:
+    async def skip() -> str | None:
         return "skip"
 
-    flow = HandoffFlow(present, paste_source=paste_source)
-    result = await run_login(_spec(fake), flow=flow, storage_root=root, timeout=10)
+    flow = HandoffFlow(present_nothing, paste_source=skip)
+    result = await run_login(_spec(fake, name="beta"), flow=flow, storage_root=root, timeout=10)
     assert not result.ok
     assert result.skipped
     assert "user_skipped" in result.error
-    assert not FreyjaTokenStorage("acme", root=root).has_cached_tokens()
+    assert not FreyjaTokenStorage("beta", root=root).has_cached_tokens()
 
 
 async def test_external_redirect_handoff_flow_deliver_callback(fake, root):
@@ -576,7 +532,7 @@ async def test_callback_timeout_restores_previous_state(fake, root):
     async def never(url: str) -> None:
         return None
 
-    result = await run_login(_spec(fake), flow=HandoffFlow(never), storage_root=root, timeout=0.3)
+    result = await run_login(_spec(fake), flow=HandoffFlow(never), storage_root=root, timeout=0.05)
     assert not result.ok
     assert "timed out" in result.error
     assert "/mcp login acme" in result.error
@@ -607,7 +563,7 @@ async def test_two_servers_login_concurrently_with_isolated_callbacks(root):
 CIMD_URL = "https://me.example/freyja/oauth/client-metadata.json"
 
 
-async def test_cimd_login_when_server_supports_it(root):
+async def test_cimd_login_when_server_supports_it_and_only_when_configured(root):
     with FakeAuthorizationServer(cimd_supported=True) as fake:
         browser = AutoBrowser()
         result = await run_login(
@@ -621,6 +577,16 @@ async def test_cimd_login_when_server_supports_it(root):
         assert fake.authorize_requests[-1]["client_id"] == CIMD_URL
         port = int(redirect_params(browser.urls[0])["redirect_uri"].rsplit(":", 1)[1].split("/")[0])
         assert port in CIMD_PORTS
+
+        # CIMD is off by default: without a configured URL the same server gets DCR.
+        browser2 = AutoBrowser()
+        result = await run_login(
+            _spec(fake, name="beta"), flow=browser2.flow, storage_root=root, timeout=10,
+        )
+        await browser2.drain()
+        assert result.ok
+        assert fake.hits["register"] == 1
+        assert result.client_id.startswith("dcr-")
 
 
 async def test_cimd_rejection_marks_and_falls_back_to_dcr(root, caplog):
@@ -648,16 +614,6 @@ async def test_cimd_rejection_marks_and_falls_back_to_dcr(root, caplog):
         assert resp.status_code == 200
         assert fake.hits["register"] == 1
         assert read_json(storage.client_info_path())["client_id"].startswith("dcr-")
-
-
-async def test_cimd_default_off_uses_dcr_even_when_supported(root):
-    with FakeAuthorizationServer(cimd_supported=True) as fake:
-        browser = AutoBrowser()
-        result = await run_login(_spec(fake), flow=browser.flow, storage_root=root, timeout=10)
-        await browser.drain()
-        assert result.ok
-        assert fake.hits["register"] == 1
-        assert result.client_id.startswith("dcr-")
 
 
 # ---------------------------------------------------------------------------
@@ -718,15 +674,6 @@ async def test_registration_403_is_humanized(root):
         await browser.drain()
         assert result.ok, result.error
         assert fake.registration_requests[-1]["client_name"] == "Claude Code"
-
-
-async def test_run_login_missing_secret_env_is_needs_auth(fake, root):
-    result = await run_login(
-        _spec(fake, {"client_id": "pre", "client_secret": "${NOPE}"}),
-        flow=HandoffFlow(lambda url: asyncio.sleep(0)), storage_root=root, environ={},
-    )
-    assert not result.ok
-    assert "NOPE" in result.error and "/mcp login acme" in result.error
 
 
 # ---------------------------------------------------------------------------

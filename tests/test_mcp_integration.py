@@ -3,7 +3,8 @@ stdio through the full McpManager -> McpConnection -> McpProxyTool ->
 ToolRegistry path.
 
 Everything runs against tmp_path catalogs; the real ~/.freyja/mcp.json is
-never read or written.
+never read or written. Kill/reconnect lifecycles live in
+tests/test_mcp_lifecycle.py.
 """
 
 from __future__ import annotations
@@ -12,12 +13,9 @@ import asyncio
 import contextlib
 import json
 import os
-import signal
 import sys
 import time
 from pathlib import Path
-
-import pytest
 
 from bridge.mcp import McpManager
 from bridge.mcp.connection import State
@@ -55,19 +53,9 @@ def _write_catalog(tmp_path: Path, *, call_s: float = 30.0, connect_s: float = 3
 
 
 @contextlib.asynccontextmanager
-async def running_manager(
-    tmp_path: Path,
-    *,
-    call_s: float = 30.0,
-    ping_interval_s: float = 0.25,
-    max_reconnects: int = 1,
-):
+async def running_manager(tmp_path: Path, *, call_s: float = 30.0):
     catalog_path = _write_catalog(tmp_path, call_s=call_s)
-    manager = McpManager.load(
-        catalog_path,
-        ping_interval_s=ping_interval_s,
-        max_reconnects=max_reconnects,
-    )
+    manager = McpManager.load(catalog_path, ping_interval_s=0.25, watchdog=False)
     try:
         await asyncio.wait_for(manager.start(), timeout=60)
         conn = manager.connection("fixture")
@@ -82,7 +70,7 @@ async def _call(registry: ToolRegistry, name: str, arguments: dict) -> object:
     return await registry.execute(ToolCall(id="t1", name=name, arguments=arguments))
 
 
-async def _wait_until(predicate, timeout_s: float, interval_s: float = 0.1) -> bool:
+async def _wait_until(predicate, timeout_s: float, interval_s: float = 0.05) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if predicate():
@@ -91,11 +79,28 @@ async def _wait_until(predicate, timeout_s: float, interval_s: float = 0.1) -> b
     return predicate()
 
 
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    # Reap in case it's our zombie child.
+    with contextlib.suppress(ChildProcessError, OSError):
+        done, _status = os.waitpid(pid, os.WNOHANG)
+        if done == pid:
+            return False
+    return True
+
+
 # ---------------------------------------------------------------------------
-# Discovery + registration
+# Discovery + registration + calls + shutdown, on one spawned server
 # ---------------------------------------------------------------------------
 
-async def test_discovery_registers_warm_tools(tmp_path):
+async def test_discovery_registers_warm_tools_serves_calls_and_stop_reaps(tmp_path):
+    from bridge.tools.registry import build_desktop_registry
+
     async with running_manager(tmp_path) as manager:
         registry = ToolRegistry()
         manager.register_into(registry)
@@ -119,6 +124,38 @@ async def test_discovery_registers_warm_tools(tmp_path):
 
         conn = manager.connection("fixture")
         assert conn.tool_count == 6  # remote count, pre-filter
+
+        # Calls: success round trip and a remote failure mapped to is_error.
+        result = await _call(registry, "mcp__fixture__echo", {"text": "round trip!"})
+        assert result.is_error is False
+        assert "round trip!" in str(result.content)
+        result = await _call(registry, "mcp__fixture__fail", {})
+        assert result.is_error is True
+        assert "fail" in str(result.content).lower() or "error" in str(result.content).lower()
+
+        # The desktop registry builder registers the proxies and attaches the
+        # registry so later disconnects mutate it.
+        desktop = build_desktop_registry(
+            workspace=tmp_path,
+            include_bash=False,
+            include_web=False,
+            include_subagents=False,
+            include_computer=False,
+            mcp_manager=manager,
+        )
+        for name in EXPECTED_TOOLS:
+            assert desktop.get(name) is not None, name
+        assert any(r is desktop for r in manager._live_registries())  # noqa: SLF001
+
+        result = await _call(registry, "mcp__fixture__pid", {})
+        pid = int(str(result.content).strip())
+        assert _process_alive(pid)
+
+    # manager.stop() ran: the child is reaped and tools are pulled.
+    gone = await _wait_until(lambda: not _process_alive(pid), timeout_s=15)
+    assert gone, f"fixture server pid {pid} still alive after manager.stop()"
+    assert registry.get("mcp__fixture__echo") is None
+    assert desktop.get("mcp__fixture__echo") is None
 
 
 async def test_tool_search_returns_the_schema_and_call_tool_runs_it(tmp_path):
@@ -149,50 +186,8 @@ async def test_tool_search_returns_the_schema_and_call_tool_runs_it(tmp_path):
         assert "round trip!" in str(ran.content)
 
 
-async def test_build_desktop_registry_wiring(tmp_path):
-    from bridge.tools.registry import build_desktop_registry
-
-    async with running_manager(tmp_path) as manager:
-        registry = build_desktop_registry(
-            workspace=tmp_path,
-            include_bash=False,
-            include_web=False,
-            include_subagents=False,
-            include_computer=False,
-            mcp_manager=manager,
-        )
-        for name in EXPECTED_TOOLS:
-            assert registry.get(name) is not None, name
-        # attach() happened: a later disconnect must mutate THIS registry
-        # (covered end-to-end in the kill test; here we assert the weakref
-        # took by checking the manager's live-registry view).
-        assert any(r is registry for r in manager._live_registries())
-
-
-# ---------------------------------------------------------------------------
-# Calls
-# ---------------------------------------------------------------------------
-
-async def test_echo_round_trip(tmp_path):
-    async with running_manager(tmp_path) as manager:
-        registry = ToolRegistry()
-        manager.register_into(registry)
-        result = await _call(registry, "mcp__fixture__echo", {"text": "round trip!"})
-        assert result.is_error is False
-        assert "round trip!" in str(result.content)
-
-
-async def test_fail_maps_to_error_result(tmp_path):
-    async with running_manager(tmp_path) as manager:
-        registry = ToolRegistry()
-        manager.register_into(registry)
-        result = await _call(registry, "mcp__fixture__fail", {})
-        assert result.is_error is True
-        assert "fail" in str(result.content).lower() or "error" in str(result.content).lower()
-
-
 async def test_call_timeout_honored(tmp_path):
-    async with running_manager(tmp_path, call_s=1.0) as manager:
+    async with running_manager(tmp_path, call_s=0.3) as manager:
         registry = ToolRegistry()
         manager.register_into(registry)
         started = time.monotonic()
@@ -201,94 +196,3 @@ async def test_call_timeout_honored(tmp_path):
         assert result.is_error is True
         assert "timed out" in str(result.content).lower()
         assert elapsed < 10, f"timeout not honored: took {elapsed:.1f}s"
-
-
-# ---------------------------------------------------------------------------
-# Lifecycle
-# ---------------------------------------------------------------------------
-
-async def _fixture_pid(registry: ToolRegistry) -> int:
-    result = await _call(registry, "mcp__fixture__pid", {})
-    assert result.is_error is False
-    return int(str(result.content).strip())
-
-
-def _process_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    # Reap in case it's our zombie child.
-    with contextlib.suppress(ChildProcessError, OSError):
-        done, _status = os.waitpid(pid, os.WNOHANG)
-        if done == pid:
-            return False
-    return True
-
-
-async def test_server_kill_unregisters_tools(tmp_path):
-    async with running_manager(tmp_path, max_reconnects=0) as manager:
-        registry = ToolRegistry()
-        manager.register_into(registry)
-        pid = await _fixture_pid(registry)
-
-        os.kill(pid, signal.SIGKILL)
-
-        unregistered = await _wait_until(
-            lambda: registry.get("mcp__fixture__echo") is None, timeout_s=15
-        )
-        assert unregistered, "tools not unregistered after server kill"
-        for name in EXPECTED_TOOLS:
-            assert registry.get(name) is None, name
-            assert registry.get_catalog_entry(name) is None, name
-
-        conn = manager.connection("fixture")
-        assert conn.state is State.FAILED
-
-        # Calls after failure produce a clean error, not a hang.
-        proxies_left = manager.proxy_tools()
-        assert proxies_left == []
-
-
-async def test_manager_stop_leaves_no_child_processes(tmp_path):
-    catalog_path = _write_catalog(tmp_path)
-    manager = McpManager.load(catalog_path, ping_interval_s=0.25)
-    await asyncio.wait_for(manager.start(), timeout=60)
-    registry = ToolRegistry()
-    manager.register_into(registry)
-    pid = await _fixture_pid(registry)
-    assert _process_alive(pid)
-
-    await manager.stop()
-
-    gone = await _wait_until(lambda: not _process_alive(pid), timeout_s=15)
-    assert gone, f"fixture server pid {pid} still alive after manager.stop()"
-    # Tools pulled from the registry on shutdown too.
-    assert registry.get("mcp__fixture__echo") is None
-
-
-async def test_reconnect_after_kill_reregisters(tmp_path):
-    """v0 single-reconnect: a killed server comes back once and its tools
-    reappear in attached registries."""
-    async with running_manager(tmp_path, max_reconnects=1) as manager:
-        registry = ToolRegistry()
-        manager.register_into(registry)
-        pid = await _fixture_pid(registry)
-
-        os.kill(pid, signal.SIGKILL)
-
-        # Tools drop out...
-        dropped = await _wait_until(
-            lambda: registry.get("mcp__fixture__echo") is None, timeout_s=15
-        )
-        assert dropped
-        # ...then the single reconnect brings them back.
-        returned = await _wait_until(
-            lambda: registry.get("mcp__fixture__echo") is not None, timeout_s=30
-        )
-        assert returned, "tools did not re-register after reconnect"
-        result = await _call(registry, "mcp__fixture__echo", {"text": "back"})
-        assert result.is_error is False
-        assert "back" in str(result.content)

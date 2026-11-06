@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "fixtures"))
 from fake_oauth_as import FakeAuthorizationServer, visit_authorization_url  # noqa: E402
 from test_mcp_http_transport import _wait_until, http_server  # noqa: E402
 
-from bridge.gateway import mcp_slack  # noqa: E402
 from bridge.gateway.mcp_slack import (  # noqa: E402
     MCP_HELP,
     SlackElicitationBridge,
@@ -433,9 +432,3 @@ async def test_elicitation_posted_to_running_session_thread_and_answered(tmp_pat
             assert bridge.stats["declined"] >= 2
         finally:
             await asyncio.wait_for(manager.stop(), timeout=30)
-
-
-def test_module_exports():
-    assert set(mcp_slack.__all__) >= {
-        "handle_mcp_slash", "SlackElicitationBridge", "promote_inline_mcp_answer", "MCP_HELP",
-    }

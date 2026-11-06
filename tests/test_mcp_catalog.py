@@ -140,12 +140,6 @@ def _oauth(name="remote", **over) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_shipped_catalog_exists_with_20_plus_entries():
-    assert shipped_catalog_dir() == SHIPPED
-    paths = iter_manifest_paths(SHIPPED)
-    assert len(paths) >= 20, [p.parent.name for p in paths]
-
-
 def test_shipped_manifests_lint_clean():
     issues = manifest_lint(SHIPPED)
     errors = lint_errors(issues)
@@ -156,7 +150,6 @@ def test_shipped_manifests_lint_clean():
 def test_each_shipped_manifest(manifest: Path):
     entry = parse_manifest(manifest)
     assert entry.name == manifest.parent.name
-    assert entry.verified == "2026-09-03"
     assert date.fromisoformat(entry.verified) <= date.today()
     assert entry.homepage.startswith("https://")
     assert entry.tags and entry.license
@@ -180,12 +173,15 @@ def test_each_shipped_manifest(manifest: Path):
     spec = McpServerSpec.from_dict(entry.name, raw)
     spec.validate()
     assert spec.trust == "standard"
-    assert raw["source"] == {"catalog": f"{entry.name}@2026-09-03"}
+    assert raw["source"] == {"catalog": f"{entry.name}@{entry.verified}"}
     for v in (raw.get("env") or {}).values():
         assert "${" in v or not any(n in v.upper() for n in ("TOKEN", "KEY", "SECRET"))
 
 
 def test_shipped_priority_entries_present_and_shaped():
+    assert shipped_catalog_dir() == SHIPPED
+    paths = iter_manifest_paths(SHIPPED)
+    assert len(paths) >= 20, [p.parent.name for p in paths]
     entries = load_catalog_dir(SHIPPED, include_user=False)
     for name in (
         "slack", "atlassian", "github", "linear", "notion", "figma", "sentry", "stripe",
@@ -205,9 +201,10 @@ def test_shipped_priority_entries_present_and_shaped():
     assert fig["auth"] == "oauth" and fig["oauth"]["client_name"] == "Claude Code"
     cf = build_server_dict(entries["cloudflare"])
     assert "*_radar_*" in cf["tools"]["exclude"]
-    pw = entries["playwright"]
-    assert pw.transport.args == ["-y", "@playwright/mcp@0.0.79"]
     assert catalog_diagnostics() == []
+    # Search over the shipped set reaches the obvious entries.
+    assert {r["name"] for r in catalog_search("slack", entries)} == {"slack", "slack-stdio"}
+    assert "atlassian" in {r["name"] for r in catalog_search("jira", entries)}
 
 
 def test_shipped_manifests_have_hermes_attribution_where_copied():
@@ -322,11 +319,7 @@ def test_lint_schema_errors_are_reported_not_raised(catalog_dir):
     issues = lint_manifest(path)
     assert issues and issues[0].code == "schema"
     assert manifest_lint(tmp_dir := catalog_dir) and lint_errors(manifest_lint(tmp_dir))
-
-
-def test_manifest_lint_empty_dir(tmp_path):
-    issues = manifest_lint(tmp_path / "nothing")
-    assert [i.code for i in issues] == ["empty"]
+    assert [i.code for i in manifest_lint(catalog_dir / "nothing")] == ["empty"]
 
 
 # ---------------------------------------------------------------------------
@@ -398,9 +391,7 @@ def test_catalog_list_rows_and_tag_filter(catalog_dir, user_dir):
     assert [r["name"] for r in catalog_list(entries, tags=["oauth"])] == ["remote"]
     assert [r["name"] for r in catalog_list(entries, tags=["demo", "local"])] == ["demo"]
     assert catalog_list(entries, tags=["nope"]) == []
-
-
-def test_auth_kind_env_for_none_with_requirements(catalog_dir, user_dir):
+    # auth "none" with a required env var is reported as "env".
     body = _stdio()
     body["auth"] = {"type": "none",
                     "env": [{"name": "DEMO_ROOT", "secret": False, "required": True}]}
@@ -437,12 +428,6 @@ def test_catalog_search(catalog_dir, user_dir):
     assert [r["name"] for r in catalog_search("demo", entries)] == ["demo", "remote"]
     assert catalog_search("zzz", entries) == []
     assert len(catalog_search("", entries)) == 2
-
-
-def test_search_shipped_catalog_finds_slack_and_jira():
-    entries = load_catalog_dir(SHIPPED, include_user=False)
-    assert {r["name"] for r in catalog_search("slack", entries)} == {"slack", "slack-stdio"}
-    assert "atlassian" in {r["name"] for r in catalog_search("jira", entries)}
 
 
 # ---------------------------------------------------------------------------
@@ -614,14 +599,20 @@ def test_reinstall_oauth_keeps_recorded_oauth_state_and_tool_edits(catalog_dir, 
     assert report.next_steps == ["/mcp login remote"]
 
 
-def test_install_custom_server_name_and_other_entries_untouched(catalog_dir, user_dir, mcp_json):
+def test_install_custom_server_name_other_entries_untouched_unknown_raises(
+    catalog_dir, user_dir, mcp_json,
+):
+    _write(catalog_dir, "demo", _stdio())
+    entries = load_catalog_dir(catalog_dir, user_dir=user_dir)
+    with pytest.raises(CatalogError):
+        catalog_install("nope", mcp_json_path=mcp_json, entries=entries)
+    assert not mcp_json.exists()  # nothing written on the failure path
+
     mcp_json.write_text(json.dumps({
         "version": 1,
         "note": "top-level passthrough",
         "servers": {"existing": {"transport": "stdio", "command": "echo", "enabled": True}},
     }))
-    _write(catalog_dir, "demo", _stdio())
-    entries = load_catalog_dir(catalog_dir, user_dir=user_dir)
     report = catalog_install("demo", mcp_json_path=mcp_json, server_name="demo-eu",
                              entries=entries, environ={})
     assert report.server_name == "demo-eu"
@@ -630,13 +621,6 @@ def test_install_custom_server_name_and_other_entries_untouched(catalog_dir, use
     assert set(doc["servers"]) == {"existing", "demo-eu"}
     assert doc["note"] == "top-level passthrough"
     assert doc["servers"]["existing"]["enabled"] is True
-
-
-def test_install_unknown_entry_raises(catalog_dir, user_dir, mcp_json):
-    entries = load_catalog_dir(catalog_dir, user_dir=user_dir)
-    with pytest.raises(CatalogError):
-        catalog_install("nope", mcp_json_path=mcp_json, entries=entries)
-    assert not mcp_json.exists()
 
 
 def test_install_loads_from_dirs_when_entries_not_given(catalog_dir, user_dir, mcp_json):

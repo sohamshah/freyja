@@ -1,9 +1,11 @@
 """FreyjaOAuthClientProvider wiring: provider defaults (Figma), humanized DCR
 errors, redirect/port resolution precedence, client metadata, pre-registration
-+ client-change invalidation, and build_httpx_auth's fast paths. No network."""
++ client-change invalidation, build_httpx_auth's fast paths and the
+auth-flow lock release. No network."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx2
@@ -51,20 +53,18 @@ def _spec(oauth=None, **kw) -> McpServerSpec:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name,url,expected", [
-    ("figma", "https://mcp.figma.com/mcp", True),
-    ("design", "https://mcp.figma.com/mcp", True),
-    ("x", "https://api.figma.com/mcp", True),
-    ("figma-local", "http://127.0.0.1:3845/mcp", False),   # local Figma desktop server
-    ("figma", "", True),                                    # name only, no url
-    ("acme", "https://mcp.example/mcp", False),
-    ("x", "https://notfigma.com/mcp", False),
-])
-def test_is_figma_remote_mcp(name, url, expected):
-    assert is_figma_remote_mcp(name, url) is expected
+def test_figma_remote_defaults_fill_only_unset_settings():
+    for name, url, expected in (
+        ("figma", "https://mcp.figma.com/mcp", True),
+        ("design", "https://mcp.figma.com/mcp", True),
+        ("x", "https://api.figma.com/mcp", True),
+        ("figma-local", "http://127.0.0.1:3845/mcp", False),   # local Figma desktop server
+        ("figma", "", True),                                    # name only, no url
+        ("acme", "https://mcp.example/mcp", False),
+        ("x", "https://notfigma.com/mcp", False),
+    ):
+        assert is_figma_remote_mcp(name, url) is expected, (name, url)
 
-
-def test_apply_provider_defaults_figma_fills_only_unset():
     s = apply_provider_defaults(OAuthSettings(), server_name="figma", server_url="https://mcp.figma.com/mcp")
     assert s.client_name == FIGMA_DCR_CLIENT_NAME == "Claude Code"
     assert s.scope == FIGMA_DEFAULT_SCOPE
@@ -78,8 +78,6 @@ def test_apply_provider_defaults_figma_fills_only_unset():
     assert s.scope == "files:read"
     assert s.token_endpoint_auth_method == "none"
 
-
-def test_apply_provider_defaults_noop_for_other_servers():
     s = apply_provider_defaults(OAuthSettings(), server_name="acme", server_url="https://mcp.example/mcp")
     assert s == OAuthSettings()
     assert s.effective_client_name == "Freyja"
@@ -100,67 +98,60 @@ def test_humanize_registration_error():
 
 
 # ---------------------------------------------------------------------------
-# Redirect / port resolution
+# Redirect / port resolution precedence
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_redirect_uri_variants():
+def test_resolve_callback_port_precedence(tmp_path, monkeypatch):
     assert resolve_redirect_uri(OAuthSettings(), 4242) == "http://127.0.0.1:4242/callback"
     assert resolve_redirect_uri(OAuthSettings(redirect_host="localhost"), 1) == "http://localhost:1/callback"
     assert resolve_redirect_uri(OAuthSettings(redirect_uri="https://p/cb"), 1) == "https://p/cb"
 
-
-def test_resolve_callback_port_explicit_config_wins(tmp_path):
+    # Explicit config wins and is not reserved (fixed ports bind via reuse_address later).
     s = OAuthSettings(redirect_port=45678)
     assert resolve_callback_port(s, FreyjaTokenStorage("a", root=tmp_path)) == 45678
     assert s.resolved_port == 45678
-    assert not cb.is_port_reserved(45678)  # fixed ports bind via reuse_address later
+    assert not cb.is_port_reserved(45678)
 
-
-def test_resolve_callback_port_uses_cached_registration(tmp_path):
-    storage = FreyjaTokenStorage("a", root=tmp_path)
-    write_json(storage.client_info_path(), {
+    # A cached registration's loopback port is reused.
+    cached = FreyjaTokenStorage("cached", root=tmp_path)
+    write_json(cached.client_info_path(), {
         "client_id": "c", "redirect_uris": ["http://127.0.0.1:41234/callback"],
     })
-    s = OAuthSettings()
-    assert resolve_callback_port(s, storage) == 41234
+    assert resolve_callback_port(OAuthSettings(), cached) == 41234
 
-
-def test_resolve_callback_port_reserves_fresh_ephemeral(tmp_path):
-    s = OAuthSettings()
-    port = resolve_callback_port(s, FreyjaTokenStorage("a", root=tmp_path))
+    # Otherwise a fresh ephemeral port is reserved.
+    port = resolve_callback_port(OAuthSettings(), FreyjaTokenStorage("fresh", root=tmp_path))
     assert port > 1024
     assert cb.is_port_reserved(port)
 
-
-def test_resolve_callback_port_external_redirect(tmp_path):
+    # External redirect (bridge https route): no loopback port, uri recorded.
     s = OAuthSettings()
     assert resolve_callback_port(s, None, external_redirect_uri="https://bridge/cb") == 0
     assert s.redirect_uri == "https://bridge/cb"
     s2 = OAuthSettings()
-    storage = FreyjaTokenStorage("a", root=tmp_path)
-    write_json(storage.client_info_path(), {"client_id": "c", "redirect_uris": ["https://old/cb"]})
-    assert resolve_callback_port(s2, storage) == 0
+    ext = FreyjaTokenStorage("ext", root=tmp_path)
+    write_json(ext.client_info_path(), {"client_id": "c", "redirect_uris": ["https://old/cb"]})
+    assert resolve_callback_port(s2, ext) == 0
     assert s2.redirect_uri == "https://old/cb"
 
-
-def test_resolve_callback_port_cimd_pins_and_records_url(tmp_path, monkeypatch):
+    # CIMD pins a port from the pool and records the URL.
     monkeypatch.setattr(cb, "reserve_fixed_port", lambda port: True)
     url = "https://me.example/oauth/cimd.json"
     s = OAuthSettings(client_metadata_url=url)
-    port = resolve_callback_port(s, FreyjaTokenStorage("a", root=tmp_path))
+    port = resolve_callback_port(s, FreyjaTokenStorage("cimd", root=tmp_path))
     assert port in CIMD_PORTS
     assert s.cimd_url == url
     assert cimd.cimd_provider_kwargs(s) == {"client_metadata_url": url}
 
-
-def test_cached_cimd_port_is_claimed_for_process(tmp_path):
-    storage = FreyjaTokenStorage("a", root=tmp_path)
-    write_json(storage.client_info_path(), {
+    # A cached CIMD registration claims its pinned port for this process.
+    cb.reset_port_state_for_tests()
+    claimed = FreyjaTokenStorage("claimed", root=tmp_path)
+    write_json(claimed.client_info_path(), {
         "client_id": "https://me/cimd.json",
         "redirect_uris": [f"http://127.0.0.1:{CIMD_PORTS[3]}/callback"],
     })
-    assert resolve_callback_port(OAuthSettings(), storage) == CIMD_PORTS[3]
+    assert resolve_callback_port(OAuthSettings(), claimed) == CIMD_PORTS[3]
     assert cb.assigned_cimd_ports() == (CIMD_PORTS[3],)
 
 
@@ -169,12 +160,9 @@ def test_cached_cimd_port_is_claimed_for_process(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_build_client_metadata_requires_resolved_port():
-    with pytest.raises(ValueError):
-        build_client_metadata(OAuthSettings())
-
-
 def test_build_client_metadata_public_vs_confidential():
+    with pytest.raises(ValueError):
+        build_client_metadata(OAuthSettings())  # port must be resolved first
     s = OAuthSettings()
     s.resolved_port = 4242
     md = build_client_metadata(s)
@@ -199,6 +187,11 @@ def test_build_client_metadata_public_vs_confidential():
 
 def test_maybe_preregister_client_writes_client_json_and_invalidates_on_change(tmp_path):
     storage = FreyjaTokenStorage("acme", root=tmp_path)
+    plain = OAuthSettings()
+    plain.resolved_port = 1
+    maybe_preregister_client(storage, plain, build_client_metadata(plain))
+    assert not storage.client_info_path().exists()  # no client_id -> nothing to write
+
     s = OAuthSettings(client_id="pre-1", client_secret="sec", scope="x")
     s.resolved_port = 4242
     md = build_client_metadata(s)
@@ -227,30 +220,25 @@ def test_maybe_preregister_client_writes_client_json_and_invalidates_on_change(t
     assert storage.tokens_path().exists()
 
 
-def test_maybe_preregister_noop_without_client_id(tmp_path):
-    storage = FreyjaTokenStorage("acme", root=tmp_path)
-    s = OAuthSettings()
-    s.resolved_port = 1
-    maybe_preregister_client(storage, s, build_client_metadata(s))
-    assert not storage.client_info_path().exists()
-
-
 # ---------------------------------------------------------------------------
-# build_httpx_auth fast paths
+# build_httpx_auth fast paths and gates
 # ---------------------------------------------------------------------------
 
 
-def test_build_httpx_auth_none_for_non_oauth(tmp_path):
+def test_build_httpx_auth_fast_paths_and_non_interactive_gate(tmp_path):
+    from bridge.mcp.connection import sdk_httpx
+
     assert build_httpx_auth(_spec(auth=None), interactive=True, storage_root=tmp_path) is None
     assert build_httpx_auth(_spec(auth="bearer"), interactive=True, storage_root=tmp_path) is None
     assert build_httpx_auth(_spec(url=None), interactive=True, storage_root=tmp_path) is None
 
-
-def test_build_httpx_auth_non_interactive_without_tokens_raises(tmp_path):
     with pytest.raises(OAuthNonInteractiveError) as ei:
         build_httpx_auth(_spec(), interactive=False, storage_root=tmp_path)
     assert "/mcp login acme" in str(ei.value)
     assert ei.value.server_name == "acme"
+    # connection.py routes exceptions whose class name mentions OAuth/NeedsAuth to needs-auth
+    assert "OAuth" in type(ei.value).__name__
+    assert any("NeedsAuth" in k.__name__ for k in type(ei.value).__mro__)
     # Suppression wins even with interactive=True
     with suppress_interactive_oauth():
         with pytest.raises(OAuthNonInteractiveError):
@@ -258,44 +246,26 @@ def test_build_httpx_auth_non_interactive_without_tokens_raises(tmp_path):
     # Nothing was written to disk on the failure path
     assert not (tmp_path / "acme").exists()
 
+    with pytest.raises(McpConfigError):
+        build_httpx_auth(
+            _spec({"client_secret": "sk-inline"}), interactive=True, storage_root=tmp_path
+        )
 
-def test_build_httpx_auth_non_interactive_with_tokens_builds_provider(tmp_path):
+    # With cached tokens the provider is built non-interactively, typed against
+    # the SDK's own httpx module (manager.py calls auth_factory(spec, interactive)).
     storage = FreyjaTokenStorage("acme", root=tmp_path)
     write_json(storage.tokens_path(), {"access_token": "AT", "expires_at": 9e12})
-    auth = build_httpx_auth(_spec(), interactive=False, storage_root=tmp_path)
+    factory = lambda spec, interactive: build_httpx_auth(spec, interactive, storage_root=tmp_path)  # noqa: E731
+    auth = factory(_spec(), False)
     assert isinstance(auth, FreyjaOAuthClientProvider)
-    assert isinstance(auth, httpx2.Auth)
+    assert isinstance(auth, httpx2.Auth) and isinstance(auth, sdk_httpx().Auth)
     assert auth.server_name == "acme"
     assert auth.preregistered is False
     assert auth.token_user_agent == "Freyja"
     assert auth.context.client_metadata.client_name == "Freyja"
 
 
-def test_build_httpx_auth_matches_manager_auth_factory_contract(tmp_path):
-    """manager.py calls ``auth_factory(spec, interactive)`` positionally and
-    type-checks the result against the SDK's own httpx module."""
-    from bridge.mcp.connection import sdk_httpx
-
-    storage = FreyjaTokenStorage("acme", root=tmp_path)
-    write_json(storage.tokens_path(), {"access_token": "AT", "expires_at": 9e12})
-    factory = lambda spec, interactive: build_httpx_auth(spec, interactive, storage_root=tmp_path)  # noqa: E731
-    auth = factory(_spec(), False)
-    assert isinstance(auth, sdk_httpx().Auth)
-    with pytest.raises(OAuthNonInteractiveError) as ei:
-        factory(_spec(name="other"), False)
-    # connection.py routes exceptions whose class name mentions OAuth/NeedsAuth to needs-auth
-    assert "OAuth" in type(ei.value).__name__
-    assert any("NeedsAuth" in k.__name__ for k in type(ei.value).__mro__)
-
-
-def test_build_httpx_auth_rejects_inline_secret(tmp_path):
-    with pytest.raises(McpConfigError):
-        build_httpx_auth(
-            _spec({"client_secret": "sk-inline"}), interactive=True, storage_root=tmp_path
-        )
-
-
-def test_build_httpx_auth_preregistered_marks_provider(tmp_path):
+def test_build_httpx_auth_preregistered_and_figma_defaults_flow_through(tmp_path):
     auth = build_httpx_auth(
         _spec({"client_id": "pre", "client_secret": "${ACME_SECRET}", "user_agent": "UA/1"}),
         interactive=True, storage_root=tmp_path, environ={"ACME_SECRET": "s"},
@@ -305,23 +275,14 @@ def test_build_httpx_auth_preregistered_marks_provider(tmp_path):
     raw = json.loads(FreyjaTokenStorage("acme", root=tmp_path).client_info_path().read_text())
     assert raw["client_id"] == "pre"
 
-
-def test_build_httpx_auth_figma_defaults_flow_through(tmp_path):
-    auth = build_httpx_auth(
+    figma = build_httpx_auth(
         _spec(name="figma", url="https://mcp.figma.com/mcp"), interactive=True,
         storage_root=tmp_path,
     )
-    md = auth.context.client_metadata
+    md = figma.context.client_metadata
     assert md.client_name == "Claude Code"
     assert md.scope == "mcp:connect"
     assert md.token_endpoint_auth_method == "client_secret_post"
-
-
-def test_build_httpx_auth_uses_semaphore_lock(tmp_path):
-    import anyio
-
-    auth = build_httpx_auth(_spec(), interactive=True, storage_root=tmp_path)
-    assert isinstance(auth.context.lock, anyio.Semaphore)
 
 
 def _capture_inner_generators(monkeypatch) -> list:
@@ -344,8 +305,6 @@ def _capture_inner_generators(monkeypatch) -> list:
 async def test_auth_flow_closed_mid_resource_request_releases_lock(tmp_path, monkeypatch):
     """httpx cancelling the flow while the resource request is in flight
     (streamable-HTTP GET teardown) must leave the semaphore free."""
-    import asyncio
-
     storage = FreyjaTokenStorage("acme", root=tmp_path)
     write_json(storage.tokens_path(), {"access_token": "AT", "expires_at": 9e12})
     auth = build_httpx_auth(_spec(), interactive=False, storage_root=tmp_path)
@@ -377,8 +336,6 @@ async def test_auth_flow_closed_mid_resource_request_releases_lock(tmp_path, mon
 async def test_auth_flow_closed_during_discovery_releases_lock(tmp_path, monkeypatch):
     """Closing while the SDK holds the lock for a *non-resource* request
     (discovery after a 401) must also release it exactly once."""
-    import asyncio
-
     storage = FreyjaTokenStorage("acme", root=tmp_path)
     write_json(storage.tokens_path(), {"access_token": "AT", "expires_at": 9e12})
     auth = build_httpx_auth(_spec(), interactive=False, storage_root=tmp_path)
@@ -403,7 +360,7 @@ async def test_auth_flow_closed_during_discovery_releases_lock(tmp_path, monkeyp
 # ---------------------------------------------------------------------------
 
 
-def test_same_endpoint_and_safe_error_fields():
+def test_same_endpoint_and_safe_error_fields_never_echo_tokens():
     assert prov._same_endpoint("https://AS.example/token?x=1", "https://as.example/token/")
     assert not prov._same_endpoint("https://as.example/token", "https://as.example/register")
     assert not prov._same_endpoint("http://as.example/token", "https://as.example/token")

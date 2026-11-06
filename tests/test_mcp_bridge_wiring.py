@@ -105,7 +105,7 @@ async def test_elicitation_bridge_emit_and_accept_round_trip():
 async def test_elicitation_bridge_decline_cancel_timeout_and_url_mode():
     events: list[dict] = []
     ids = iter(["a", "b", "c", "d"])
-    bridge = ElicitationBridge(events.append, timeout_s=0.2, id_factory=lambda: next(ids))
+    bridge = ElicitationBridge(events.append, timeout_s=0.05, id_factory=lambda: next(ids))
 
     t = asyncio.create_task(bridge(_req()))
     assert await _wait_until(lambda: len(events) == 1, 2)
@@ -203,7 +203,7 @@ def test_answer_parsing_and_schema_coercion():
 # manager_hooks + auth factory
 # ---------------------------------------------------------------------------
 
-def test_manager_hooks_shape_and_auth_factory_semantics(tmp_path):
+async def test_manager_hooks_shape_and_auth_factory_semantics(tmp_path):
     events: list[dict] = []
     hooks = manager_hooks(events.append, elicitation_timeout_s=7, token_root=tmp_path / "t")
     assert set(hooks) == {"auth_factory", "approval_handler", "elicitation_timeout_s", "token_root"}
@@ -243,6 +243,18 @@ def test_manager_hooks_shape_and_auth_factory_semantics(tmp_path):
     assert elicitation_bridge_of(None) is None
     assert resolve_elicitation_response(manager, {"requestId": "zz", "action": "accept"}) is False
     assert resolve_elicitation_response(None, {"requestId": "zz", "action": "accept"}) is False
+
+    # emit_status posts one full-snapshot mcp_status event; no sink is a no-op.
+    path.write_text(json.dumps({"version": 1, "servers": {
+        "s": {"transport": "stdio", "command": "x", "enabled": False},
+    }}))
+    manager = McpManager.load(path, watchdog=False)
+    events.clear()
+    await emit_status(events.append, manager)
+    assert events[0]["type"] == "mcp_status"
+    assert [r["server"] for r in events[0]["servers"]] == ["s"]
+    assert events[0]["servers"][0]["needs_auth"] is False
+    await emit_status(None, manager)
 
 
 def test_freyja_bridge_boot_wiring_uses_manager_hooks():
@@ -299,20 +311,6 @@ async def test_surface_login_flow_emits_mcp_oauth_url_per_surface():
     assert gateway.paste_source is None and gateway.redirect_uri is None
 
 
-async def test_emit_status_shape(tmp_path):
-    path = tmp_path / "mcp.json"
-    path.write_text(json.dumps({"version": 1, "servers": {
-        "s": {"transport": "stdio", "command": "x", "enabled": False},
-    }}))
-    manager = McpManager.load(path, watchdog=False)
-    events: list[dict] = []
-    await emit_status(events.append, manager)
-    assert events[0]["type"] == "mcp_status"
-    assert [r["server"] for r in events[0]["servers"]] == ["s"]
-    assert events[0]["servers"][0]["needs_auth"] is False
-    await emit_status(None, manager)  # no sink -> no-op
-
-
 # ---------------------------------------------------------------------------
 # _handle_command: background dispatch + elicitation response IPC
 # ---------------------------------------------------------------------------
@@ -343,6 +341,12 @@ async def test_bridge_ipc_background_actions_reply_asynchronously(tmp_path, monk
         )
         assert [e["type"] for e in events] == ["mcp_command_result"]
         assert events[0]["requestId"] == "r1" and events[0]["servers"][0]["state"] == "disabled"
+        assert events[0]["ok"] is True
+        events.clear()
+        # An unknown action comes back as a clean ok=False result, not a crash.
+        await fb._handle_command(state, {"type": "mcp_command", "action": "detonate"})
+        assert events[0]["type"] == "mcp_command_result" and events[0]["ok"] is False
+        assert "unknown mcp_command action" in events[0]["message"]
         events.clear()
         # Background action: _handle_command returns first, the result lands later.
         assert "enable" in BACKGROUND_ACTIONS

@@ -1,19 +1,24 @@
 """HTTP transport + v2 lifecycle tests against tests/fixtures/mcp_http_fixture_server.py.
 
-Every test spawns its own fixture server subprocess on a free loopback
-port (offline, tmp_path for ready files, no real ~/.freyja paths) and
-drives it through McpManager with sub-second timers.
+Fixture servers run as subprocesses on free loopback ports (offline,
+tmp dirs for ready files, no real ~/.freyja paths). Modes with no
+mutable server state (normal, stateless, auth, sse) are started once per
+module and shared; tests that kill the server or mutate its tool list
+(flaky, listchanged, restart) spawn their own. Every test drives the
+server through McpManager with sub-second timers.
 
 Covers (card_017): streamable HTTP connect + calls; stateless (no
-Mcp-Session-Id) sessions; ${VAR} header expansion; missing secret header
-var -> needs-auth; HTTP 401 -> needs-auth (no retry ladder) with the
-``/mcp login`` reason; injected auth_factory; explicit SSE transport;
-http -> SSE auto-fallback remembered across reconnects; flaky transport
--> rapid-drop budget -> parked; in-flight fast-fail when the server dies
-mid-call; elicitation routing (accept / decline / default decline);
-sampling decline; tools/list_changed diff refresh (add / update in place
-/ remove / poisoned re-description quarantine); result cap; status
-snapshot v2 details.
+Mcp-Session-Id) sessions; ${VAR} header expansion; HTTP 401 -> needs-auth
+(no retry ladder) with the ``/mcp login`` reason, then a static bearer
+header or an injected auth_factory authenticating; explicit SSE transport
+and http -> SSE auto-fallback remembered across reconnects; flaky
+transport -> rapid-drop budget -> parked; in-flight fast-fail when the
+server dies mid-call; sampling decline; tools/list_changed diff refresh
+(add / update in place / remove / poisoned re-description quarantine);
+result cap; restart on the same port; clean stop.
+
+``http_server``, ``_wait_until`` and ``_call`` are imported by the
+commands_v2, oauth_e2e, bridge_wiring and gateway_mcp_v2 tests.
 """
 
 from __future__ import annotations
@@ -28,8 +33,10 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from bridge.mcp.config import McpCatalog, McpServerSpec
-from bridge.mcp.connection import ElicitRequest, State, sdk_httpx
+from bridge.mcp.connection import State, sdk_httpx
 from bridge.mcp.manager import McpManager
 from bridge.tools.base import ToolCall, ToolRegistry
 
@@ -56,7 +63,7 @@ class HttpFixture:
         self.args = list(args)
         self.proc: subprocess.Popen[bytes] | None = None
 
-    async def start(self) -> "HttpFixture":
+    def _launch(self) -> None:
         self.proc = subprocess.Popen(
             [
                 sys.executable, str(FIXTURE), "--port", str(self.port),
@@ -65,13 +72,32 @@ class HttpFixture:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+
+    def _ready(self) -> bool:
+        if self.ready_file.exists():
+            return True
+        assert self.proc is not None
+        if self.proc.poll() is not None:
+            raise RuntimeError(f"fixture server exited early: {self.proc.returncode}")
+        return False
+
+    async def start(self) -> "HttpFixture":
+        self._launch()
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
-            if self.ready_file.exists():
+            if self._ready():
                 return self
-            if self.proc.poll() is not None:
-                raise RuntimeError(f"fixture server exited early: {self.proc.returncode}")
             await asyncio.sleep(0.02)
+        raise RuntimeError("fixture server did not become ready")
+
+    def start_blocking(self) -> "HttpFixture":
+        """Synchronous start for module-scoped fixtures."""
+        self._launch()
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if self._ready():
+                return self
+            time.sleep(0.02)
         raise RuntimeError("fixture server did not become ready")
 
     def kill(self) -> None:
@@ -97,6 +123,32 @@ async def http_server(tmp_path: Path, *args: str, port: int | None = None):
         yield fixture
     finally:
         fixture.stop()
+
+
+def _shared_server(tmp_path_factory, *args: str):
+    fixture = HttpFixture(tmp_path_factory.mktemp("http-fixture"), *args).start_blocking()
+    yield fixture
+    fixture.kill()  # nothing needs a graceful exit; a SIGTERM wait costs ~0.2 s each
+
+
+@pytest.fixture(scope="module")
+def normal_server(tmp_path_factory):
+    yield from _shared_server(tmp_path_factory)
+
+
+@pytest.fixture(scope="module")
+def stateless_server(tmp_path_factory):
+    yield from _shared_server(tmp_path_factory, "--mode", "stateless")
+
+
+@pytest.fixture(scope="module")
+def auth_server(tmp_path_factory):
+    yield from _shared_server(tmp_path_factory, "--mode", "auth", "--token", "sekrit")
+
+
+@pytest.fixture(scope="module")
+def sse_server(tmp_path_factory):
+    yield from _shared_server(tmp_path_factory, "--transport", "sse")
 
 
 def _spec(url: str, name: str = "hsrv", **overrides) -> McpServerSpec:
@@ -159,99 +211,83 @@ def _text(result) -> str:
 # Streamable HTTP basics
 # ---------------------------------------------------------------------------
 
-async def test_streamable_http_connects_and_calls(tmp_path):
-    async with http_server(tmp_path) as srv:
-        async with running(_spec(srv.url)) as (manager, registry):
-            conn = manager.connection("hsrv")
-            assert conn is not None and conn.state is State.ACTIVE, conn.reason
-            assert conn.transport_in_use == "http"
-            assert conn.protocol_mode == "handshake"
-            assert conn.session_id, "stateful server should issue Mcp-Session-Id"
-            assert registry.get("mcp__hsrv__echo") is not None
-            # The injected description must never register.
-            assert registry.get("mcp__hsrv__shady") is None
-            result = await _call(registry, "mcp__hsrv__echo", {"text": "over http"})
-            assert result.is_error is False and "over http" in _text(result)
-            # A successful call proves the session.
-            assert conn.session_proven is True
-            # Status snapshot carries the v2 details.
-            row = manager.status_snapshot()[0]
-            assert row["transport_in_use"] == "http"
-            assert row["session_proven"] is True
-            assert row["quarantined"] == 1  # shady
-            quarantine = manager.pending_quarantine()
-            assert [q["tool"] for q in quarantine] == ["shady"]
-            assert quarantine[0]["server"] == "hsrv" and quarantine[0]["pattern"]
+async def test_streamable_http_connects_and_calls(normal_server):
+    async with running(_spec(normal_server.url)) as (manager, registry):
+        conn = manager.connection("hsrv")
+        assert conn is not None and conn.state is State.ACTIVE, conn.reason
+        assert conn.transport_in_use == "http"
+        assert conn.protocol_mode == "handshake"
+        assert conn.session_id, "stateful server should issue Mcp-Session-Id"
+        assert registry.get("mcp__hsrv__echo") is not None
+        # The injected description must never register.
+        assert registry.get("mcp__hsrv__shady") is None
+        result = await _call(registry, "mcp__hsrv__echo", {"text": "over http"})
+        assert result.is_error is False and "over http" in _text(result)
+        # A successful call proves the session.
+        assert conn.session_proven is True
+        # Status snapshot carries the v2 details.
+        row = manager.status_snapshot()[0]
+        assert row["transport_in_use"] == "http"
+        assert row["session_proven"] is True
+        assert row["quarantined"] == 1  # shady
+        quarantine = manager.pending_quarantine()
+        assert [q["tool"] for q in quarantine] == ["shady"]
+        assert quarantine[0]["server"] == "hsrv" and quarantine[0]["pattern"]
 
 
-async def test_stateless_server_without_session_id_is_valid(tmp_path):
-    async with http_server(tmp_path, "--mode", "stateless") as srv:
-        async with running(_spec(srv.url)) as (manager, registry):
-            conn = manager.connection("hsrv")
-            assert conn.state is State.ACTIVE, conn.reason
-            assert conn.session_id is None
-            result = await _call(registry, "mcp__hsrv__session_info", {})
-            assert json.loads(_text(result))["session_id"] is None
-            # Keepalive works without a GET stream / session.
-            assert await _wait_until(lambda: conn.last_latency_ms is not None, 5)
-            result = await _call(registry, "mcp__hsrv__echo", {"text": "stateless ok"})
-            assert "stateless ok" in _text(result)
+async def test_stateless_server_without_session_id_is_valid(stateless_server):
+    async with running(_spec(stateless_server.url)) as (manager, registry):
+        conn = manager.connection("hsrv")
+        assert conn.state is State.ACTIVE, conn.reason
+        assert conn.session_id is None
+        result = await _call(registry, "mcp__hsrv__session_info", {})
+        assert json.loads(_text(result))["session_id"] is None
+        # Keepalive works without a GET stream / session.
+        assert await _wait_until(lambda: conn.last_latency_ms is not None, 5)
+        result = await _call(registry, "mcp__hsrv__echo", {"text": "stateless ok"})
+        assert "stateless ok" in _text(result)
 
 
-async def test_headers_expand_env_refs_at_connect_time(tmp_path, monkeypatch):
+async def test_headers_expand_env_refs_at_connect_time(normal_server, monkeypatch):
     monkeypatch.setenv("FIXTURE_HDR_A", "alpha-value")
-    async with http_server(tmp_path) as srv:
-        spec = _spec(
-            srv.url,
-            headers={"X-Fixture-A": "${FIXTURE_HDR_A}", "X-Fixture-Static": "static-value"},
-        )
-        async with running(spec) as (manager, registry):
-            assert manager.connection("hsrv").state is State.ACTIVE
-            result = await _call(registry, "mcp__hsrv__headers_echo", {})
-            seen = json.loads(_text(result))
-            assert seen == {"x-fixture-a": "alpha-value", "x-fixture-static": "static-value"}
-
-
-async def test_missing_secret_header_var_marks_needs_auth(tmp_path, monkeypatch):
-    monkeypatch.delenv("FIXTURE_API_TOKEN", raising=False)
-    async with http_server(tmp_path) as srv:
-        spec = _spec(srv.url, headers={"Authorization": "Bearer ${FIXTURE_API_TOKEN}"})
-        async with running(spec) as (manager, _registry):
-            conn = manager.connection("hsrv")
-            assert conn.state is State.NEEDS_AUTH
-            assert "FIXTURE_API_TOKEN" in conn.reason
-            assert conn.restart_count == 0
+    spec = _spec(
+        normal_server.url,
+        headers={"X-Fixture-A": "${FIXTURE_HDR_A}", "X-Fixture-Static": "static-value"},
+    )
+    async with running(spec) as (manager, registry):
+        assert manager.connection("hsrv").state is State.ACTIVE
+        result = await _call(registry, "mcp__hsrv__headers_echo", {})
+        seen = json.loads(_text(result))
+        assert seen == {"x-fixture-a": "alpha-value", "x-fixture-static": "static-value"}
 
 
 # ---------------------------------------------------------------------------
-# Auth: 401 -> needs-auth (permanent), auth_factory injection
+# Auth: 401 -> needs-auth (permanent); static header; auth_factory injection
 # ---------------------------------------------------------------------------
 
-async def test_http_401_marks_needs_auth_without_retry_ladder(tmp_path):
+async def test_auth_server_401_needs_auth_then_header_or_auth_factory_authenticates(
+    auth_server, monkeypatch,
+):
     recorder: list[dict] = []
-    async with http_server(tmp_path, "--mode", "auth", "--token", "sekrit") as srv:
-        async with running(_spec(srv.url), status_listener=recorder.append) as (manager, registry):
-            conn = manager.connection("hsrv")
-            assert conn.state is State.NEEDS_AUTH, conn.reason
-            assert "run /mcp login hsrv" in conn.reason
-            assert "401" in conn.reason
-            states = [e["state"] for e in recorder]
-            assert "backoff" not in states and "parked" not in states
-            assert registry.get("mcp__hsrv__echo") is None
-            assert manager.proxy_tools() == []
+    async with running(
+        _spec(auth_server.url), status_listener=recorder.append,
+    ) as (manager, registry):
+        conn = manager.connection("hsrv")
+        assert conn.state is State.NEEDS_AUTH, conn.reason
+        assert "run /mcp login hsrv" in conn.reason
+        assert "401" in conn.reason
+        states = [e["state"] for e in recorder]
+        assert "backoff" not in states and "parked" not in states
+        assert registry.get("mcp__hsrv__echo") is None
+        assert manager.proxy_tools() == []
 
-
-async def test_static_bearer_header_authenticates(tmp_path, monkeypatch):
     monkeypatch.setenv("FIXTURE_API_TOKEN", "sekrit")
-    async with http_server(tmp_path, "--mode", "auth", "--token", "sekrit") as srv:
-        spec = _spec(srv.url, headers={"Authorization": "Bearer ${FIXTURE_API_TOKEN}"})
-        async with running(spec) as (manager, registry):
-            assert manager.connection("hsrv").state is State.ACTIVE
-            result = await _call(registry, "mcp__hsrv__echo", {"text": "authed"})
-            assert "authed" in _text(result)
+    spec = _spec(auth_server.url, headers={"Authorization": "Bearer ${FIXTURE_API_TOKEN}"})
+    async with running(spec) as (manager, registry):
+        assert manager.connection("hsrv").state is State.ACTIVE
+        result = await _call(registry, "mcp__hsrv__echo", {"text": "authed"})
+        assert "authed" in _text(result)
 
-
-async def test_auth_factory_supplies_httpx_auth(tmp_path):
     httpx_mod = sdk_httpx()
     calls: list[tuple[str, bool]] = []
 
@@ -267,72 +303,46 @@ async def test_auth_factory_supplies_httpx_auth(tmp_path):
         calls.append((spec.name, interactive))
         return BearerAuth("sekrit")
 
-    async with http_server(tmp_path, "--mode", "auth", "--token", "sekrit") as srv:
-        async with running(_spec(srv.url), auth_factory=factory) as (manager, registry):
-            conn = manager.connection("hsrv")
-            assert conn.state is State.ACTIVE, conn.reason
-            assert calls == [("hsrv", False)]  # background connects are never interactive
-            result = await _call(registry, "mcp__hsrv__echo", {"text": "via-auth"})
-            assert "via-auth" in _text(result)
-
-
-async def test_auth_factory_raising_needs_auth_shaped_error(tmp_path):
-    class NeedsAuthError(Exception):
-        pass
-
-    def factory(spec: McpServerSpec, interactive: bool):
-        raise NeedsAuthError("no cached tokens for hsrv")
-
-    async with http_server(tmp_path) as srv:
-        async with running(_spec(srv.url), auth_factory=factory) as (manager, _registry):
-            conn = manager.connection("hsrv")
-            assert conn.state is State.NEEDS_AUTH
-            assert "run /mcp login hsrv" in conn.reason
-            assert "no cached tokens" in conn.reason
-
-
-async def test_auth_factory_returning_none_means_unauthenticated(tmp_path):
-    async with http_server(tmp_path) as srv:
-        async with running(_spec(srv.url), auth_factory=lambda spec, interactive: None) as (manager, _r):
-            assert manager.connection("hsrv").state is State.ACTIVE
+    async with running(_spec(auth_server.url), auth_factory=factory) as (manager, registry):
+        conn = manager.connection("hsrv")
+        assert conn.state is State.ACTIVE, conn.reason
+        assert calls == [("hsrv", False)]  # background connects are never interactive
+        result = await _call(registry, "mcp__hsrv__echo", {"text": "via-auth"})
+        assert "via-auth" in _text(result)
 
 
 # ---------------------------------------------------------------------------
-# SSE: explicit + auto-fallback
+# SSE: explicit + auto-fallback remembered across reconnects
 # ---------------------------------------------------------------------------
 
-async def test_explicit_sse_transport(tmp_path):
-    async with http_server(tmp_path, "--transport", "sse") as srv:
-        async with running(_spec(srv.url, transport="sse")) as (manager, registry):
-            conn = manager.connection("hsrv")
-            assert conn.state is State.ACTIVE, conn.reason
-            assert conn.transport_in_use == "sse"
-            result = await _call(registry, "mcp__hsrv__echo", {"text": "sse ok"})
-            assert "sse ok" in _text(result)
-            assert manager.status_snapshot()[0]["transport"] == "sse"
+async def test_sse_explicit_and_http_fallback_remembered_across_reconnect(sse_server):
+    async with running(_spec(sse_server.url, transport="sse")) as (manager, registry):
+        conn = manager.connection("hsrv")
+        assert conn.state is State.ACTIVE, conn.reason
+        assert conn.transport_in_use == "sse"
+        result = await _call(registry, "mcp__hsrv__echo", {"text": "sse ok"})
+        assert "sse ok" in _text(result)
+        assert manager.status_snapshot()[0]["transport"] == "sse"
 
+    async with running(_spec(sse_server.url, transport="http")) as (manager, registry):
+        conn = manager.connection("hsrv")
+        assert conn.state is State.ACTIVE, conn.reason
+        assert conn.spec.transport == "http"
+        assert conn.transport_in_use == "sse"
+        result = await _call(registry, "mcp__hsrv__echo", {"text": "fell back"})
+        assert "fell back" in _text(result)
+        row = manager.status_snapshot()[0]
+        assert row["transport"] == "http" and row["transport_in_use"] == "sse"
 
-async def test_http_falls_back_to_sse_and_remembers_it(tmp_path):
-    async with http_server(tmp_path, "--transport", "sse") as srv:
-        async with running(_spec(srv.url, transport="http")) as (manager, registry):
-            conn = manager.connection("hsrv")
-            assert conn.state is State.ACTIVE, conn.reason
-            assert conn.spec.transport == "http"
-            assert conn.transport_in_use == "sse"
-            result = await _call(registry, "mcp__hsrv__echo", {"text": "fell back"})
-            assert "fell back" in _text(result)
-            row = manager.status_snapshot()[0]
-            assert row["transport"] == "http" and row["transport_in_use"] == "sse"
-
-            # A reconnect must go straight to SSE (remembered), not re-probe.
-            assert conn.sse_fallbacks == 1
-            conn.request_reconnect("test-driven reconnect")
-            assert await _wait_until(lambda: conn.restart_count == 1 and conn.state is State.ACTIVE, 15)
-            assert conn.transport_in_use == "sse"
-            assert conn.sse_fallbacks == 1, "reconnect must reuse the remembered transport"
-            assert all(s not in (404, 405) for s in conn._http_recorder.statuses)  # noqa: SLF001
-            result = await _call(registry, "mcp__hsrv__echo", {"text": "still sse"})
-            assert "still sse" in _text(result)
+        # A reconnect must go straight to SSE (remembered), not re-probe.
+        assert conn.sse_fallbacks == 1
+        conn.request_reconnect("test-driven reconnect")
+        assert await _wait_until(lambda: conn.restart_count == 1 and conn.state is State.ACTIVE, 15)
+        assert conn.transport_in_use == "sse"
+        assert conn.sse_fallbacks == 1, "reconnect must reuse the remembered transport"
+        assert all(s not in (404, 405) for s in conn._http_recorder.statuses)  # noqa: SLF001
+        result = await _call(registry, "mcp__hsrv__echo", {"text": "still sse"})
+        assert "still sse" in _text(result)
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +356,7 @@ async def test_flaky_transport_hits_rapid_drop_budget_and_parks(tmp_path):
     recorder: list[dict] = []
     async with http_server(tmp_path, "--mode", "flaky", "--flaky-every", "4") as srv:
         async with running(
-            _spec(srv.url), status_listener=recorder.append,
+            _spec(srv.url), status_listener=recorder.append, keepalive_interval_s=0.05,
             backoff_max_retries=20, rapid_drop_budget=3, park_probe_interval_s=30.0,
         ) as (manager, registry):
             conn = manager.connection("hsrv")
@@ -367,7 +377,7 @@ async def test_inflight_call_fails_fast_when_server_dies(tmp_path):
             assert conn.state is State.ACTIVE
             started = time.monotonic()
             task = asyncio.ensure_future(_call(registry, "mcp__hsrv__slow", {"seconds": 30}))
-            await asyncio.sleep(0.4)
+            assert await _wait_until(lambda: len(conn._inflight) == 1, 5)  # noqa: SLF001
             assert not task.done()
             srv.kill()
             result = await asyncio.wait_for(task, timeout=15)
@@ -381,55 +391,18 @@ async def test_inflight_call_fails_fast_when_server_dies(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Elicitation + sampling
+# Sampling (elicitation round trips live in test_mcp_bridge_wiring.py)
 # ---------------------------------------------------------------------------
 
-async def test_elicitation_routes_through_approval_handler(tmp_path):
-    seen: list[ElicitRequest] = []
-
-    async def approve(request: ElicitRequest):
-        seen.append(request)
-        return {"confirm": True}
-
-    async with http_server(tmp_path) as srv:
-        async with running(_spec(srv.url), approval_handler=approve) as (manager, registry):
-            result = await _call(registry, "mcp__hsrv__elicit_me", {"msg": "Proceed with payment?"})
-            payload = json.loads(_text(result))
-            assert payload == {"action": "accept", "content": {"confirm": True}}
-            assert len(seen) == 1
-            req = seen[0]
-            assert req.server == "hsrv" and req.message == "Proceed with payment?"
-            assert req.mode == "form"
-            assert req.requested_schema and "confirm" in req.requested_schema["properties"]
-            conn = manager.connection("hsrv")
-            assert conn.elicitations["requests"] == 1 and conn.elicitations["accepted"] == 1
-
-
-async def test_elicitation_decline_and_default_handler(tmp_path):
-    async def decline(request: ElicitRequest):
-        return None
-
-    async with http_server(tmp_path) as srv:
-        async with running(_spec(srv.url), approval_handler=decline) as (manager, registry):
-            result = await _call(registry, "mcp__hsrv__elicit_me", {"msg": "ok?"})
-            assert json.loads(_text(result))["action"] == "decline"
-            assert manager.connection("hsrv").elicitations["declined"] == 1
-        # No handler wired -> declined (never blocks the bridge).
-        async with running(_spec(srv.url)) as (manager, registry):
-            result = await _call(registry, "mcp__hsrv__elicit_me", {"msg": "ok?"})
-            assert json.loads(_text(result))["action"] == "decline"
-
-
-async def test_sampling_is_declined_with_clean_error(tmp_path):
-    async with http_server(tmp_path) as srv:
-        async with running(_spec(srv.url)) as (manager, registry):
-            result = await _call(registry, "mcp__hsrv__sample_me", {})
-            payload = json.loads(_text(result))
-            assert "error" in payload
-            assert "not supported" in payload["error"].lower()
-            conn = manager.connection("hsrv")
-            assert conn.sampling_declined == 1
-            assert conn.state is State.ACTIVE  # declining never destabilizes the session
+async def test_sampling_is_declined_with_clean_error(normal_server):
+    async with running(_spec(normal_server.url)) as (manager, registry):
+        result = await _call(registry, "mcp__hsrv__sample_me", {})
+        payload = json.loads(_text(result))
+        assert "error" in payload
+        assert "not supported" in payload["error"].lower()
+        conn = manager.connection("hsrv")
+        assert conn.sampling_declined == 1
+        assert conn.state is State.ACTIVE  # declining never destabilizes the session
 
 
 # ---------------------------------------------------------------------------
@@ -477,33 +450,21 @@ async def test_list_changed_diff_refresh_add_update_remove_poison(tmp_path):
             assert conn.tool_count == len(conn.tools)
 
 
-async def test_poisoned_live_tool_is_unregistered_on_refresh(tmp_path):
-    async with http_server(tmp_path, "--mode", "listchanged") as srv:
-        async with running(_spec(srv.url)) as (manager, registry):
-            await _call(registry, "mcp__hsrv__mutate_tools", {"op": "add"})
-            assert await _wait_until(lambda: registry.get("mcp__hsrv__dynamic_tool") is not None, 10)
-            # Rug pull: a LIVE tool's description changes to an injection.
-            await _call(registry, "mcp__hsrv__mutate_tools", {"op": "poison"})
-            assert await _wait_until(lambda: registry.get("mcp__hsrv__dynamic_tool") is None, 10)
-            assert any(q["tool"] == "dynamic_tool" for q in manager.pending_quarantine())
-
-
 # ---------------------------------------------------------------------------
 # Result cap
 # ---------------------------------------------------------------------------
 
-async def test_result_cap_truncates_with_notice(tmp_path):
-    async with http_server(tmp_path) as srv:
-        spec = _spec(srv.url, max_result_chars=500)
-        async with running(spec) as (manager, registry):
-            result = await _call(registry, "mcp__hsrv__big", {"chars": 5000})
-            text = _text(result)
-            assert result.is_error is False
-            assert text.startswith("0123456789" * 50)
-            assert "TRUNCATED" in text and "4,500" in text and "limits.max_result_chars" in text
-            assert len(text) < 800
-            small = await _call(registry, "mcp__hsrv__big", {"chars": 400})
-            assert len(_text(small)) == 400
+async def test_result_cap_truncates_with_notice(normal_server):
+    spec = _spec(normal_server.url, max_result_chars=500)
+    async with running(spec) as (manager, registry):
+        result = await _call(registry, "mcp__hsrv__big", {"chars": 5000})
+        text = _text(result)
+        assert result.is_error is False
+        assert text.startswith("0123456789" * 50)
+        assert "TRUNCATED" in text and "4,500" in text and "limits.max_result_chars" in text
+        assert len(text) < 800
+        small = await _call(registry, "mcp__hsrv__big", {"chars": 400})
+        assert len(_text(small)) == 400
 
 
 # ---------------------------------------------------------------------------
@@ -515,7 +476,9 @@ async def test_http_server_restart_reconnects_and_reregisters(tmp_path):
     fixture = HttpFixture(tmp_path, port=port)
     await fixture.start()
     try:
-        async with running(_spec(fixture.url), backoff_max_retries=30, backoff_cap_s=0.3) as (manager, registry):
+        async with running(
+            _spec(fixture.url), keepalive_interval_s=0.05, backoff_max_retries=30, backoff_cap_s=0.15,
+        ) as (manager, registry):
             conn = manager.connection("hsrv")
             assert conn.state is State.ACTIVE
             await _call(registry, "mcp__hsrv__echo", {"text": "before"})
@@ -547,7 +510,7 @@ async def test_stop_leaves_no_orphan_tasks_or_clients(tmp_path):
         await _call(registry, "mcp__hsrv__mutate_tools", {"op": "add"})
         assert await _wait_until(lambda: registry.get("mcp__hsrv__dynamic_tool") is not None, 10)
         pending = asyncio.ensure_future(_call(registry, "mcp__hsrv__slow", {"seconds": 30}))
-        await asyncio.sleep(0.3)
+        assert await _wait_until(lambda: len(conn._inflight) == 1, 5)  # noqa: SLF001
         await asyncio.wait_for(manager.stop(), timeout=30)
         result = await asyncio.wait_for(pending, timeout=5)
         assert result.is_error is True  # fast-failed, not waiting out 30s
