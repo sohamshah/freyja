@@ -724,6 +724,30 @@ class SlackAdapter:
         async def _on_card_link(ack):
             await ack()
 
+    async def _click_allowed(self, body: dict[str, Any], respond: Any) -> bool:
+        """A card's button is as privileged as a message or a slash
+        command, so the clicker passes the same allowlist. The cards post
+        in the session's chat, where everyone in the channel sees them:
+        anyone else is told so privately, and the card keeps its buttons."""
+        user = body.get("user") or {}
+        user_id = str(user.get("id") or "")
+        team_id = str((body.get("team") or {}).get("id") or user.get("team_id") or "")
+        if self.slack_config.user_allowed(team_id, user_id):
+            return True
+        logger.info(
+            "[slack] ignoring a card click from team=%s user=%s — not in allowlist",
+            team_id, user_id,
+        )
+        try:
+            await respond(
+                response_type="ephemeral",
+                replace_original=False,
+                text="Only Freyja's owner can answer this.",
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("[slack] denied click notice failed", exc_info=True)
+        return False
+
     async def _handle_skill_candidate_click(
         self,
         body: dict[str, Any],
@@ -735,6 +759,8 @@ class SlackAdapter:
         invoke the confirmation module directly here (we're inside the
         daemon process — confirmation.promote/discard write to disk and
         emit the resolution event)."""
+        if not await self._click_allowed(body, respond):
+            return
         actions = body.get("actions") or []
         candidate_id = ""
         if actions:
@@ -811,6 +837,9 @@ class SlackAdapter:
         *,
         approved: bool,
     ) -> None:
+        # Approving runs what the agent asked to (bash, an MCP tool).
+        if not await self._click_allowed(body, respond):
+            return
         actions = body.get("actions") or []
         request_id = ""
         if actions:
