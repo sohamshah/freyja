@@ -293,8 +293,8 @@ await check('a follow-up the bridge refused to send leaves its pending bubble an
 })
 
 await check('a message the bridge refused to send gives its attachments back to the composer too', async () => {
-  // The refusal is for a Slack session (none other is refused). Its bubble
-  // keeps only previews of what was attached.
+  // Here for a Slack session. Its bubble keeps only previews of what was
+  // attached.
   const slack = 'freyja:slack:T1:channel:C1:2.0'
   useHarness.setState({ activeSessionId: slack, messages: [], inputDraft: '', isStreaming: false })
   const shot = {
@@ -313,6 +313,29 @@ await check('a message the bridge refused to send gives its attachments back to 
   assert.ok(!useHarness.getState().messages.some((m) => m.id === c))
   assert.equal(useHarness.getState().inputDraft, 'see these')
   assert.deepEqual(useHarness.getState().pendingAttachments, [shot, card])
+})
+
+await check('a refused message to a sub-agent or a scheduled job gives its attachments back too', async () => {
+  // A desktop sub-agent with nothing saved to resume, and a scheduled job's
+  // session that the background scheduler runs, are refused as well.
+  const sub = 'sub_19f0desk_9'
+  const S = useHarness.getState()
+  useHarness.setState({
+    sessions: [...S.sessions, { ...S.sessions[0], id: sub, title: 'worker', parentSessionId: sid }],
+  })
+  const shot = {
+    id: 'att-3', type: 'image', mimeType: 'image/png', dataBase64: 'iVBORw0KGgo=',
+    previewUrl: 'data:image/png;base64,iVBORw0KGgo=', filename: 'shot.png', sizeBytes: 8,
+  }
+  for (const target of [sub, 'scheduler:sched_19f0']) {
+    useHarness.setState({ activeSessionId: target, messages: [], inputDraft: '', isStreaming: false })
+    useHarness.setState({ pendingAttachments: [shot] })
+    await useHarness.getState().sendMessage('see this')
+    const c = sent.at(-1).clientId
+    useHarness.getState().handleEvent({ sessionId: target, type: 'send_refused', clientId: c })
+    assert.equal(useHarness.getState().inputDraft, 'see this', target)
+    assert.deepEqual(useHarness.getState().pendingAttachments, [shot], target)
+  }
 })
 
 await check("a sub-agent pane's message and switch name its parent", async () => {

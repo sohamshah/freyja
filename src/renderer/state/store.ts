@@ -997,10 +997,10 @@ function answerForceDispatch(sessionId: string, subtype: string, message: string
   )
 }
 
-/** What was attached to a message sent to a Slack session, keyed on its
- *  bubble, for as long as the bridge may still refuse it (`send_refused`).
- *  The bubble keeps only previews, so a refusal gives these back to the
- *  composer, as a refused follow-up gives back its own. */
+/** What was attached to a message the bridge may refuse (`send_refused`,
+ *  see sendMayBeRefused), keyed on its bubble, for as long as the bubble
+ *  stays. The bubble keeps only previews, so a refusal gives these back to
+ *  the composer, as a refused follow-up gives back its own. */
 const refusableAttachments = new WeakMap<Message, PendingAttachment[]>()
 
 interface SessionTreeIndex {
@@ -1044,6 +1044,18 @@ export function isInSlackThread(sessions: SessionSnapshot[], sessionId: string):
     id = s?.parentSessionId
   }
   return false
+}
+
+/** True when the bridge may refuse a message typed for `sessionId`
+ *  (`send_refused`): a Slack session's, or a sub-agent's under one, goes to
+ *  the gateway; a sub-agent's may have nothing saved to resume; a scheduled
+ *  job's session runs in the background scheduler. A desktop session's
+ *  never is, so its attachments are not kept twice for as long as its
+ *  bubble stays. */
+function sendMayBeRefused(sessions: SessionSnapshot[], sessionId: string): boolean {
+  if (sessionId.startsWith('scheduler:') || sessionId.startsWith('sub_')) return true
+  if (sessions.some((s) => s.id === sessionId && s.parentSessionId)) return true
+  return isInSlackThread(sessions, sessionId)
 }
 
 /** Walk the parent-child session graph and return every descendant id of
@@ -3587,10 +3599,12 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           sessionArchive: { ...prev.sessionArchive, [sid]: { ...archived, messages: restore(archived.messages) } },
         }
       }
-      // A message typed for a Slack session did not reach the gateway (none
-      // runs, or it is too large to hand over): take back out the bubble, or
-      // the pending follow-up, it was shown as, and return its text to the
-      // composer, as a refused edit does.
+      // The bridge did not deliver a message typed for a session (a Slack
+      // session's did not reach the gateway, a sub-agent had nothing saved
+      // to resume, a scheduled job's session runs in the background
+      // scheduler): take back out the bubble, or the pending follow-up, it
+      // was shown as, and return its text and attachments to the composer,
+      // as a refused edit does.
       if (ev.type === 'send_refused') {
         const sid = ev.sessionId
         if (!sid || !ev.clientId) return prev
@@ -4753,7 +4767,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         createdAt: Date.now(),
         attachments: messageAttachments,
       } as Message
-      if (messageAttachments && isInSlackThread(state.sessions, sessionId)) {
+      if (messageAttachments && sendMayBeRefused(state.sessions, sessionId)) {
         // With the previews the bubble shows: a video's blob: URL is freed below.
         refusableAttachments.set(
           bubble,
