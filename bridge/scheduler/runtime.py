@@ -125,6 +125,12 @@ async def fire_job(
         run.finished_at = time.time()
         run.duration_seconds = run.finished_at - run.started_at
         save_run(run)
+        append_event({
+            "type": "scheduler_run_failed",
+            "job_id": job.id,
+            "run_id": run.run_id,
+            "duration_seconds": run.duration_seconds,
+        })
         service.emit_event(
             subtype="scheduler_run_failed",
             message=f"Scheduled job '{job.name}' failed (execution context)",

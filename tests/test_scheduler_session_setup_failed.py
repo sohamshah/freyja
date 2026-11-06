@@ -1,0 +1,38 @@
+"""A run whose session cannot be set up is written to events.jsonl as failed,
+like every other run that ends.
+
+fire_job ended such a run as failed and sent scheduler_run_failed to the
+app, but wrote no line to the scheduler's events.jsonl: the audit log had
+its claim and nothing after, as if it still ran.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from bridge.scheduler.models import IntervalSchedule, JobRecord, NewSession, NoopSinkSpec
+from bridge.scheduler.persistence import load_run, read_recent_events, save_job
+from bridge.scheduler.runtime import fire_job
+
+
+async def test_a_run_whose_session_cannot_be_set_up_writes_its_failure_to_the_events_log():
+    async def ensure_session(_session_id, **_kw):
+        raise OSError("No space left on device")
+
+    told: list[dict] = []
+    service = SimpleNamespace(
+        state=SimpleNamespace(ensure_session=ensure_session),
+        emit_event=lambda **kw: told.append(kw),
+    )
+    job = JobRecord(id="sched_digest", name="digest", prompt="digest",
+                    schedule=IntervalSchedule(seconds=3600), execution=NewSession(),
+                    sinks=[NoopSinkSpec()])
+    save_job(job)
+
+    run = await fire_job(service, job)
+
+    assert load_run(job.id, run.run_id).status == "failed"
+    assert [e["subtype"] for e in told] == ["scheduler_run_claimed", "scheduler_run_failed"]
+    ended = [e for e in read_recent_events() if e.get("run_id") == run.run_id]
+    assert [e["type"] for e in ended] == ["scheduler_run_claimed", "scheduler_run_failed"]
+    assert ended[-1]["job_id"] == job.id
