@@ -13976,6 +13976,32 @@ def _emit_turn_failed(sess: "_BridgeSession", exc: BaseException) -> None:
         pass
 
 
+def _emit_strategy_changed(session_id: str, strategy: str, *, held: bool = False) -> None:
+    """Tell the app a session's coordination strategy changed to
+    ``strategy``, or, with ``held``, that it changes when the running turn
+    ends."""
+    from bridge.tools.coordination import get_coordination_strategy
+
+    info = get_coordination_strategy(strategy)
+    emit(
+        {
+            "type": "system_event",
+            "sessionId": session_id,
+            "subtype": "coordination_strategy_changed",
+            "message": (
+                f"Coordination strategy will change to {info.label} when the running turn ends"
+                if held
+                else f"Coordination strategy set to {info.label}"
+            ),
+            "details": {
+                "coordinationStrategy": strategy,
+                "label": info.label,
+                "summary": info.summary,
+            },
+        }
+    )
+
+
 async def _apply_pending_config(sess: "_BridgeSession") -> None:
     """Apply a config change that arrived mid-turn.
 
@@ -13994,30 +14020,34 @@ async def _apply_pending_config(sess: "_BridgeSession") -> None:
         return
     sess.pending_config = None
     try:
-        from bridge.tools.coordination import normalize_coordination_strategy
+        from bridge.tools.coordination import (
+            normalize_coordination_strategy,
+            strategy_uses_kanban,
+        )
 
-        changed = False
+        model_changed = False
         model_id = requested.get("model_id")
         if model_id and model_id != sess.model_id:
             sess.model_id = model_id
             sess.reasoning_level = _normalize_reasoning_level(model_id, "auto")
             sess.reasoning_level_explicit = False
-            changed = True
+            model_changed = True
         reasoning_level = requested.get("reasoning_level")
         if reasoning_level is not None:
             next_reasoning = _normalize_reasoning_level(sess.model_id, reasoning_level)
             if next_reasoning != sess.reasoning_level:
                 sess.reasoning_level = next_reasoning
                 sess.reasoning_level_explicit = True
-                changed = True
+                model_changed = True
+        strategy_changed = False
         strategy = requested.get("coordination_strategy")
         if strategy is not None:
             next_strategy = normalize_coordination_strategy(strategy)
             if next_strategy != sess.coordination_strategy:
                 sess.coordination_strategy = next_strategy
-                changed = True
+                strategy_changed = True
 
-        if not changed:
+        if not (model_changed or strategy_changed):
             return
         sess.reset()
         await sess.try_restore_transcript()
@@ -14027,23 +14057,30 @@ async def _apply_pending_config(sess: "_BridgeSession") -> None:
             f"model={sess.model_id} reasoning={sess.reasoning_level} "
             f"strategy={sess.coordination_strategy}",
         )
-        emit(
-            {
-                "type": "system_event",
-                "sessionId": sess.id,
-                "subtype": "config_applied",
-                "message": (
-                    f"Model is now `{sess.model_id}` "
-                    f"(reasoning {sess.reasoning_level}) — the change you "
-                    "made during the last turn is in effect."
-                ),
-                "details": {
-                    "model": sess.model_id,
-                    "reasoningLevel": sess.reasoning_level,
-                    "coordinationStrategy": sess.coordination_strategy,
-                },
-            }
-        )
+        if model_changed:
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": sess.id,
+                    "subtype": "config_applied",
+                    "message": (
+                        f"Model is now `{sess.model_id}` "
+                        f"(reasoning {sess.reasoning_level}) — the change you "
+                        "made during the last turn is in effect."
+                    ),
+                    "details": {
+                        "model": sess.model_id,
+                        "reasoningLevel": sess.reasoning_level,
+                        "coordinationStrategy": sess.coordination_strategy,
+                    },
+                }
+            )
+        if strategy_changed:
+            # As set_coordination_strategy does between turns: autopilot
+            # on when the session enters kanban mode.
+            if strategy_uses_kanban(sess.coordination_strategy) and not sess.auto_dispatch_enabled:
+                sess.set_auto_dispatch_enabled(True)
+            _emit_strategy_changed(sess.id, sess.coordination_strategy)
     except Exception as exc:  # noqa: BLE001
         log("error", f"applying deferred config failed (session={sess.id}): {exc}")
 
@@ -14823,10 +14860,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         return
 
     if ctype == "set_coordination_strategy":
-        from bridge.tools.coordination import (
-            get_coordination_strategy,
-            normalize_coordination_strategy,
-        )
+        from bridge.tools.coordination import normalize_coordination_strategy
 
         strategy = normalize_coordination_strategy(cmd.get("coordinationStrategy"))
         if not session_id:
@@ -14848,7 +14882,15 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             reasoning_level=cmd.get("reasoningLevel"),
             coordination_strategy=strategy,
         )
-        strategy_info = get_coordination_strategy(sess.coordination_strategy)
+        if (
+            sess.coordination_strategy != strategy
+            and (getattr(sess, "pending_config", None) or {}).get("coordination_strategy") == strategy
+        ):
+            # A turn is running: ensure_session parked the change, and
+            # _apply_pending_config makes it (autopilot too) when the turn
+            # ends. Reported as made, it named the mode the thread was in.
+            _emit_strategy_changed(sess.id, strategy, held=True)
+            return
         log(
             "info",
             f"coordination strategy set to {sess.coordination_strategy} "
@@ -14867,19 +14909,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             and not sess.auto_dispatch_enabled
         ):
             sess.set_auto_dispatch_enabled(True)
-        emit(
-            {
-                "type": "system_event",
-                "sessionId": sess.id,
-                "subtype": "coordination_strategy_changed",
-                "message": f"Coordination strategy set to {strategy_info.label}",
-                "details": {
-                    "coordinationStrategy": sess.coordination_strategy,
-                    "label": strategy_info.label,
-                    "summary": strategy_info.summary,
-                },
-            }
-        )
+        _emit_strategy_changed(sess.id, sess.coordination_strategy)
         return
 
     if ctype in _KANBAN_COMMANDS and session_id and _route_command_to_gateway(

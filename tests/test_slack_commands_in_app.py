@@ -9,6 +9,7 @@ board gave out again.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from types import SimpleNamespace
@@ -351,6 +352,68 @@ async def test_the_gateway_builds_no_session_on_a_sub_agents_id_for_a_mode_chang
     assert state.sessions == {}
     (refused,) = [e for e in events if e.get("subtype") == "coordination_strategy_refused"]
     assert refused["sessionId"] == SUB
+
+
+def _mode_changes(events: list[dict]) -> list[dict]:
+    return [e for e in events if e.get("subtype") == "coordination_strategy_changed"]
+
+
+async def test_a_mode_picked_during_a_running_turn_is_made_when_the_turn_ends(gateway):
+    # The change waits for the turn. The app was told the thread was set to
+    # the mode it was still in, and autopilot stayed off once kanban came.
+    daemon, state, events = gateway
+    _thread_saved("bus")
+    thread = await state.ensure_session(SLACK)
+    turn = asyncio.get_running_loop().create_future()
+    thread.pending_task = turn
+
+    await daemon._on_set_coordination_strategy(
+        {"type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "kanban"},
+    )
+    assert thread.coordination_strategy == "bus" and not thread.auto_dispatch_enabled
+    (held,) = _mode_changes(events)
+    assert held["details"]["coordinationStrategy"] == "kanban"
+    assert "when the running turn ends" in held["message"]
+
+    events.clear()
+    turn.set_result(None)
+    await fb._drain_after_turn(thread)
+    assert thread.coordination_strategy == "kanban"
+    assert thread.kanban_board is not None and thread.auto_dispatch_enabled
+    # Reported as the mode, not as a model change.
+    reports = [e for e in events if e.get("subtype") in ("config_applied", "coordination_strategy_changed")]
+    assert [(e["subtype"], e["message"]) for e in reports] == [
+        ("coordination_strategy_changed", "Coordination strategy set to Kanban"),
+    ]
+
+
+async def test_slash_mode_during_a_running_turn_says_the_mode_waits_for_the_turn(gateway):
+    from bridge.gateway.platforms.base import IncomingMessage, MessageSource, Platform
+
+    daemon, state, _events = gateway
+    _thread_saved("bus")
+    thread = await state.ensure_session(SLACK)
+    thread.pending_task = asyncio.get_running_loop().create_future()
+    sent: list[str] = []
+
+    class _Adapter:
+        async def send(self, _chat_id, text, **_kw):
+            sent.append(text)
+
+    source = MessageSource(
+        platform=Platform.SLACK, workspace_id="T1", chat_type="channel", chat_id="C1",
+        user_id="U0OPERATOR", thread_id="1.0",
+    )
+    await daemon._handle_mode_command(
+        IncomingMessage(
+            source=source, text="/mode kanban", is_slash_command=True, slash_command_name="mode",
+            slash_command_args="kanban",
+        ),
+        _Adapter(),
+    )
+    assert thread.coordination_strategy == "bus"
+    (text,) = sent
+    assert "`kanban`" in text and "turn" in text
 
 
 # ── goal ─────────────────────────────────────────────────────────────

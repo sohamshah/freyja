@@ -1650,11 +1650,20 @@ class GatewayDaemon:
             coordination_strategy=target,
         )
         # If the session existed with a different strategy, ensure_session
-        # already swapped it. Re-emit confirmation for the operator.
+        # already swapped it, unless a turn is running: then it parked the
+        # change for after the turn, as /model's is.
         prev = getattr(session, "coordination_strategy", "?")
+        parked = (getattr(session, "pending_config", None) or {}).get("coordination_strategy")
+        if parked == target and prev != target:
+            text = (
+                f"Coordination strategy will switch to `{target}` when the "
+                "current turn finishes."
+            )
+        else:
+            text = f"Coordination strategy set to `{prev}`."
         await adapter.send(  # type: ignore[attr-defined]
             message.source.chat_id,
-            f"Coordination strategy set to `{prev}`.",
+            text,
             thread_id=message.source.thread_id,
             ephemeral_user_id=message.source.user_id,
             raw_hint=message.raw,
