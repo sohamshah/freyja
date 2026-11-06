@@ -473,6 +473,7 @@ class SchedulerService:
         boot_count = 0
         now = time.time()
         aimed_at_sub_agents: list[tuple[JobRecord, str]] = []
+        resumed: list[JobRecord] = []
         for job in load_all_jobs():
             with FileLock(job_lock_path(job.id)) as got:
                 if not got:
@@ -482,6 +483,7 @@ class SchedulerService:
                     continue
                 fresh = load_job(job.id) or job
                 if _stopped_only_by_passing_failures(fresh):
+                    resumed.append(fresh)
                     # Stopped before such runs stopped counting: the
                     # Morning briefing and the Routing radar after three
                     # runs in DarkWake. A job the user paused stays paused.
@@ -516,6 +518,13 @@ class SchedulerService:
             "mode": mode,
             "job_count": boot_count,
         })
+        # Saved: the dashboard and the sidebar read a job back on its event.
+        for job in resumed:
+            self.emit_event(
+                subtype="scheduler_job_resumed_after_passing_failures",
+                message=f"Scheduled job '{job.name}' runs again: only passing failures stopped it",
+                details={"jobId": job.id, "nextFireAt": job.next_fire_at},
+            )
         for job, why in aimed_at_sub_agents:
             asyncio.create_task(
                 self._tell_stopped_aimed_at_a_sub_agent(job, why),
@@ -1048,6 +1057,14 @@ class SchedulerService:
             retried = True
 
         await update_job_record(job.id, _retry)
+        if retried:
+            # The run's own end event came before its next fire moved: the
+            # dashboard and the sidebar read the job back on a job event.
+            self.emit_event(
+                subtype="scheduler_job_retrying",
+                message=f"Scheduled job '{job.name}' runs again in {round(retry_at - time.time())} s",
+                details={"jobId": job.id, "nextFireAt": retry_at},
+            )
         return retried
 
     async def _retry_after_passing_failure(self, job: JobRecord, run: RunRecord) -> None:
@@ -1176,7 +1193,17 @@ class SchedulerService:
                 if fresh.enabled and fresh.status == "active":
                     fresh.next_fire_at = _first_fire_tomorrow(fresh)
 
-            await update_job_record(job.id, _wait_for_tomorrow)
+            fresh = await update_job_record(job.id, _wait_for_tomorrow)
+            # The dashboard and the sidebar read the job back on a job
+            # event: without one they showed the skipped slot as its next.
+            self.emit_event(
+                subtype="scheduler_job_skipped_over_budget",
+                message=f"Scheduled job '{job.name}' skipped its slot: {said}",
+                details={
+                    "jobId": job.id,
+                    "nextFireAt": fresh.next_fire_at if fresh is not None else None,
+                },
+            )
             return True
         # The stop is a run that went over its budget before it started:
         # the notice, the dashboard and the schedule tool point to it.
