@@ -49,6 +49,10 @@ export function deriveSnapshotFromTask(task: Record<string, unknown>): KanbanCar
   let verifierActor: string | null = null
   let rejected = false
   let rejectionFeedback: string | null = null
+  // The judge leaves its reason in the card summary. It is still the
+  // judge's when the verdict wrote it and no later move wrote over it.
+  let summaryRewritten = false
+  let summaryIsVerdict = false
   // Walk the card's status moves newest-first. The reviewer's latest
   // verdict stands until someone else finishes the card, as the worker
   // does when it sends the card back to review. Other moves, such as
@@ -60,17 +64,20 @@ export function deriveSnapshotFromTask(task: Record<string, unknown>): KanbanCar
       | Record<string, unknown>
       | undefined
     const innerStatus = String(innerDetails?.status ?? '').toLowerCase()
-    if (!innerStatus) continue
     const actor = String((inner as Record<string, unknown>).actor ?? '').toLowerCase()
-    if (isReviewerActor(actor)) {
+    if (innerStatus && isReviewerActor(actor)) {
       verifierActor = String((inner as Record<string, unknown>).actor)
       rejected = innerStatus !== 'done'
+      summaryIsVerdict = Boolean(innerDetails?.summary) && !summaryRewritten
       break
     }
     if (FINISH_STATUSES.has(innerStatus)) break
+    if (innerDetails?.summary) summaryRewritten = true
   }
-  if (rejected) {
-    // Find the comment the verifier left when bouncing the card.
+  if (rejected && summaryIsVerdict) {
+    rejectionFeedback = String(task.summary ?? '') || null
+  } else if (rejected) {
+    // Legacy verifiers left a comment when bouncing the card.
     const comments = Array.isArray(task.comments) ? task.comments : []
     for (const c of comments.slice().reverse()) {
       if (!c || typeof c !== 'object') continue

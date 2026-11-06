@@ -121,6 +121,32 @@ check('a legacy verify sub-agent that sealed the card still reads as the verifie
   })
 })
 
+// The judge leaves its reason in the card summary, not in a comment.
+const REASON = 'Rework iteration 1: the README never documents the --redact flag.'
+const judgeRejected = [...firstReview, ev(JUDGE, { status: 'running', summary: true })]
+
+check("a judge rejection shows the judge's reason from the card summary", () => {
+  const events = [...judgeRejected, ev(WORKER, { status: 'running', comment: true })]
+  const snapshot = deriveSnapshotFromTask({ ...card('running', events), summary: REASON })
+  assert.equal(snapshot.rejected, true)
+  assert.equal(snapshot.rejectionFeedback, REASON)
+})
+
+check("a summary the worker wrote after the rejection is not shown as the judge's", () => {
+  const events = [...judgeRejected, ev(WORKER, { summary: true })]
+  const snapshot = deriveSnapshotFromTask({ ...card('running', events), summary: 'Halfway there.' })
+  assert.equal(snapshot.rejected, true)
+  assert.equal(snapshot.rejectionFeedback, null)
+})
+
+check("a legacy verify sub-agent's rejection still shows its comment", () => {
+  const verifier = 'verify card_002 (sub_19e1aee19bc_26)'
+  const events = [...claimed, ev(WORKER, { status: 'done_unverified' }), ev(verifier, { status: 'running', comment: true })]
+  const comments = [{ author: verifier, body: 'The parser drops trailing commas.', timestamp: 0 }]
+  const snapshot = deriveSnapshotFromTask({ ...card('running', events), comments, summary: 'Parser written.' })
+  assert.equal(snapshot.rejectionFeedback, 'The parser drops trailing commas.')
+})
+
 check('the snapshot follows the latest kanban event that carries this card', () => {
   const sys = (subtype, task) => ({ id: subtype, subtype, message: '', at: 0, details: { task } })
   const events = [
