@@ -96,6 +96,10 @@ _DEFAULT_MAX_CONCURRENT_RUNS = 256
 # without burning CPU.
 _TICK_CAP_SECONDS = 1.0
 
+# How often a CRUD-only scheduler tries the owner lock again. When the
+# owner exits and nothing restarts it, jobs wait at most this long.
+_OWNER_RETRY_SECONDS = 15.0
+
 # A job whose last runs all failed is stopped and says so where it
 # reports. Without this a job that cannot run fires until max_fires,
 # silently, since failed runs deliver nothing: one self-paced loop failed
@@ -156,6 +160,8 @@ class SchedulerService:
         # still services CRUD via disk + per-job flocks.
         self._owner_lock: FileLock | None = None
         self._is_owner: bool = False
+        # While CRUD-only: retries the owner lock until a peer frees it.
+        self._claim_task: asyncio.Task | None = None
         # Wake-mtime watermark: peers bump ``.wake`` on every CRUD;
         # we use it to know whether to bother re-scanning even if our
         # sleep timed out early. Currently informational — the tick
@@ -170,7 +176,9 @@ class SchedulerService:
     async def start(self) -> None:
         """Boot the run loop. Acquires the cross-process owner lock; if
         another scheduler in another process already holds it, this
-        instance runs in CRUD-only mode (no tick loop).
+        instance runs in CRUD-only mode (no tick loop) and tries the
+        lock again every ``_OWNER_RETRY_SECONDS``, so it takes over the
+        tick when the owner exits.
 
         A second call while started does nothing. It used to open
         owner.lock again: a flock belongs to the open file description,
@@ -188,20 +196,42 @@ class SchedulerService:
         # don't run a tick. This avoids two processes burning CPU on
         # parallel disk scans for the same jobs.
         self._owner_lock = FileLock(owner_lock_path())
-        self._is_owner = self._owner_lock.acquire()
-        if not self._is_owner:
-            logger.info(
-                "scheduler started in CRUD-only mode "
-                "(peer holds owner lock at %s)",
-                owner_lock_path(),
-            )
-            append_event({
-                "type": "scheduler_started",
-                "mode": "crud_only",
-                "job_count": _count_jobs_on_disk(),
-            })
+        if self._owner_lock.acquire():
+            self._boot_as_owner(mode="owner")
             return
+        logger.info(
+            "scheduler started in CRUD-only mode "
+            "(peer holds owner lock at %s)",
+            owner_lock_path(),
+        )
+        append_event({
+            "type": "scheduler_started",
+            "mode": "crud_only",
+            "job_count": _count_jobs_on_disk(),
+        })
+        self._claim_task = asyncio.create_task(
+            self._claim_owner_lock_when_free(), name="scheduler-claim-owner",
+        )
 
+    async def _claim_owner_lock_when_free(self) -> None:
+        """Retry the owner lock until it is ours, then run the tick."""
+        while not self._stopped:
+            await asyncio.sleep(_OWNER_RETRY_SECONDS)
+            if self._stopped or self._owner_lock is None:
+                return
+            if not self._owner_lock.acquire():
+                continue
+            try:
+                self._boot_as_owner(mode="took_over")
+                return
+            except Exception:  # noqa: BLE001
+                # Holding the lock without a tick would stall every peer.
+                logger.exception("scheduler takeover failed; lock released")
+                self._is_owner = False
+                self._owner_lock.release()
+
+    def _boot_as_owner(self, *, mode: str) -> None:
+        self._is_owner = True
         # Owner: recompute next_fire_at for every job and persist —
         # the prior process may have crashed mid-update, leaving stale
         # values. We hold each job's flock briefly while we rewrite.
@@ -218,10 +248,10 @@ class SchedulerService:
                 save_job(fresh)
                 boot_count += 1
         touch_wake()
-        logger.info("scheduler booted as owner: %d jobs", boot_count)
+        logger.info("scheduler booted as owner (%s): %d jobs", mode, boot_count)
         append_event({
             "type": "scheduler_started",
-            "mode": "owner",
+            "mode": mode,
             "job_count": boot_count,
         })
         self._loop_task = asyncio.create_task(
@@ -230,6 +260,9 @@ class SchedulerService:
 
     async def stop(self) -> None:
         self._stopped = True
+        if self._claim_task is not None:
+            self._claim_task.cancel()
+            self._claim_task = None
         if self._loop_task is not None:
             # The loop checks _stopped on each iteration; up to 1s
             # before it notices. Wait up to 5s for clean exit.
