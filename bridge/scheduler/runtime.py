@@ -552,10 +552,15 @@ async def fire_job(
 
 def count_fire(job: JobRecord, run: RunRecord) -> None:
     """Count ``run``, ended, as a fire of ``job``: a job that ran its
-    max_fires is done."""
+    max_fires is done. One stopped meanwhile, or by the run (over its
+    budget), keeps the reason it was stopped."""
     job.fire_count += 1
     job.last_fire_at = run.started_at
-    if job.max_fires is not None and job.fire_count >= job.max_fires:
+    if (
+        job.max_fires is not None
+        and job.fire_count >= job.max_fires
+        and job.status in ("active", "paused")
+    ):
         job.status = "disabled_max_fires"
         job.enabled = False
         job.next_fire_at = None

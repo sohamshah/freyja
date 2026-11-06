@@ -109,3 +109,28 @@ async def test_a_one_shot_over_its_budget_is_not_enabled_again_to_retry(service)
     )
 
     assert (saved.enabled, saved.status, saved.next_fire_at) == (False, "disabled_max_fires", None)
+
+
+async def test_a_run_over_its_budget_on_the_last_fire_it_may_have_says_it_was_stopped(service, monkeypatch):
+    # Counted as the last of its max_fires, it was saved "disabled_max_fires"
+    # over the stop: the dashboard said the job had run all its fires, and
+    # the notice that it was stopped over its budget was never posted.
+    told: list[str] = []
+    monkeypatch.setattr(service, "emit_event", lambda **kw: told.append(kw["subtype"]))
+    job = JobRecord(
+        id="sched_digest", name="digest", prompt="digest",
+        schedule=CronSchedule(expression="0 6 * * *"),
+        execution=ExistingSession(session_id="s1"), sinks=[NoopSinkSpec()],
+        budget=BudgetSpec(max_cost_usd_per_run=0.10, on_exceeded="abort_job"),
+        max_fires=1,
+    )
+    job.next_fire_at = time.time() - 1
+    save_job(job)
+
+    await service._try_claim_and_fire(job.id)
+    await asyncio.gather(*service._in_flight_runs.values())
+
+    saved = load_job(job.id)
+    assert (saved.enabled, saved.status, saved.next_fire_at) == (False, "disabled_budget_exhausted", None)
+    assert saved.fire_count == 1
+    assert "scheduler_job_stopped_over_budget" in told

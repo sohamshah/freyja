@@ -345,6 +345,31 @@ async def test_complete_keeps_the_reason_a_loop_was_stopped_while_it_ran(monkeyp
     assert saved.fire_count == 1
 
 
+async def test_the_last_fire_a_loop_may_have_keeps_the_reason_it_was_stopped_while_it_ran(monkeypatch) -> None:
+    # Counted as the last of its max_fires, it was saved "disabled_max_fires"
+    # over the stop: the dashboard said the loop had run all its fires, not
+    # why it was stopped.
+    from bridge.scheduler.runtime import fire_job
+
+    sess = _session(cost_so_far=0.0)
+    job = _job()
+    job.max_fires = 1
+    save_job(job)
+
+    def stop() -> None:
+        stopped = load_job(job.id)
+        stopped.enabled, stopped.status, stopped.next_fire_at = False, "disabled_target_lost", None
+        save_job(stopped)
+
+    _drive_fire(monkeypatch, sess, loop_call=None, cost=0.1, meanwhile=stop)
+
+    await fire_job(_Service({"s1": sess}), job)
+
+    saved = load_job(job.id)
+    assert (saved.enabled, saved.status, saved.next_fire_at) == (False, "disabled_target_lost", None)
+    assert saved.fire_count == 1
+
+
 async def test_a_fire_nothing_answered_leaves_no_prompt_behind(monkeypatch) -> None:
     from bridge.scheduler.runtime import fire_job
 
