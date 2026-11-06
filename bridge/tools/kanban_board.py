@@ -1159,10 +1159,11 @@ class SessionKanbanBoard:
                         ts=event.get("ts"),
                     )
                 elif kind == "unblock":
-                    cid = str(event.get("id") or "")
-                    task = self._tasks.get(cid)
-                    if task is not None:
-                        task.status = "ready"
+                    self._apply_unblock(
+                        str(event.get("id") or ""),
+                        actor=str(event.get("actor") or ""),
+                        ts=event.get("ts"),
+                    )
         finally:
             self._replaying = False
 
@@ -1249,23 +1250,44 @@ class SessionKanbanBoard:
         # both cards and gave each a "linked" event then.
         if child.status in UNSTARTED_STATUSES:
             child.status = "ready" if self._parents_done(child) else "triage"
-        when = float(ts) / 1000.0 if isinstance(ts, (int, float)) else None
         for card, message in (
             (parent, f"Linked to {child_id}"),
             (child, f"Depends on {parent_id}"),
         ):
-            if card is None:
-                continue
-            if when is not None:
-                card.updated_at = max(card.updated_at, when)
-            card.append_event(
-                KanbanEvent(
-                    "linked",
-                    actor,
-                    message,
-                    timestamp=when if when is not None else time.time(),
-                )
+            if card is not None:
+                self._apply_row_event(card, "linked", actor, message, ts)
+
+    def _apply_unblock(self, task_id: str, *, actor: str, ts: Any) -> None:
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        # The journal row carries the id, the actor and the time; unblock()
+        # also stamped the card and gave it an "unblocked" event then.
+        task.status = "ready"
+        self._apply_row_event(
+            task,
+            "unblocked",
+            actor,
+            "Promoted by operator override despite failed parent(s)",
+            ts,
+        )
+
+    def _apply_row_event(
+        self, card: KanbanTask, kind: str, actor: str, message: str, ts: Any
+    ) -> None:
+        # Stamp the card with the row's time (never back) and add the
+        # event the live write added, at that time.
+        when = float(ts) / 1000.0 if isinstance(ts, (int, float)) else None
+        if when is not None:
+            card.updated_at = max(card.updated_at, when)
+        card.append_event(
+            KanbanEvent(
+                kind,
+                actor,
+                message,
+                timestamp=when if when is not None else time.time(),
             )
+        )
 
     def _task_from_snapshot(self, snapshot: dict[str, Any]) -> KanbanTask:
         # `to_dict()` emits timestamps in milliseconds and a few field

@@ -997,6 +997,19 @@ function kanbanCardsFromJournal(id: string): Record<string, Record<string, unkno
   const ids = (list: unknown, add: string) => [
     ...new Set([...(Array.isArray(list) ? list : []), add]),
   ]
+  // Stamps a card with a link or unblock row's time (never back) and
+  // adds the event the live write added, at that time.
+  const addRowEvent = (cardId: string, kind: string, message: string, row: any) => {
+    const card = cards[cardId]
+    if (!card) return
+    const at = typeof row.ts === 'number' ? row.ts : undefined
+    const actor = typeof row.actor === 'string' ? row.actor : ''
+    const events = Array.isArray(card.events) ? card.events : []
+    // The bridge keeps a card's last 30 events (DEFAULT_HISTORY_TAIL).
+    const event = { kind, actor, message, timestamp: at ?? Date.now(), details: {} }
+    cards[cardId] = { ...card, events: [...events, event].slice(-30), eventCount: (Number(card.eventCount) || events.length) + 1 }
+    if (at !== undefined && card.updatedAt < at) cards[cardId].updatedAt = at
+  }
   let missionRoot = ''
   for (const line of raw.split('\n')) {
     let row: any
@@ -1033,19 +1046,13 @@ function kanbanCardsFromJournal(id: string): Record<string, Record<string, unkno
       // both cards and gave each a "linked" event then.
       const done = parents.every((pid) => pid === missionRoot || cards[pid]?.status === 'done')
       if (['triage', 'ready'].includes(cards[row.child].status)) cards[row.child].status = done ? 'ready' : 'triage'
-      const at = typeof row.ts === 'number' ? row.ts : undefined
-      const actor = typeof row.actor === 'string' ? row.actor : ''
-      for (const [cardId, message] of [[row.parent, `Linked to ${row.child}`], [row.child, `Depends on ${row.parent}`]]) {
-        const card = cards[cardId]
-        if (!card) continue
-        const events = Array.isArray(card.events) ? card.events : []
-        // The bridge keeps a card's last 30 events (DEFAULT_HISTORY_TAIL).
-        const event = { kind: 'linked', actor, message, timestamp: at ?? Date.now(), details: {} }
-        cards[cardId] = { ...card, events: [...events, event].slice(-30), eventCount: (Number(card.eventCount) || events.length) + 1 }
-        if (at !== undefined && card.updatedAt < at) cards[cardId].updatedAt = at
-      }
+      addRowEvent(row.parent, 'linked', `Linked to ${row.child}`, row)
+      addRowEvent(row.child, 'linked', `Depends on ${row.parent}`, row)
     } else if (row?.kind === 'unblock' && cards[row.id]) {
+      // The row carries the id, the actor and the time; unblock() also
+      // stamped the card and gave it an "unblocked" event then.
       cards[row.id] = { ...cards[row.id], status: 'ready' }
+      addRowEvent(row.id, 'unblocked', 'Promoted by operator override despite failed parent(s)', row)
     }
   }
   return cards

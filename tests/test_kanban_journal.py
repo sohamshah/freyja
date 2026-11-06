@@ -685,3 +685,34 @@ async def test_replaying_a_link_stamps_both_cards_and_adds_their_events(tmp_path
         ]
         assert got["events"][-1]["timestamp"] == events[-1]["ts"]
         assert got["eventCount"] == want["eventCount"]
+
+
+@pytest.mark.asyncio
+async def test_replaying_an_unblock_stamps_the_card_and_adds_its_event(tmp_path) -> None:
+    """unblock() stamps the card and gives it an "unblocked" event, and its
+    row holds the actor and the time. Replay set only the status, so after
+    a restart the card's history lost the override until its next update
+    row, and its stamp was older than the move to ready."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    parent = (await live.create(title="parent")).id
+    child = (await live.create(title="child", parents=[parent])).id
+    await live.update(parent, actor="parent", status="cancelled")
+    _, message = await live.unblock(child, actor="operator")
+    assert message == "unblocked"
+    events = KanbanJournal(tmp_path / "kanban.jsonl").read_all()
+    assert events[-1]["kind"] == "unblock"
+    # The unblock came a minute after the child's last row.
+    events[-1]["ts"] = (events[-2]["ts"] // 1000 + 60) * 1000
+
+    restored = SessionKanbanBoard()
+    restored.replay_events(events)
+
+    want = (await live.get(child)).to_dict()
+    got = (await restored.get(child)).to_dict()
+    assert got["status"] == "ready"
+    assert got["updatedAt"] == events[-1]["ts"]
+    assert [(e["kind"], e["actor"], e["message"]) for e in got["events"]] == [
+        (e["kind"], e["actor"], e["message"]) for e in want["events"]
+    ]
+    assert got["events"][-1]["timestamp"] == events[-1]["ts"]
+    assert got["eventCount"] == want["eventCount"]
