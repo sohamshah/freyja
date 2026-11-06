@@ -1817,21 +1817,15 @@ async def _wake_archived_subagent(
     # loaded, and saved over them. The gateway gets the message; while none
     # runs, the inbox sidecar keeps it for the sub-agent's next run there.
     if _gateway_holds(session_id):
-        from bridge.gateway.pid import get_running_pid
-        from bridge.tools.talk_tool import queue_to_inbox_sidecar
+        from bridge.tools.talk_tool import queue_to_inbox_sidecar, send_to_gateway
 
-        if get_running_pid() is not None:
-            from bridge.gateway.control_channel import append_command
-
-            try:
-                append_command(
-                    {"type": "talk_deliver", "to": session_id, "message": msg.to_dict(), "origin_pid": os.getpid()}
-                )
-                log("info", f"_wake_archived_subagent: {session_id} runs in the gateway — handed it the message")
-                return True
-            except Exception as exc:  # noqa: BLE001
-                log("warn", f"_wake_archived_subagent: handing {session_id}'s message to the gateway failed: {exc}")
-        queue_to_inbox_sidecar(session_id, msg)
+        status = send_to_gateway(session_id, msg)
+        if status.startswith("forwarded"):
+            log("info", f"_wake_archived_subagent: {session_id} runs in the gateway — handed it the message")
+            return True
+        if status.startswith("forward to gateway daemon failed"):
+            log("warn", f"_wake_archived_subagent: handing {session_id}'s message to the gateway failed: {status}")
+            queue_to_inbox_sidecar(session_id, msg)
         return False
 
     # Already running again (an earlier message re-woke it): its live

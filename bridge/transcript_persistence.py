@@ -23,7 +23,7 @@ import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -163,17 +163,27 @@ def load_inbox_state(session_id: str) -> dict[str, Any] | None:
         return _read_inbox(session_id)
 
 
-def append_inbox_messages(session_id: str, messages: list[dict[str, Any]]) -> None:
+def append_inbox_messages(
+    session_id: str,
+    messages: list[dict[str, Any]],
+    *,
+    unless: Callable[[], bool] | None = None,
+) -> bool:
     """Add ``messages`` (``InboxMessage.to_dict()``) to the unread queue in
     a session's inbox sidecar, skipping any it already holds. The read and
     the write are one hold of the inbox lock, so a message another process
-    queues at the same time, or a load at the same time, is not lost."""
+    queues at the same time, or a load at the same time, is not lost.
+    ``unless`` is asked under the lock first: when it is true, nothing is
+    written and this returns False (see talk_tool.send_to_gateway)."""
     with _inbox_lock():
+        if unless is not None and unless():
+            return False
         data = _read_inbox(session_id) or {"sessionId": session_id, "unread": [], "delivered": []}
         unread = list(data.get("unread") or [])
         known = {u.get("id") for u in unread if isinstance(u, dict)}
         data["unread"] = unread + [m for m in messages if m.get("id") not in known]
         _write_inbox(session_id, data)
+    return True
 
 
 def _write_inbox(session_id: str, data: dict[str, Any]) -> None:

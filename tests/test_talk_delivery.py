@@ -232,6 +232,41 @@ async def test_gateway_id_goes_to_its_inbox_file_when_no_daemon(monkeypatch, tmp
     assert [m.content for m in thread.inbox.unread] == ["hi"]
 
 
+def test_a_talk_that_saw_no_gateway_goes_to_one_that_started_before_it_was_queued(monkeypatch, tmp_path):
+    """The sender saw no gateway, then stalled while a whole gateway started
+    and loaded the thread. Written to the inbox file then, the message
+    missed the gateway's load, and the gateway's next save of the inbox
+    dropped it."""
+    from bridge import freyja_bridge as fb
+    from bridge import transcript_persistence as tp
+    from bridge.gateway.control_channel import commands_path
+
+    monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    thread = fb._BridgeSession(
+        GW_ID, workspace=str(tmp_path), model_id="claude-sonnet-5-5",
+        reasoning_level="auto", coordination_strategy="bus", state=state,
+    )
+    gateway: list[int] = []
+
+    def _owner() -> int | None:
+        if gateway:
+            return gateway[0]
+        # The stall: a gateway writes its PID, then loads the thread.
+        gateway.append(os.getpid() + 1)
+        thread._restore_inbox()
+        return None
+
+    monkeypatch.setattr(tt, "_gateway_owner_pid", _owner)
+    status = _router({}).forward_cross_process(GW_ID, _msg("hi"), live_local=False, archived_state=None)
+    thread._save_inbox()
+
+    lines = commands_path().read_text().splitlines() if commands_path().exists() else []
+    assert [json.loads(line)["message"]["content"] for line in lines] == ["hi"]
+    assert "forwarded to the gateway daemon" in status
+
+
 def _queue_in_another_process(monkeypatch, sid: str, content: str):
     """Start queueing ``content`` to ``sid``'s inbox file on a thread, as
     another process would, and return once it has read the file and is

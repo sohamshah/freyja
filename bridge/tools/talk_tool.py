@@ -108,23 +108,60 @@ def _session_exists_on_disk(session_id: str) -> bool:
 _QUEUED_ONLY = "queued to inbox sidecar"
 
 
-def queue_to_inbox_sidecar(session_id: str, msg: InboxMessage) -> str:
+def queue_to_inbox_sidecar(
+    session_id: str, msg: InboxMessage, *, unless: Callable[[], bool] | None = None
+) -> str | None:
     """Persist a message into a session's on-disk inbox sidecar.
 
     Used when no process currently has the recipient loaded — the
     sidecar is rehydrated by try_restore_transcript (Step 2c) the next
     time the session loads, and the pre-iteration drain delivers the
-    message on its first turn.
+    message on its first turn. ``unless`` is asked under the inbox lock;
+    when it is true nothing is queued and this returns None.
     """
     try:
         from bridge.transcript_persistence import append_inbox_messages
 
-        append_inbox_messages(session_id, [msg.to_dict()])
+        if not append_inbox_messages(session_id, [msg.to_dict()], unless=unless):
+            return None
     except Exception as exc:  # noqa: BLE001
         return f"sidecar queue failed: {exc}"
     return (
         "queued to inbox sidecar — recipient isn't loaded anywhere right "
         "now; it will see the message when it next runs"
+    )
+
+
+def send_to_gateway(session_id: str, msg: InboxMessage) -> str:
+    """Hand ``msg`` for a session the gateway runs (a Slack thread, or a
+    sub-agent under one) to the gateway daemon on its control channel.
+    While no gateway runs, the session's inbox file is its mailbox, read
+    when the gateway next loads it (try_restore_transcript, Step 2c).
+
+    Whether a gateway runs is asked again under the inbox lock. A gateway
+    writes its PID before it loads a session, and the load reads the inbox
+    file under that lock. Asked only before, a sender that stalled through
+    a whole gateway start wrote into a file the gateway had already read,
+    and the gateway's next save of it dropped the message."""
+    owner = _gateway_owner_pid()
+    if owner is None:
+
+        def _gateway_started() -> bool:
+            nonlocal owner
+            owner = _gateway_owner_pid()
+            return owner is not None
+
+        queued = queue_to_inbox_sidecar(session_id, msg, unless=_gateway_started)
+        if queued is not None:
+            return queued
+    try:
+        _send_talk_deliver(session_id, msg)
+    except Exception as exc:  # noqa: BLE001
+        return f"forward to gateway daemon failed: {exc}"
+    return (
+        f"forwarded to the gateway daemon (pid {owner}) which "
+        "owns this session — it will deliver and wake the "
+        "recipient"
     )
 
 
@@ -338,22 +375,11 @@ class TalkRouter:
         if _is_gateway_session_id(target_id):
             if am_owner:
                 return None  # we are the authority — deliver locally
-            if owner is not None:
-                try:
-                    _send_talk_deliver(target_id, msg)
-                except Exception as exc:  # noqa: BLE001
-                    return f"forward to gateway daemon failed: {exc}"
-                return (
-                    f"forwarded to the gateway daemon (pid {owner}) which "
-                    "owns this session — it will deliver and wake the "
-                    "recipient"
-                )
-            # No live gateway daemon: the thread's inbox file is its
-            # mailbox, read when the gateway next loads the thread
-            # (try_restore_transcript, Step 2c). Not a copy loaded here:
-            # it saves and runs nothing (_BridgeSession._gateway_copy), so
-            # a message pushed into it was lost.
-            return queue_to_inbox_sidecar(target_id, msg)
+            # To the gateway, or the thread's inbox file while none runs.
+            # Not a copy loaded here: it saves and runs nothing
+            # (_BridgeSession._gateway_copy), so a message pushed into it
+            # was lost.
+            return send_to_gateway(target_id, msg)
 
         # Non-gateway recipient. If we're the gateway daemon and can't
         # serve it live, it lives in the desktop bridge — forward there.

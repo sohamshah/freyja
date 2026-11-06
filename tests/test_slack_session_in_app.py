@@ -475,6 +475,32 @@ async def test_a_message_for_a_slack_sub_agent_waits_in_its_inbox_file_while_no_
     assert [m["content"] for m in tp.load_inbox_state(SLACK_SUB)["unread"]] == ["also check X"]
 
 
+async def test_a_message_for_a_slack_sub_agent_goes_to_a_gateway_that_started_before_it_was_queued(
+    app_bridge, monkeypatch
+):
+    # It saw no gateway, then stalled while a whole gateway started and
+    # loaded the sub-agent's inbox file. Written there then, the message
+    # was dropped by the gateway's next save of that file.
+    import bridge.gateway.pid as gp
+
+    state, _events, _built = app_bridge
+    _gateway_sub_agent_saved()
+    _app_root_that_could_host(state)
+    gateway: list[dict | None] = []
+
+    def _running_pid() -> int | None:
+        if gateway:
+            return os.getpid() + 1
+        gateway.append(tp.load_inbox_state(SLACK_SUB))
+        return None
+
+    monkeypatch.setattr(gp, "get_running_pid", _running_pid)
+    await fb._handle_command(state, {"type": "send_message", "sessionId": SLACK_SUB, "content": "also check X"})
+    tp.save_inbox_state(SLACK_SUB, gateway[0] or {"sessionId": SLACK_SUB, "unread": [], "delivered": []})
+
+    assert [cmd["message"]["content"] for cmd in _forwarded()] == ["also check X"]
+
+
 async def test_a_copy_of_a_slack_sub_agent_saves_nothing_over_its_files(app_bridge, tmp_path):
     # compact, set_model, goal_control and the like build a root session
     # on the id they are given, here a Slack thread's sub-agent.
