@@ -361,7 +361,11 @@ async def fire_job(
             # Never ran: the last reply in the transcript is the stopped
             # turn this fire waited behind.
             run.status = "cancelled"
-            run.error = "not run: the emergency stop dropped its prompt from the session's queue"
+            run.error = (
+                "not run: its session was deleted or replaced while its prompt was queued"
+                if getattr(sess, "_background_closed", False)
+                else "not run: the emergency stop dropped its prompt from the session's queue"
+            )
         elif run_cost.unqueued:
             # Never ran either: stopped while its prompt waited in the queue.
             run.error = f"{run.error or run.status}, while its prompt was still queued: it never ran"

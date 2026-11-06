@@ -2241,9 +2241,10 @@ class GatewayDaemon:
             return
         sessions = getattr(self.state, "sessions", {})
         if session_key in sessions:
-            from bridge.freyja_bridge import _stop_background_work
+            from bridge.freyja_bridge import _drop_queued_turns, _stop_background_work
 
             sessions[session_key]._background_closed = True
+            _drop_queued_turns(sessions[session_key])
             self._cancel_session(session_key)
             _stop_background_work(sessions[session_key])
             sessions.pop(session_key, None)

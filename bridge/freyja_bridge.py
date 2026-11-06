@@ -14509,13 +14509,27 @@ def _drop_queued_turns(sess: "_BridgeSession") -> int:
     scheduled job or /goal), so the chat says they did not run; a scheduled
     run whose prompt was among them records itself as not run (_RunCost).
     A wake prompt is left out of the count: the inbox items it would carry
-    stay unread. Returns how many were dropped."""
+    stay unread. A session deleted, or replaced by a new one with its id,
+    drops its queue too, and has no chat to tell: an event for its id
+    reopens its events file, or shows in the new session's chat. Only a
+    scheduled run waiting on it hears. Returns how many were dropped."""
     queued = getattr(sess, "queued_messages", None)
     if not queued:
         return 0
     dropped = sum(1 for entry in queued if entry[0] not in SYNTHETIC_WAKE_PROMPTS)
     queued.clear()
-    if dropped:
+    if dropped and getattr(sess, "_background_closed", False):
+        log("info", f"dropped {dropped} queued turn(s) with closed session={sess.id}")
+        notify_session_listeners(
+            sess.id,
+            {
+                "type": "system_event",
+                "sessionId": sess.id,
+                "subtype": "queued_turns_dropped",
+                "details": {"count": dropped},
+            },
+        )
+    elif dropped:
         log("warn", f"emergency stop dropped {dropped} queued turn(s) on session={sess.id}")
         emit(
             {
@@ -15086,7 +15100,12 @@ async def _drain_after_turn(sess: "_BridgeSession", *, cancelled: bool = False) 
     """Everything that has to happen once a turn is over, in order: apply
     a parked config change, then run what arrived while the turn ran.
     Shared by the normal turn queue and the edit / rerun paths, which
-    start their turn task directly."""
+    start their turn task directly. A session deleted, or replaced by a
+    new one with its id, runs nothing more: its queue went with it
+    (_drop_queued_turns). Drained, its queued turns and wakes ran on the
+    closed session."""
+    if getattr(sess, "_background_closed", False):
+        return
     try:
         await _drain_turns(sess, cancelled=cancelled)
     except asyncio.CancelledError:
@@ -15096,6 +15115,8 @@ async def _drain_after_turn(sess: "_BridgeSession", *, cancelled: bool = False) 
         _uncancel_current_task()
         cancelled = True
         log("info", f"drain after turn stopped (session={sess.id})")
+    if getattr(sess, "_background_closed", False):
+        return
 
     # A change parked during the last turn run here, or while this drain
     # awaited (making a change loads the transcript and posts the Slack
@@ -15131,6 +15152,8 @@ async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
     # continuation checks the same state before auto-continuing, so real
     # user input preempts automation.
     while True:
+        if getattr(sess, "_background_closed", False):
+            break
         if not sess.queued_messages:
             if cancelled:
                 if not _has_unread_agent_talk(sess):
@@ -16485,6 +16508,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if session_id in state.sessions:
             state.sessions[session_id]._background_closed = True
             state.sessions[session_id]._discarded = True
+            _drop_queued_turns(state.sessions[session_id])
             _force_cancel_session(state.sessions[session_id])
             # H3: drain the outcome watcher before the session is GC'd.
             # Without this any in-flight classifier task tracks a dead
@@ -17070,6 +17094,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             if existing is not None:
                 existing._background_closed = True
                 existing._discarded = not keep_files
+                _drop_queued_turns(existing)
                 pending = getattr(existing, "pending_task", None)
                 if pending is not None and not pending.done():
                     try:
