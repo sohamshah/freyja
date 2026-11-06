@@ -1062,6 +1062,8 @@ class SchedulerService:
             if patch.enabled is not None and patch.enabled != (
                 job.enabled and job.status == "active"
             ):
+                if patch.enabled:
+                    _check_fires_left(job)
                 job.enabled = patch.enabled
                 job.status = "active" if patch.enabled else "paused"
                 if patch.enabled:
@@ -1118,6 +1120,7 @@ class SchedulerService:
             job = load_job(job_id)
             if job is None:
                 raise KeyError(job_id)
+            _check_fires_left(job)
             if not (job.enabled and job.status == "active"):
                 job.resumed_at = time.time()
             job.enabled = True
@@ -1365,6 +1368,17 @@ def _check_retry_policy(policy: RetryPolicy | None) -> None:
         raise ValueError(
             f"retry_policy.max_retries is {policy.max_retries}: "
             f"use 0 to {MAX_RETRIES} retries per slot"
+        )
+
+
+def _check_fires_left(job: JobRecord) -> None:
+    """Refuse to resume ``job`` when it ran all its max_fires. Nothing
+    checks them before a run: resumed, the job fired once more, and the
+    end of that run stopped it again."""
+    if job.max_fires is not None and job.fire_count >= job.max_fires:
+        raise ValueError(
+            f"it ran all {job.max_fires} of its max fires; raise or clear "
+            "max fires first"
         )
 
 

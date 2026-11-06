@@ -587,7 +587,7 @@ function stoppedHint(job: SchedulerJob): string | undefined {
   }
   if (job.status !== 'disabled_max_fires') return undefined
   if (job.max_fires != null && job.fire_count >= job.max_fires) {
-    return `It ran all ${job.max_fires} of its max fires. Raise max fires, then resume it.`
+    return `It ran all ${job.max_fires} of its max fires. Raise or clear max fires, then resume it.`
   }
   if (job.schedule?.kind === 'self_paced') {
     return 'Its loop ended itself. Resume it to start the loop again.'

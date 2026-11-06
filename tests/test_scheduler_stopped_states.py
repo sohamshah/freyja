@@ -136,7 +136,7 @@ async def _stop(service, which: str) -> JobRecord:
 
 @pytest.mark.parametrize("which, says", [
     ("failing", ["kept failing", "action='runs'", "action='resume'"]),
-    ("max fires", ["all 1 of its max_fires", "raise max_fires", "action='resume'"]),
+    ("max fires", ["all 1 of its max_fires", "raise max_fires", "clear it", "action='resume'"]),
     ("one-shot", ["no more times", "new time", "action='resume'"]),
     ("loop", ["loop ended itself", "action='resume'"]),
 ])
@@ -153,7 +153,7 @@ async def test_the_schedule_tool_says_why_the_job_stopped_and_how_to_run_it_agai
 
 @pytest.mark.parametrize("which, says", [
     ("failing", ["stopped for failing", "/freyja schedule runs sched_digest"]),
-    ("max fires", ["done", "all 1 of its max fires", "raise max fires"]),
+    ("max fires", ["done", "all 1 of its max fires", "raise or clear max fires"]),
     ("one-shot", ["done", "no more times", "new time"]),
     ("loop", ["done", "loop ended itself"]),
 ])

@@ -445,7 +445,7 @@ def _job_summary(j: JobRecord) -> dict[str, Any]:
 def _stopped_note(j: JobRecord) -> str | None:
     """Why a job that is not paused stopped, and what runs it again. Its
     raw status said neither: resume alone does not run a one-shot whose
-    time has passed, and runs a job whose max_fires are used up once."""
+    time has passed, nor a job whose max_fires are used up."""
     if j.status == "disabled_budget_exhausted":
         return (
             "over budget: a run, or the day's runs, went over the job's "
@@ -463,8 +463,8 @@ def _stopped_note(j: JobRecord) -> str | None:
     if j.max_fires is not None and j.fire_count >= j.max_fires:
         return (
             f"done: it ran all {j.max_fires} of its max_fires. To run it "
-            "again, raise max_fires with action='update', then "
-            "action='resume'."
+            "again, raise max_fires, or clear it with null, with "
+            "action='update', then action='resume'."
         )
     if isinstance(j.schedule, SelfPacedSchedule):
         return (

@@ -266,8 +266,8 @@ def _job_status(j: Any) -> str:
         return j.status
     if j.max_fires is not None and j.fire_count >= j.max_fires:
         return (
-            f"done (it ran all {j.max_fires} of its max fires; raise max fires, "
-            f"then {resume})"
+            f"done (it ran all {j.max_fires} of its max fires; raise or clear "
+            f"max fires, then {resume})"
         )
     if isinstance(j.schedule, SelfPacedSchedule):
         return f"done (its loop ended itself; {resume} starts it again)"
@@ -2321,8 +2321,11 @@ class GatewayDaemon:
             job = _find_job_by_token(jobs, body)
             if job is None:
                 return f"_No job matched `{body}`._"
-            # The next fire resume set: a paused job has none.
-            job = await service.resume_job(job.id)
+            try:
+                # The next fire resume set: a paused job has none.
+                job = await service.resume_job(job.id)
+            except ValueError as exc:
+                return f"Did not resume *{job.name}* (`{job.id}`): {exc}."
             return f"Resumed *{job.name}* (`{job.id}`). Next fire: {_format_ts(job.next_fire_at)}"
         if verb in ("remove", "delete", "rm"):
             jobs = await service.list_jobs(None)
