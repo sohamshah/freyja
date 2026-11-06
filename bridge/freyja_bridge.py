@@ -14829,6 +14829,10 @@ async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
                     f"waking in {TALK_WAKE_AFTER_STOP_S:g}s",
                 )
                 await asyncio.sleep(TALK_WAKE_AFTER_STOP_S)
+            # Made before the follow-ups are promoted (shown as sent), so a
+            # stop while it is made leaves them in the inbox, and the stop
+            # hands them back to the composer.
+            await _apply_pending_config(sess)
             nxt = _next_inbox_turn(sess)
             if nxt is None:
                 break
@@ -14841,7 +14845,6 @@ async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
                 f"processing inbox after turn on session={sess.id} "
                 f"({len(before)} item(s) left for the drain)",
             )
-            await _apply_pending_config(sess)
             _run_pre_turn_hook(w_hook, sess)
             try:
                 await sess.run_turn(w_content, w_attachments)

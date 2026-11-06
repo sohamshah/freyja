@@ -302,6 +302,37 @@ async def test_a_stop_while_the_drain_makes_a_held_change_between_queued_turns_s
     assert sess.queued_messages == []
 
 
+async def test_a_stop_while_the_drain_makes_a_held_change_before_late_follow_ups_hands_them_back(monkeypatch, tmp_path):
+    """Follow-ups that land after a turn's last boundary run as the next turn. The drain promoted them (the app shows them as sent), then made the held change. A stop there ended the drain: they never ran and were not handed back. The change is made first, so the stop hands them back to the composer, as it does every follow-up still waiting."""
+    fb, state, sess, ends, ran = await _session_with_turns(monkeypatch, tmp_path, 2)
+    events: list[dict] = []
+    monkeypatch.setattr(fb, "emit", events.append)
+    posting = asyncio.Event()
+
+    async def note(_sess, text):
+        if "glm-5.3-fireworks" in text:
+            posting.set()
+            await asyncio.sleep(5)  # the reply is still being sealed
+
+    state.thread_notice = note
+    fb._schedule_or_queue_turn(sess, "first")
+    await _until(lambda: len(ran) == 1)
+    sess.push_operator_followup("and the tests", None, client_id="c1")
+    ends[0].set_result(None)
+    await _until(lambda: len(ran) == 2)  # the follow-up's turn
+    await _pick_model(fb, state, "glm-5.3-fireworks")  # held for the next turn
+    sess.push_operator_followup("and the docs", None, client_id="c2")  # after its last boundary
+    ends[1].set_result(None)
+    await asyncio.wait_for(posting.wait(), timeout=2)
+    await _stop(fb, state)
+    await asyncio.wait_for(asyncio.gather(sess.pending_task, return_exceptions=True), timeout=2)
+    assert ran == ["kimi-k3-fast", "kimi-k3-fast"]
+    promoted = [i["clientId"] for e in events if e["type"] == "followups_promoted" for i in e["items"]]
+    assert "c2" not in promoted
+    (back,) = [e for e in events if e["type"] == "followup_withdrawn"]
+    assert (back["clientId"], back["content"], back["restore"]) == ("c2", "and the docs", True)
+
+
 async def test_a_model_picked_while_a_stopped_session_waits_to_wake_is_made_when_stopped_again(monkeypatch, tmp_path):
     """After a stop the drain waits a moment before waking for an agent's message. A second stop there ended the drain, and a change picked during the wait stayed held into the next turn."""
     from bridge.inbox import InboxMessage, new_message_id
