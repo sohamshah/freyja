@@ -1534,11 +1534,12 @@ class FocusWindowTool:
             tier=ToolTier.HOT,
             description="""Focus an application (bringing it to the front).
 
-Pass `window_id` from `list_windows` to focus a specific window, or
-`bundle_id` (e.g. `com.apple.finder`) to activate an application by
-bundle identifier. macOS doesn't let us raise a specific CGWindow
-directly, so either path activates the owning app and lets it restore
-its key window.
+Pass `window_id` from `list_windows` to bring that window to the front:
+the owning app is activated and the window is raised above the app's
+other windows. Pass `bundle_id` (e.g. `com.apple.finder`) to activate an
+application by bundle identifier; it brings its own key window forward.
+If a window cannot be raised, its app still comes forward with whichever
+window it had in front, so check the screenshot.
 
 This is a cross-app handoff and may count as a permission-gated
 action depending on the policy.

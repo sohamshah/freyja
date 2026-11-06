@@ -301,7 +301,7 @@ fn find_unique(
     found
 }
 
-fn frame_matches(actual: Option<(f64, f64, f64, f64)>, want: (f64, f64, f64, f64)) -> bool {
+pub(crate) fn frame_matches(actual: Option<(f64, f64, f64, f64)>, want: (f64, f64, f64, f64)) -> bool {
     actual.is_some_and(|a| {
         (a.0 - want.0).abs() <= 2.0
             && (a.1 - want.1).abs() <= 2.0

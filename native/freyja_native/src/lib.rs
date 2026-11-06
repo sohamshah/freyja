@@ -174,9 +174,11 @@ fn get_frontmost_window(py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
     Ok(Some(dict.unbind()))
 }
 
+// Raising the window asks the app over AX, so the GIL is released as for
+// the AX calls below.
 #[pyfunction]
-fn focus_window(window_id: u32) -> PyResult<()> {
-    windows::focus_window(window_id).map_err(err)
+fn focus_window(py: Python<'_>, window_id: u32) -> PyResult<()> {
+    py.allow_threads(|| windows::focus_window(window_id)).map_err(err)
 }
 
 #[pyfunction]
