@@ -270,6 +270,10 @@ async def fire_job(
             run.finished_at = time.time()
             run.duration_seconds = run.finished_at - run.started_at
             save_run(run)
+            # A fire, as a run whose prompt waits behind another turn is:
+            # its prompt runs once the calling turn ends. Uncounted, the
+            # next run took its fire number, and a job ran past max_fires.
+            await update_job_record(job.id, lambda fresh: count_fire(fresh, run))
             # Its end, as every run's: without it, the claim was the last
             # the events log and the dashboard heard of it.
             append_event({

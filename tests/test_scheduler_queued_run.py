@@ -93,3 +93,36 @@ async def test_a_queued_run_writes_its_end_to_the_events_log_and_tells_the_app(m
     ]
     logged = [e for e in read_recent_events() if e.get("run_id") == run.run_id]
     assert [e["type"] for e in logged] == ["scheduler_run_claimed", "scheduler_run_queued"]
+
+
+async def test_a_queued_run_counts_as_a_fire(monkeypatch):
+    # Its prompt runs once the calling turn ends, as a run's that waits
+    # behind another turn does, and that run is counted when it ends.
+    # Uncounted, the next run took the same fire number, and a job with
+    # max_fires ran past it.
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.persistence import load_job
+    from bridge.scheduler.runtime import fire_job
+
+    sess = SimpleNamespace(
+        tool_registry=ToolRegistry(),
+        pending_task=None,
+        session=SimpleNamespace(transcript=TranscriptManager()),
+        _save_transcript=lambda: None,
+    )
+    monkeypatch.setattr(fb, "_schedule_or_queue_turn", lambda *_a, **_kw: False)
+    job = JobRecord(id="sched_digest", name="digest", prompt="digest",
+                    schedule=IntervalSchedule(seconds=3600),
+                    execution=ExistingSession(session_id="s1"), max_fires=1)
+    save_job(job)
+
+    async def run_now_from_a_tool_call():
+        sess.pending_task = asyncio.current_task()
+        return await fire_job(_Service({"s1": sess}), job)
+
+    run = await asyncio.ensure_future(run_now_from_a_tool_call())
+
+    saved = load_job(job.id)
+    assert run.status == "queued" and run.fire_number == 1
+    assert (saved.fire_count, saved.last_fire_at) == (1, run.started_at)
+    assert (saved.enabled, saved.status, saved.next_fire_at) == (False, "disabled_max_fires", None)
