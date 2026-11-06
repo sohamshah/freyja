@@ -77,10 +77,7 @@ export function ScheduledJobsDashboard() {
       if (runFilter === 'running') return r.status === 'running'
       if (runFilter === 'succeeded') return r.status === 'succeeded'
       if (runFilter === 'failed') {
-        return r.status === 'failed'
-            || r.status === 'timed_out'
-            || r.status === 'budget_exceeded'
-            || r.status === 'partial_failure'
+        return FAILED_RUN_STATUSES.includes(r.status) || r.status === 'partial_failure'
       }
       return true
     })
@@ -705,11 +702,16 @@ function startOfDay(ts: number): number {
   return Math.floor(d.getTime() / 1000)
 }
 
+// Runs that did not complete, which the "failed" filter shows and the
+// timeline colors as failed: one cut off by a crash or a restart
+// (interrupted) too.
+const FAILED_RUN_STATUSES = ['failed', 'timed_out', 'budget_exceeded', 'interrupted']
+
 function worstStatus(runs: SchedulerRun[]): string {
   if (runs.length === 0) return ''
-  const order = ['failed', 'timed_out', 'budget_exceeded', 'partial_failure', 'running', 'succeeded']
+  const order = [...FAILED_RUN_STATUSES, 'partial_failure', 'running', 'succeeded']
   for (const s of order) {
-    if (runs.some((r) => r.status === s)) return s === 'timed_out' || s === 'budget_exceeded' ? 'failed' : s
+    if (runs.some((r) => r.status === s)) return FAILED_RUN_STATUSES.includes(s) ? 'failed' : s
   }
   return runs[0].status
 }
