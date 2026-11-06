@@ -106,3 +106,39 @@ async def test_a_condensed_result_is_not_condensed_again(tmp_path):
     assert result.is_error
     assert _results(session) == once
     assert len(list((tmp_path / ".freyja" / "truncated").iterdir())) == 1
+
+
+@pytest.mark.parametrize("scope", ["tool_results_only", "exploration_only"])
+async def test_a_condensed_result_says_how_many_images_left_the_context(tmp_path, scope):
+    # A result can be a list of blocks: its text and the images a tool
+    # returned. Condensing keeps only a preview of the text, and the saved
+    # file holds the text alone, so the images leave the model's context.
+    from engine.types import ImageBlock, TextBlock
+
+    session = _session("read_file")
+    msg = next(m for m in session.get_messages() if m.role == "tool_result")
+    original = msg.content
+    msg.content = [
+        TextBlock(text=original),
+        ImageBlock.from_base64("aGVsbG8="),
+        ImageBlock.from_base64("d29ybGQ="),
+    ]
+
+    result = await _tool(session).execute("sc1", {"scope": scope})
+
+    assert not result.is_error, result.content
+    (text,) = _results(session)
+    assert isinstance(text, str)
+    assert "2 images removed" in text
+    assert "raw message log keeps" in text
+    saved = Path(SAVED.search(text).group(1))
+    assert saved.read_text(encoding="utf-8") == original
+
+
+async def test_a_condensed_result_without_images_says_nothing_of_them(tmp_path):
+    session = _session("grep")
+
+    await _tool(session).execute("sc1", {"scope": "tool_results_only"})
+
+    (text,) = _results(session)
+    assert "image" not in text.split("· preview:")[0]

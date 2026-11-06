@@ -648,15 +648,19 @@ class SummarizeContextTool:
             self._truncator = ToolResultTruncator(AgentConfig())
         return self._truncator.write_full_content(text, tool_name)
 
-    def _condensed(self, text: str, label: str, tool_name: str | None) -> str | None:
+    def _condensed(
+        self, text: str, label: str, tool_name: str | None, content: Any = None
+    ) -> str | None:
         """The preview that replaces ``text``, naming the file that holds it
         whole. None when the text stays: it was condensed before, the preview
-        would not shorten it, or it could not be saved."""
+        would not shorten it, or it could not be saved. ``content`` is the
+        result's block list, when it is one: the images in it leave the
+        context with the text, and the preview says how many."""
         if _CONDENSED_RE.match(text):
             return None
         preview = text.strip().splitlines()[0][:200] if text.strip() else ""
         head = f"[{label}: {len(text):,} chars"
-        tail = f" · preview: {preview!r}]"
+        tail = f"{_media_removed_note(content)} · preview: {preview!r}]"
         # Only condense if it actually shrinks; some results are already short.
         if len(head) + _CONDENSED_FILE_ROOM + len(tail) >= len(text):
             return None
@@ -702,7 +706,7 @@ class SummarizeContextTool:
             if not text:
                 continue
             tool_name = tool_name_by_id.get(getattr(msg, "tool_call_id", "") or "")
-            replacement = self._condensed(text, "tool result condensed", tool_name)
+            replacement = self._condensed(text, "tool result condensed", tool_name, content)
             if replacement is not None:
                 msg.content = replacement
                 rewritten += 1
@@ -752,7 +756,7 @@ class SummarizeContextTool:
             if not text:
                 continue
             replacement = self._condensed(
-                text, f"exploration result condensed ({tool_name})", tool_name
+                text, f"exploration result condensed ({tool_name})", tool_name, content
             )
             if replacement is not None:
                 msg.content = replacement
@@ -776,6 +780,28 @@ def _request_tokens(session: Any, transcript: Any) -> int:
         return int(session.estimate_tokens())
     except Exception:
         return int(transcript.estimate_tokens())
+
+
+def _media_removed_note(content: Any) -> str:
+    """What a condensed result says of the images (and documents, videos) in
+    its block list: the saved file holds only the text, so they leave the
+    context. The raw message log keeps the result as it came, with them."""
+    if not isinstance(content, list):
+        return ""
+    counts: dict[str, int] = {}
+    for block in content:
+        kind = getattr(block, "type", None)
+        if kind in ("image", "document", "video"):
+            counts[kind] = counts.get(kind, 0) + 1
+    if not counts:
+        return ""
+    removed = " and ".join(
+        f"{n} {kind}{'s' if n != 1 else ''}" for kind, n in counts.items()
+    )
+    return (
+        f" · {removed} removed from context (the file has the text only; the "
+        "raw message log keeps them)"
+    )
 
 
 def _tool_name_by_id(transcript: Any) -> dict[str, str]:
