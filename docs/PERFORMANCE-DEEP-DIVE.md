@@ -252,11 +252,11 @@ Recommended fix:
 Relevant code:
 
 - `src/main/inputProxy.ts` (`InputWorker`) runs every input action in one long-lived Python worker, in order and one at a time. Before commit 665b63c it started a new Python process with `execFileSync` for each action, inside the HTTP request handler.
-- `src/main/captureProxy.ts:66-78` requests native display-sized thumbnails from `desktopCapturer`.
-- `src/main/captureProxy.ts:99-120` then resizes and encodes the image.
-- `bridge/tools/computer_tools.py:191-337` captures, cursor-composites, optionally dumps to disk, base64-encodes, and emits every frame.
-- `bridge/tools/computer_tools.py:55-61` enables frame dumping by default unless `FREYJA_FRAME_DUMP` is explicitly false.
-- `bridge/tools/computer_tools.py:1232-1237`, `1345`, `1526`, `1633`, and `1892` capture a fresh screenshot after mutating actions.
+- `src/main/captureProxy.ts:233-240` requests native display-sized thumbnails from `desktopCapturer`.
+- `src/main/captureProxy.ts:64-102` (`sendImage`) then resizes and encodes the image.
+- `bridge/tools/computer_tools.py:270-428` (`_emit_frame`) captures, cursor-composites, optionally dumps to disk, base64-encodes, and emits every frame.
+- `bridge/tools/computer_tools.py:62-65` enables frame dumping by default unless `FREYJA_FRAME_DUMP` is explicitly false.
+- `bridge/tools/computer_tools.py:1372-1374`, `1526`, `1709`, `1816`, `1997` and `2078` capture a fresh screenshot after mutating actions.
 
 The most suspicious single I/O issue was `execFileSync` per input action. Starting Python for every click, key or scroll blocked Electron main, and with it every window and IPC, while the request was handled. Against a stub `freyja_native`, a move took 20 ms and blocked main for 21 ms. Commit 665b63c fixed this. One worker reads the actions as JSON lines on stdin and answers each one. With the same stub, a move now takes about 0.5 ms median, and main lags at most 1.3 ms.
 
