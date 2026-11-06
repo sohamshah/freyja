@@ -1004,6 +1004,19 @@ class SessionKanbanBoard:
             for parent_id in task.parents
         )
 
+    def _parents_pending(self, task: KanbanTask) -> bool:
+        # A parent that can still finish, counted as `_parents_done` counts
+        # (the mission root is done). A failed, cancelled or missing parent
+        # never finishes, and `unblock` releases a card past it, so it does
+        # not hold the card.
+        return any(
+            parent_id != self._mission_root_id
+            and (parent := self._tasks.get(parent_id)) is not None
+            and parent.status != "done"
+            and parent.status not in TERMINAL_FAILURE_STATUSES
+            for parent_id in task.parents
+        )
+
     def _promote_unblocked_children(self, parent_id: str, actor: str) -> None:
         parent = self._tasks[parent_id]
         for child_id in parent.children:

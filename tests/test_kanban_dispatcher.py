@@ -758,3 +758,72 @@ async def test_worker_ending_at_the_review_cap_reports_the_block() -> None:
     assert blocked["sessionId"] == "parent-1"
     assert blocked["details"]["cardId"] == card_id
     assert blocked["details"]["chatVisible"] is True
+
+
+async def _dispatched(session: Any, sub_tool: _StubSubAgentTool) -> set[str]:
+    """The cards one tick hands to a worker, verifier or judge."""
+    judged: list[str] = []
+
+    async def _judge(card: Any, *, sub_tool: Any) -> None:
+        judged.append(card.id)
+
+    session._run_kanban_judge_for_card = _judge
+    sub_tool.calls.clear()
+    await session._kanban_tick(source="test", force=True)
+    await asyncio.sleep(0)
+    return {call["kanban_task_id"] for call in sub_tool.calls} | set(judged)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lane",
+    [
+        ["review", "ready"],
+        ["crashed"],
+        ["timed_out"],
+        ["done_unverified"],
+        ["review"],
+    ],
+)
+async def test_dispatcher_holds_a_card_past_triage_while_a_parent_is_pending(
+    lane: list[str],
+) -> None:
+    """link() records a parent on a card a worker has picked up and
+    leaves it in its lane, and review sends a card back to ready. The
+    dispatcher checked parents only for triage cards, so it handed such
+    a card to a worker, verifier or judge while its parent was still
+    pending. The card now waits in its lane until the parent is done;
+    the mission root counts as done."""
+    board = SessionKanbanBoard()
+    await board.create(title="mission", metadata={"role": "mission_root"})
+    parent = (await board.create(title="parent")).id
+    card = (await board.create(title="card", assignee="code")).id
+    await board.update(card, actor="worker", status="running", worker_session_id="sub_w")
+    await board.link(parent, card, actor="parent")
+    for status in lane:
+        await board.update(card, actor="worker", status=status)
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+
+    assert card not in await _dispatched(session, sub_tool)
+
+    await board.update(parent, actor="worker", status="running")
+    await board.update(parent, actor="kanban-judge", status="done")
+    assert card in await _dispatched(session, sub_tool)
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_sends_a_card_unblock_released_past_a_failed_parent() -> None:
+    """unblock releases a triage card whose parent failed to ready. That
+    parent never finishes, so the dispatcher must not hold the card on
+    it."""
+    board = SessionKanbanBoard()
+    parent = (await board.create(title="parent")).id
+    card = (await board.create(title="card", parents=[parent])).id
+    await board.update(parent, actor="parent", status="cancelled")
+    _, message = await board.unblock(card, actor="parent")
+    assert message == "unblocked"
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+
+    assert card in await _dispatched(session, sub_tool)

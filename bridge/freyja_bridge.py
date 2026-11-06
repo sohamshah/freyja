@@ -9264,6 +9264,10 @@ class _BridgeSession:
                         },
                     )
                 continue
+            # It waits while a parent can still finish, as in the worker
+            # lane below.
+            if self.kanban_board._parents_pending(card):  # noqa: SLF001
+                continue
             self._kanban_judge_pending.add(card.id)
             asyncio.create_task(
                 self._run_kanban_judge_for_card(card, sub_tool=sub_tool),
@@ -9278,6 +9282,15 @@ class _BridgeSession:
             if capacity == 0:
                 break
             if card.id in self._kanban_dispatched or card.id in live:
+                continue
+            # link() records a new parent on a card a worker has picked up
+            # without moving it, and review can send a card back to ready.
+            # Such a card waits in its lane while a parent can still finish
+            # and goes out on the first tick after. Triage is gated below.
+            if (
+                card.status != "triage"
+                and self.kanban_board._parents_pending(card)  # noqa: SLF001
+            ):
                 continue
             if card.status == "done_unverified":
                 plans.append(
