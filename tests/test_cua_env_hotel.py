@@ -1,28 +1,16 @@
 """The hotel env (evals/computer_use/envs/hotel, "Casa Alameda"): every task is
-solvable with its quirks on and off, each check catches what it forbids, and
-the page shows each pattern its README names. The page tests need a headless
-Chromium and skip without one."""
+solvable with its quirks on and off, and each check catches what it forbids.
+The page tests need a headless Chromium and skip without one."""
 
 from __future__ import annotations
 
-import asyncio
-import sys
-from pathlib import Path
-
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "evals"))
-
-from computer_use import envs, oracle  # noqa: E402
-from computer_use.browser import Browser, find_chrome  # noqa: E402
-from computer_use.envs.hotel import backend as B  # noqa: E402
-from computer_use.envs.hotel import tasks as T  # noqa: E402
-from computer_use.run import make_server  # noqa: E402
-from computer_use.server import Episode  # noqa: E402
+from tests.cua_harness import Episode, envs, harness_fixture  # noqa: F401
 
 pytestmark = pytest.mark.skipif("hotel" not in envs.NAMES, reason="CUA_ENVS leaves out hotel")
-chrome = pytest.mark.skipif(find_chrome() is None, reason="no Chromium for the environments")
+B = envs.backend("hotel")
+T = envs.tasks("hotel")
 TASK = {t.id: t for t in T.TASKS}
 
 
@@ -38,6 +26,7 @@ def _check(t, ep, text: str = "", llm_calls: int = 0):
 
 
 def test_the_rates_follow_the_contract():
+    """The checks expect these numbers; the rate model must keep producing them."""
     four = dict(B.DEFAULT_SEARCH)
     three = {**four, "checkin": "2027-01-21"}
     assert (B.average("group", four), B.average("flex", four)) == (316, 411)
@@ -74,29 +63,9 @@ def test_quote_hidden_check():
     assert _check(t, ep, "The total is $1,241.50 including taxes.").reward == 0
 
 
-async def _solve(task_id: str, quirks: dict | None = None):
-    server = make_server()
-    browser = await Browser.launch()
-    try:
-        t = TASK[task_id]
-        cfg = dict(t.config)
-        if quirks is not None:
-            cfg["quirks"] = quirks
-        ep = server.new_episode("hotel", cfg)
-        ctx = await browser.new_context()
-        page = await browser.new_page(context=ctx)
-        await page.navigate(server.start_url(ep, f"/hotel/{t.start}"), timeout=20)
-        out = await oracle.solve(task_id, page)
-        return t.check(B.view(ep), list(ep.events), {**out, "llm_calls": 0})
-    finally:
-        await browser.close()
-        server.stop()
-
-
-@chrome
+@pytest.mark.parametrize("quirks", ["on", "off"])
 @pytest.mark.parametrize("task_id", sorted(TASK))
-@pytest.mark.parametrize("plain", [False, True])
-def test_every_task_is_solvable(task_id, plain):
-    quirks = {k: False for k in B.QUIRKS} if plain else None
-    chk = asyncio.run(_solve(task_id, quirks))
-    assert chk.reward == 1, chk.why
+def test_every_task_is_solvable_with_quirks_on_and_off(harness, task_id, quirks):
+    before, after = harness.solvable(task_id, quirks)
+    assert before.reward == 0.0, before.why
+    assert after.reward == 1.0, after.why

@@ -10,15 +10,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from bridge.tools.jev_operator import act as act_module
 from bridge.tools.jev_operator import dom_surface
 from bridge.tools.jev_operator.act import ActionRecord
 from bridge.tools.jev_operator.dom_surface import DOMSurface, DOMUnavailable
 from bridge.tools.jev_operator.loop import is_irreversible
 from bridge.tools.jev_operator.observe import meaningful_change
-from tests.test_jev_operator import (
+from tests.test_jev_operator import (  # noqa: F401  (fast_clock is an autouse fixture)
     FakeCalculator,
     ScriptedProvider,
+    fast_clock,
     make_operator,
 )
 
@@ -72,13 +72,17 @@ def test_observation_mapping_and_context_folding():
         action(4, "toggle", "Agree", checked=True),
         action(5, "select", "Plan", value="Pro"),
         action(6, "click", "Footer", offscreen="below"),
+        # Radio buttons were listed as checkboxes ("AXCheckBox 'No' (off)"), though picking one clears the others.
+        action(7, "toggle", "Yes", role="radio", checked=False),
+        action(8, "toggle", "No", role="radio", checked=True),
     ])
     s = surface(page)
     obs = run(s.observe(TARGET))
     labels = [e.label for e in obs.elements]
     assert labels[0] == "Add (Claude · $200.00)"
-    assert [e.role for e in obs.elements] == ["AXButton", "AXLink", "AXTextField", "AXCheckBox", "AXComboBox", "AXButton"]
+    assert [e.role for e in obs.elements] == ["AXButton", "AXLink", "AXTextField", "AXCheckBox", "AXComboBox", "AXButton", "AXRadioButton", "AXRadioButton"]
     assert obs.elements[3].toggle_state() == "on"
+    assert [e.toggle_state() for e in obs.elements[6:]] == ["not selected", "selected"]
     # Off-screen page elements stay targetable: act() scrolls them into view.
     assert "below the visible area" in obs.elements[5].row() and obs.elements[5] in obs.click_targets
     assert obs.screen_text == "hello" and "x.test" in obs.focused_window
@@ -88,7 +92,7 @@ def test_observation_mapping_and_context_folding():
     assert meaningful_change(obs, other)
 
 
-def test_click_passes_guard_and_stale_rebinds_once():
+def test_a_stale_click_rebinds_once_and_fails_without_a_retry_when_the_rebinding_is_ambiguous():
     page = FakePage([action(1, label="Add", context="A"), action(2, label="Add", context="B")])
     s = surface(page)
     obs = run(s.observe(TARGET))
@@ -97,9 +101,6 @@ def test_click_passes_guard_and_stale_rebinds_once():
     rec = run(s.execute("click", obs.elements[0]))
     assert rec.ok
     assert page.calls == [[1, "click", None, "g1"], [9, "click", None, "new"]]
-
-
-def test_stale_ambiguous_fails_without_retry():
     page = FakePage([action(1, label="Add", context="A")])
     s = surface(page)
     obs = run(s.observe(TARGET))
@@ -175,18 +176,13 @@ def test_secure_field_refused():
     assert not rec.ok and "secure" in rec.error and page.calls == []
 
 
-def test_irreversible_gate_sees_dom_targets():
-    obs = run(surface(FakePage([action(1, label="Submit"), action(2, "link", "Delete", context="Row 3"),
-                                action(3, label="Next")])).observe(TARGET))
-    assert [is_irreversible(e) for e in obs.elements] == [True, True, False]
-
-
-def test_the_gate_reads_a_control_by_its_own_name_not_its_card():
+def test_the_irreversible_gate_sees_dom_targets_by_their_own_name_not_their_card():
     # A card heading made "Save PO" read "Save PO (New purchase order)", and the
     # run stopped to ask before saving a draft.
-    obs = run(surface(FakePage([action(1, label="Save PO", context="New purchase order"),
-                                action(2, label="", context="Pay now")])).observe(TARGET))
-    assert [is_irreversible(e) for e in obs.elements] == [False, True]
+    obs = run(surface(FakePage([action(1, label="Submit"), action(2, "link", "Delete", context="Row 3"),
+                                action(3, label="Next"), action(4, label="Save PO", context="New purchase order"),
+                                action(5, label="", context="Pay now")])).observe(TARGET))
+    assert [is_irreversible(e) for e in obs.elements] == [True, True, False, False, True]
 
 
 def dom_operator(page, goal="go", **kw):
@@ -221,6 +217,8 @@ def test_enter_in_form_field_gated_by_submit_button(tmp_path, monkeypatch):
     assert attempt("search", "Search")[0] == "done"
     assert attempt("form:Save")[1] == [[0, "key", "Enter", ""]]
     assert attempt("form")[0] == "done"
+    # Enter that picks an open suggestion (an airport from a typed code) needs no confirmation.
+    assert attempt("pick", "From*") == ("done", [[0, "key", "Enter", ""]])
 
 
 def test_probe():
@@ -266,7 +264,7 @@ def test_auto_selection(tmp_path, monkeypatch, probe_result, bundle, surf, expec
         assert probes and probes[0]["ok"] is probe_result[0]
 
 
-def test_two_page_failures_end_the_run_instead_of_switching_to_ax(tmp_path, monkeypatch):
+def test_a_page_that_stops_answering_or_parsing_ends_the_run_instead_of_switching_to_ax(tmp_path, monkeypatch):
     """The accessibility tree acts on the browser's front window, which may no
     longer be the run's tab, so a page that stops answering ends the run."""
     from bridge.tools.jev_operator.loop import SurfaceFailed
@@ -280,6 +278,12 @@ def test_two_page_failures_end_the_run_instead_of_switching_to_ax(tmp_path, monk
     assert op.surface.name == "dom" and native.clicks == []
     evs = [r["event"] for r in rows(op) if r.get("event") in ("dom_error", "surface_failed")]
     assert evs == ["dom_error", "dom_error", "surface_failed"]
+    # The transport answers but the snapshot cannot be parsed: a surface failure too (blocked, not crashed).
+    op, native, target = browser_operator(tmp_path, monkeypatch, (True, "ok"))
+    run(op._select_surface(target))
+    op.surface._run_js = lambda b, js: json.dumps({"url": "x", "actions": [{"kind": "click", "id": "not-an-int"}]})
+    with pytest.raises(SurfaceFailed):
+        run(op._observe(SimpleNamespace(name="Calculator", bundle="com.apple.calculator", pid=100)))
 
 
 def test_arc_double_encoded_results_decode():
@@ -315,23 +319,10 @@ def test_select_options_are_click_targets():
     assert rec.ok and page.calls == [[2, "select", "r", "g2"]]
 
 
-def test_unparseable_snapshots_end_the_run(tmp_path, monkeypatch):
-    """The transport answers but the snapshot cannot be parsed: that is a surface
-    failure too, so two in a row end the run (blocked, not crashed)."""
-    from bridge.tools.jev_operator.loop import SurfaceFailed
-
-    op, native, target = browser_operator(tmp_path, monkeypatch, (True, "ok"))
-    run(op._select_surface(target))
-    op.surface._run_js = lambda b, js: json.dumps({"url": "x", "actions": [{"kind": "click", "id": "not-an-int"}]})
-    with pytest.raises(SurfaceFailed):
-        run(op._observe(SimpleNamespace(name="Calculator", bundle="com.apple.calculator", pid=100)))
-
-
-def test_probe_retries_once_when_the_browser_is_slow(tmp_path, monkeypatch):
-    """One 3 s timeout sent a whole Arc run to the accessibility tree (8 s reads);
-    a slow first answer now gets one longer retry."""
+def test_the_probe_retries_while_the_browser_is_slow_or_the_page_still_loads(tmp_path, monkeypatch):
+    """One 3 s timeout sent a whole Arc run to the accessibility tree (8 s reads), and the probe failed twice while a heavy results page loaded: a slow first answer gets longer retries, and the run stays on the page."""
     op, native, target = browser_operator(tmp_path, monkeypatch, (True, "x"))
-    answers = iter([(False, "Arc did not answer within 3s"), (True, "title='x'")])
+    answers = iter([(False, "Arc did not answer within 3s"), (False, "Arc did not answer within 8s"), (True, "title='x'")])
     seen = []
 
     def probe(b, run_js=None, timeout_s=None):
@@ -341,7 +332,8 @@ def test_probe_retries_once_when_the_browser_is_slow(tmp_path, monkeypatch):
     monkeypatch.setattr(dom_surface, "probe", probe)
     monkeypatch.setattr(DOMSurface, "pin_active", lambda self: asyncio.sleep(0))
     run(op._select_surface(target))
-    assert op.surface.name == "dom" and seen == [None, dom_surface.PROBE_RETRY_TIMEOUT_S]
+    assert op.surface.name == "dom" and not op._page_unreadable
+    assert seen == [None, dom_surface.PROBE_RETRY_TIMEOUT_S, dom_surface.PROBE_RETRY_TIMEOUT_S]
     probe_rows = [r for r in rows(op) if r.get("event") == "surface_probe"]
     assert probe_rows[-1]["ok"] is True and "retry" in probe_rows[-1]["detail"]
 
@@ -391,19 +383,6 @@ def test_page_confirm_stops_the_run_for_the_person(tmp_path, monkeypatch):
     assert res.pending_action and "confirm" in res.pending_action
 
 
-def test_radio_buttons_read_as_radio_buttons():
-    """A page's radio buttons were listed as checkboxes ("AXCheckBox 'No' (off)"),
-    though picking one clears the others."""
-    page = FakePage([
-        action(1, "toggle", "Yes", role="radio", checked=False),
-        action(2, "toggle", "No", role="radio", checked=True),
-        action(3, "toggle", "Remember me", role="checkbox", checked=False),
-    ])
-    obs = run(surface(page).observe(TARGET))
-    assert [e.role for e in obs.elements] == ["AXRadioButton", "AXRadioButton", "AXCheckBox"]
-    assert [e.toggle_state() for e in obs.elements] == ["not selected", "selected", "off"]
-
-
 class FakeBrowser:
     """Answers the page script the way a browser tab does, for a run that picks
     its own surface (no injected page)."""
@@ -421,7 +400,7 @@ class FakeBrowser:
         return json.dumps({"ok": True, "reason": None, "readback": None})
 
 
-def test_a_run_without_an_address_never_starts_in_a_tab_no_run_used(tmp_path, monkeypatch):
+def test_a_run_without_an_address_starts_only_in_a_tab_a_run_used(tmp_path, monkeypatch):
     """A test run with no address attached to the browser's front tab, which was
     the person's live video call, and clicked in it. Now it stops, names the
     tab, and sends no script into it at all."""
@@ -438,9 +417,7 @@ def test_a_run_without_an_address_never_starts_in_a_tab_no_run_used(tmp_path, mo
     assert res.status == "blocked" and res.code == "foreign_tab"
     assert "'Meet - Weekly' (https://meet.example/abc)" in res.summary and "Open <url>" in res.summary
     assert page.acts == [] and native.clicks == [] and calls == []
-
-
-def test_a_tab_an_earlier_run_worked_in_is_fine(tmp_path, monkeypatch):
+    # A tab an earlier run worked in is fine.
     page = FakeBrowser(title="Tasks", url="https://app.example/tasks")
     monkeypatch.setattr(dom_surface, "osascript_run_js", page)
     op, native, _ = browser_operator(tmp_path, monkeypatch, (True, "ok"))

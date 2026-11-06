@@ -8,7 +8,6 @@ off, and that an untouched page scores zero.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from typing import Any
@@ -193,14 +192,14 @@ async def _exists_checked(page: Any, sel: str) -> int:
 
 
 async def _uncheck(page: Any, sel: str) -> None:
-    from ...oracle import click
+    from ...oracle import click, settle
     if await _exists_checked(page, sel) == 1:
         await click(page, sel)
-        await asyncio.sleep(0.3)
+        await settle(0.3)
 
 
 async def solve_sneak(page: Any) -> None:
-    from ...oracle import click, wait_for
+    from ...oracle import click, settle, wait_for
     await _ready(page)
     # Blue is the default colour; add it.
     await click(page, "#btnAdd")
@@ -211,7 +210,7 @@ async def solve_sneak(page: Any) -> None:
     await _ready(page)
     # Choose Standard shipping, then clear every pre-checked extra.
     await click(page, "input[name=ship][value=standard]")
-    await asyncio.sleep(0.3)
+    await settle(0.3)
     await _uncheck(page, "#chkGiftwrap")
     await _uncheck(page, "#chkDeals")
     await _uncheck(page, "#protChk")
@@ -249,7 +248,7 @@ async def solve_mirror(page: Any) -> None:
 
 
 async def solve_popup(page: Any) -> str:
-    from ...oracle import click, wait_for
+    from ...oracle import click, settle, wait_for
     await _ready(page)
     for _ in range(7):
         n = await page.evaluate("document.querySelectorAll('.pop').length", isolated=False)
@@ -257,7 +256,7 @@ async def solve_popup(page: Any) -> str:
             break
         await click(page, ".pop button.x")  # the real close (a button), never the decoy link
         await wait_for(page, f"document.querySelectorAll('.pop').length < {n}")
-        await asyncio.sleep(0.2)
+        await settle(0.2)
     await wait_for(page, "document.getElementById('couponPanel').textContent.indexOf('KW-')>=0")
     code = await page.evaluate(
         "(function(){var m=document.getElementById('couponPanel')"

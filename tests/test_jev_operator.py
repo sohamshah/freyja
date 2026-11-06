@@ -49,10 +49,52 @@ ROLE_DESCRIPTIONS = {
 }
 
 
+_real_sleep = asyncio.sleep
+_real_perf_counter = time.perf_counter
+_real_monotonic = time.monotonic
+
+
+class FastClock:
+    """Stands in for the `time` module inside the operator's modules. `asyncio.sleep` advances it instead of waiting, so the loop's settle, toggle and planner waits end at once while every deadline still sees the time it expects to have passed. Everything else (`time.time` for log rows) is the real module's."""
+
+    def __init__(self) -> None:
+        self.offset = 0.0
+
+    def perf_counter(self) -> float:
+        return _real_perf_counter() + self.offset
+
+    def monotonic(self) -> float:
+        return _real_monotonic() + self.offset
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+    async def sleep(self, delay: float, result: Any = None) -> Any:
+        self.offset += max(0.0, float(delay))
+        await _real_sleep(0)
+        return result
+
+
 @pytest.fixture(autouse=True)
-def nobody_at_the_keyboard(monkeypatch):
+def fast_clock(monkeypatch):
+    """Nobody at the keyboard, and no real waiting. Every test here drives the operator through fakes, so its settle and retry waits would only cost time; the other jev test modules import this fixture."""
     monkeypatch.setattr(act_module, "seconds_since_input", lambda: 999.0)
     monkeypatch.setattr(act_module, "ACTIVATION_SETTLE_S", 0.0)
+    clock = FastClock()
+    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.time", clock)
+    monkeypatch.setattr("bridge.tools.jev_operator.dom_surface.time", clock)
+
+    async def highlight(spec, ms=act_module.ACTION_HIGHLIGHT_MS):
+        # The pre-action highlight pause waits on the cancel event with a real
+        # timeout, which asyncio.sleep does not cover: same answer, virtual wait.
+        if spec.cancel_event.is_set():
+            return False
+        await clock.sleep(ms / 1000.0)
+        return True
+
+    monkeypatch.setattr(act_module, "_await_highlight_or_cancel", highlight)
+    return clock
 
 
 CLOSED = (0, 1117, 0, 0)  # where AppKit reports the items of a menu that is not showing
@@ -214,14 +256,6 @@ def test_a_full_table_keeps_the_focused_windows_rows_out_of_view_before_other_wi
     assert obs.truncated
 
 
-def test_window_buttons_name_their_window():
-    win = node("AXWindow", "notes.txt", focused=True, bounds=(0, 40, 500, 400), children=[
-        node("AXButton", None, label="close button", subrole="AXCloseButton", bounds=(8, 44, 14, 14)),
-    ])
-    obs = build_observation(node("AXApplication", "TextEdit", children=[win]), app_name="TextEdit", bundle="b", pid=1)
-    assert "AXButton 'close button' (of window 'notes.txt')" in obs.table()
-
-
 def test_unnamed_state_controls_take_their_row_name_not_their_value():
     def group(app, expanded, children):
         cell = node("AXCell", None, bounds=(10, 60, 400, 30), children=[
@@ -316,13 +350,6 @@ def test_literals_and_launch_candidates():
     assert launch_candidates_from_goal("recalculators are not apps", apps) == []
 
 
-def test_irreversible_detection():
-    obs = build_observation(form_tree(), app_name="c", bundle="b", pid=1)
-    labels = {e.label: e for e in obs.elements}
-    assert is_irreversible(labels["Delete account"])
-    assert not is_irreversible(labels["Continue"])
-
-
 def test_a_quoted_address_is_text_to_type_not_the_page_to_open():
     """'Business website "https://acme.example"' made a run open acme.example
     instead of filling the form it was on."""
@@ -334,14 +361,6 @@ def test_a_quoted_address_is_text_to_type_not_the_page_to_open():
     assert urls_from_goal('Fill Business website "https://acme.example" on this form.') == []
     assert urls_from_goal('Open "https://docs.example.com/a" and report the limit.') == ["https://docs.example.com/a"]
     assert urls_from_goal("Go to \u201chttps://docs.example.com/b\u201d and read it.") == ["https://docs.example.com/b"]
-
-
-def test_agree_buttons_are_irreversible():
-    """A console's enablement form ends in "Agree", which accepts Marketplace terms."""
-    from bridge.tools.jev_operator.loop import _IRREVERSIBLE
-
-    assert _IRREVERSIBLE.search("Agree") and _IRREVERSIBLE.search("I agree")
-    assert not _IRREVERSIBLE.search("Disagree") and not _IRREVERSIBLE.search("Agreement details")
 
 
 # ─── decision interpretation ─────────────────────────────────────────
@@ -589,18 +608,12 @@ def test_loop_calculator_end_to_end(tmp_path, monkeypatch):
     assert provider.calls[-1]["state"]["recent_actions"][-1]["action"].startswith("click")
     log_lines = [json.loads(l) for l in (tmp_path / f"{res.run_id}.jsonl").read_text().splitlines()]
     assert [r["event"] for r in log_lines][:2] == ["start", "decision"] and log_lines[-1]["event"] == "finish"
+    assert {r["event"] for r in log_lines} >= {"decision", "outcome", "finish"}
+    assert all(r["surface"] == "ax" for r in log_lines) and res.surface == "ax" and "surface=ax" in res.footer()
 
 
 def test_loop_stops_for_irreversible_control(tmp_path, monkeypatch):
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-
-    class FormNative(FakeCalculator):
-        def list_windows(self, *, include_helpers=False):
-            return [FakeWindow(1, 100, "com.apple.calculator", "Sign in", FakeBounds(0, 40, 400, 300))]
-
-        def read_ax_tree(self, pid, max_depth=8):
-            return json.dumps(form_tree())
-
     native = FormNative()
     op, _ = make_operator(native, ScriptedProvider([("click", "Delete account")]), goal="delete the account")
     res = asyncio.run(op.run())
@@ -1074,6 +1087,7 @@ def test_names_come_from_label_and_values_from_static_text():
     assert "button" not in labels, "the role description is never used as a name"
     assert "5,535" in obs.screen_text and "text" not in obs.screen_text.split("\n")
     assert "close button" in labels, "window buttons keep their specific role description"
+    assert "AXButton 'close button' (of window 'Calculator')" in obs.table(), "window buttons name their window"
 
 
 def scroll_tree() -> dict[str, Any]:
@@ -1116,17 +1130,15 @@ def test_rows_scrolled_out_of_view_are_scrolled_to_never_clicked_where_they_are_
     assert res.status != "done"
 
 
-def test_planner_subgoal_text_becomes_a_typing_option_with_its_line_break():
+def test_literals_keep_apostrophes_and_a_subgoals_line_break():
     from bridge.tools.jev_operator.observe import quoted_literals
 
-    assert quoted_literals('Type "\\nBread 1" into the text entry area [1].') == ["\nBread 1"]
-    assert quoted_literals("click [3], then press return") == [], "element indexes are not text to type"
-
-
-def test_literals_keep_apostrophes():
     assert literals_from_goal('type "Don\'t panic, it\'s fine"') == ["Don't panic, it's fine"]
     assert literals_from_goal("In Soham's notes, type 'buy milk'") == ["buy milk"]
     assert literals_from_goal("type ‘Don’t stop’") == ["Don’t stop"]
+    # A planner sub-goal's quoted text becomes a typing option with its line break.
+    assert quoted_literals('Type "\\nBread 1" into the text entry area [1].') == ["\nBread 1"]
+    assert quoted_literals("click [3], then press return") == [], "element indexes are not text to type"
 
 
 def test_gate_applies_to_commit_roles_only():
@@ -1140,15 +1152,22 @@ def test_gate_applies_to_commit_roles_only():
             node("AXRow", bounds=(0, 20, 200, 20), children=[node("AXStaticText", value="Remove me.txt", bounds=(0, 20, 100, 20))]),
             node("AXButton", "Clear History…", bounds=(0, 60, 100, 20)),
             node("AXMenuItem", "Move to Bin", bounds=(0, 90, 100, 20)),
+            node("AXButton", "Agree", bounds=(0, 120, 100, 20)),
+            node("AXButton", "I agree", bounds=(0, 150, 100, 20)),
+            node("AXButton", "Disagree", bounds=(0, 180, 100, 20)),
+            node("AXButton", "Agreement details", bounds=(0, 210, 100, 20)),
         ])]),
         app_name="a", bundle="b", pid=1,
     )
     by = {e.label: e for e in row.elements}
     assert not is_irreversible(by["Remove me.txt"])
     assert is_irreversible(by["Clear History…"]) and is_irreversible(by["Move to Bin"])
+    # A console's enablement form ends in "Agree", which accepts Marketplace terms.
+    assert is_irreversible(by["Agree"]) and is_irreversible(by["I agree"])
+    assert not is_irreversible(by["Disagree"]) and not is_irreversible(by["Agreement details"])
 
 
-def test_input_refused_when_target_is_not_frontmost(tmp_path, monkeypatch):
+def test_input_refused_when_target_is_not_frontmost_or_the_screen_is_locked(tmp_path, monkeypatch):
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
     native = FakeCalculator()
     op, _ = make_operator(native, ScriptedProvider([("click", "7")]), frontmost=999)
@@ -1156,15 +1175,11 @@ def test_input_refused_when_target_is_not_frontmost(tmp_path, monkeypatch):
     assert native.clicks == []
     assert res.status == "blocked" and "not the frontmost app" in res.summary
     assert native.focused, "the operator tries to refocus the target before giving up"
-
-
-def test_refusal_names_the_lock_screen(tmp_path, monkeypatch):
-    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-    native = FakeCalculator()
-    op, _ = make_operator(native, ScriptedProvider([("click", "7")]), frontmost=1085)
+    locked = FakeCalculator()
+    op, _ = make_operator(locked, ScriptedProvider([("click", "7")]), frontmost=1085)
     op._screen_locked = lambda: True
     res = asyncio.run(op.run())
-    assert native.clicks == [] and "screen locked" in res.summary
+    assert locked.clicks == [] and "screen locked" in res.summary, "the refusal names the lock screen"
 
 
 class CoveredCalculator(FakeCalculator):
@@ -1330,40 +1345,7 @@ def test_menu_state_follows_the_screen_not_the_clicks(tmp_path, monkeypatch):
     assert "menu opened" in diffs[0] and "menu closed" in diffs[-1], diffs
 
 
-def test_typing_into_an_unfocused_text_area_appends():
-    from bridge.tools.jev_operator.observe import Element
-
-    class Recorder(FakeCalculator):
-        def __init__(self):
-            super().__init__()
-            self.events: list[tuple] = []
-
-        def click(self, x, y, *, button="left", double=False, modifiers=None):
-            self.events.append(("click", x, y))
-
-        def press_key(self, key, modifiers=None):
-            self.events.append(("key", "+".join([*(modifiers or []), key])))
-
-        def type_text(self, text):
-            self.events.append(("type", text))
-
-    async def go(native):
-        spec = ComputerToolSpec(session_id="t", emit_event=lambda _e: None, cancel_event=asyncio.Event())
-        actuator = act_module.Actuator(spec, native, settle_ms=0)
-        area = Element(index=1, role="AXTextArea", subrole=None, label="Notes", value="draft", bounds=(20, 160, 300, 80), enabled=True, focused=False, window="w", kind="type")
-        field = Element(index=2, role="AXTextField", subrole=None, label="Username", value="old", bounds=(20, 80, 200, 24), enabled=True, focused=False, window="w", kind="type")
-        await actuator.type_into(area, " more", replace=False)
-        await actuator.type_into(field, "soham", replace=True)
-
-    native = Recorder()
-    asyncio.run(go(native))
-    assert native.events == [
-        ("click", 170, 200), ("key", "cmd+down"), ("type", " more"),
-        ("click", 120, 92), ("key", "cmd+a"), ("key", "cmd+a"), ("type", "soham"),
-    ]
-
-
-def test_appending_to_a_focused_text_area_goes_to_the_end_and_breaks_lines_with_return():
+def test_type_into_focuses_unfocused_fields_appends_at_the_end_and_breaks_lines_with_return():
     # A select-all left by an earlier step made the next item's text replace the
     # whole document (2026-10-08): appends always go to the end first.
     from bridge.tools.jev_operator.observe import Element
@@ -1382,17 +1364,22 @@ def test_appending_to_a_focused_text_area_goes_to_the_end_and_breaks_lines_with_
         def type_text(self, text):
             self.events.append(("type", text))
 
+    def element(index, role, label, value, bounds, focused):
+        return Element(index=index, role=role, subrole=None, label=label, value=value, bounds=bounds, enabled=True, focused=focused, window="w", kind="type")
+
     async def go(native):
         spec = ComputerToolSpec(session_id="t", emit_event=lambda _e: None, cancel_event=asyncio.Event())
         actuator = act_module.Actuator(spec, native, settle_ms=0)
-        area = Element(index=1, role="AXTextArea", subrole=None, label="Notes", value="Apples 3", bounds=(20, 160, 300, 80), enabled=True, focused=True, window="w", kind="type")
-        field = Element(index=2, role="AXTextField", subrole=None, label="Search", value="", bounds=(20, 80, 200, 24), enabled=True, focused=True, window="w", kind="type")
-        await actuator.type_into(area, "\nBread 1", replace=False)
-        await actuator.type_into(field, "two\nlines", replace=True)
+        await actuator.type_into(element(1, "AXTextArea", "Notes", "draft", (20, 160, 300, 80), False), " more", replace=False)
+        await actuator.type_into(element(2, "AXTextField", "Username", "old", (20, 80, 200, 24), False), "soham", replace=True)
+        await actuator.type_into(element(1, "AXTextArea", "Notes", "Apples 3", (20, 160, 300, 80), True), "\nBread 1", replace=False)
+        await actuator.type_into(element(2, "AXTextField", "Search", "", (20, 80, 200, 24), True), "two\nlines", replace=True)
 
     native = Recorder()
     asyncio.run(go(native))
     assert native.events == [
+        ("click", 170, 200), ("key", "cmd+down"), ("type", " more"),
+        ("click", 120, 92), ("key", "cmd+a"), ("key", "cmd+a"), ("type", "soham"),
         ("key", "cmd+down"), ("key", "return"), ("type", "Bread 1"),
         ("type", "two lines"),  # a single-line field never gets a Return from typed text
     ]
@@ -1566,7 +1553,7 @@ class PressingCalculator(FakeCalculator):
         super().click(x, y, button=button, double=double, modifiers=modifiers)
 
 
-def test_buttons_are_pressed_through_accessibility(tmp_path, monkeypatch):
+def test_buttons_are_pressed_through_accessibility_with_a_pointer_click_as_the_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
     native = PressingCalculator()
     op, _ = make_operator(native, ScriptedProvider([("click", "7"), ("click", "Multiply"), ("click", "2"), ("click", "Equals"), ("done", None)]))
@@ -1574,14 +1561,10 @@ def test_buttons_are_pressed_through_accessibility(tmp_path, monkeypatch):
     assert native.display == "14" and native.pointer_clicks == 0
     assert native.presses == ["AXButton"] * 4
     assert all(h.get("via") == "AXPress" for h in res.history if h["kind"] == "click")
-
-
-def test_press_failure_falls_back_to_a_pointer_click(tmp_path, monkeypatch):
-    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-    native = PressingCalculator(press_works=False)
-    op, _ = make_operator(native, ScriptedProvider([("click", "7"), ("done", None)]))
+    unpressable = PressingCalculator(press_works=False)
+    op, _ = make_operator(unpressable, ScriptedProvider([("click", "7"), ("done", None)]))
     asyncio.run(op.run())
-    assert native.pointer_clicks == 1 and native.display == "7"
+    assert unpressable.pointer_clicks == 1 and unpressable.display == "7"
 
 
 def test_launch_by_bundle_id_uses_open_b(monkeypatch):
@@ -1606,10 +1589,6 @@ def test_launch_by_bundle_id_uses_open_b(monkeypatch):
 
     asyncio.run(both())
     assert calls[0] == ["open", "-b", "com.apple.calculator"] and calls[1] == ["open", "-a", "Calculator"]
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q"]))
 
 
 # ─── a hung accessibility read must not hold the run ─────────────────
@@ -1871,24 +1850,33 @@ def test_running_out_of_steps_on_a_met_read_goal_ends_done_with_what_was_read(tm
 
 
 def test_a_finish_row_is_written_when_the_run_is_cancelled(tmp_path, monkeypatch):
+    import threading
+
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    reading, release = threading.Event(), threading.Event()
 
     class Slow(FakeCalculator):
         def read_ax_tree(self, pid, max_depth=8):
-            import time as _t
-            _t.sleep(0.3)
+            reading.set()
+            release.wait(5)
             return super().read_ax_tree(pid, max_depth)
 
     op, _ = make_operator(Slow(), ScriptedProvider([("click", "7")] * 20))
 
     async def go():
         task = asyncio.create_task(op.run())
-        await asyncio.sleep(0.1)
+        while not reading.is_set():  # cancel in the middle of an accessibility read
+            await _real_sleep(0.005)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        # Let the worker thread finish before the loop closes and joins it.
+        release.set()
 
-    asyncio.run(go())
+    try:
+        asyncio.run(go())
+    finally:
+        release.set()
     rows = read_log(tmp_path, op.run_id)
     assert rows[-1]["event"] == "finish" and rows[-1]["status"] == "cancelled" and rows[-1]["reason"]
     assert sum(1 for r in rows if r["event"] == "finish") == 1
@@ -1913,17 +1901,9 @@ def test_a_finish_row_is_written_when_the_run_crashes(tmp_path, monkeypatch):
     assert last["event"] == "finish" and last["status"] == "error" and "kaboom" in last["reason"]
 
 
-def test_rows_and_footer_carry_the_surface(tmp_path, monkeypatch):
-    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-    op, _ = make_operator(FakeCalculator(), ScriptedProvider([("click", "1"), ("done", None)]))
-    res = asyncio.run(op.run())
-    rows = read_log(tmp_path, res.run_id)
-    assert {r["event"] for r in rows} >= {"decision", "outcome", "finish"}
-    assert all(r["surface"] == "ax" for r in rows)
-    assert "surface=ax" in res.footer() and res.surface == "ax"
+def test_handoff_on_a_budget_exhausted_run_is_trimmed_and_hints(tmp_path, monkeypatch):
+    from bridge.tools.jev_operator.loop import RunResult
 
-
-def test_handoff_on_a_budget_exhausted_run(tmp_path, monkeypatch):
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
     op, _ = make_operator(FakeCalculator(), ScriptedProvider([("click", "7")] * 50), max_steps=2)
     res = asyncio.run(op.run())
@@ -1934,11 +1914,7 @@ def test_handoff_on_a_budget_exhausted_run(tmp_path, monkeypatch):
     assert "read_ms: median=" in h and "next: narrow the goal" in h
     done, _ = make_operator(FakeCalculator(), ScriptedProvider([("done", None)]))
     assert asyncio.run(done.run()).handoff() == ""
-
-
-def test_handoff_table_is_trimmed_and_unreadable_trees_get_the_ui_free_hint():
-    from bridge.tools.jev_operator.loop import RunResult
-
+    # A long table is trimmed, and an unreadable tree gets the UI-free hint.
     base = dict(summary="s", steps=0, jev_calls=0, jev_ms=[], llm_calls=0, llm_ms=0, llm_tokens=(0, 0), elapsed_s=1.0, history=[], run_id="r", log_path="/x.jsonl")
     big = RunResult(status="blocked", final_table="\n".join(f"row{i}" for i in range(200)), final_screen_text="x" * 500, last_frame_path="/f.jpg", code="ax_unreadable", **base)
     h = big.handoff()
@@ -2049,10 +2025,13 @@ def test_a_second_run_waits_its_turn_instead_of_failing(tmp_path, monkeypatch):
                 return await super().run()
 
         monkeypatch.setattr(mod, "Operator", Recording)
-        first = await tool.execute("c1", {"goal": "first", "use_llm": False})
+        await tool.execute("c1", {"goal": "first", "use_llm": False})
         second = await tool.execute("c2", {"goal": "second", "use_llm": False})
         assert not second.is_error and "waits for 1 jev run(s) ahead" in second.content
-        await asyncio.sleep(0.3)
+        while not started:
+            await _real_sleep(0.005)
+        for _ in range(20):  # turns enough for a second run that wrongly started to show up
+            await _real_sleep(0)
         assert started == ["first"], "the second run must not start while the first holds the screen"
         release.set()
         a, b = spec.registry.list_all()
@@ -2115,18 +2094,6 @@ def test_the_tool_blocks_when_wait_is_true(tmp_path, monkeypatch):
     asyncio.run(go())
 
 
-def test_ax_surface_satisfies_protocol():
-    from bridge.tools.jev_operator.surface import AXSurface, Surface
-
-    s = AXSurface(object(), object(), ax_depth=3, read_timeout_s=1.0)
-    assert isinstance(s, Surface) and s.name == "ax"
-
-
-def test_loop_uses_ax_surface():
-    op, _ = make_operator(object(), None)
-    assert op.surface.name == "ax"
-
-
 # ─── long text, unperformed actions, Jev's end-state check ───────────
 
 
@@ -2159,14 +2126,6 @@ def test_a_type_with_no_text_is_not_a_performed_action(tmp_path, monkeypatch):
     """'Performed 1 actions: type (text from LLM)' summed up a run that typed
     nothing: the goal gave no text and no LLM was there to compose one."""
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-
-    class FormNative(FakeCalculator):
-        def list_windows(self, *, include_helpers=False):
-            return [FakeWindow(1, 100, "com.apple.calculator", "Sign in", FakeBounds(0, 40, 400, 300))]
-
-        def read_ax_tree(self, pid, max_depth=8):
-            return json.dumps(form_tree())
-
     op, _ = make_operator(FormNative(), ScriptedProvider([("type", "Username"), ("done", None)]), goal="fill in the username field")
     res = asyncio.run(op.run())
     assert res.status == "blocked", res.summary
@@ -2217,7 +2176,7 @@ def test_a_door_that_does_not_answer_in_time_is_given_up(tmp_path, monkeypatch):
     monkeypatch.setattr("bridge.tools.jev_operator.handoff.DOOR_TIMEOUT_S", 0.05)
 
     async def slow_complete(messages, system_prompt, max_tokens):
-        await asyncio.sleep(1.0)
+        await _real_sleep(1.0)  # a real wait: the door's deadline runs on the event loop's own clock
         return "{}"
 
     llm = LLMHelper(slow_complete, max_calls=3)

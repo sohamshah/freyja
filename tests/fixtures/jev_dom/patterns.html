@@ -1,7 +1,7 @@
 <!doctype html><html><head><meta charset="utf-8"><title>patterns</title>
 <script>
-// A slow server: requests answer after 1.2 s (the hook installed later wraps this).
-window.fetch = function () { return new Promise(function (res) { setTimeout(function () { res({ ok: true }); }, 1200); }); };
+// A slow server: requests answer after 0.3 s (the hook installed later wraps this).
+window.fetch = function () { return new Promise(function (res) { setTimeout(function () { res({ ok: true }); }, 300); }); };
 </script>
 <style>
 body { font: 14px sans-serif; margin: 10px; width: 760px; }

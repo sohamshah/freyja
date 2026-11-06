@@ -14,6 +14,15 @@ from .browser import Page
 
 PAX = [("Ada", "Lovelace", "Female", "12/10/1990"), ("Alan", "Turing", "Male", "06/23/1992")]
 
+# Scales the settle time after a trusted click or typed text (the moment a page
+# gets to react before the next action) and the poll interval of wait_for. A run
+# keeps 1.0; the tests set 0.2 for their local pages.
+PACE = 1.0
+
+
+async def settle(seconds: float) -> None:
+    await asyncio.sleep(seconds * PACE)
+
 
 async def wait_for(page: Page, js: str, timeout: float = 10.0) -> Any:
     deadline = asyncio.get_running_loop().time() + timeout
@@ -27,7 +36,7 @@ async def wait_for(page: Page, js: str, timeout: float = 10.0) -> Any:
             return v
         if asyncio.get_running_loop().time() > deadline:
             raise TimeoutError(f"timed out waiting for {js[:80]}")
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(max(0.03, 0.15 * PACE))
 
 
 async def click(page: Page, selector: str, *, index: int = 0, frame_js: str | None = None) -> None:
@@ -38,7 +47,7 @@ async def click(page: Page, selector: str, *, index: int = 0, frame_js: str | No
     )
     xy = await wait_for(page, js)
     await page.mouse_click(*xy)
-    await asyncio.sleep(0.25)
+    await settle(0.25)
 
 
 async def type_into(page: Page, selector: str, text: str) -> None:
@@ -48,7 +57,7 @@ async def type_into(page: Page, selector: str, text: str) -> None:
         isolated=False,
     )
     await page.insert_text(text)
-    await asyncio.sleep(0.2)
+    await settle(0.2)
 
 
 async def ready(page: Page) -> None:
@@ -56,8 +65,19 @@ async def ready(page: Page) -> None:
 
 
 async def dismiss_promo(page: Page) -> None:
-    await asyncio.sleep(1.5)
+    """The promotion covers the home page 1.2 s after load (promo_popup) and
+    Escape closes it. With the quirk off there is nothing to wait for."""
+    due = await page.evaluate(
+        "(async function(){var r=await fetch('/airline/api/session'); var s=await r.json();"
+        "return !!(s.quirks && s.quirks.promo_popup) && !sessionStorage.getItem('promo');})()",
+        isolated=False,
+        await_promise=True,
+    )
+    if not due:
+        return
+    await wait_for(page, "document.getElementById('promo-root')", 5)
     await page.key("Escape")
+    await wait_for(page, "!document.getElementById('promo-root')", 5)
 
 
 async def search(page: Page) -> None:
@@ -102,7 +122,7 @@ async def _pick_day(page: Page, month: str, day: int) -> None:
         xy = await wait_for(page, f"document.querySelector('.ui-datepicker') && ({js})", 5)
         if xy:
             await page.mouse_click(*xy)
-            await asyncio.sleep(0.3)
+            await settle(0.3)
             return
         await click(page, ".ui-datepicker-next")
 
@@ -121,7 +141,7 @@ async def select_fares(page: Page) -> None:
         await click(page, ".farebox", index=idx)
     await wait_for(page, "!document.getElementById('fareBar').classList.contains('hidden')")
     await click(page, "#fareBar .opt:nth-child(2) button")
-    await asyncio.sleep(0.4)
+    await settle(0.4)
     has_modal = await page.evaluate("!!document.querySelector('.overlay')", isolated=False)
     if has_modal:
         await click(page, ".overlay a")
@@ -193,7 +213,7 @@ async def extras(page: Page) -> None:
         # by their place in its fixed layout (offer.html).
         for y in (75, 201):
             await page.mouse_click(frame[0] + frame[2] * 0.75, frame[1] + y)
-            await asyncio.sleep(0.4)
+            await settle(0.4)
     else:
         for name in ("disruption", "cfar"):
             await click(page, f"input[name={name}]", index=1)

@@ -59,7 +59,7 @@ Episodes can also expire. `session_timeout_s` sends the next request home with t
 
 A check returns named marks read from the server's state and events, for example `outbound_business`, `p2_dob`, `out:1` (a seat), or `on_payment_page`. The reward is 1 only when every required mark holds and nothing forbidden happened. Forbidden: purchasing, joining a membership, choosing the Club Saver fare, or adding a paid extra. The marks also make a dense signal for partial credit.
 
-`oracle.py` is a privileged scripted solver. It knows the pages and acts with trusted pointer and keyboard events. `tests/test_cua_envs.py` uses it to prove every task can be finished, with quirks on and off, and that an untouched page scores 0. A task the oracle cannot finish is a broken env, not a weak agent.
+`oracle.py` is a privileged scripted solver. It knows the pages and acts with trusted pointer and keyboard events. Each env's test file (`tests/test_cua_env_<env>.py`, on the shared browser and server of `tests/cua_harness.py`) uses it to prove every task of that env can be finished, with quirks on and off, and that an untouched page scores 0; `tests/test_cua_envs.py` keeps the generic step-API and accessible-variant checks. The tests shorten every server and page wait through the episode config (`cua_harness.FAST`), so a solve takes seconds instead of the real timeline. A task the oracle cannot finish is a broken env, not a weak agent.
 
 ## Running
 
@@ -106,6 +106,6 @@ uv run python evals/computer_use/run.py serve airline/seats --port 8777
 2. Add `backend.py` with `init(episode)` and `backend(episode, method, name, query, body)` for the JSON routes.
 3. Register it in `run.py:make_server`.
 4. Add tasks with checks that read only server state and events.
-5. Extend `oracle.py` and `tests/test_cua_envs.py`, so every task is proven solvable.
+5. Extend `oracle.py` and the env's `tests/test_cua_env_<env>.py`, so every task is proven solvable on the shortened timelines (add the env's waits to `cua_harness.FAST` and make them config keys in the backend).
 
 Never copy a real site's markup or branding. Rebuild the pattern.

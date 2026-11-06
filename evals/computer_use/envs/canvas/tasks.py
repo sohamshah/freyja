@@ -4,7 +4,6 @@ forbidden in every task, and shipping any order but the one named."""
 
 from __future__ import annotations
 
-import asyncio
 import re
 from typing import Any
 
@@ -165,7 +164,7 @@ async def _click(page: Any, region: str) -> None:
         page, _js(f"(function(){{var c=app.find({region!r});return c?[c[0]+L.dx,c[1]+L.dy]:null}})()"), 5
     )
     await page.mouse_click(at[0], at[1])
-    await asyncio.sleep(0.2)
+    await oracle.settle(0.2)
 
 
 async def _settled(page: Any, js: str) -> None:

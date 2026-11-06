@@ -89,7 +89,7 @@
           city.dispatchEvent(new Event('change', { bubbles: true }));
           document.body.setAttribute('data-lookup', r.data.city);
         });
-      }, LOOKUP_DELAY_MS);
+      }, s.lookup_delay_ms || LOOKUP_DELAY_MS);
     });
 
     // ─── submit ────────────────────────────────────────────────────────

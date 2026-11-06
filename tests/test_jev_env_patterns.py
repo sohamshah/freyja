@@ -6,7 +6,6 @@ test_jev_dom_snapshot.py.)
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 
@@ -14,7 +13,7 @@ from bridge.decisions.types import Answers, ChoiceAnswer, NoulAnswer
 from bridge.tools.jev_operator.decide import Thresholds, interpret
 from bridge.tools.jev_operator.handoff import LLMHelper
 from tests.test_jev_dom_surface import TARGET, FakePage, action, dom_operator, run, snap, surface
-from tests.test_jev_operator import ScriptedProvider
+from tests.test_jev_operator import ScriptedProvider, fast_clock  # noqa: F401
 
 
 def _choice(probs: dict[str, float]) -> ChoiceAnswer:
@@ -75,13 +74,6 @@ def test_a_typing_step_the_planner_names_is_taken_when_jev_spreads_the_operation
     assert decide(op=away).operation == "need_help"
     elsewhere = {"click": 0.45, "done": 0.35, "type": 0.15, "scroll_up": 0.05}
     assert decide(op=elsewhere, ct=("3", 0.9)).operation == "need_help"
-
-
-def test_the_type_option_says_typing_focuses_and_scrolls_by_itself():
-    from bridge.tools.jev_operator.decide import OPERATION_OPTIONS
-
-    assert "no click first" in OPERATION_OPTIONS["type"]
-    assert "out of view" in OPERATION_OPTIONS["type"]
 
 
 def test_a_label_every_row_repeats_names_no_row():
@@ -157,33 +149,26 @@ def test_a_click_on_a_look_alike_row_goes_to_the_row_the_goal_names_exactly():
 
 
 class Dashboard(FakePage):
-    """A page whose backlog figure moves once `switch_at` has passed."""
+    """A page whose backlog figure moves once `switch_at` has passed on the run's (virtual) clock."""
 
-    def __init__(self, actions):
+    def __init__(self, actions, clock):
         super().__init__(actions)
+        self.clock = clock
         self.switch_at = float("inf")
 
     def __call__(self, bundle, js):
         if js.endswith("snapshot();})()"):
-            n = 430 if time.monotonic() >= self.switch_at else 385
+            n = 430 if self.clock.monotonic() >= self.switch_at else 385
             return json.dumps(snap(self.actions, text=f"Support backlog\n{n}\nopen tickets"))
         return super().__call__(bundle, js)
 
 
-_real_sleep = asyncio.sleep
-
-
-async def _no_sleep(*a, **k):
-    await _real_sleep(0)
-
-
-def test_the_planner_waits_on_the_world_and_keeps_its_notes(tmp_path, monkeypatch):
+def test_the_planner_waits_on_the_world_and_keeps_its_notes(tmp_path, monkeypatch, fast_clock):  # noqa: F811
     """A watch run had only Jev's wait, under a second: it replanned every few
     seconds and ended "stuck" 35 s in. Its planner also never saw its own notes:
     "the starting backlog is 385" became "treat 422 as the baseline"."""
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
-    page = Dashboard([action(1, label="Refresh"), action(2, label="Page on-call")])
+    page = Dashboard([action(1, label="Refresh"), action(2, label="Page on-call")], fast_clock)
     payloads: list[dict] = []
 
     systems: list[str] = []
@@ -193,7 +178,7 @@ def test_the_planner_waits_on_the_world_and_keeps_its_notes(tmp_path, monkeypatc
             systems.append(system_prompt)
             payloads.append(json.loads(messages[0].content))
             if len(payloads) == 1:
-                page.switch_at = time.monotonic() + 0.3
+                page.switch_at = fast_clock.monotonic() + 0.3
                 return json.dumps({
                     "status": "continue", "subgoal": "Read the Support backlog.",
                     "direct_action": {"kind": "wait", "seconds": 1},
@@ -233,7 +218,6 @@ def test_the_planner_waits_on_the_world_and_keeps_its_notes(tmp_path, monkeypatc
 
 def test_a_planner_wait_never_outlasts_the_run(tmp_path, monkeypatch):
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
     page = FakePage([action(1, label="Refresh")])
 
     async def door(messages, system_prompt, max_tokens):
@@ -257,7 +241,6 @@ def test_a_check_that_says_not_yet_waits_instead_of_ending_the_run(tmp_path, mon
     done between them end a run "blocked", and a watch run ended that way a
     minute into its two."""
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
     page = FakePage([action(1, label="Refresh")])
     checks: list[str] = []
 

@@ -9,6 +9,10 @@ Every trap is a switch in `episode.config["quirks"]` (all on by default). With a
 quirk off the page uses the accessible version of the same widget. Rewards come
 only from what this server saved or logged; the pages never show a success
 banner or an answer to find. See README.md next to this file.
+
+The sign-up form's two waits are config too, so the tests can shorten them:
+`signup_delay_s` (the server's answer, default 2.0) and `lookup_delay_ms` (the
+page's postcode lookup, default 2000).
 """
 
 from __future__ import annotations
@@ -158,6 +162,11 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _POSTCODE = re.compile(r"^[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}$")
 _VAT = re.compile(r"^GB\d{9}$")
 SIGNUP_DELAY_S = 2.0
+LOOKUP_DELAY_MS = 2000
+
+
+def _signup_delay(ep: Episode) -> float:
+    return float(ep.config.get("signup_delay_s", SIGNUP_DELAY_S))
 
 # ─── members ──────────────────────────────────────────────────────────────
 MEMBER_COUNT = 2000
@@ -452,7 +461,7 @@ def _signup(ep: Episode, body: dict[str, Any]) -> Response:
             err("vat", "VAT ID: use GB followed by 9 digits")
     if errors:
         ep.log("signup_rejected", errors=[e["message"] for e in errors], vat=vat, city=city)
-        return Response(400, {"errors": errors}, delay_s=SIGNUP_DELAY_S)
+        return Response(400, {"errors": errors}, delay_s=_signup_delay(ep))
     accounts = ep.state["signup"]["accounts"]
     acc = {
         "id": f"acc-{len(accounts) + 1}",
@@ -475,7 +484,7 @@ def _signup(ep: Episode, body: dict[str, Any]) -> Response:
     return Response(
         200,
         {"ok": True, "id": acc["id"], "go": f"account.html?id={acc['id']}"},
-        delay_s=SIGNUP_DELAY_S,
+        delay_s=_signup_delay(ep),
     )
 
 
@@ -517,7 +526,14 @@ def backend(ep: Episode, method: str, name: str, query: dict[str, str], body: An
         return Response(405, {"error": "POST only"})
 
     if name == "session":
-        return Response(200, {"quirks": q, "mode": st["checklist"]["mode"]})
+        return Response(
+            200,
+            {
+                "quirks": q,
+                "mode": st["checklist"]["mode"],
+                "lookup_delay_ms": int(ep.config.get("lookup_delay_ms", LOOKUP_DELAY_MS)),
+            },
+        )
 
     # ─── catalog ────────────────────────────────────────────────────────
     if name == "catalog":

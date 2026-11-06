@@ -91,8 +91,9 @@ class _WS:
 
 
 class Page:
-    def __init__(self, ws):
+    def __init__(self, ws, url):
         self.ws = ws
+        self.url = url
 
     def eval(self, expr):
         r = self.ws.call("Runtime.evaluate", expression=expr, returnByValue=True)
@@ -106,6 +107,20 @@ class Page:
     def act(self, id_, op, arg=None, guard=None):
         return json.loads(self.eval(
             f"window.__freyjaJev.act({json.dumps(id_)},{json.dumps(op)},{json.dumps(arg)},{json.dumps(guard)})"))
+
+    def reload(self):
+        """Back to the fixture as first loaded, in the same Chrome. A test that leaves a layer open over the page calls this so the next test does not find it there."""
+        self.ws.call("Page.navigate", url=self.url)
+        for _ in range(250):
+            try:
+                if self.eval("typeof window.__freyjaJev === 'undefined' && document.readyState === 'complete'"):
+                    break
+            except Exception:  # the old document's context is going away
+                pass
+            time.sleep(0.02)
+        else:
+            raise RuntimeError("the fixture page did not reload")
+        self.eval(SCRIPT)
 
 
 import contextlib
@@ -130,7 +145,7 @@ def _open(fixture):
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         target = None
-        for _ in range(100):
+        for _ in range(400):
             try:
                 tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=2))
                 pages = [t for t in tabs if t.get("type") == "page"]
@@ -139,15 +154,15 @@ def _open(fixture):
                     break
             except Exception:
                 pass
-            time.sleep(0.2)
+            time.sleep(0.05)
         if not target:
             pytest.skip("headless Chrome did not start")
-        p = Page(_WS(target["webSocketDebuggerUrl"]))
+        p = Page(_WS(target["webSocketDebuggerUrl"]), fixture.as_uri())
         p.ws.call("Emulation.setDeviceMetricsOverride", width=800, height=600, deviceScaleFactor=1, mobile=False)
-        for _ in range(50):
+        for _ in range(250):
             if p.eval("document.readyState") == "complete":
                 break
-            time.sleep(0.1)
+            time.sleep(0.02)
         p.eval(SCRIPT)
         yield p
     finally:
@@ -159,19 +174,23 @@ def _open(fixture):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# One Chrome per fixture page for the whole module. The tests on a page share
+# it in file order; a test that leaves a layer open calls Page.reload().
+
+
 @pytest.fixture(scope="module")
 def page():
     with _open(FIXTURE) as p:
         yield p
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def patterns():
     with _open(PATTERNS) as p:
         yield p
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def lists():
     with _open(LISTS) as p:
         yield p
@@ -185,8 +204,12 @@ def test_idempotent_install(page):
     assert page.eval(SCRIPT) == "already-installed"
     before = page.snap()["mutations"]
     page.eval("document.body.setAttribute('data-x','1')")
-    time.sleep(0.1)
-    assert page.snap()["mutations"] - before == 1  # one observer, not two
+    for _ in range(50):
+        seen = page.snap()["mutations"] - before
+        if seen:
+            break
+        time.sleep(0.01)
+    assert seen == 1  # one observer, not two
 
 
 def test_filtering_and_shape(page):
@@ -397,63 +420,59 @@ def test_a_click_on_a_plain_div_commits_the_field_typed_last(patterns):
     assert patterns.eval("document.title") == "next:model:80202"
 
 
-def test_a_modal_layer_is_a_dialog_and_hides_what_is_behind_it(patterns):
-    """An upsell with no dialog role was appended after a long page; its text was
-    cut off and the run waited on a page it could not see was blocked."""
-    btn = [a for a in patterns.snap()["actions"] if a["label"] == "Open offer"][0]
+def test_a_modal_layer_is_a_dialog_that_hides_and_covers_what_is_behind_it(patterns):
+    """An upsell with no dialog role was appended after a long page; its text was cut off and the run waited on a page it could not see was blocked. A click on a control behind the layer is refused, naming the layer and its title."""
+    before = patterns.snap()
+    btn = _by_label(before, "Open offer")[0]
+    slow = _by_label(before, "Save slowly")[0]
     patterns.act(btn["id"], "click")
     s = patterns.snap()
     assert s["dialog"]["title"] == "Join the club"
     assert s["text"].startswith("[dialog] Join the club")
     assert sorted(a["label"] for a in s["actions"]) == ["No thanks, continue", "SIGN UP"]
     assert s["behind"] > 5
-    covered = [a for a in patterns.snap()["actions"] if a["label"] == "SIGN UP"]
-    assert covered
-    no = [a for a in s["actions"] if a["label"] == "No thanks, continue"][0]
+    r = patterns.act(slow["id"], "click", None, slow["guard"])
+    assert r["reason"].startswith("covered by div#overlay") and "Join the club" in r["reason"]
+    no = _by_label(s, "No thanks, continue")[0]
     assert patterns.act(no["id"], "click")["ok"] and patterns.eval("document.title") == "declined"
     assert patterns.snap()["dialog"] is None
-
-
-def test_a_covered_control_names_what_covers_it(patterns):
-    s = patterns.snap()
-    target = [a for a in s["actions"] if a["label"] == "Save slowly"][0]
-    patterns.eval("document.getElementById('overlay').style.display='flex'")
-    r = patterns.act(target["id"], "click", None, target["guard"])
-    assert r["reason"].startswith("covered by div#overlay") and "Join the club" in r["reason"]
-
-
-def test_frames_are_reported(patterns):
-    s = patterns.snap()
-    assert len(s["frames"]) == 1 and s["frames"][0]["title"] == "offers"
 
 
 def test_requests_an_action_started_keep_the_page_busy(patterns):
     """A Continue that posts and navigates when the server answers looked
     settled after 3 s; the run judged it a no-op."""
-    slow = [a for a in patterns.snap()["actions"] if a["label"] == "Save slowly"][0]
+    def quiet():
+        return json.loads(patterns.eval("window.__freyjaJev.quiet()"))
+
+    slow = _by_label(patterns.snap(), "Save slowly")[0]
     assert patterns.act(slow["id"], "click")["ok"]
-    q = json.loads(patterns.eval("window.__freyjaJev.quiet()"))
-    assert q["p"] == 1
-    time.sleep(1.5)
-    q = json.loads(patterns.eval("window.__freyjaJev.quiet()"))
-    assert q["p"] == 0 and patterns.eval("document.title") == "saved"
+    assert quiet()["p"] == 1
+    for _ in range(250):  # the fixture's server answers after 0.3 s
+        if quiet()["p"] == 0:
+            break
+        time.sleep(0.02)
+    assert quiet()["p"] == 0 and patterns.eval("document.title") == "saved"
 
 
-def test_a_panel_parked_beside_the_window_is_not_on_the_page(patterns):
-    """Six closed slide-in panels each listed a "Close" button on every page of a
-    real booking site; something in a side-scrolling carousel still counts."""
-    labels = [a["label"] for a in patterns.snap()["actions"]]
+def test_a_frame_is_listed_and_a_panel_parked_beside_the_window_is_not(patterns):
+    """Six closed slide-in panels each listed a "Close" button on every page of a real booking site; something in a side-scrolling carousel still counts, and an iframe is reported by its title."""
+    s = patterns.snap()
+    labels = [a["label"] for a in s["actions"]]
     assert "Close" not in labels and "Book this deal" in labels
+    assert len(s["frames"]) == 1 and s["frames"][0]["title"] == "offers"
 
 
 def test_typing_the_same_value_again_reopens_the_suggestions(patterns):
     """An autocomplete searches only when the value changes; a run retyped an
     airport code over itself and the suggestion list never came back."""
     city = [a for a in patterns.snap()["actions"] if a["label"] == "City"][0]
-    patterns.act(city["id"], "fill", {"text": "San", "mode": "replace"})
-    patterns.eval("document.getElementById('menu').style.display='none'")
-    patterns.act(city["id"], "fill", {"text": "San", "mode": "replace"})
-    assert patterns.eval("document.getElementById('menu').style.display") == "block"
+    try:
+        patterns.act(city["id"], "fill", {"text": "San", "mode": "replace"})
+        patterns.eval("document.getElementById('menu').style.display='none'")
+        patterns.act(city["id"], "fill", {"text": "San", "mode": "replace"})
+        assert patterns.eval("document.getElementById('menu').style.display") == "block"
+    finally:
+        patterns.reload()  # the suggestion list is left open over the top of the page
 
 
 def test_repeated_day_links_are_named_by_their_month_not_by_a_nav_link(patterns):
@@ -519,7 +538,7 @@ def test_return_in_a_search_box_with_suggestions_searches(lists):
 ROOMS = ROOT / "tests/fixtures/jev_dom/rooms.html"
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def rooms():
     with _open(ROOMS) as p:
         yield p
@@ -558,7 +577,7 @@ def test_text_above_the_view_is_returned_apart(rooms):
 CALENDAR = ROOT / "tests/fixtures/jev_dom/calendar.html"
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def calendar():
     with _open(CALENDAR) as p:
         yield p

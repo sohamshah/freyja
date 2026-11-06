@@ -10,7 +10,6 @@ pages (open the record, fill the form, submit) and knows the gold answers.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from typing import Any
@@ -438,7 +437,7 @@ async def _open_from_list(page: Any, list_path: str, rid: str) -> None:
             "b.textContent==='Next page'})",
         )
         await o.click(page, ".pager button", index=int(idx))
-        await asyncio.sleep(0.2)
+        await o.settle(0.2)
     await o.click(page, sel)
     await o.wait_for(page, f"location.search.indexOf({json.dumps(rid)})>=0", 10)
     await _ready(page)

@@ -10,6 +10,8 @@ its fields, logs it, and the checks read only what it stored.
 
 Each trap is a switch in `episode.config["quirks"]` (all on by default); with
 one off, the page uses the plain twin of the same pattern. See ./README.md.
+`episode.config["panel_delay_s"]` ([lo, hi], default [1.5, 3.0]) is how long the
+lazy panels take; the tests shorten it.
 """
 
 from __future__ import annotations
@@ -66,7 +68,7 @@ DEFAULT_QUIRKS = {k: True for k in QUIRKS}
 
 TODAY = dt.date(2026, 10, 14)
 CLOCK0 = dt.datetime(2026, 10, 14, 10, 30)  # the app's clock when an episode starts
-TRACKING_DELAY_S = 3.0
+PANEL_DELAY_S = (1.5, 3.0)  # lazy_panels: a panel's loading time; tracking takes the longest
 
 REFUND_DECISIONS = ["Approve refund", "Approve as store credit", "Deny", "Request info", "Escalate"]
 APPROVALS = ("Approve refund", "Approve as store credit")
@@ -152,12 +154,18 @@ def _stamp(t: dt.datetime) -> str:
     return t.strftime("%Y-%m-%dT%H:%M")
 
 
+def _panel_delay(ep: Episode) -> tuple[float, float]:
+    lo, hi = ep.config.get("panel_delay_s") or PANEL_DELAY_S
+    return float(lo), float(hi)
+
+
 def _delay(ep: Episode, key: str) -> float:
     """A panel's loading time (lazy_panels): 1.5 to 3 s, fixed per record."""
     if not _q(ep)["lazy_panels"]:
         return 0.0
+    lo, hi = _panel_delay(ep)
     h = int(hashlib.md5(key.encode()).hexdigest()[:6], 16)
-    return 1.5 + (h % 1501) / 1000.0
+    return lo + (h % 1501) / 1500.0 * (hi - lo)
 
 
 def _day(iso: str, ep: Episode) -> str:
@@ -1081,7 +1089,7 @@ def backend(ep: Episode, method: str, name: str, query: dict[str, str], body: An
                     "carrier": D.ORDERS[D.CASE["order"]]["carrier"],
                     "tracking_no": D.ORDERS[D.CASE["order"]]["tracking"],
                 },
-                delay_s=TRACKING_DELAY_S if _q(ep)["lazy_panels"] else 0.0,
+                delay_s=_panel_delay(ep)[1] if _q(ep)["lazy_panels"] else 0.0,
             )
         if name == "contracts":
             return Response(200, {"rows": _contract_rows(ep)})

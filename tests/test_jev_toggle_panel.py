@@ -12,7 +12,7 @@ import re
 from types import SimpleNamespace
 
 from tests.test_jev_dom_surface import FakePage, action, dom_operator, run, snap
-from tests.test_jev_operator import ScriptedProvider
+from tests.test_jev_operator import ScriptedProvider, fast_clock  # noqa: F401
 
 OPENER = "Add permissions"
 

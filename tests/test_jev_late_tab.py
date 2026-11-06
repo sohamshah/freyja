@@ -63,7 +63,7 @@ def test_a_tab_the_click_opens_late_is_followed_at_the_next_read(monkeypatch):
                        "how": "the click opened a new tab after it returned"}
 
 
-def test_a_late_tab_on_another_site_or_one_the_person_had_is_not_followed(monkeypatch):
+def test_a_late_tab_is_not_followed_on_another_site_or_if_the_person_had_it_or_long_after_the_click(monkeypatch):
     front = {"id": "D"}
     s, log, asked = _surface(monkeypatch, front, {"D": "https://mail.other.example/inbox"})
     s._clicked_at = time.monotonic()
@@ -74,11 +74,8 @@ def test_a_late_tab_on_another_site_or_one_the_person_had_is_not_followed(monkey
     front["id"] = "B"  # a tab that existed when the run started
     run(s._follow_late_tab())
     assert s.tab_id == "A"
-
-
-def test_the_front_tab_is_checked_only_for_a_while_after_a_click(monkeypatch):
-    front = {"id": "C"}
-    s, _, asked = _surface(monkeypatch, front, {"C": WARNING})
+    # The front tab is checked only for a while after a click.
+    front["id"] = "C"
     s._clicked_at = time.monotonic() - LATE_TAB_S - 1
     run(s._follow_late_tab())
-    assert s.tab_id == "A" and s._clicked_at is None and asked == []
+    assert s.tab_id == "A" and s._clicked_at is None and asked == ["D"], "no lookup once the window has passed"

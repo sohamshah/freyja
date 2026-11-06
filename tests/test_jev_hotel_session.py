@@ -17,7 +17,14 @@ from bridge.tools.jev_operator.dom_surface import ABOVE_MARK, DOMSurface
 from bridge.tools.jev_operator.handoff import LLMHelper
 from bridge.tools.jev_operator.loop import MAX_IDLE_SCROLLS, Target, fallback_urls, same_site
 from tests.test_jev_dom_surface import TARGET, action
-from tests.test_jev_operator import FakeCalculator, ScriptedProvider, make_operator, read_log
+from tests.test_jev_operator import (  # noqa: F401
+    FakeCalculator,
+    ScriptedProvider,
+    fast_clock,
+    make_operator,
+    read_log,
+)
+
 
 @pytest.fixture(autouse=True)
 def _runs_dir(tmp_path, monkeypatch):
@@ -88,10 +95,11 @@ def door(replan=None, verify=None, seen: list | None = None):
 # ── J1: the page's whole text reaches the planner and the check ──────────
 
 
-def test_the_check_reads_the_whole_page_and_the_decision_step_a_marked_start():
+def test_the_check_reads_the_whole_page_in_page_order_and_the_decision_step_a_marked_start():
     # A room's policy below two room cards was cut at "Cancella…" and read as
     # missing from the page. The run scrolled for it for minutes.
-    page = Page(text="Deluxe Room 1 King Bed\nFrom 318\n[below the visible area]\n" + POLICY + "\nPOLICY-END")
+    page = Page(text="Deluxe Room 1 King Bed\nFrom 318\n[below the visible area]\n" + POLICY + "\nPOLICY-END",
+                above="Hotel header\nDates: January 21 2027 - January 24 2027")
     seen: list[dict] = []
     check = {"satisfied": True, "summary": "Read the rates.", "report": "Deluxe: 318"}
     op = operator(page, ScriptedProvider([("done", None)]), llm=LLMHelper(door(verify=[check], seen=seen)))
@@ -102,14 +110,9 @@ def test_the_check_reads_the_whole_page_and_the_decision_step_a_marked_start():
     assert "POLICY-END" in obs.page_text
     assert "POLICY-END" in seen[-1]["final_screen_text"]
     assert res.status == "done"
-
-
-def test_text_above_the_view_comes_first_in_page_order():
-    page = Page(text="Rates in view", above="Hotel header\nDates: January 21 2027 - January 24 2027")
-    op = operator(page, ScriptedProvider([]))
-    obs = asyncio.run(op.surface.observe(TARGET))
+    # Text above the view comes first in page order; the decision step reads what is in view.
     assert obs.page_text.startswith(ABOVE_MARK) and "January 21 2027" in obs.page_text
-    assert "January 21 2027" not in obs.screen_text  # the decision step reads what is in view
+    assert "January 21 2027" not in obs.screen_text
 
 
 # ── J4: every "done" goes through one check with one count ───────────────
@@ -213,7 +216,7 @@ def test_a_fallback_address_is_recognised():
     assert not same_site("https://mail.example.test/", "https://t.bookwell.test/y")
 
 
-def test_a_run_continues_in_its_tab_instead_of_opening_the_fallback():
+def test_a_run_continues_in_its_tab_and_opens_the_fallback_only_from_another_site():
     # The second search found the first run's results tab, then opened the
     # entry page in a new tab and started over.
     page = Page(url="https://alameda.bookwell.test/rooms")
@@ -231,19 +234,16 @@ def test_a_run_continues_in_its_tab_instead_of_opening_the_fallback():
     assert opened == []
     rows = read_log(op.log_path.parent, op.run_id)
     assert any(r.get("event") == "open_url" and "fallback" in str(r.get("skipped")) for r in rows)
-
-
-def test_a_fallback_on_another_site_is_still_opened():
+    # From another site the fallback is still opened.
     page = Page(url="https://mail.example.test/inbox")
     op = operator(page, ScriptedProvider([("done", None)]), goal=GOAL_R2)
-    opened: list[str] = []
 
-    async def spy(url):
+    async def spy_elsewhere(url):
         opened.append(url)
         page.url = url
         return SimpleNamespace(ok=True, error=None, description="", confirm_declined=None)
 
-    op.surface.open_url = spy
+    op.surface.open_url = spy_elsewhere
     asyncio.run(op.run())
     assert opened == ["https://t.bookwell.test/Xk3Yd9q"]
 

@@ -1,38 +1,21 @@
 """The ops env (evals/computer_use/envs/ops, "Quaymark Ops"): every task is
 solvable with its quirks on and with them off, on timelines shortened through
-the task config; each pattern behaves as its README says; and each check
-catches what it forbids. The shared oracle test (tests/test_cua_envs.py) runs
-the same solvers on the real timelines. The page tests need a headless
+the task config (tests/cua_harness.py FAST); each pattern behaves as its README
+says; and each check catches what it forbids. The page tests need a headless
 Chromium and skip without one."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import sys
-from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "evals"))
-
-# The oracle first: importing it collects every env's SOLVERS.
-from computer_use import envs, oracle  # noqa: E402
-from computer_use.browser import Browser, find_chrome  # noqa: E402
-from computer_use.envs.ops import backend as B  # noqa: E402
-from computer_use.envs.ops import tasks as T  # noqa: E402
-from computer_use.run import make_server  # noqa: E402
-from computer_use.server import Episode  # noqa: E402
+from tests.cua_harness import FAST, Episode, envs, harness_fixture, oracle  # noqa: F401
 
 pytestmark = pytest.mark.skipif("ops" not in envs.NAMES, reason="CUA_ENVS leaves out ops")
-chrome = pytest.mark.skipif(find_chrome() is None, reason="no Chromium for the environments")
-
-# The same timelines in seconds instead of minutes.
-FAST = {
-    "ops/monitor_backlog": {"timeline": {"cross_s": [6, 8], "tick_s": 1.5}},
-    "ops/monitor_quiet": {"timeline": {"quiet_s": 14, "report_after_s": 9, "tick_s": 1.5}},
-}
+B = envs.backend("ops")
+T = envs.tasks("ops")
 TASK = {t.id: t for t in T.TASKS}
 
 
@@ -58,27 +41,10 @@ def _call(ep, name: str, body=None):
 # ─── every task, quirks on and off ────────────────────────────────────────
 
 
-async def _solve(task_id: str, quirks: dict[str, bool]):
-    server = make_server()
-    b = await Browser.launch(width=1280, height=900)
-    try:
-        t = TASK[task_id]
-        ep = server.new_episode("ops", {**t.config, **FAST.get(task_id, {}), "quirks": quirks})
-        before = t.check(B.view(ep), list(ep.events), {"status": "", "text": ""})
-        p = await b.new_page(context=await b.new_context())
-        await p.navigate(server.start_url(ep, f"/ops/{t.start}"))
-        run = await oracle.solve(task_id, p)
-        return before, t.check(B.view(ep), list(ep.events), run)
-    finally:
-        await b.close()
-        server.stop()
-
-
-@chrome
 @pytest.mark.parametrize("quirks", ["on", "off"])
 @pytest.mark.parametrize("task_id", sorted(TASK))
-def test_every_task_is_solvable_with_quirks_on_and_off(task_id, quirks):
-    before, after = asyncio.run(_solve(task_id, {k: quirks == "on" for k in B.QUIRKS}))
+def test_every_task_is_solvable_with_quirks_on_and_off(harness, task_id, quirks):
+    before, after = harness.solvable(task_id, quirks)
     assert before.reward == 0.0
     assert after.reward == 1.0, after.why
 
@@ -143,33 +109,28 @@ def test_the_quiet_task_needs_the_window_and_a_no_trigger_report():
 
 
 @pytest.mark.parametrize(
-    "text",
+    "text,no_trigger",
     [
-        "It has not happened within 2 minutes.",
-        "The support backlog never rose 10% above 385.",
-        "Condition not met after 2 minutes; I did not page anyone.",
-        "The backlog stayed below the 10% threshold (424) the whole time.",
-        "No rise past 10% in two minutes, so nobody was paged.",
-        "Backlog didn't reach the line (peak 423 vs 424 needed).",
-        "Two minutes are up and the backlog is still below 424.",
-        "There was no 10% rise in the support backlog.",
-    ],
-)
-def test_no_trigger_reports_are_recognised(text):
-    assert T.NO_TRIGGER.search(text)
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "The backlog rose to 431, 12% above 385, so I paged Alan Turing.",
-        "Paged the on-call engineer at 09:00:31 when the backlog hit 428.",
+        ("It has not happened within 2 minutes.", True),
+        ("The support backlog never rose 10% above 385.", True),
+        ("Condition not met after 2 minutes; I did not page anyone.", True),
+        ("The backlog stayed below the 10% threshold (424) the whole time.", True),
+        ("No rise past 10% in two minutes, so nobody was paged.", True),
+        ("Backlog didn't reach the line (peak 423 vs 424 needed).", True),
+        ("Two minutes are up and the backlog is still below 424.", True),
+        ("There was no 10% rise in the support backlog.", True),
+        ("The backlog rose to 431, 12% above 385, so I paged Alan Turing.", False),
+        ("Paged the on-call engineer at 09:00:31 when the backlog hit 428.", False),
         # From a smoke run that stopped after 9 seconds: it is about paging, not the backlog.
-        "The backlog went from 385 to 379, so the on-call engineer has correctly not been paged.",
+        (
+            "The backlog went from 385 to 379, so the on-call engineer has correctly not been "
+            "paged.",
+            False,
+        ),
     ],
 )
-def test_trigger_reports_are_not_mistaken_for_no_trigger(text):
-    assert not T.NO_TRIGGER.search(text)
+def test_no_trigger_reports_are_told_from_trigger_reports(text, no_trigger):
+    assert bool(T.NO_TRIGGER.search(text)) is no_trigger
 
 
 # ─── purchase orders ──────────────────────────────────────────────────────
@@ -272,14 +233,10 @@ def test_the_receipts_keep_one_field_wrong_under_sticky_values():
     assert len({r["merchant"] for r in rows}) == 8
 
 
-async def _expense_page(cfg):
-    server = make_server()
-    b = await Browser.launch(width=1280, height=900)
-    ep = server.new_episode("ops", cfg)
-    p = await b.new_page(context=await b.new_context())
-    await p.navigate(server.start_url(ep, "/ops/expenses.html"))
+async def _expense_page(h, **cfg):
+    ep, p = await h.open("ops", {**FAST["ops"], **cfg}, "expenses.html")
     await oracle.ready(p)
-    return server, b, ep, p
+    return ep, p
 
 
 FILL = (
@@ -290,30 +247,35 @@ FILL = (
 )
 
 
-@chrome
 @pytest.mark.parametrize("slow", [True, False])
-def test_a_second_click_while_saving_saves_twice_only_when_slow(slow):
+def test_a_second_click_while_saving_saves_twice_only_when_slow(harness, slow):
+    """A slow save leaves its button enabled, so the second click posts again; the
+    plain form disables the button and ignores the click while it saves."""
+
     async def go():
-        server, b, ep, p = await _expense_page({"quirks": {"slow_save": slow}})
+        # Both saves outlast the oracle's two clicks (a settle apart), so the
+        # second click always lands while the first save is in flight.
+        cfg = {"quirks": {"slow_save": slow}, "save_delay_s": [0.6, 0.8], "plain_save_s": 0.5}
+        ep, p = await _expense_page(harness, **cfg)
         try:
             row = ep.state["expenses"]["receipts"][0]
             await _js(p, f"{FILL}({json.dumps(row)})")
             await oracle.click(p, "#expSave")
             await oracle.click(p, "#expSave")
-            await asyncio.sleep(4.5)
-            return len(ep.state["expenses"]["saved"])
+            await oracle.wait_for(p, "+document.body.getAttribute('data-saved') >= 1", 5)
+            if slow:
+                await oracle.wait_for(p, "+document.body.getAttribute('data-saved') >= 2", 5)
+            # Any second request was received before the first answered.
+            return ep.state["expenses"]["requests"], len(ep.state["expenses"]["saved"])
         finally:
-            await b.close()
-            server.stop()
+            await harness.close(p)
 
-    assert asyncio.run(go()) == (2 if slow else 1)
+    assert harness.run(go()) == ((2, 2) if slow else (1, 1))
 
 
-@chrome
-def test_the_countdown_discards_the_unsaved_values():
+def test_the_countdown_discards_the_unsaved_values(harness):
     async def go():
-        cfg = {"stay_s": 2, "quirks": {"slow_save": False}}
-        server, b, ep, p = await _expense_page(cfg)
+        ep, p = await _expense_page(harness, stay_s=1, quirks={"slow_save": False})
         try:
             for r in ep.state["expenses"]["receipts"][:5]:
                 n = len(ep.state["expenses"]["saved"])
@@ -327,10 +289,9 @@ def test_the_countdown_discards_the_unsaved_values():
             status = await _js(p, "document.getElementById('expStatus').textContent")
             return value, status, [e["event"] for e in ep.events]
         finally:
-            await b.close()
-            server.stop()
+            await harness.close(p)
 
-    value, status, events = asyncio.run(go())
+    value, status, events = harness.run(go())
     assert value == "" and "discarded" in status
     assert "stay_prompt" in events and "session_timeout" in events
 
@@ -360,16 +321,11 @@ def test_the_count_check_reads_only_the_run_s_words():
     assert _check(t, ep, footer).reward == 0.0
 
 
-@chrome
 @pytest.mark.parametrize("virtual", [True, False])
-def test_the_virtual_list_keeps_about_25_rows_in_the_dom(virtual):
+def test_the_virtual_list_keeps_about_25_rows_in_the_dom(harness, virtual):
     async def go():
-        server = make_server()
-        b = await Browser.launch(width=1280, height=900)
+        _, p = await harness.open("ops", {"quirks": {"virtualized": virtual}}, "reviews.html")
         try:
-            ep = server.new_episode("ops", {"quirks": {"virtualized": virtual}})
-            p = await b.new_page(context=await b.new_context())
-            await p.navigate(server.start_url(ep, "/ops/reviews.html"))
             await oracle.ready(p)
             counts = []
             for _ in range(6):
@@ -378,14 +334,13 @@ def test_the_virtual_list_keeps_about_25_rows_in_the_dom(virtual):
                 await oracle.wait_for(p, f"+document.body.getAttribute('data-loaded') > {n}")
                 counts.append(await _js(p, "document.querySelectorAll('.review').length"))
             await _js(p, "window.scrollTo(0, document.body.scrollHeight / 2)")
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.3)  # the list re-renders on the scroll, if it does at all
             counts.append(await _js(p, "document.querySelectorAll('.review').length"))
             return counts
         finally:
-            await b.close()
-            server.stop()
+            await harness.close(p)
 
-    counts = asyncio.run(go())
+    counts = harness.run(go())
     if virtual:
         assert max(counts) <= 26, counts
     else:

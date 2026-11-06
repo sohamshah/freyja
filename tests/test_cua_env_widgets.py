@@ -1,34 +1,22 @@
 """The widgets env (evals/computer_use/envs/widgets, "Tessaly Console"): its
 checks read only server state and catch the forbidden side effects, its traps
-hold against script-made events, and with every quirk off (each widget's
-accessible twin) the oracle still finishes every task. tests/test_cua_envs.py
-runs the oracle with the default quirks. Browser tests need a headless
-Chromium and skip without one."""
+hold against script-made events, and the oracle finishes every task with the
+quirks on and with every quirk off (each widget's accessible twin). Browser
+tests need a headless Chromium and skip without one."""
 
 from __future__ import annotations
 
 import asyncio
-import sys
-from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "evals"))
+from tests.cua_harness import Episode, envs, harness_fixture, oracle  # noqa: F401
 
-from computer_use import envs  # noqa: E402
-from computer_use.browser import Browser, find_chrome  # noqa: E402
-from computer_use.envs.widgets import backend as B  # noqa: E402
-from computer_use.envs.widgets import tasks as T  # noqa: E402
-from computer_use.server import Episode  # noqa: E402
-
+pytestmark = pytest.mark.skipif("widgets" not in envs.NAMES, reason="CUA_ENVS leaves out widgets")
+B = envs.backend("widgets")
+T = envs.tasks("widgets")
 TASKS = {t.id: t for t in T.TASKS}
-OFF = {k: False for k in B.QUIRKS}
 RUN = {"status": "done", "text": ""}
-needs_browser = pytest.mark.skipif(
-    find_chrome() is None or "widgets" not in envs.NAMES,
-    reason="no Chromium, or CUA_ENVS leaves the widgets env out",
-)
 
 
 def _ep(**config):
@@ -152,38 +140,11 @@ def test_choosing_another_menu_item_is_forbidden():
 # ─── in a browser ─────────────────────────────────────────────────────────
 
 
-async def _page(task_id, quirks=None):
-    from computer_use.run import make_server  # noqa: PLC0415
-
-    server = make_server()
-    b = await Browser.launch(width=1280, height=900)
-    t = TASKS[task_id]
-    cfg = dict(t.config)
-    if quirks is not None:
-        cfg["quirks"] = quirks
-    ep = server.new_episode("widgets", cfg)
-    p = await b.new_page(context=await b.new_context())
-    await p.navigate(server.start_url(ep, f"/widgets/{t.start}"))
-    return server, b, ep, p
-
-
-async def _solve_off(task_id):
-    server, b, ep, p = await _page(task_id, OFF)
-    try:
-        before = _check(task_id, ep)
-        for step in T.SOLVERS[task_id]:
-            await step(p)
-        return before, _check(task_id, ep)
-    finally:
-        await b.close()
-        server.stop()
-
-
-@needs_browser
+@pytest.mark.parametrize("quirks", ["on", "off"])
 @pytest.mark.parametrize("task_id", sorted(T.SOLVERS))
-def test_every_task_is_solvable_with_every_quirk_off(task_id):
-    before, after = asyncio.run(_solve_off(task_id))
-    assert before.reward == 0.0
+def test_every_task_is_solvable_with_quirks_on_and_off(harness, task_id, quirks):
+    before, after = harness.solvable(task_id, quirks)
+    assert before.reward == 0.0, before.why
     assert after.reward == 1.0, after.why
 
 
@@ -201,13 +162,17 @@ SCRIPT_PRESS = (
 )
 
 
-async def _traps():
-    out = {}
-    server, b, ep, p = await _page("widgets/hover_menu")
-    try:
-        from computer_use import oracle  # noqa: PLC0415
+async def _task_page(h, task_id):
+    t = TASKS[task_id]
+    ep, p = await h.open("widgets", dict(t.config), t.start)
+    await oracle.ready(p)
+    return ep, p
 
-        await oracle.ready(p)
+
+async def _traps(h):
+    out = {}
+    ep, p = await _task_page(h, "widgets/hover_menu")
+    try:
         await p.evaluate("document.querySelector('.mbtn[data-menu=view]').click()", isolated=False)
         parent = "document.querySelector('.msub[data-sub=security] .parent')"
         await p.evaluate(SCRIPT_PRESS + f"({parent})", isolated=False)
@@ -215,7 +180,7 @@ async def _traps():
             f"{parent}.dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}}))",
             isolated=False,
         )
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.4)  # the submenu opens after a hover delay, if it opens at all
         out["submenu_after_script"] = await p.evaluate(
             "!!document.querySelector('[data-item=show_passwords]')", isolated=False
         )
@@ -228,18 +193,13 @@ async def _traps():
             "Input.dispatchMouseEvent",
             {"type": "mouseMoved", "x": xy[0], "y": xy[1], "button": "none"},
         )
-        await asyncio.sleep(0.2)
-        out["submenu_after_hover"] = await p.evaluate(
-            "!!document.querySelector('[data-item=show_passwords]')", isolated=False
+        out["submenu_after_hover"] = await oracle.wait_for(
+            p, "!!document.querySelector('[data-item=show_passwords]')", 3
         )
     finally:
-        await b.close()
-        server.stop()
-    server, b, ep, p = await _page("widgets/reorder_drag")
+        await h.close(p)
+    ep, p = await _task_page(h, "widgets/reorder_drag")
     try:
-        from computer_use import oracle  # noqa: PLC0415
-
-        await oracle.ready(p)
         await p.evaluate(
             SCRIPT_PRESS + "(document.querySelector('.ccard[data-id=smoke] .handle'))",
             isolated=False,
@@ -256,13 +216,9 @@ async def _traps():
         out["drag_moves"] = [e for e in ep.events if e["event"] == "checklist_move"]
         out["drag_check"] = _check("widgets/reorder_drag", ep)
     finally:
-        await b.close()
-        server.stop()
-    server, b, ep, p = await _page("widgets/virtual_list")
+        await h.close(p)
+    ep, p = await _task_page(h, "widgets/virtual_list")
     try:
-        from computer_use import oracle  # noqa: PLC0415
-
-        await oracle.ready(p)
         out["rows_in_dom"] = await p.evaluate(
             "document.querySelectorAll('.mspacer .mrow').length", isolated=False
         )
@@ -273,14 +229,12 @@ async def _traps():
             "document.scrollingElement.scrollHeight > window.innerHeight", isolated=False
         )
     finally:
-        await b.close()
-        server.stop()
+        await h.close(p)
     return out
 
 
-@needs_browser
-def test_the_traps_hold_against_script_made_events():
-    out = asyncio.run(_traps())
+def test_the_traps_hold_against_script_made_events(harness):
+    out = harness.run(_traps(harness))
     assert out["submenu_after_script"] is False  # script clicks and keys do not open it
     assert out["submenu_after_hover"] is True  # a real pointer over it does
     assert out["drag_moves"] == []  # script pointer events do not drag a card

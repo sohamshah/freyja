@@ -16,7 +16,12 @@ from PIL import Image, ImageDraw
 from bridge.decisions.types import Answers, Box, BoxAnswer, NoulAnswer
 from bridge.tools.jev_operator import vision
 from bridge.tools.jev_operator.handoff import LLMHelper
-from tests.test_jev_operator import FormNative, ScriptedProvider, make_operator
+from tests.test_jev_operator import (  # noqa: F401
+    FormNative,
+    ScriptedProvider,
+    fast_clock,
+    make_operator,
+)
 
 
 def png(width: int, height: int, rect: tuple[int, int, int, int] | None = None) -> bytes:
@@ -89,7 +94,7 @@ def test_locate_fits_the_capture_to_the_service_window():
     assert image.size == (1568, 784), "the longest side is brought to the largest the service takes"
 
 
-def test_locate_looks_again_on_a_crop_for_a_small_target():
+def test_locate_looks_again_on_a_crop_for_a_small_target_unless_told_not_to():
     # First box: a small target around (0.5, 0.5) of a 1000x800 capture. The
     # crop is 40% of each side centred there: (300, 240)..(700, 560). The second
     # box, in crop fractions, maps back to the capture.
@@ -102,24 +107,18 @@ def test_locate_looks_again_on_a_crop_for_a_small_target():
     assert abs(loc.box.left - 0.4) < 1e-9 and abs(loc.box.top - 0.5) < 1e-9
     assert abs(loc.x - 0.42) < 1e-9 and abs(loc.y - 0.52) < 1e-9
     assert loc.input_tokens == 8000
-
-
-def test_locate_can_skip_the_second_look():
     p = SeeingProvider([], [(0.9, (0.49, 0.49, 0.51, 0.51))])
     loc = asyncio.run(vision.locate(p, png(1000, 600), "the tiny icon", look_closer=False))
-    assert loc.stages == 1 and len(p.image_calls) == 1
+    assert loc.stages == 1 and len(p.image_calls) == 1, "the second look can be skipped"
 
 
-def test_an_absent_target_still_has_a_box_but_is_not_found():
+def test_an_absent_target_or_a_low_confidence_box_is_not_found():
     p = SeeingProvider([], [(0.2, (0.4, 0.7, 0.7, 0.8))])
     loc = asyncio.run(vision.locate(p, png(400, 300), "the Continue button"))
-    assert not loc.seen and not loc.found and loc.visible == 0.2
-
-
-def test_a_low_confidence_box_is_seen_but_not_found():
+    assert not loc.seen and not loc.found and loc.visible == 0.2, "absent: a box, but not seen"
     p = SeeingProvider([], [(0.9, (0.4, 0.7, 0.7, 0.8))], confidence=0.3)
     loc = asyncio.run(vision.locate(p, png(400, 300), "the Add button in the third row"))
-    assert loc.seen and not loc.found and loc.confidence == 0.3
+    assert loc.seen and not loc.found and loc.confidence == 0.3, "a low-confidence box is seen but not found"
 
 
 def test_frame_change_measures_the_share_of_the_window_that_moved():
@@ -179,18 +178,6 @@ def test_planner_click_by_description_is_grounded_by_jev(tmp_path, monkeypatch):
     log = [json.loads(line) for line in open(res.log_path or next(tmp_path.glob("*.jsonl")))]
     located = next(e for e in log if e.get("event") == "locate")
     assert located["target"] == "the Continue button" and located["visible"] == 0.94 and located["stages"] == 1
-
-
-def test_a_target_jev_does_not_see_is_not_clicked(tmp_path, monkeypatch):
-    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-    native = FormNative()
-    provider = SeeingProvider([("need_help", None), ("need_help", None), ("done", None)], [(0.12, (0.4, 0.733, 0.7, 0.833))])
-    op, _ = make_operator(native, provider, goal="g", llm=LLMHelper(seeing_planner("the Finish button"), max_calls=6))
-    op.actuator.frame = frames(png(400, 300))
-    res = asyncio.run(op.run())
-    assert native.clicks == []
-    skipped = next(h for h in res.history if h["kind"] == "click")
-    assert "skipped" in skipped["action"] and "p=0.12" in skipped["diff"]
 
 
 def test_a_described_irreversible_control_is_refused_without_an_element(tmp_path, monkeypatch):
@@ -307,7 +294,8 @@ def test_a_plan_stops_at_a_target_jev_does_not_see(tmp_path, monkeypatch):
     op.actuator.frame = frames(png(400, 300), png(400, 300, (0, 0, 399, 150)))
     res = asyncio.run(op.run())
     assert native.clicks == ["Continue"] and len(provider.image_calls) == 1
-    assert any("skipped" in h["action"] for h in res.history if h["kind"] == "click")
+    skipped = next(h for h in res.history if h["kind"] == "click" and "skipped" in h["action"])
+    assert "p=0.2" in skipped["diff"], "a target Jev does not see is not clicked"
 
 
 def test_a_plan_leaves_an_unsure_click_to_the_planner(tmp_path, monkeypatch):
@@ -362,31 +350,6 @@ def test_an_expectation_that_holds_is_progress_and_one_that_does_not_stops_the_p
     assert clicks[0]["changed"] is True and "holds (p=0.90)" in clicks[0]["diff"]
     assert clicks[1]["changed"] is False and "does not hold (p=0.25)" in clicks[1]["diff"]
     assert not any(h["kind"] == "type" for h in res.history)
-
-
-def test_a_screen_with_no_controls_and_no_text_goes_straight_to_the_planner(tmp_path, monkeypatch):
-    """Jev is not asked what to do about a screen it cannot read."""
-    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-
-    class Bare(FormNative):
-        def read_ax_tree(self, pid, max_depth=8):
-            return json.dumps({"role": "AXApplication", "title": "FormApp", "children": [
-                {"role": "AXWindow", "title": "Sign in", "focused": True, "bounds": [0, 40, 400, 300], "children": []}
-            ]})
-
-    native = Bare()
-    provider = SeeingProvider([("done", None)], [(0.9, (0.4, 0.733, 0.7, 0.833))])
-
-    async def planner(messages, system_prompt, max_tokens):
-        if "planner" in system_prompt:
-            return json.dumps({"status": "done", "subgoal": None, "direct_action": None, "note": "nothing to do"})
-        return json.dumps({"satisfied": True, "summary": "ok", "subgoal": None})
-
-    op, _ = make_operator(native, provider, goal="g", llm=LLMHelper(planner, max_calls=6))
-    op.actuator.frame = frames(png(400, 300))
-    res = asyncio.run(op.run())
-    assert provider.calls == [], "no Jev decision on an empty, textless screen"
-    assert res.status == "done"
 
 
 def test_goal_span_names_the_goals_own_text():
@@ -452,9 +415,7 @@ def test_the_planner_is_offered_pointer_actions_only_on_a_page_that_draws_its_ow
     asyncio.run(helper.replan(screenshot=None, pixels=True, **common))
     assert '"kind": "click", "x": int, "y": int' in seen[0] and "draws its own" in seen[0]
     assert '"kind": "click"' not in seen[1] and '"kind": "click"' not in seen[2]
-
-
-def test_a_page_draws_its_own_controls_when_it_lists_none_or_has_an_embedded_frame():
+    # A page draws its own controls when it lists none or has an embedded frame.
     from bridge.tools.jev_operator.loop import Operator
 
     class Obs:

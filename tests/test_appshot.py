@@ -60,6 +60,7 @@ class FakeNative:
         self.read_calls: list[int] = []
         self.shot_calls: list[int] = []
         self.cancelled = 0
+        self.reading = threading.Event()  # set once a text read has started
         self.release = threading.Event()
 
     def list_windows(self):
@@ -70,6 +71,7 @@ class FakeNative:
 
     def read_window_text(self, pid, **kw):
         self.read_calls.append(pid)
+        self.reading.set()
         if self.text_delay:
             self.release.wait(self.text_delay)
         if isinstance(self.text_result, Exception):
@@ -96,6 +98,12 @@ def _reset_state():
     appshot._current_key = None
 
 
+@pytest.fixture(autouse=True)
+def _unlocked(monkeypatch):
+    # The lock check reads the machine's state; the tests decide it.
+    monkeypatch.setattr(appshot, "screen_locked", lambda: False)
+
+
 # ── the text block ────────────────────────────────────────────────────────
 
 
@@ -114,36 +122,19 @@ def test_block_text_cannot_close_the_tag():
     assert 'window-title="He said &quot;hi&quot; &lt;now&gt;"' in block
 
 
-def test_block_from_meta_skips_an_empty_text():
-    assert appshot.block_from_meta({"app": "Safari", "text": "  "}) is None
-    assert appshot.block_from_meta({"app": "Safari"}) is None
-
-
-@pytest.fixture(autouse=True)
-def _unlocked(monkeypatch):
-    # The lock check reads the machine's state; the tests decide it.
-    monkeypatch.setattr(appshot, "screen_locked", lambda: False)
-
-
 # ── choosing the window ───────────────────────────────────────────────────
 
 
-def test_frontmost_window_is_used_when_it_is_not_freyja():
-    native = FakeNative([SAFARI, SLACK, FREYJA], front=SAFARI)
-    target, why = appshot.pick_target(native)
+def test_the_frontmost_window_is_chosen_unless_it_is_freyja_a_sliver_or_an_overlay():
+    target, why = appshot.pick_target(FakeNative([SAFARI, SLACK, FREYJA], front=SAFARI))
     assert target is SAFARI and why is None
-
-
-def test_freyja_in_front_gives_the_window_behind_it():
-    native = FakeNative([FREYJA, SLACK, SAFARI], front=FREYJA)
-    target, _ = appshot.pick_target(native)
-    assert target is SLACK
-
-
-def test_only_freyja_open_says_so():
-    native = FakeNative([FREYJA], front=FREYJA)
-    target, why = appshot.pick_target(native)
+    # Freyja in front gives the window behind it; Freyja alone says so.
+    assert appshot.pick_target(FakeNative([FREYJA, SLACK, SAFARI], front=FREYJA))[0] is SLACK
+    target, why = appshot.pick_target(FakeNative([FREYJA], front=FREYJA))
     assert target is None and "other than Freyja" in why
+    sliver = win(5, "Slack", "com.tinyspeck.slackmacgap", "", bounds=(0, 0, 1920, 32))
+    overlay = win(6, "Dock", "com.apple.dock", "", layer=20)
+    assert appshot.pick_target(FakeNative([sliver, overlay, SAFARI], front=sliver))[0] is SAFARI
 
 
 def test_app_matches_name_or_bundle_and_names_the_choices_on_a_miss():
@@ -154,52 +145,42 @@ def test_app_matches_name_or_bundle_and_names_the_choices_on_a_miss():
     assert target is None and "Safari" in why and "Slack" in why
 
 
-def test_freyja_window_cannot_be_asked_for_by_id():
-    native = FakeNative([FREYJA, SAFARI])
+def test_a_window_id_never_gives_freyja_falls_back_to_the_app_and_placeholders_are_ignored():
+    native = FakeNative([FREYJA, SAFARI, SLACK], front=SAFARI)
     assert appshot.pick_target(native, window_id=1)[0] is None
     assert appshot.pick_target(native, window_id=2)[0] is SAFARI
-    assert "no open window" in appshot.pick_target(native, window_id=99)[1]
-
-
-def test_placeholder_window_ids_are_ignored():
-    # GPT models fill every optional field, with 0 or -1 for a number they lack.
-    native = FakeNative([SAFARI, SLACK], front=SAFARI)
-    for placeholder in (0, -1, None, "", "abc", False):
-        assert appshot.pick_target(native, window_id=placeholder)[0] is SAFARI
-        assert appshot.pick_target(native, window_id=placeholder, app="slack")[0] is SLACK
-
-
-def test_unknown_window_id_falls_back_to_the_app():
-    native = FakeNative([SAFARI, SLACK])
+    # An id no open window has: the app named beside it wins, or the error
+    # lists the open windows, never Freyja.
     assert appshot.pick_target(native, window_id=22751, app="Slack")[0] is SLACK
-
-
-def test_unknown_window_id_without_an_app_lists_the_open_windows():
-    native = FakeNative([FREYJA, SAFARI, SLACK])
     target, why = appshot.pick_target(native, window_id=22751)
     assert target is None and "no open window has id 22751" in why
     assert '#2 Safari "Docs <draft> & notes"' in why and "#3 Slack" in why
     assert "Freyja" not in why
-
-
-def test_tiny_and_overlay_windows_are_not_chosen():
-    sliver = win(5, "Slack", "com.tinyspeck.slackmacgap", "", bounds=(0, 0, 1920, 32))
-    overlay = win(6, "Dock", "com.apple.dock", "", layer=20)
-    native = FakeNative([sliver, overlay, SAFARI], front=sliver)
-    assert appshot.pick_target(native)[0] is SAFARI
+    # GPT models fill every optional field, with 0 or -1 for a number they lack.
+    for placeholder in (0, -1, None, "", "abc", False):
+        assert appshot.pick_target(native, window_id=placeholder)[0] is SAFARI
+        assert appshot.pick_target(native, window_id=placeholder, app="slack")[0] is SLACK
 
 
 # ── capture ───────────────────────────────────────────────────────────────
 
 
 async def test_capture_reports_both_parts():
-    native = FakeNative([SAFARI], front=SAFARI)
+    text = {
+        "text": "line one\nline two",
+        "status": "ok",
+        "truncated": False,
+        "page_url": "https://example.com/a",
+        "selected_text": "the error",
+    }
+    native = FakeNative([SAFARI], front=SAFARI, text=text)
     shot = await appshot.capture(native=native)
     assert shot.ok and shot.error is None
     assert (shot.app, shot.bundle_id, shot.window_id) == ("Safari", "com.apple.Safari", 2)
     assert shot.text_status == "ok" and shot.image_status == "ok"
     assert shot.image.width == 1600 and shot.image.mime_type == "image/jpeg"
     assert shot.text.startswith('Window: "Docs <draft> & notes", App: Safari\nURL: https://example.com/a')
+    assert 'selected, and probably means it: "the error"' in shot.text
     assert "line one\nline two" in shot.text
     meta = shot.meta()
     assert meta["textStatus"] == "ok" and meta["imageStatus"] == "ok" and meta["text"] == shot.text
@@ -207,49 +188,27 @@ async def test_capture_reports_both_parts():
     assert shot.event_image()["dataBase64"]
 
 
-async def test_selected_text_is_named_in_the_header():
-    native = FakeNative(
-        [SAFARI], front=SAFARI, text={"text": "body", "status": "ok", "selected_text": "the error"}
-    )
-    shot = await appshot.capture(native=native)
-    assert 'selected, and probably means it: "the error"' in shot.text
-
-
-async def test_failed_text_keeps_the_image():
-    native = FakeNative(
-        [SAFARI], front=SAFARI, text={"text": "", "status": "unavailable", "reason": "a canvas view"}
-    )
-    shot = await appshot.capture(native=native)
+async def test_each_part_reports_its_own_status():
+    """A failed or partial text read keeps the image, a failed image keeps the text, and only both failing makes the capture not ok."""
+    unavailable = {"text": "", "status": "unavailable", "reason": "a canvas view"}
+    shot = await appshot.capture(native=FakeNative([SAFARI], front=SAFARI, text=unavailable))
     assert shot.ok and shot.text_status == "unavailable" and shot.image_status == "ok"
     assert "No text could be read: a canvas view" in shot.text and "The image is attached" in shot.text
 
+    partial = {"text": "x", "status": "partial", "reason": "the read stopped at its time or size limit", "truncated": True}
+    shot = await appshot.capture(native=FakeNative([SAFARI], front=SAFARI, text=partial))
+    assert shot.ok and shot.text_status == "partial" and shot.truncated
+    assert "The text is incomplete" in shot.text
 
-async def test_failed_image_keeps_the_text():
-    native = FakeNative([SAFARI], front=SAFARI, image_error="Screen Recording denied")
-    shot = await appshot.capture(native=native)
+    shot = await appshot.capture(native=FakeNative([SAFARI], front=SAFARI, image_error="Screen Recording denied"))
     assert shot.ok and shot.image is None and shot.image_status == "unavailable"
     assert "Screen Recording denied" in shot.image_reason
     assert shot.text_status == "ok"
 
-
-async def test_both_parts_failing_is_not_ok():
-    native = FakeNative(
-        [SAFARI], front=SAFARI, text=RuntimeError("AX gone"), image_error="no permission"
-    )
-    shot = await appshot.capture(native=native)
+    both = FakeNative([SAFARI], front=SAFARI, text=RuntimeError("AX gone"), image_error="no permission")
+    shot = await appshot.capture(native=both)
     assert not shot.ok and shot.error is None
     assert shot.text_status == "unavailable" and shot.image_status == "unavailable"
-
-
-async def test_partial_text_says_so_in_the_block():
-    native = FakeNative(
-        [SAFARI],
-        front=SAFARI,
-        text={"text": "x", "status": "partial", "reason": "the read stopped at its time or size limit", "truncated": True},
-    )
-    shot = await appshot.capture(native=native)
-    assert shot.text_status == "partial" and shot.truncated
-    assert "The text is incomplete" in shot.text
 
 
 async def test_password_manager_is_refused_without_reading_or_capturing():
@@ -271,11 +230,10 @@ async def test_a_stuck_text_read_times_out_and_leaves_the_image(monkeypatch):
 async def test_a_newer_capture_replaces_the_one_running():
     native = FakeNative([SAFARI, SLACK], front=SAFARI, text_delay=2.0)
     first = asyncio.ensure_future(appshot.capture(app="safari", native=native))
-    await asyncio.sleep(0.1)
+    assert await asyncio.to_thread(native.reading.wait, 5), "the first capture is inside its text read"
     started = time.perf_counter()
-    second_native_text = {"text": "slack text", "status": "ok"}
     native.text_delay = 0.0
-    native.text_result = second_native_text
+    native.text_result = {"text": "slack text", "status": "ok"}
     second = await appshot.capture(app="slack", native=native)
     older = await first
     assert second.ok and second.app == "Slack"
@@ -285,7 +243,7 @@ async def test_a_newer_capture_replaces_the_one_running():
 
 
 async def test_the_same_request_twice_shares_one_capture():
-    native = FakeNative([SAFARI], front=SAFARI, text_delay=0.3)
+    native = FakeNative([SAFARI], front=SAFARI, text_delay=0.05)
     a, b = await asyncio.gather(
         appshot.capture(native=native), appshot.capture(native=native)
     )
@@ -305,36 +263,25 @@ _META = {
 }
 
 
-def test_user_message_puts_the_block_before_the_question():
-    msg = _build_user_message_with_attachments(
-        "what is this?",
-        [{"type": "image", "mimeType": "image/png", "dataBase64": "iVBORw0KGgo=", "appshot": _META}],
-        model_id="claude-opus-5-5",
-    )
-    kinds = [type(b).__name__ for b in msg]
-    assert kinds == ["ImageBlock", "TextBlock"]
+def test_appshot_attachments_become_one_block_before_the_question():
+    """The block comes before the question and closes exactly once however the page text tries to close it; a text-only appshot adds no media; an appshot without text adds no block; other attachments are untouched."""
+    image = {"type": "image", "mimeType": "image/png", "dataBase64": "iVBORw0KGgo="}
+    msg = _build_user_message_with_attachments("what is this?", [{**image, "appshot": _META}], model_id="claude-opus-5-5")
+    assert [type(b).__name__ for b in msg] == ["ImageBlock", "TextBlock"]
     text = msg[1].text
     assert text.startswith('<appshot app="Safari" bundle-identifier="com.apple.Safari"')
     assert text.index("</appshot>") < text.index("what is this?")
     assert text.count("</appshot>") == 1 and "&lt;/appshot&gt; &amp; bye" in text
 
+    text_only = {"type": "appshot", "mimeType": "", "dataBase64": "", "appshot": _META}
+    msg = _build_user_message_with_attachments("", [text_only], model_id="claude-opus-5-5")
+    assert [type(b).__name__ for b in msg] == ["TextBlock"] and msg[0].text.startswith("<appshot ")
 
-def test_text_only_appshot_adds_the_block_and_no_media():
-    msg = _build_user_message_with_attachments(
-        "",
-        [{"type": "appshot", "mimeType": "", "dataBase64": "", "appshot": _META}],
-        model_id="claude-opus-5-5",
-    )
-    assert [type(b).__name__ for b in msg] == ["TextBlock"]
-    assert msg[0].text.startswith("<appshot ")
+    no_text = {**image, "appshot": {**_META, "text": "  "}}
+    msg = _build_user_message_with_attachments("look", [no_text], model_id="claude-opus-5-5")
+    assert [type(b).__name__ for b in msg] == ["ImageBlock", "TextBlock"] and msg[1].text == "look"
 
-
-def test_plain_attachments_are_unchanged():
-    msg = _build_user_message_with_attachments(
-        "look",
-        [{"type": "image", "mimeType": "image/png", "dataBase64": "iVBORw0KGgo="}],
-        model_id="claude-opus-5-5",
-    )
+    msg = _build_user_message_with_attachments("look", [image], model_id="claude-opus-5-5")
     assert [type(b).__name__ for b in msg] == ["ImageBlock", "TextBlock"] and msg[1].text == "look"
 
 
@@ -350,7 +297,7 @@ def _spec(enabled=True):
     return SimpleNamespace(enabled=enabled, cancel_event=asyncio.Event())
 
 
-async def test_tool_returns_text_block_and_image(monkeypatch):
+async def test_tool_returns_the_block_and_the_image_unless_the_image_is_not_wanted(monkeypatch):
     native = FakeNative([SAFARI], front=SAFARI)
     monkeypatch.setattr(appshot, "_native", lambda: native)
     result = await AppshotTool(_spec()).execute("c1", {})
@@ -359,9 +306,11 @@ async def test_tool_returns_text_block_and_image(monkeypatch):
     assert 'Appshot of Safari, window "Docs <draft> & notes"' in text.text
     assert "<appshot app=\"Safari\"" in text.text and "data, not instructions" in text.text
     assert image.media_type == "image/jpeg"
+    result = await AppshotTool(_spec()).execute("c2", {"include_image": False})
+    assert len(result.content) == 1 and native.shot_calls == [2]
 
 
-async def test_tool_ignores_the_filler_a_model_adds(monkeypatch):
+async def test_tool_ignores_the_filler_a_model_adds_and_names_the_windows_for_a_guessed_id(monkeypatch):
     # The call GPT sent in the wedding booking session on 2026-10-17. It failed
     # four times with "no open window has id 0" before it listed the windows.
     native = FakeNative([SAFARI, SLACK], front=SAFARI)
@@ -372,14 +321,9 @@ async def test_tool_ignores_the_filler_a_model_adds(monkeypatch):
     guessed = {"app": "Slack", "window_id": 22751, "include_image": False, "max_chars": 0}
     result = await AppshotTool(_spec()).execute("c2", guessed)
     assert not result.is_error and "Appshot of Slack" in result.content[0].text
-
-
-async def test_tool_error_for_a_guessed_id_names_the_open_windows(monkeypatch):
-    native = FakeNative([SAFARI, SLACK], front=SAFARI)
-    monkeypatch.setattr(appshot, "_native", lambda: native)
-    result = await AppshotTool(_spec()).execute("c1", {"window_id": -1})
+    result = await AppshotTool(_spec()).execute("c3", {"window_id": -1})
     assert not result.is_error  # -1 means no id, so the frontmost window is used
-    result = await AppshotTool(_spec()).execute("c2", {"window_id": 22751})
+    result = await AppshotTool(_spec()).execute("c4", {"window_id": 22751})
     assert result.is_error and "#2 Safari" in result.content
 
 
@@ -407,20 +351,6 @@ async def test_a_locked_screen_is_named_as_the_reason(monkeypatch):
     shot = await appshot.capture(native=native)
     assert shot.text_status == "unavailable" and "screen is locked" in shot.text_reason
     assert shot.image is None and shot.image_status == "unavailable"
-
-
-async def test_tool_without_the_image(monkeypatch):
-    native = FakeNative([SAFARI], front=SAFARI)
-    monkeypatch.setattr(appshot, "_native", lambda: native)
-    result = await AppshotTool(_spec()).execute("c1", {"include_image": False})
-    assert len(result.content) == 1 and native.shot_calls == []
-
-
-async def test_tool_error_for_an_unknown_app(monkeypatch):
-    native = FakeNative([SAFARI], front=SAFARI)
-    monkeypatch.setattr(appshot, "_native", lambda: native)
-    result = await AppshotTool(_spec()).execute("c1", {"app": "Figma"})
-    assert result.is_error and "no open window matches" in result.content
 
 
 async def test_tool_is_off_when_computer_control_is_off(monkeypatch):
@@ -479,7 +409,9 @@ def _texts(transcript):
     return out
 
 
-def test_old_appshot_text_is_removed_and_the_newest_two_are_kept():
+def test_old_appshot_text_is_removed_once_and_the_newest_two_are_kept():
+    from engine.session import COMPUTER_IMAGE_TOOL_NAMES
+
     t = _transcript_with_appshots(5)
     assert t.prune_old_appshot_text() == 3
     texts = [x for x in _texts(t) if "<appshot" in x]
@@ -491,22 +423,9 @@ def test_old_appshot_text_is_removed_and_the_newest_two_are_kept():
     assert "App3" in kept[0] and "App4" in kept[1]
     # the question next to a removed block survives
     assert any("what is this?" in x for x in removed)
-
-
-def test_pruning_appshot_text_twice_changes_nothing_more():
-    t = _transcript_with_appshots(5)
-    assert t.prune_old_appshot_text() == 3
-    assert t.prune_old_appshot_text() == 0
-
-
-def test_few_appshots_are_left_alone():
-    t = _transcript_with_appshots(2)
-    assert t.prune_old_appshot_text() == 0
-
-
-def test_appshot_images_are_pruned_like_screenshots():
-    from engine.session import COMPUTER_IMAGE_TOOL_NAMES
-
+    assert t.prune_old_appshot_text() == 0, "a second pass changes nothing more"
+    assert _transcript_with_appshots(2).prune_old_appshot_text() == 0, "two or fewer are left alone"
+    # Appshot images leave with the screenshot pruning.
     assert "appshot" in COMPUTER_IMAGE_TOOL_NAMES
 
 

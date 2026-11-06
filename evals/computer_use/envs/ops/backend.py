@@ -14,6 +14,8 @@ Config keys, all optional:
   timeline         the queue's clock, see TIMELINE (a test shortens it)
   stay_s           the expense form's "Stay signed in?" countdown (default 60)
   message_delay_s  seconds from the second saved PO to the team lead's message
+  save_delay_s     [lo, hi] seconds a slow expense save takes (slow_save; default [2, 4])
+  plain_save_s     seconds a plain expense save takes (default 0.3)
 """
 
 from __future__ import annotations
@@ -152,6 +154,8 @@ AMOUNTS = {
 }
 STAY_AFTER = 5  # the dialog follows this many saved expenses
 STAY_S = 60
+SAVE_DELAY_S = [2.0, 4.0]
+PLAIN_SAVE_S = 0.3
 
 # ─── reviews ──────────────────────────────────────────────────────────────
 PRODUCT = "Harbor cordless kettle"
@@ -274,6 +278,8 @@ def init(ep: Episode) -> None:
                 "saved": [],
                 "requests": 0,
                 "stay_s": int(cfg.get("stay_s", STAY_S)),
+                "save_delay_s": [float(x) for x in cfg.get("save_delay_s", SAVE_DELAY_S)],
+                "plain_save_s": float(cfg.get("plain_save_s", PLAIN_SAVE_S)),
                 "prompted": None,
                 "stayed": None,
                 "timed_out": None,
@@ -681,7 +687,9 @@ def backend(ep: Episode, method: str, name: str, query: dict[str, str], body: An
         n = x["requests"]
         x["requests"] += 1
         delay = (
-            random.Random(f"{st['seed']}-save-{n}").uniform(2.0, 4.0) if q["slow_save"] else 0.3
+            random.Random(f"{st['seed']}-save-{n}").uniform(*x["save_delay_s"])
+            if q["slow_save"]
+            else x["plain_save_s"]
         )
         f, err = _expense_fields(body)
         if f is None:

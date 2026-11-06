@@ -16,9 +16,14 @@ import json
 from bridge.tools.jev_operator.decide import Thresholds, interpret
 from bridge.tools.jev_operator.handoff import LLMHelper
 from bridge.tools.jev_operator.observe import typed_values
-from tests.test_jev_env_patterns import _answers, _obs
 from tests.test_jev_dom_surface import action
-from tests.test_jev_operator import FormNative, ScriptedProvider, make_operator
+from tests.test_jev_env_patterns import _answers, _obs
+from tests.test_jev_operator import (  # noqa: F401
+    FormNative,
+    ScriptedProvider,
+    fast_clock,
+    make_operator,
+)
 
 
 def test_typed_values_reads_the_unquoted_value_a_subgoal_types():

@@ -1,36 +1,23 @@
-"""The `console` env (evals/computer_use/envs/console): every task is finishable
-by its privileged solver with the quirks off (the plain control twins) as well
-as on, an untouched page scores 0, the checks read a run's words the way a
-person would, and each trap behaves the way the README says. The shared
-tests/test_cua_envs.py proves the quirks-on case. Needs a headless Chromium for
-the browser tests; skips them without one.
-
-    CUA_ENVS=console .venv/bin/python -m pytest -q tests/test_cua_env_console.py
-"""
+"""The console env (evals/computer_use/envs/console): every task is finishable
+by its privileged solver with the quirks on and with them off (the plain control
+twins), an untouched page scores 0, the checks read a run's words the way a
+person would, and each trap behaves the way the README says. Needs a headless
+Chromium for the browser tests; skips them without one."""
 
 from __future__ import annotations
 
 import asyncio
 import copy
 import json
-import sys
-from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "evals"))
+from tests.cua_harness import FAST, Episode, envs, harness_fixture, oracle  # noqa: F401
 
-from computer_use import envs, oracle  # noqa: E402
-from computer_use.browser import Browser, find_chrome  # noqa: E402
-from computer_use.envs.console import backend as B  # noqa: E402
-from computer_use.envs.console import tasks as T  # noqa: E402
-from computer_use.run import make_server  # noqa: E402
-from computer_use.tasks import select  # noqa: E402
-
-browser = pytest.mark.skipif(find_chrome() is None, reason="no Chromium for the environments")
+pytestmark = pytest.mark.skipif("console" not in envs.NAMES, reason="CUA_ENVS leaves out console")
+B = envs.backend("console")
+T = envs.tasks("console")
 CONSOLE = [t.id for t in T.TASKS]
-FAST = {"first_ms": 300, "swap_ms": 300, "agree_s": [0.3, 0.5], "more_s": 0.3}
 
 
 # ─── reading a run's words ────────────────────────────────────────────────
@@ -101,6 +88,7 @@ def test_project_list_needs_every_name_and_id():
 
 
 def test_the_seed_gives_untitled_ids_of_the_right_shape():
+    """The switch_project task's target must be one of the generated look-alikes."""
     ids = B.untitled_ids(5)
     assert len(set(ids)) == 9 and all(i.startswith("sys-") and len(i) == 30 for i in ids)
     assert T.SWITCH_TARGET in ids
@@ -111,8 +99,6 @@ def _fresh_view(cfg):
 
 
 def _fresh_episode(cfg):
-    from computer_use.server import Episode  # noqa: PLC0415
-
     ep = Episode(id="t", env="console", config=dict(cfg))
     B.init(ep)
     return ep
@@ -190,79 +176,65 @@ def test_read_and_write_is_forbidden_even_when_set_back():
     assert c.reward == 0.0 and all(c.marks.values())
 
 
-# ─── the solver with the quirks off ───────────────────────────────────────
+# ─── every task, quirks on and off ────────────────────────────────────────
 
 
-async def _solve(task_id: str, quirks: dict):
-    server = make_server()
-    b = await Browser.launch(width=1280, height=900)
-    try:
-        t = select([task_id])[0]
-        cfg = dict(t.config)
-        cfg["quirks"] = quirks
-        cfg["timings"] = FAST
-        ep = server.new_episode(t.env, cfg)
-        before = t.check(envs.backend(t.env).view(ep), list(ep.events), {"status": "", "text": ""})
-        p = await b.new_page(context=await b.new_context())
-        await p.navigate(server.start_url(ep, f"/{t.env}/{t.start}"))
-        run = await oracle.solve(task_id, p)
-        after = t.check(envs.backend(t.env).view(ep), list(ep.events), run)
-        return before, after
-    finally:
-        await b.close()
-        server.stop()
-
-
-@browser
+@pytest.mark.parametrize("quirks", ["on", "off"])
 @pytest.mark.parametrize("task_id", CONSOLE)
-def test_control_twins_are_solvable(task_id):
+def test_every_task_is_solvable_with_quirks_on_and_off(harness, task_id, quirks):
     """With every quirk off each widget is its plain version; the same solver
     still finishes, so one quirk can be switched off to test a single fix."""
-    before, after = asyncio.run(_solve(task_id, {k: False for k in B.QUIRKS}))
+    before, after = harness.solvable(task_id, quirks)
     assert before.reward == 0.0, f"an untouched page should score 0: {before.why}"
     assert after.reward == 1.0, after.why
 
 
-@browser
 @pytest.mark.parametrize("portal,toggle", [(False, True), (True, False)])
-def test_key_form_is_solvable_with_each_panel_quirk_off(portal, toggle):
-    """One of the two panel quirks off, the other quirks on. tests/test_cua_envs.py
-    runs the key form with every quirk on, and the test above with every one off."""
+def test_key_form_is_solvable_with_each_panel_quirk_off(harness, portal, toggle):
+    """One of the two panel quirks off, the other quirks on: the two panel traps
+    are separate fixes, and the solver must cope with each on its own."""
     q = {"portal_panel": portal, "toggle_opener": toggle}
-    before, after = asyncio.run(_solve("console/key_permissions", q))
+    before, after = harness.run(harness.solve("console/key_permissions", quirks=q))
     assert before.reward == 0.0 and after.reward == 1.0, after.why
 
 
 # ─── the traps ────────────────────────────────────────────────────────────
 
 
-async def _page(server, b, path, cfg):
-    ep = server.new_episode("console", {"timings": FAST, **cfg})
-    p = await b.new_page(context=await b.new_context())
-    await p.navigate(server.start_url(ep, path))
-    return p, ep
+async def _page(h, path, cfg):
+    return await h.open("console", {**FAST["console"], **cfg}, path)
 
 
-def _run(fn):
+def _run(harness, fn):
+    """Runs `fn(harness)` on the harness loop and closes every page it opened."""
+
     async def go():
-        server = make_server()
-        b = await Browser.launch(width=1280, height=900)
+        pages = []
+
+        async def opened(path, cfg):
+            ep, p = await _page(harness, path, cfg)
+            pages.append(p)
+            return p, ep
+
         try:
-            return await fn(server, b)
+            return await fn(opened)
         finally:
-            await b.close()
-            server.stop()
+            for p in pages:
+                await harness.close(p)
 
-    return asyncio.run(go())
-
-
-QUESTIONNAIRE = f"/console/questionnaire.html?model=publishers/anthropic/models/{T.OPUS55}"
+    return harness.run(go())
 
 
-@browser
-def test_overlay_select_lives_at_the_end_of_body_only_while_open():
-    async def fn(server, b):
-        p, ep = await _page(server, b, QUESTIONNAIRE, {"selected": T.DEV})
+QUESTIONNAIRE = f"questionnaire.html?model=publishers/anthropic/models/{T.OPUS55}"
+
+
+def test_overlay_selects_live_at_the_end_of_body_only_while_open(harness):
+    """The questionnaire's selects are overlay comboboxes (the quirk) whose option
+    panel is appended to <body> only while open; with the quirks off they are
+    native selects with no preset value and static labels."""
+
+    async def fn(opened):
+        p, ep = await opened(QUESTIONNAIRE, {"selected": T.DEV})
         js = lambda s: p.evaluate(s, isolated=False)  # noqa: E731
         await oracle.wait_for(p, "document.body.getAttribute('data-shown')==='questionnaire'")
         industry = await js("document.getElementById('q-industry').textContent.trim()")
@@ -287,31 +259,23 @@ def test_overlay_select_lives_at_the_end_of_body_only_while_open():
         await oracle.click(p, ".card-foot .btn.primary")
         await oracle.wait_for(p, "document.querySelectorAll('.ff.invalid').length >= 5")
         assert any(e["event"] == "questionnaire_invalid" for e in ep.events)
-
-    _run(fn)
-
-
-@browser
-def test_plain_twins_of_the_form():
-    async def fn(server, b):
         off = {"overlay_selects": False, "preset_industry": False, "floating_labels": False}
-        p, _ = await _page(server, b, QUESTIONNAIRE, {"selected": T.DEV, "quirks": off})
+        p, _ = await opened(QUESTIONNAIRE, {"selected": T.DEV, "quirks": off})
         await oracle.wait_for(p, "document.body.getAttribute('data-shown')==='questionnaire'")
         native = await p.evaluate(
             "[document.getElementById('q-industry').tagName, document.getElementById('q-industry')"
             ".value, document.querySelectorAll('.ff.static').length]", isolated=False)
         assert native[0] == "SELECT" and native[1] == "" and native[2] >= 8
 
-    _run(fn)
+    _run(harness, fn)
 
 
-@browser
-def test_picker_pages_and_ignores_escape():
-    async def fn(server, b):
+def test_picker_pages_and_ignores_escape(harness):
+    async def fn(opened):
         out = {}
         for paged in (True, False):
             q = {"paged_picker": paged, "sticky_picker": paged}
-            p, _ = await _page(server, b, "/console/catalog.html", {"selected": T.DEV, "quirks": q})
+            p, _ = await opened("catalog.html", {"selected": T.DEV, "quirks": q})
             await oracle.wait_for(p, "document.body.getAttribute('data-ready')==='1'")
             await oracle.click(p, ".chip")
             await oracle.type_into(p, ".pk-search input", "lumen")
@@ -324,19 +288,18 @@ def test_picker_pages_and_ignores_escape():
             await p.key("Escape")  # leaves search mode
             await oracle.wait_for(p, f"!{tabs}")
             await p.key("Escape")
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.3)  # a sticky picker must still be there after a moment
             still = await p.evaluate("!!document.querySelector('.picker')", isolated=False)
             out[paged] = (rows, rng, still)
         assert out[True] == (10, "1 – 10 of 27", True)
         assert out[False][0] == 27 and out[False][2] is False
 
-    _run(fn)
+    _run(harness, fn)
 
 
-@browser
-def test_picker_hides_the_page_behind_it_and_suggestions_have_no_backdrop():
-    async def fn(server, b):
-        p, _ = await _page(server, b, f"/console/catalog.html?project={T.DEV}", {"selected": T.DEV})
+def test_picker_hides_the_page_behind_it_and_suggestions_have_no_backdrop(harness):
+    async def fn(opened):
+        p, _ = await opened(f"catalog.html?project={T.DEV}", {"selected": T.DEV})
         js = lambda s: p.evaluate(s, isolated=False)  # noqa: E731
         await oracle.wait_for(p, "document.querySelector('.mcard')")
         # Model search suggestions: listed inline, no backdrop, closed by a press outside.
@@ -357,13 +320,12 @@ def test_picker_hides_the_page_behind_it_and_suggestions_have_no_backdrop():
         await oracle.wait_for(p, "!document.querySelector('.picker')")
         assert await js(hidden) == 0
 
-    _run(fn)
+    _run(harness, fn)
 
 
-@browser
-def test_untitled_rows_differ_only_by_id():
-    async def fn(server, b):
-        p, _ = await _page(server, b, "/console/catalog.html", {"selected": T.DEV})
+def test_untitled_rows_differ_only_by_id(harness):
+    async def fn(opened):
+        p, _ = await opened("catalog.html", {"selected": T.DEV})
         await oracle.wait_for(p, "document.body.getAttribute('data-ready')==='1'")
         await oracle.click(p, ".chip")
         await oracle.click(p, ".pk-tabs button", index=2)  # All
@@ -374,34 +336,34 @@ def test_untitled_rows_differ_only_by_id():
         await oracle.click(p, ".pk-more button")
         await oracle.wait_for(p, "document.querySelectorAll('.pk-name').length > 20")
 
-    _run(fn)
+    _run(harness, fn)
 
 
-@browser
-def test_catalog_is_blank_without_a_project_and_swaps_late():
-    async def fn(server, b):
-        p, _ = await _page(server, b, "/console/catalog.html", {})
+def test_catalog_is_blank_without_a_project_and_swaps_late(harness):
+    """Opening a model changes the address at once and the view only after the
+    swap delay, so a surface that trusts the address reads the old page."""
+
+    async def fn(opened):
+        p, _ = await opened("catalog.html", {})
         await oracle.wait_for(p, "document.body.getAttribute('data-ready')==='1'")
         blank = await p.evaluate("[document.querySelector('.card-body').innerText.trim(), "
                                  "document.querySelector('.card-head').classList.contains('hidden')]",
                                  isolated=False)
         assert blank == ["", True]
-        slow = {"first_ms": 300, "swap_ms": 2500}
-        p, _ = await _page(server, b, f"/console/catalog.html?project={T.DEV}",
-                           {"selected": T.DEV, "timings": slow})
+        slow = {"first_ms": 300, "swap_ms": 1500}
+        p, _ = await opened(f"catalog.html?project={T.DEV}", {"selected": T.DEV, "timings": slow})
         await oracle.wait_for(p, "document.querySelector('a.mcard-name')")
         assert not await p.evaluate("!!document.querySelector('a.mcard')", isolated=False)
         await oracle.click(p, "a.mcard-name")
-        await asyncio.sleep(0.6)
-        url, shown = await p.evaluate(
-            "[location.pathname, document.body.getAttribute('data-shown')]", isolated=False)
-        assert url.endswith("/model.html") and shown == "catalog"  # the address first
+        await oracle.wait_for(p, "location.pathname.endsWith('/model.html')", 3)
+        shown = await p.evaluate("document.body.getAttribute('data-shown')", isolated=False)
+        assert shown == "catalog"  # the address first, the view later
         await oracle.wait_for(p, "document.body.getAttribute('data-shown')==='model'", 6)
 
-    _run(fn)
+    _run(harness, fn)
 
 
-KEYS = f"/console/keys.html?project={T.DEV}"
+KEYS = f"keys.html?project={T.DEV}"
 PANEL = "document.getElementById('perm-panel-project')"
 OPENER = "document.getElementById('k-add-project')"
 PANEL_FACTS = (
@@ -418,13 +380,12 @@ PANEL_FACTS = (
 )
 
 
-@browser
-def test_permission_panel_placement_and_what_closes_it():
-    async def fn(server, b):
+def test_permission_panel_placement_and_what_closes_it(harness):
+    async def fn(opened):
         out = {}
         for on in (True, False):
             q = {"portal_panel": on, "toggle_opener": on}
-            p, _ = await _page(server, b, KEYS, {"selected": T.DEV, "quirks": q})
+            p, _ = await opened(KEYS, {"selected": T.DEV, "quirks": q})
             js = lambda s: p.evaluate(s, isolated=False)  # noqa: E731
             await oracle.wait_for(p, "document.body.getAttribute('data-shown')==='keys'")
             assert await js(f"{OPENER}.getAttribute('aria-expanded')") == "false"
@@ -440,7 +401,7 @@ def test_permission_panel_placement_and_what_closes_it():
                              "{return b.textContent})")
             # A second click on the button.
             await oracle.click(p, "#k-add-project")
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.2)  # the twin keeps the panel open: give it a moment to close
             again = await js(f"[!!{PANEL}, {OPENER}.getAttribute('aria-expanded'), !!{PANEL} && "
                              f"document.activeElement === {PANEL}.querySelector('input')]")
             # Escape closes it, and so does a press outside.
@@ -468,14 +429,12 @@ def test_permission_panel_placement_and_what_closes_it():
         assert on[2] == [False, "false", False]  # toggle_opener: the second click closes it
         assert off[2] == [True, "true", True]  # the twin keeps it open, the search field focused
 
-    _run(fn)
+    _run(harness, fn)
 
 
-@browser
-def test_get_api_key_opens_the_key_form():
-    async def fn(server, b):
-        catalog = f"/console/catalog.html?project={T.DEV}"
-        p, ep = await _page(server, b, catalog, {"selected": T.DEV})
+def test_get_api_key_opens_the_key_form(harness):
+    async def fn(opened):
+        p, ep = await opened(f"catalog.html?project={T.DEV}", {"selected": T.DEV})
         await oracle.wait_for(p, "document.body.getAttribute('data-ready')==='1'")
         await oracle.click(p, ".sn-key")
         await oracle.wait_for(p, "document.body.getAttribute('data-shown')==='keys'")
@@ -484,13 +443,12 @@ def test_get_api_key_opens_the_key_form():
         d = B.view(ep)["key_draft"]
         assert d["owner"] == "Lumen Robotics" and d["expiration"] == 30 and d["access"] == "none"
 
-    _run(fn)
+    _run(harness, fn)
 
 
-@browser
-def test_agree_waits_for_the_box_and_the_server_checks_it():
-    async def fn(server, b):
-        p, ep = await _page(server, b, QUESTIONNAIRE, {"selected": T.DEV})
+def test_agree_waits_for_the_box_and_the_server_checks_it(harness):
+    async def fn(opened):
+        p, ep = await opened(QUESTIONNAIRE, {"selected": T.DEV})
         ep.state["submissions"][f"{T.DEV}|{T.OPUS55}"] = {"name": "Lumen Robotics"}
         await oracle.wait_for(p, "document.body.getAttribute('data-ready')==='1'")
         await p.evaluate(
@@ -508,4 +466,4 @@ def test_agree_waits_for_the_box_and_the_server_checks_it():
             ".then(function(r){return r.status})", isolated=False, await_promise=True)
         assert r == 400 and not any(e["event"] == "agree" for e in ep.events)
 
-    _run(fn)
+    _run(harness, fn)

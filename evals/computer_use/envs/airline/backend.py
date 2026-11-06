@@ -62,6 +62,7 @@ QUIRKS = {
         "ignored)",
 }
 DEFAULT_QUIRKS = {k: k != "trusted_toggle" for k in QUIRKS}
+CONTINUE_DELAY_S = 6.0  # slow_continue: the add-ons Continue's wait; config "continue_delay_s"
 
 TODAY = dt.date(2026, 10, 13)
 AIRPORTS = [
@@ -578,9 +579,10 @@ def backend(ep: Episode, method: str, name: str, query: dict[str, str], body: An
         st["stage"] = "payment"
         st["last_activity"] = time.time()
         ep.log("extras", **ex)
-        return Response(
-            200, {"ok": True, "go": "payment.html"}, delay_s=6.0 if q.get("slow_continue") else 0.0
-        )
+        delay = float(ep.config.get("continue_delay_s", CONTINUE_DELAY_S))
+        if not q.get("slow_continue"):
+            delay = 0.0
+        return Response(200, {"ok": True, "go": "payment.html"}, delay_s=delay)
     if name == "purchase":
         r = _need(ep, "payment")
         if r:

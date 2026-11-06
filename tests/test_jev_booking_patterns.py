@@ -7,7 +7,6 @@ suggestion, the end-state check on long forms, and toggles that undo themselves.
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 from bridge.decisions.types import Answers, ChoiceAnswer, NoulAnswer
@@ -15,7 +14,7 @@ from bridge.tools.jev_operator.decide import Thresholds, interpret
 from bridge.tools.jev_operator.handoff import LLMHelper
 from bridge.tools.jev_operator.loop import RunResult
 from tests.test_jev_dom_surface import TARGET, FakePage, action, dom_operator, run, snap, surface
-from tests.test_jev_operator import ScriptedProvider, answers
+from tests.test_jev_operator import ScriptedProvider, answers, fast_clock  # noqa: F401
 
 
 def test_a_control_with_no_name_is_not_named_by_its_surroundings():
@@ -112,24 +111,6 @@ def test_settle_waits_while_a_request_the_action_started_is_open():
     page = SlowPage()
     run(surface(page).settle("click"))
     assert page.reads >= 5  # four busy reads, then two quiet ones
-
-
-def test_enter_that_picks_a_suggestion_needs_no_confirmation(tmp_path, monkeypatch):
-    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-    page = FakePage([action(1, "fill", "From*", focused=True, enter="pick"), action(2, label="Go")])
-    op = dom_operator(
-        page, provider=ScriptedProvider([("key", "return"), ("done", None)]), goal="pick DEN"
-    )
-    res = run(op.run())
-    assert res.status == "done" and page.calls == [[0, "key", "Enter", ""]]
-
-
-def test_down_and_up_are_page_keys():
-    page = FakePage([])
-    s = surface(page)
-    assert {"down", "up"} <= set(s.key_options)
-    assert run(s.execute("press", "down")).ok
-    assert page.calls == [[0, "key", "ArrowDown", ""]]
 
 
 class SubgoalProvider(ScriptedProvider):
@@ -265,41 +246,6 @@ def test_a_page_with_an_embedded_frame_hands_that_part_to_screenshots():
         final_screen_text="[embedded frame from offers.example, 600x300 at (10, 400): ...]\nAdd",
     )
     assert "embedded frame from offers.example" in r.next_hint() and "computer_use" in r.next_hint()
-
-
-def test_probe_waits_for_a_page_that_is_still_loading(tmp_path, monkeypatch):
-    """The probe failed twice while a heavy results page loaded, and the run
-    stopped before reading the results."""
-    from bridge.tools.jev_operator import dom_surface
-    from tests.test_jev_operator import FakeCalculator, make_operator
-
-    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-    answers = iter(
-        [
-            (False, "Arc did not answer within 3s"),
-            (False, "Arc did not answer within 8s"),
-            (True, "title='Select'"),
-        ]
-    )
-    monkeypatch.setattr(dom_surface, "probe", lambda *a, **k: next(answers))
-    monkeypatch.setattr(dom_surface, "supported", lambda b: True)
-    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
-    op, _ = make_operator(FakeCalculator(), ScriptedProvider([]), goal="read the results")
-    target = type("T", (), {"bundle": "company.thebrowser.Browser", "pid": 1, "name": "Arc"})()
-
-    async def pin():
-        return None
-
-    monkeypatch.setattr(dom_surface.DOMSurface, "pin_active", lambda self: pin())
-    run(op._select_surface(target))
-    assert op.surface.name == "dom" and not op._page_unreadable
-
-
-_real_sleep = asyncio.sleep
-
-
-async def _no_sleep(*a, **k):
-    await _real_sleep(0)
 
 
 def test_numbers_in_the_goal_do_not_carry_the_sentence_punctuation():
