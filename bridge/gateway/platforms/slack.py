@@ -708,9 +708,9 @@ class SlackAdapter:
 
         # Thumbs up / down under a reply.
         @self._app.action(_blocks.FEEDBACK_ACTION_ID)
-        async def _on_feedback_buttons(ack, body):
+        async def _on_feedback_buttons(ack, body, respond):
             await ack()
-            await self._handle_feedback_click(body or {})
+            await self._handle_feedback_click(body or {}, respond)
 
         # The "what went wrong" modal after a thumbs down.
         @self._app.view(_blocks.FEEDBACK_NOTE_CALLBACK_ID)
@@ -2281,6 +2281,37 @@ class SlackAdapter:
             team_id = next(iter(self._team_clients.keys()))
         return team_id
 
+    async def _session_action_allowed(
+        self,
+        team_id: str,
+        user_id: str,
+        channel_id: str,
+        thread_ts: str | None,
+        *,
+        what: str,
+        notice: str,
+    ) -> bool:
+        """Stop, a rename and a feedback note act on the operator's
+        session, so whoever did it passes the same allowlist as a message.
+        Anyone else is told privately, where they did it."""
+        if self.slack_config.user_allowed(team_id, user_id):
+            return True
+        logger.info(
+            "[slack] ignoring %s from team=%s user=%s — not in allowlist",
+            what, team_id, user_id,
+        )
+        client = self._get_client(channel_id, team_id or None)
+        if client is None or not channel_id or not user_id:
+            return False
+        kwargs: dict[str, Any] = {"channel": channel_id, "user": user_id, "text": notice}
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        try:
+            await client.chat_postEphemeral(**kwargs)
+        except Exception:  # noqa: BLE001
+            logger.debug("[slack] denied %s notice failed", what, exc_info=True)
+        return False
+
     async def _handle_session_stopped(self, event: dict[str, Any]) -> None:
         channel_id = str(event.get("channel") or "")
         info = {
@@ -2294,6 +2325,12 @@ class SlackAdapter:
             "[slack] stop pressed: channel=%s thread=%s by=%s",
             channel_id, info["thread_ts"], info["user_id"],
         )
+        # Slack can show Stop to everyone in the channel.
+        if not await self._session_action_allowed(
+            info["team_id"], info["user_id"], channel_id, info["thread_ts"],
+            what="a stop", notice="Only Freyja's owner can stop it.",
+        ):
+            return
         if self.on_session_stopped is None:
             return
         try:
@@ -2307,7 +2344,6 @@ class SlackAdapter:
         title = str(event.get("title") or "").strip()
         if not channel_id or not title:
             return
-        self.bindings.set_title(channel_id, thread_ts, title, by_user=True)
         info = {
             "chat_id": channel_id,
             "thread_ts": thread_ts,
@@ -2316,6 +2352,12 @@ class SlackAdapter:
             "user_id": str(event.get("user") or ""),
             "team_id": self._team_for(event, channel_id),
         }
+        if not await self._session_action_allowed(
+            info["team_id"], info["user_id"], channel_id, thread_ts,
+            what="a rename", notice="Only Freyja's owner can rename this session.",
+        ):
+            return
+        self.bindings.set_title(channel_id, thread_ts, title, by_user=True)
         if self.on_session_title_changed is None:
             return
         try:
@@ -2362,6 +2404,11 @@ class SlackAdapter:
         item_user = str(event.get("item_user") or "")
         if not (self.bindings.has_message_ts(ts) or item_user in bot_ids):
             return
+        team_id = self._team_for(event, channel_id)
+        # Only the operator's reactions are feedback. Anyone else gets no
+        # note: a reaction is not addressed to Freyja (see _tell_denied).
+        if not self.slack_config.user_allowed(team_id, user_id):
+            return
         if self.on_feedback is None:
             return
         try:
@@ -2371,7 +2418,7 @@ class SlackAdapter:
                 "message_ts": ts,
                 "thread_ts": None,
                 "user_id": user_id,
-                "team_id": self._team_for(event, channel_id),
+                "team_id": team_id,
                 "verdict": verdict,
                 "reaction": reaction,
                 "session_key": "",
@@ -2380,7 +2427,9 @@ class SlackAdapter:
         except Exception:  # noqa: BLE001
             logger.exception("[slack] on_feedback (reaction) raised")
 
-    async def _handle_feedback_click(self, body: dict[str, Any]) -> None:
+    async def _handle_feedback_click(self, body: dict[str, Any], respond: Any) -> None:
+        if not await self._click_allowed(body, respond):
+            return
         actions = body.get("actions") or []
         if not actions:
             return
@@ -2430,14 +2479,22 @@ class SlackAdapter:
         if not note or self.on_feedback is None:
             return
         channel_id = str(private.get("c") or "")
+        thread_ts = str(private.get("t") or "") or None
+        user_id = str((body.get("user") or {}).get("id") or "")
+        team_id = str((body.get("team") or {}).get("id") or "") or self._team_for({}, channel_id)
+        if not await self._session_action_allowed(
+            team_id, user_id, channel_id, thread_ts,
+            what="a feedback note", notice="Only Freyja's owner can leave feedback.",
+        ):
+            return
         try:
             await self.on_feedback({
                 "kind": "note",
                 "chat_id": channel_id,
                 "message_ts": str(private.get("m") or ""),
-                "thread_ts": str(private.get("t") or "") or None,
-                "user_id": str((body.get("user") or {}).get("id") or ""),
-                "team_id": str((body.get("team") or {}).get("id") or "") or self._team_for({}, channel_id),
+                "thread_ts": thread_ts,
+                "user_id": user_id,
+                "team_id": team_id,
                 "verdict": "-",
                 "reaction": "",
                 "session_key": str(private.get("k") or ""),

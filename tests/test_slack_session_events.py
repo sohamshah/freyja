@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from bridge.gateway.config import SlackConfig
 from bridge.gateway.platforms.slack import SlackAdapter
 from bridge.gateway.slack_bindings import ThreadBindings
 
@@ -30,6 +31,7 @@ class _Client:
 
 def _adapter(tmp_path, client: _Client | None = None) -> SlackAdapter:
     a = SlackAdapter.__new__(SlackAdapter)
+    a.slack_config = SlackConfig(allowed_user_ids={"T1": ["U1"]})
     a._app = object()
     a._team_clients = {"T1": client or _Client()}
     a._team_bot_user_ids = {"T1": "UBOT"}
@@ -42,6 +44,10 @@ def _adapter(tmp_path, client: _Client | None = None) -> SlackAdapter:
     a.on_home_opened = None
     a.on_feedback = None
     return a
+
+
+async def _respond(**_kw: Any) -> None:
+    pass
 
 
 def _capture():
@@ -97,7 +103,7 @@ def test_thumbs_down_click_records_and_opens_the_note_modal(tmp_path):
         "actions": [{"type": "feedback_buttons", "action_id": b.FEEDBACK_ACTION_ID, "value": value}],
         "channel": {"id": "D1"}, "message": {"ts": "11.1", "thread_ts": "10.1"},
         "user": {"id": "U1"}, "team": {"id": "T1"}, "trigger_id": "trig",
-    }))
+    }, _respond))
     assert seen[0]["verdict"] == "-" and seen[0]["session_key"] == "freyja:slack:T1:dm:D1"
     assert seen[0]["turn_ts"] == "10.1" and seen[0]["kind"] == "button"
     assert client.calls and client.calls[-1][0] == "views_open"
