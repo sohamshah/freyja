@@ -381,6 +381,8 @@ class SessionLedger:
         # them; we let only one command attribute files per repo at a time and
         # fall the others back to command-only recording.
         self._git_inflight: set[str] = set()
+        # When the conversation under this id was last reset, in ms (ensure).
+        self._reset_at = 0
 
     def begin_git_capture(self, repo_root: str) -> bool:
         """Claim exclusive git-delta attribution for ``repo_root``. Returns
@@ -402,6 +404,12 @@ class SessionLedger:
             self._dir_ready = True
         except Exception:  # noqa: BLE001
             logger.debug("session ledger ensure() failed", exc_info=True)
+        # A conversation reset under this id (Slack's /reset, new_session)
+        # keeps the project directory: the rows from before the reset are
+        # the conversation set aside, not this one's. They stay on disk.
+        from bridge.transcript_persistence import reset_at
+
+        self._reset_at = reset_at(self.session_id)
         # Hydrate from disk so the ledger survives resume / app restart. The
         # forgetting incident itself happened on a RESUMED turn — without this
         # the on-disk ledger is write-only and the standing reminder goes
@@ -424,6 +432,8 @@ class SessionLedger:
                 try:
                     row = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                if self._reset_at and int(row.get("createdAt") or 0) <= self._reset_at:
                     continue
                 self._rows.append(row)
                 if row.get("kind") == "shell_effect":
@@ -457,6 +467,8 @@ class SessionLedger:
                 path = m.get("path")
                 op = str(m.get("operation") or "")
                 if not path or path in have_paths:
+                    continue
+                if self._reset_at and int(m.get("createdAt") or 0) <= self._reset_at:
                     continue
                 if op not in ("write", "edit", "create", "update"):
                     continue  # skip legacy / subagent_artifact handoff imports

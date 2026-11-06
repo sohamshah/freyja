@@ -573,19 +573,25 @@ def set_transcript_aside(session_id: str) -> Path | None:
     """Start a session's next load on an empty conversation, keeping the
     saved one: its file moves to ``<file>.reset-<ms>``, a name no load or
     listing reads. The files a load reads back into the conversation go
-    aside with it, under the same name: its goal, its inbox, and its
-    kanban and task journals. Left, the next conversation took up the old
-    one's board, goal and unread messages. Its event log and its raw
-    message and compaction logs stay: they are traces, and no load reads
-    them into the conversation. Nothing is read, so the moves take no
-    time on an event loop, and a load after them finds no conversation;
+    aside with it, under the same name: its goal, its inbox, its kanban
+    and task journals, and the working memory in its project directory.
+    Left, the next conversation took up the old one's board, goal, unread
+    messages and working memory. Its event log and its raw message and
+    compaction logs stay: they are traces, and no load reads them into the
+    conversation. So do its project directory's files, the action ledger
+    and artifact manifest with them; a ledger skips their rows from before
+    the reset (reset_at). Nothing is read, so the moves take no time on
+    an event loop, and a load after them finds no conversation;
     keep_settings puts the model, reasoning level and mode back. Returns
     where the conversation went, or None when none was saved."""
+    from bridge.project_paths import project_output_dir
+
     stamp = int(time.time() * 1000)
     for sidecar in (
         _goal_path(session_id),
         _journal_path(session_id, ".kanban.jsonl"),
         _journal_path(session_id, ".tasks.jsonl"),
+        project_output_dir(session_id) / "working_memory.json",
     ):
         _set_aside(sidecar, stamp)
     with _inbox_lock():  # another process queues into it under the lock

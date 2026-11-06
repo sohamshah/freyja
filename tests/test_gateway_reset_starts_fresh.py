@@ -178,6 +178,41 @@ async def test_a_message_the_old_conversation_left_unread_does_not_wake_the_new_
     assert "the old report" in aside.read_text()
 
 
+async def test_the_conversation_after_reset_holds_none_of_the_old_ones_writes_or_working_memory(monkeypatch, tmp_path):
+    # The thread's project directory stays under its id: the write
+    # reminder listed the old conversation's writes (its action ledger,
+    # and its artifact manifest) as this chat's, and its working memory
+    # came back.
+    import json
+
+    state, sess = await _thread(monkeypatch, tmp_path)
+    old_file = str(tmp_path / "old_report.md")
+    sess.session_ledger.record_effect(kind="file_create", operation="create", summary="created old_report.md", path=old_file)
+    sess.artifact_store.record_file(
+        tmp_path / "old_notes.md", creator_id=sess.id, creator_label="lead", operation="write", source="write_file",
+    )
+    sess.working_memory.set_overview(summary="the old summary")
+    project = sess.project_output_dir
+
+    await _gateway(state)._reset_session(KEY)
+    await asyncio.sleep(0.01)
+    fresh = await state.ensure_session(KEY)
+
+    assert fresh.session_ledger.effects() == []
+    assert fresh._build_write_ledger_reminder() is None
+    assert fresh.working_memory.overview() is None
+    # The ledger and manifest stay whole on disk; the working memory is set aside.
+    assert old_file in (project / "action_ledger.jsonl").read_text()
+    assert "old_notes.md" in (project / "manifest.jsonl").read_text()
+    (aside,) = project.glob("working_memory.json.reset-*")
+    assert json.loads(aside.read_text())["overview"]["summary"] == "the old summary"
+    # A write of the new conversation is its own.
+    fresh.session_ledger.record_effect(kind="file_create", operation="create", summary="created new.md", path=str(tmp_path / "new.md"))
+    reopened = fb.SessionLedger(session_id=KEY, project_dir=project)
+    reopened.ensure()
+    assert [r["summary"] for r in reopened.effects()] == ["created new.md"]
+
+
 def _subagent(parent: str, sub_id: str) -> str:
     """A sub-agent of ``parent`` that ran and ended, as its files hold it."""
     import time
