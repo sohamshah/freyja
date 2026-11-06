@@ -537,6 +537,23 @@ def test_a_sub_agent_whose_first_run_is_going_is_not_a_closed_root_session(app_b
     assert not fb._is_closed_root_session("sub_19f0desk_1")
 
 
+async def test_a_desktop_sub_agent_with_a_transcript_and_no_sidecar_is_not_built_as_a_root(app_bridge, monkeypatch):
+    # Its first run was cut short (the app quit) or goes on in another
+    # process, so it saved a transcript and no sidecar. Only the sidecar
+    # was asked, and opening or typing into its pane built a root copy.
+    state, events, built = app_bridge
+    monkeypatch.setattr(fb, "_SUBAGENT_PARENTS", {})
+    sub = "sub_19f0desk_3"
+    _gateway_sub_agent_running(sub, parent="session-1")
+
+    assert fb._is_subagent_session_id(state, sub)
+    await fb._handle_command(state, {"type": "switch_session", "sessionId": sub})
+    await fb._handle_command(state, {"type": "send_message", "sessionId": sub, "content": "focus on X", "clientId": "m8"})
+
+    assert built == [] and state.sessions == {}
+    assert any(e.get("type") == "error" for e in events)
+
+
 async def test_a_slack_sub_agents_first_run_pane_builds_no_copy_and_its_messages_go_to_the_gateway(
     app_bridge, monkeypatch
 ):

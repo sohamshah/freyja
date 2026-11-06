@@ -1226,8 +1226,10 @@ def _subagent_record_in_process(state: Any, sid: str) -> Any | None:
 
 
 def _is_subagent_session_id(state: Any, sid: str) -> bool:
-    """``sid`` names a sub-agent: one this process runs (or ran), or one
-    with a saved sidecar.
+    """``sid`` names a sub-agent: one this process runs (or ran), one
+    with a saved sidecar, or one whose transcript names its parent (a
+    first run cut short, or going on in another process, has saved no
+    sidecar yet; see _root_session_id).
 
     Such an id must never become a ROOT ``_BridgeSession``. The desktop
     opens sub-agents as panes (sub-agent card, swarm grid, sidebar child),
@@ -1244,7 +1246,7 @@ def _is_subagent_session_id(state: Any, sid: str) -> bool:
     try:
         from bridge.transcript_persistence import _subagent_path
 
-        return _subagent_path(sid).exists()
+        return _subagent_path(sid).exists() or _root_session_id(sid) != sid
     except Exception:  # noqa: BLE001
         return False
 
@@ -1430,6 +1432,10 @@ async def _route_operator_message_to_subagent(
         return True
 
     if _resolve_archived_subagent(sid) is None:
+        if _gateway_holds(sid):
+            # A Slack thread's sub-agent on its first run: the gateway
+            # runs it (_route_operator_message_to_gateway).
+            return False
         emit_error(
             f"Sub-agent {sid} has no saved state to resume from, so this "
             "message could not be delivered."
