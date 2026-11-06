@@ -3,7 +3,15 @@
 // real store actions and checks the commands. Run from the repo root:
 //   npx tsx test-message-anchors.mjs
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { useHarness } from './src/renderer/state/store.ts'
+
+// The main-process persistence module resolves ~/.freyja from HOME when it
+// loads (imported below, after this).
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'freyja-anchors-test-'))
+process.env.HOME = home
 
 const sent = []
 globalThis.window = globalThis.window ?? {}
@@ -145,6 +153,34 @@ await check("an agent's pin marks the message holding the entry stamped `at`", a
   reset()
   ev({ type: 'entry_pin_changed', entryId: 'e9', at: 2_000, pinned: true, source: 'agent_summarize_context' })
   assert.deepEqual(pinnedIds(useHarness.getState().messages), ['u2'])
+})
+
+// The bridge's _find_message_entry_index: the first entry holding a message
+// stamped at or after the anchor.
+const resolve = (entries, createdAt) =>
+  entries.find((e) => e.message && e.timestamp >= createdAt / 1000)?.id
+
+await check('a Slack session shown from its transcript puts each message where its anchor finds its own entry', async () => {
+  // Real stamps from a Slack thread: a turn queued behind the one
+  // running appends its user entry in the same ms as that turn's last.
+  const entry = (id, role, timestamp, content = `${role} ${id}`) => ({ id, timestamp, message: { role, content } })
+  const entries = [
+    entry('u1', 'user', 1788996000.5),
+    entry('a1', 'assistant', 1788996050.25),
+    entry('t1', 'tool_result', 1788996057.99725),
+    entry('u2', 'user', 1788996057.997675),
+    entry('a2', 'assistant', 1788996070.1),
+  ]
+  const sessionsDir = path.join(home, '.freyja', 'sessions')
+  fs.mkdirSync(sessionsDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(sessionsDir, 'freyja_slack_T1_channel_C1_1.0.transcript.json'),
+    JSON.stringify({ session_id: 'freyja:slack:T1:channel:C1:1.0', metadata: {}, transcript: { entries } }),
+  )
+  const { loadSession } = await import('./src/main/persistence.ts')
+  const { messages } = loadSession('freyja:slack:T1:channel:C1:1.0').slice
+  assert.deepEqual(messages.map((m) => m.id), ['u1', 'a1', 'u2', 'a2'])
+  assert.deepEqual(messages.map((m) => resolve(entries, m.createdAt)), ['u1', 'a1', 'u2', 'a2'])
 })
 
 if (failures) {

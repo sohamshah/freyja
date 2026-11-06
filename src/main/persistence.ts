@@ -650,6 +650,8 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
   const messages: any[] = []
   let totalInput = 0, totalOutput = 0, totalCacheR = 0, totalCacheW = 0
   let attachmentSeq = 0
+  // Stamp (ms) of the last entry holding a message, shown or not.
+  let prevMs = -Infinity
   for (const e of entries) {
     // Compaction entries carry no `message` (it's null) — they hold the
     // summary the compactor wrote. Reconstruct them as an expandable inline
@@ -672,6 +674,13 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
       continue
     }
     const msg = e?.message
+    // Branch, pin and delete resolve a message to the first entry stamped
+    // at or after its createdAt. A turn queued behind another appends its
+    // user entry in the same ms as that turn's last entry, so the ms floor
+    // can fall at or before that entry: then it is shown between the two.
+    const ms = (e?.timestamp ?? 0) * 1000
+    const createdAt = Math.floor(ms) > prevMs ? Math.floor(ms) : (prevMs + ms) / 2
+    if (msg) prevMs = ms
     if (!msg || (msg.role !== 'user' && msg.role !== 'assistant')) continue
     const parts: any[] = []
     // MessageAttachmentRef entries for inline image blocks (e.g. Slack
@@ -763,7 +772,7 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
       id: e.id || String(messages.length),
       role: msg.role,
       parts,
-      createdAt: Math.floor((e.timestamp ?? 0) * 1000),
+      createdAt,
       ...(attachments.length > 0 ? { attachments } : {}),
     })
   }
