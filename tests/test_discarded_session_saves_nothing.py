@@ -84,3 +84,25 @@ async def test_a_thread_reset_by_slack_writes_no_settings_file(state):
     sess._save_settings_alone()
 
     assert tp.load_transcript(KEY)["metadata"]["model_id"] == "kimi-k3-fast"
+
+
+async def test_a_new_session_with_a_loaded_id_starts_a_fresh_conversation(state):
+    # new_session dropped the loaded session from memory only: ensure_session
+    # loaded its transcript and its inbox back from their files.
+    from engine.types import Message
+
+    old = await state.ensure_session("session-desktop")
+    await old.initialize()
+    old.session.transcript.append_message(Message(role="user", content="the old question"))
+    old._save_transcript()
+    old.inbox.push(_talk("the old report"))
+
+    await fb._handle_command(state, {"type": "new_session", "sessionId": old.id, "model": "kimi-k3-fast"})
+    new = state.sessions[old.id]
+
+    assert new is not old
+    assert new.session is None or len(new.session.transcript) == 0
+    assert new.inbox.unread == []
+    # The old conversation stays on disk, set aside.
+    (aside,) = tp.SESSIONS_DIR.glob("session-desktop.transcript.json.reset-*")
+    assert "the old question" in aside.read_text()

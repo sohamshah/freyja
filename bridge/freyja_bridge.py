@@ -16603,6 +16603,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if session_id in state.sessions:
             state.sessions[session_id]._background_closed = True
             state.sessions[session_id]._discarded = True
+            _close_board_journals(state.sessions[session_id])
             _drop_queued_turns(state.sessions[session_id])
             _force_cancel_session(state.sessions[session_id])
             # H3: drain the outcome watcher before the session is GC'd.
@@ -16617,6 +16618,12 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 pass
             del state.sessions[session_id]
             _close_session_event_file(session_id)
+        # Its files too, as Slack's /reset does: ensure_session loaded the
+        # old transcript and inbox back from them. They stay on disk, set
+        # aside.
+        from bridge.transcript_persistence import set_transcript_aside
+
+        set_transcript_aside(session_id)
         sess = await state.ensure_session(
             session_id,
             model_id=model,
