@@ -2292,7 +2292,8 @@ class GatewayDaemon:
             job = _find_job_by_token(jobs, body)
             if job is None:
                 return f"_No job matched `{body}`._"
-            await service.resume_job(job.id)
+            # The next fire resume set, not the one the job kept while paused.
+            job = await service.resume_job(job.id)
             return f"Resumed *{job.name}* (`{job.id}`). Next fire: {_format_ts(job.next_fire_at)}"
         if verb in ("remove", "delete", "rm"):
             jobs = await service.list_jobs(None)

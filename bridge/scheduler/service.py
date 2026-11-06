@@ -820,7 +820,7 @@ class SchedulerService:
             if job is None:
                 raise KeyError(job_id)
             for field_name in (
-                "name", "description", "enabled", "max_fires", "prompt",
+                "name", "description", "max_fires", "prompt",
                 "permission_snapshot", "model_id", "coordination_strategy",
                 "skills_to_load", "budget", "artifact", "memory", "sinks",
                 "misfire_policy", "overlap_policy", "timeout_seconds",
@@ -829,8 +829,19 @@ class SchedulerService:
                 val = getattr(patch, field_name)
                 if val is not None:
                     setattr(job, field_name, val)
+            # enabled pauses or resumes the job, as pause_job and
+            # resume_job do. Set alone, a paused job kept status "paused",
+            # which the tick skips, and never ran again.
+            resumed = False
+            if patch.enabled is not None and patch.enabled != (
+                job.enabled and job.status == "active"
+            ):
+                job.enabled = patch.enabled
+                job.status = "active" if patch.enabled else "paused"
+                resumed = patch.enabled
             if patch.schedule is not None:
                 job.schedule = patch.schedule
+            if patch.schedule is not None or resumed:
                 self._recompute_next_fire(job, force=True)
             if patch.execution is not None:
                 job.execution = patch.execution
