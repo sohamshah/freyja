@@ -584,11 +584,14 @@ async def _resolve_execution_session(
     )
     try:
         # If the session already has prior content from earlier fires,
-        # reset before this fire so the agent starts clean.
+        # reset before this fire so the agent starts clean. Then build
+        # the empty session: restoring the transcript here, as this did,
+        # loaded the last fire's back from disk, and every briefing was
+        # sent the previous ones.
         inner = getattr(sess, "session", None)
         if inner is not None and len(inner.transcript) > 0:
             sess.reset()
-            await sess.try_restore_transcript()  # no-op since we just reset
+            await sess.initialize()
     except Exception:  # noqa: BLE001
         pass
     _apply_job_tier(sess, job)
