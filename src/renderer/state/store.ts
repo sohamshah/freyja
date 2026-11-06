@@ -884,6 +884,12 @@ const pendingRewinds = new Map<
   { requestId: string; at: number; removed: Message[]; edited?: { id: string; text: string } }
 >()
 
+/** What was attached to a message sent to a Slack session, keyed on its
+ *  bubble, for as long as the bridge may still refuse it (`send_refused`).
+ *  The bubble keeps only previews, so a refusal gives these back to the
+ *  composer, as a refused follow-up gives back its own. */
+const refusableAttachments = new WeakMap<Message, PendingAttachment[]>()
+
 interface SessionTreeIndex {
   byId: Map<string, SessionSnapshot>
   childrenOf: Map<string, string[]>
@@ -3496,8 +3502,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         }
         if (active) {
           next.inputDraft = restoreIntoDraft(prev.inputDraft, text)
-          if (pending?.composerAttachments?.length) {
-            next.pendingAttachments = [...pending.composerAttachments, ...prev.pendingAttachments]
+          const attached = pending?.composerAttachments ?? (bubble && refusableAttachments.get(bubble))
+          if (attached?.length) {
+            next.pendingAttachments = [...attached, ...prev.pendingAttachments]
           }
         }
         return next
@@ -4617,17 +4624,22 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         pendingAttachments: [],
       }))
     } else {
+      const bubble = {
+        id,
+        role: 'user',
+        parts,
+        createdAt: Date.now(),
+        attachments: messageAttachments,
+      } as Message
+      if (messageAttachments && isInSlackThread(state.sessions, sessionId)) {
+        // With the previews the bubble shows: a video's blob: URL is freed below.
+        refusableAttachments.set(
+          bubble,
+          attachments.map((a, i) => ({ ...a, previewUrl: messageAttachments[i].previewUrl })),
+        )
+      }
       set((prev) => ({
-        messages: [
-          ...prev.messages,
-          {
-            id,
-            role: 'user',
-            parts,
-            createdAt: Date.now(),
-            attachments: messageAttachments,
-          } as Message,
-        ],
+        messages: [...prev.messages, bubble],
         inputDraft: '',
         pendingAttachments: [],
       }))

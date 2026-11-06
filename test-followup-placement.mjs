@@ -292,6 +292,29 @@ await check('a follow-up the bridge refused to send leaves its pending bubble an
   ev({ type: 'turn_complete', turnId: 'turn-11', success: true })
 })
 
+await check('a message the bridge refused to send gives its attachments back to the composer too', async () => {
+  // The refusal is for a Slack session (none other is refused). Its bubble
+  // keeps only previews of what was attached.
+  const slack = 'freyja:slack:T1:channel:C1:2.0'
+  useHarness.setState({ activeSessionId: slack, messages: [], inputDraft: '', isStreaming: false })
+  const shot = {
+    id: 'att-1', type: 'image', mimeType: 'image/png', dataBase64: 'iVBORw0KGgo=',
+    previewUrl: 'data:image/png;base64,iVBORw0KGgo=', filename: 'shot.png', sizeBytes: 8,
+  }
+  const card = {
+    id: 'att-2', type: 'appshot', mimeType: '', dataBase64: '', previewUrl: '', filename: 'notes.txt', sizeBytes: 0,
+    appshot: { app: 'Notes', title: 'Plan', text: 'the whole page of text' },
+  }
+  useHarness.setState({ pendingAttachments: [shot, card] })
+  await useHarness.getState().sendMessage('see these')
+  const c = sent.at(-1).clientId
+  assert.equal(useHarness.getState().pendingAttachments.length, 0)
+  useHarness.getState().handleEvent({ sessionId: slack, type: 'send_refused', clientId: c })
+  assert.ok(!useHarness.getState().messages.some((m) => m.id === c))
+  assert.equal(useHarness.getState().inputDraft, 'see these')
+  assert.deepEqual(useHarness.getState().pendingAttachments, [shot, card])
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)
