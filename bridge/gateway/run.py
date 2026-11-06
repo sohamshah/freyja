@@ -3359,6 +3359,10 @@ class GatewayDaemon:
         if scheduler is None or not job_id:
             logger.warning("scheduler_fire: dropped (job %r)", job_id)
             return
+        if cmd.get("run_id"):
+            # Run now in the app, run here as the app answered it.
+            await scheduler.run_now_handed_over(job_id, str(cmd["run_id"]))
+            return
         await scheduler.fire_handed_over(
             job_id, cmd.get("scheduled_for"), int(cmd.get("attempt") or 0),
         )

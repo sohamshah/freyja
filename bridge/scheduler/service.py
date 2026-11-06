@@ -1467,24 +1467,91 @@ class SchedulerService:
         return its record as it starts, without waiting for it; the run's
         events tell how it goes. The app's bridge handles one command at a
         time: waiting for the run there held every other command until it
-        ended, and the renderer gave up on the run after 30 s."""
+        ended, and the renderer gave up on the run after 30 s.
+
+        A job that fires into a Slack thread runs in the gateway, as its
+        scheduled fires do (_hand_over): run here, it went on a copy of the
+        thread, and failed with that reason. The gateway runs it under the
+        id answered here (run_now_handed_over)."""
+        job = load_job(job_id)
+        if job is not None and _fires_in_the_gateway(job):
+            return self._hand_run_now_to_gateway(job)
         job, lock = self._take_run_lock(job_id)
         run = RunRecord(
             run_id=new_run_id(), job_id=job.id, job_name=job.name,
             started_at=time.time(), fire_number=job.fire_count + 1, prompt=job.prompt,
         )
+        self._start_run_now(job, lock, run.run_id)
+        return run
+
+    def _start_run_now(self, job: JobRecord, lock: FileLock, run_id: str) -> None:
+        """Run ``job`` now under its run ``lock`` as ``run_id``, without
+        waiting for it."""
         name = f"scheduler-run-now-{job.id}"
 
         async def _run() -> None:
             try:
-                await self._run_now(job, lock, run_id=run.run_id)
+                await self._run_now(job, lock, run_id=run_id)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("run now crashed (job=%s): %s", job.id, exc)
             finally:
                 self._in_flight_runs.pop(name, None)
 
         self._in_flight_runs[name] = asyncio.create_task(_run(), name=name)
+
+    def _hand_run_now_to_gateway(self, job: JobRecord) -> RunRecord:
+        """Hand a run now of ``job``, whose Slack thread the gateway runs,
+        to the gateway, and return the record it will run under."""
+        if not _gateway_runs():
+            raise ValueError(
+                f"{job.name} runs in its Slack thread, and the Slack gateway "
+                "is not running. Start the gateway, or let the job run at its "
+                "next scheduled time"
+            )
+        with FileLock(job_run_lock_path(job.id)) as free:
+            if not free:
+                raise RuntimeError(f"job {job.id} is running; try again when its run ends")
+        run = RunRecord(
+            run_id=new_run_id(), job_id=job.id, job_name=job.name,
+            started_at=time.time(), fire_number=job.fire_count + 1, prompt=job.prompt,
+        )
+        if not _hand_over(job, None, 0, to_app=False, run_id=run.run_id):
+            raise RuntimeError(f"{job.name} could not be handed to the Slack gateway")
         return run
+
+    async def run_now_handed_over(self, job_id: str, run_id: str) -> bool:
+        """Run ``job_id`` now as ``run_id``: a run now that the app handed
+        to this process, which runs the job's session
+        (_hand_run_now_to_gateway). It is a manual run, as run_job_now
+        makes: no slot, no retries, and the cadence is left alone. When it
+        cannot start, its record says why, so the app's run does not stay
+        "claimed" or vanish. Returns False then."""
+        job = load_job(job_id)
+        if job is None:
+            logger.warning("job %s: handed a run now, but the job is gone", job_id)
+            return False
+        lock = FileLock(job_run_lock_path(job_id))
+        if _fires_in_the_gateway(job) or _fires_in_the_app(job):
+            refused = "this process does not run its session"
+        elif not lock.acquire():
+            refused = "a run of it goes on"
+        else:
+            self._start_run_now(job, lock, run_id)
+            return True
+        now = time.time()
+        save_run(RunRecord(
+            run_id=run_id, job_id=job.id, job_name=job.name,
+            started_at=now, finished_at=now, status="failed",
+            fire_number=job.fire_count + 1, prompt=job.prompt,
+            error=f"not run: {refused}",
+        ))
+        logger.warning("job %s: handed a run now, but %s", job_id, refused)
+        self.emit_event(
+            subtype="scheduler_run_failed",
+            message=f"Scheduled job '{job.name}' did not run: {refused}",
+            details={"jobId": job.id, "runId": run_id, "error": f"not run: {refused}"},
+        )
+        return False
 
     def _take_run_lock(self, job_id: str) -> tuple[JobRecord, FileLock]:
         """``job_id``'s record and its run lock, taken for a run now."""
@@ -1908,23 +1975,29 @@ def _app_runs() -> bool:
         return False
 
 
-def _hand_over(job: JobRecord, slot: float | None, attempt: int, *, to_app: bool) -> bool:
+def _hand_over(
+    job: JobRecord, slot: float | None, attempt: int, *, to_app: bool, run_id: str | None = None,
+) -> bool:
     """Send a claimed fire of ``job`` on its control channel to the process
     that runs its session: the gateway (``GatewayDaemon._on_scheduler_fire``)
     or the app's bridge (``_handle_scheduler_fire_command``). Each reads
     from where it left off, so a fire sent while it restarts runs when it
-    is back. Returns False when the fire was not sent."""
+    is back. With ``run_id`` it is a run now, run under that id. Returns
+    False when the fire was not sent."""
     from bridge.gateway.control_channel import append_command, desktop_commands_path
 
     owner = "the app" if to_app else "the Slack gateway"
+    cmd: dict[str, Any] = {
+        "type": "scheduler_fire",
+        "job_id": job.id,
+        "scheduled_for": slot,
+        "attempt": attempt,
+        "origin_pid": os.getpid(),
+    }
+    if run_id is not None:
+        cmd["run_id"] = run_id
     try:
-        append_command({
-            "type": "scheduler_fire",
-            "job_id": job.id,
-            "scheduled_for": slot,
-            "attempt": attempt,
-            "origin_pid": os.getpid(),
-        }, path=desktop_commands_path() if to_app else None)
+        append_command(cmd, path=desktop_commands_path() if to_app else None)
     except Exception:  # noqa: BLE001
         logger.exception("job %s: the fire for slot %s did not reach %s", job.id, slot, owner)
         return False

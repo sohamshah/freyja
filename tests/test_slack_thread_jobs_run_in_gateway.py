@@ -255,3 +255,95 @@ async def test_a_job_made_without_a_mode_has_none(monkeypatch):
     # A job saved before mode was optional reads back as saved.
     assert JobRecord.from_dict({**job.to_dict(), "coordination_strategy": "bus"}).coordination_strategy == "bus"
     assert JobRecord.from_dict({k: v for k, v in job.to_dict().items() if k != "coordination_strategy"}).coordination_strategy is None
+
+
+# ── run now from the app ─────────────────────────────────────────────
+
+
+async def test_run_now_in_the_app_of_a_slack_thread_job_goes_to_the_gateway(daemon):
+    # It failed with "its Slack thread runs in the Slack gateway".
+    service, built = daemon
+    job = _slack_thread_job()
+
+    run = await service.start_job_now(job.id)
+    await asyncio.gather(*service._in_flight_runs.values())
+
+    assert built == [] and not service._in_flight_runs
+    (cmd,) = _commands()
+    assert (cmd["type"], cmd["job_id"], cmd["run_id"], cmd["scheduled_for"]) == (
+        "scheduler_fire", job.id, run.run_id, None,
+    )
+    # A manual run leaves the job's cadence alone.
+    assert load_job(job.id).next_fire_at == job.next_fire_at
+
+
+async def test_run_now_in_the_app_of_a_slack_thread_job_while_no_gateway_runs_says_so(daemon, monkeypatch):
+    import bridge.gateway.pid as gp
+
+    service, built = daemon
+    monkeypatch.setattr(gp, "get_running_pid", lambda: None)
+    job = _slack_thread_job()
+
+    with pytest.raises(ValueError, match="Slack gateway is not running"):
+        await service.start_job_now(job.id)
+
+    assert built == [] and _commands() == [] and not service._in_flight_runs
+
+
+def _gateway_service(monkeypatch):
+    from bridge.gateway.run import GatewayDaemon
+
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
+    service = SchedulerService(SimpleNamespace(sessions={}))
+    monkeypatch.setattr(service, "emit_event", lambda **_kw: None)
+    gateway = GatewayDaemon()
+    gateway.state = SimpleNamespace(scheduler=service)
+    return gateway, service
+
+
+async def test_the_gateway_runs_a_run_now_it_was_handed_under_the_apps_run_id(daemon, monkeypatch):
+    service, _built = daemon
+    job = _slack_thread_job()
+    run = await service.start_job_now(job.id)
+    (cmd,) = _commands()
+    gateway, gateway_service = _gateway_service(monkeypatch)
+    fired: list[tuple] = []
+
+    async def fake_fire(_service, fresh, **kw):
+        assert not FileLock(job_run_lock_path(fresh.id)).acquire()
+        fired.append((fresh.id, kw.get("run_id"), kw.get("scheduled_for")))
+        return RunRecord(run_id=kw["run_id"], job_id=fresh.id, job_name=fresh.name,
+                         started_at=time.time(), status="succeeded")
+
+    monkeypatch.setattr(runtime, "fire_job", fake_fire)
+
+    await gateway._on_scheduler_fire(cmd)
+    await asyncio.gather(*gateway_service._in_flight_runs.values())
+
+    assert fired == [(job.id, run.run_id, None)]
+    assert load_job(job.id).next_fire_at == job.next_fire_at
+    run_lock = FileLock(job_run_lock_path(job.id))
+    assert run_lock.acquire()
+    run_lock.release()
+
+
+async def test_a_run_now_the_gateway_cannot_start_is_recorded_as_failed(daemon, monkeypatch):
+    from bridge.scheduler.persistence import load_run
+
+    service, _built = daemon
+    job = _slack_thread_job()
+    run = await service.start_job_now(job.id)
+    (cmd,) = _commands()
+    gateway, gateway_service = _gateway_service(monkeypatch)
+    busy = FileLock(job_run_lock_path(job.id))
+    assert busy.acquire()  # a scheduled run of it started first
+    try:
+        await gateway._on_scheduler_fire(cmd)
+    finally:
+        busy.release()
+
+    assert not gateway_service._in_flight_runs
+    recorded = load_run(job.id, run.run_id)
+    assert recorded.status == "failed" and "a run of it goes on" in recorded.error
+    assert recorded.finished_at is not None
+    assert load_job(job.id).next_fire_at == job.next_fire_at
