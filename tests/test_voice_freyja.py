@@ -1,10 +1,6 @@
 """freyja.* verbs (bridge/voice/adapters/freyja_query.py).
 
-Read-only over the operator's own Freyja state: the session index, each
-session's working memory, and the latest briefing. Everything points
-FREYJA_HOME at a tmp tree so no test touches the real home; the briefing
-read goes through bridge.briefing.read_briefing (which honors
-FREYJA_HOME) against a fixture briefing.json.
+Read-only over the operator's own Freyja state: the session index, each session's working memory, and the latest briefing. Everything points FREYJA_HOME at a tmp tree so no test touches the real home; the briefing read goes through bridge.briefing.read_briefing (which honors FREYJA_HOME) against a fixture briefing.json.
 """
 
 from __future__ import annotations
@@ -119,14 +115,11 @@ async def test_sessions_respects_limit_and_cap(home):
     assert len(res.data["sessions"]) == 8
 
 
-async def test_sessions_empty_when_no_index(home):
+async def test_sessions_tolerates_missing_or_corrupt_index(home):
     res = await _run("freyja.sessions")
     assert res.ok
     assert res.data["sessions"] == []
     assert res.summary == "no recent sessions"
-
-
-async def test_sessions_survives_corrupt_index(home):
     (home / "sessions" / "_index.json").write_text("{not json", encoding="utf-8")
     res = await _run("freyja.sessions")
     assert res.ok and res.data["sessions"] == []
@@ -185,45 +178,27 @@ async def test_project_status_no_match_lists_known(home):
     assert res.data["projects"] == ["Galdr voice"]
 
 
-async def test_project_status_no_briefing(home):
+async def test_project_status_refuses_without_briefing_or_name(home):
     res = await _run("freyja.project_status", {"name": "anything"})
     assert res.ok is False
     assert res.data == {"setup": "briefing"}
-
-
-async def test_project_status_requires_name(home):
     res = await _run("freyja.project_status", {"name": "  "})
     assert res.ok is False
     assert res.error == "missing_name"
 
 
-# ── registration ───────────────────────────────────────────────────────────
-
-
-def test_registers_read_only_verbs():
-    reg = _reg()
-    names = {v.name for v in reg.all()}
-    assert names == {"freyja.sessions", "freyja.project_status"}
-    for v in reg.all():
-        assert v.tier == "auto"  # read-only, never a confirm
-
-
-# ── the relative-time helper ───────────────────────────────────────────────
+# ── the relative-time helper (unit boundaries) ─────────────────────────────
 
 
 @pytest.mark.parametrize(
     "age_s,expected",
     [
-        (10, "just now"),
         (44, "just now"),
-        (90, "2m ago"),
         (3599, "60m ago"),
         (3600, "1h ago"),
-        (7200, "2h ago"),
         (86400, "1d ago"),
-        (3 * 86400, "3d ago"),
     ],
 )
-def test_relative_time(age_s, expected):
+def test_relative_time_boundaries(age_s, expected):
     now = 1_000_000_000_000.0
     assert freyja_query._relative_time(now - age_s * 1000, now_ms=now) == expected

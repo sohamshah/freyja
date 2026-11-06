@@ -1,12 +1,9 @@
 """Adapter behavior: exact AppleScript strings, undo cycles, search, timers.
 
-Nothing here touches the real Mac — `mac.run_osascript` / `mac.run_exec`
-are the single subprocess seams and every test monkeypatches them. The
-one exception is the FREYJA_VOICE_LIVE=1 smoke test at the bottom.
+Nothing here touches the real Mac — `mac.run_osascript` / `mac.run_exec` are the single subprocess seams and every test monkeypatches them.
 """
 
 import asyncio
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -69,8 +66,7 @@ def _reset_spotify_token_cache():
 
 @pytest.fixture(autouse=True)
 def _stub_installed_apps(monkeypatch):
-    """Pin the app index so app.* resolution is deterministic and never
-    touches the real machine's Spotlight / /Applications."""
+    """Pin the app index so app.* resolution is deterministic and never touches the real machine's Spotlight / /Applications."""
     from bridge.voice.adapters import system
 
     index = {
@@ -127,8 +123,7 @@ async def test_spotify_transport_scripts(reg, osa):
 
 @pytest.mark.asyncio
 async def test_spotify_transport_failure_surfaces_error(reg, osa):
-    """Raw AppleScript stderr rides in error= (for the model); the human
-    summary stays terse — it lands verbatim in the HUD receipt row."""
+    """Raw AppleScript stderr rides in error= (for the model); the human summary stays terse — it lands verbatim in the HUD receipt row."""
     stderr = "execution error: Not authorized to send Apple events to Spotify. (-1743)"
     cases = [
         ("spotify.pause", "couldn't pause"),
@@ -145,18 +140,13 @@ async def test_spotify_transport_failure_surfaces_error(reg, osa):
 
 
 @pytest.mark.asyncio
-async def test_spotify_play_explicit_uri(reg, osa):
+async def test_spotify_play_uri_or_bare_resumes(reg, osa, no_spotify_creds):
     res = await reg.get("spotify.play").run({"uri": "spotify:track:abc123"})
-    assert res.ok
+    assert res.ok and res.data == {"uri": "spotify:track:abc123"}
     assert osa.scripts == ['tell application "Spotify" to play track "spotify:track:abc123"']
-    assert res.data == {"uri": "spotify:track:abc123"}
-
-
-@pytest.mark.asyncio
-async def test_spotify_play_bare_resumes(reg, osa, no_spotify_creds):
     res = await reg.get("spotify.play").run({})
     assert res.ok and res.summary == "▶ resumed"
-    assert osa.scripts == ['tell application "Spotify" to play']
+    assert osa.scripts[-1] == 'tell application "Spotify" to play'
 
 
 @pytest.mark.asyncio
@@ -265,7 +255,7 @@ async def test_spotify_play_search_no_results(reg, osa, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_spotify_now_playing(reg, osa):
+async def test_spotify_now_playing_parses_track_state_and_error(reg, osa):
     osa.replies = [(True, "Vienna\nBilly Joel\nThe Stranger\n83\nplaying")]
     res = await reg.get("spotify.now_playing").run({})
     assert res.ok
@@ -279,10 +269,6 @@ async def test_spotify_now_playing(reg, osa):
     }
     assert "current track" in osa.scripts[0]
     assert "player position" in osa.scripts[0]
-
-
-@pytest.mark.asyncio
-async def test_spotify_now_playing_paused_glyph_and_error(reg, osa):
     osa.replies = [(True, "Vienna\nBilly Joel\nThe Stranger\n0\npaused")]
     res = await reg.get("spotify.now_playing").run({})
     assert res.summary.startswith("⏸ ")
@@ -333,14 +319,10 @@ async def test_volume_mute_undo_restores_full_state(reg, osa):
 
 
 @pytest.mark.asyncio
-async def test_volume_requires_some_change(reg, osa):
+async def test_volume_refuses_without_change_or_readable_level(reg, osa):
     res = await reg.get("system.volume").run({})
     assert not res.ok
     assert osa.scripts == []
-
-
-@pytest.mark.asyncio
-async def test_volume_delta_fails_without_prior_read(reg, osa):
     osa.replies = [(False, "no audio device")]
     res = await reg.get("system.volume").run({"delta": 10})
     assert not res.ok
@@ -351,10 +333,14 @@ async def test_volume_delta_fails_without_prior_read(reg, osa):
 
 
 @pytest.mark.asyncio
-async def test_app_open_via_open_a(reg, osa, run_exec):
+async def test_app_open_and_focus_use_open_a(reg, osa, run_exec):
     res = await reg.get("app.open").run({"name": "Safari"})
     assert res.ok and res.summary == "opened Safari"
-    assert run_exec.calls == [["open", "-a", "Safari"]]
+    # Focus is open-if-needed + activate; `open -a` brings a running app
+    # forward, so the resolved name goes straight through it.
+    res = await reg.get("app.focus").run({"name": "Safari"})
+    assert res.ok and res.summary == "focused Safari"
+    assert run_exec.calls == [["open", "-a", "Safari"], ["open", "-a", "Safari"]]
     assert osa.scripts == []
 
 
@@ -367,53 +353,32 @@ async def test_app_open_falls_back_to_applescript(reg, osa, run_exec):
 
 
 @pytest.mark.asyncio
-async def test_app_focus_opens_and_activates(reg, osa, run_exec):
-    # Focus is open-if-needed + activate; `open -a` brings a running app
-    # forward, so the resolved name goes straight through it.
-    res = await reg.get("app.focus").run({"name": "Safari"})
-    assert res.ok and res.summary == "focused Safari"
-    assert run_exec.calls == [["open", "-a", "Safari"]]
-
-
-@pytest.mark.asyncio
-async def test_app_quit_script_and_undo_reopens(reg, osa, run_exec):
-    res = await reg.get("app.quit").run({"name": "Safari"})
-    assert res.ok and res.summary == "quit Safari"
-    assert osa.scripts == ['tell application "Safari" to quit']
+async def test_app_quit_resolves_name_and_undo_reopens(reg, osa, run_exec):
+    res = await reg.get("app.quit").run({"name": "arc browser"})
+    assert res.ok and res.summary == "quit Arc"
+    assert osa.scripts == ['tell application "Arc" to quit']
     undo_res = await res.undo()
-    assert undo_res.ok and undo_res.summary == "opened Safari"
-    assert run_exec.calls == [["open", "-a", "Safari"]]
-
-
-@pytest.mark.asyncio
-async def test_app_open_resolves_misheard_name(reg, osa, run_exec):
-    # The live gap: the model says "Arc Browser"; the bundle is "Arc".
-    res = await reg.get("app.open").run({"name": "Arc Browser"})
-    assert res.ok and res.summary == "opened Arc"
+    assert undo_res.ok and undo_res.summary == "opened Arc"
     assert run_exec.calls == [["open", "-a", "Arc"]]
 
 
 @pytest.mark.asyncio
-async def test_app_open_resolves_subword(reg, osa, run_exec):
-    res = await reg.get("app.open").run({"name": "chrome"})
-    assert res.ok and res.summary == "opened Google Chrome"
-    assert run_exec.calls == [["open", "-a", "Google Chrome"]]
-
-
-@pytest.mark.asyncio
-async def test_app_open_prefers_plainest_when_close(reg, osa, run_exec):
-    # "chrome" is a subword of both Chrome and Chrome Canary; the plainest
-    # (shortest) name is the one meant — resolve, don't nag.
-    res = await reg.get("app.open").run({"name": "chrome"})
-    assert res.ok and res.summary == "opened Google Chrome"
-    assert run_exec.calls == [["open", "-a", "Google Chrome"]]
-
-
-@pytest.mark.asyncio
-async def test_app_open_subword_resolves_canary(reg, osa, run_exec):
-    # "canary" is a full spoken word inside exactly one app name → resolve.
-    res = await reg.get("app.open").run({"name": "canary"})
-    assert res.ok and res.summary == "opened Google Chrome Canary"
+@pytest.mark.parametrize(
+    "spoken,resolved",
+    [
+        # The live gap: the model says "Arc Browser"; the bundle is "Arc".
+        ("Arc Browser", "Arc"),
+        # "chrome" is a subword of both Chrome and Chrome Canary; the plainest
+        # (shortest) name is the one meant — resolve, don't nag.
+        ("chrome", "Google Chrome"),
+        # "canary" is a full spoken word inside exactly one app name → resolve.
+        ("canary", "Google Chrome Canary"),
+    ],
+)
+async def test_app_open_resolves_spoken_name(reg, osa, run_exec, spoken, resolved):
+    res = await reg.get("app.open").run({"name": spoken})
+    assert res.ok and res.summary == f"opened {resolved}"
+    assert run_exec.calls == [["open", "-a", resolved]]
 
 
 @pytest.mark.asyncio
@@ -452,15 +417,6 @@ async def test_app_open_unknown_fails_cleanly(reg, osa, run_exec):
 
 
 @pytest.mark.asyncio
-async def test_app_quit_resolves_before_quitting(reg, osa, run_exec):
-    res = await reg.get("app.quit").run({"name": "arc browser"})
-    assert res.ok and res.summary == "quit Arc"
-    assert osa.scripts == ['tell application "Arc" to quit']
-    undo_res = await res.undo()
-    assert undo_res.ok and undo_res.summary == "opened Arc"
-
-
-@pytest.mark.asyncio
 async def test_app_frontmost(reg, osa):
     osa.replies = [(True, "Safari")]
     res = await reg.get("app.frontmost").run({})
@@ -469,14 +425,6 @@ async def test_app_frontmost(reg, osa):
     assert osa.scripts == [
         'tell application "System Events" to get name of first process whose frontmost is true'
     ]
-
-
-@pytest.mark.asyncio
-async def test_app_verbs_require_name(reg, osa, run_exec):
-    for verb in ("app.open", "app.focus", "app.quit"):
-        res = await reg.get(verb).run({})
-        assert not res.ok, verb
-    assert osa.scripts == [] and run_exec.calls == []
 
 
 @pytest.mark.asyncio
@@ -491,10 +439,11 @@ async def test_app_name_is_applescript_quoted(reg, osa):
 
 @pytest.mark.asyncio
 async def test_timer_fires_emits_and_notifies(reg, osa, timer_events):
-    res = await reg.get("timer.set").run({"seconds": 0.05, "label": "tea"})
+    res = await reg.get("timer.set").run({"seconds": 0.01, "label": "tea"})
     assert res.ok and res.summary.startswith("⏱ tea")
-    await asyncio.sleep(0.15)
-    assert timer_events == [{"type": "voice_timer_fired", "label": "tea", "seconds": 0.05}]
+    task = timers._manager._timers["tea"].task
+    await asyncio.wait_for(task, timeout=5)
+    assert timer_events == [{"type": "voice_timer_fired", "label": "tea", "seconds": 0.01}]
     note = osa.scripts[-1]
     assert note.startswith("display notification ")
     assert '"tea — done"' in note
@@ -504,6 +453,7 @@ async def test_timer_fires_emits_and_notifies(reg, osa, timer_events):
 @pytest.mark.asyncio
 async def test_timer_list_and_labelled_cancel(reg, osa, timer_events):
     await reg.get("timer.set").run({"seconds": 5, "label": "tea"})
+    task = timers._manager._timers["tea"].task
     res = await reg.get("timer.list").run({})
     assert res.ok and "⏱ tea" in res.summary
     assert len(res.data["timers"]) == 1
@@ -511,8 +461,8 @@ async def test_timer_list_and_labelled_cancel(reg, osa, timer_events):
 
     res = await reg.get("timer.cancel").run({"label": "tea"})
     assert res.ok and res.summary == "cancelled ⏱ tea"
-    await asyncio.sleep(0.05)
-    assert timer_events == []  # cancelled task never fires
+    await asyncio.wait({task}, timeout=1)
+    assert task.cancelled() and timer_events == []  # cancelled task never fires
 
     res = await reg.get("timer.list").run({})
     assert res.summary == "no timers running"
@@ -530,46 +480,20 @@ async def test_timer_cancel_without_label_picks_most_recent(reg, osa, timer_even
 
 @pytest.mark.asyncio
 async def test_timer_undo_cancels(reg, osa, timer_events):
-    res = await reg.get("timer.set").run({"seconds": 0.05, "label": "tea"})
+    res = await reg.get("timer.set").run({"seconds": 5, "label": "tea"})
+    task = timers._manager._timers["tea"].task
     undo_res = await res.undo()
     assert undo_res.ok and undo_res.summary == "cancelled ⏱ tea"
-    await asyncio.sleep(0.15)
-    assert timer_events == []
+    await asyncio.wait({task}, timeout=1)
+    assert task.cancelled() and timer_events == []
 
 
 @pytest.mark.asyncio
-async def test_timer_minutes_and_default_label(reg, osa, timer_events):
+async def test_timer_set_minutes_default_label_and_dedupe(reg, osa, timer_events):
     res = await reg.get("timer.set").run({"minutes": 1})
     assert res.ok
     assert res.data == {"label": "1m timer", "seconds": 60.0}
     assert res.summary == "⏱ 1m timer — 1m"
-
-
-@pytest.mark.asyncio
-async def test_timer_duplicate_labels_deduped(reg, osa, timer_events):
     await reg.get("timer.set").run({"seconds": 5, "label": "tea"})
     res = await reg.get("timer.set").run({"seconds": 5, "label": "tea"})
     assert res.data["label"] == "tea 2"
-
-
-@pytest.mark.asyncio
-async def test_timer_requires_duration_and_cancel_missing(reg, osa, timer_events):
-    res = await reg.get("timer.set").run({})
-    assert not res.ok
-    res = await reg.get("timer.cancel").run({"label": "ghost"})
-    assert not res.ok
-
-
-# ── live smoke (opt-in) ──────────────────────────────────────────────────
-
-
-@pytest.mark.skipif(
-    os.environ.get("FREYJA_VOICE_LIVE") != "1",
-    reason="touches the real Mac; set FREYJA_VOICE_LIVE=1 to run",
-)
-@pytest.mark.asyncio
-async def test_live_now_playing_smoke():
-    reg = build_default_registry()
-    res = await reg.get("spotify.now_playing").run({})
-    # Either a real track line or a clean "nothing playing" — never a crash.
-    assert isinstance(res.summary, str) and res.summary

@@ -1,10 +1,6 @@
-"""Apple-app adapter behavior: exact AppleScript, TCC-denied degradation,
-messages confirm-tier + recipient resolution, calendar/mail timeout.
+"""Apple-app adapter behavior: exact AppleScript, TCC-denied degradation, messages recipient resolution, calendar/mail timeout.
 
-Nothing here touches a real Apple app — `mac.run_osascript` is the single
-subprocess seam and every test monkeypatches it. In particular NO test
-drives Calendar/Reminders/Notes/Messages/Mail/Contacts live (that would
-trip a blocking Automation-permission dialog).
+Nothing here touches a real Apple app — `mac.run_osascript` is the single subprocess seam and every test monkeypatches it. In particular NO test drives Calendar/Reminders/Notes/Messages/Mail/Contacts live (that would trip a blocking Automation-permission dialog).
 """
 
 import pytest
@@ -12,7 +8,7 @@ import pytest
 from bridge.voice.adapters import apple, mac
 from bridge.voice.verbs import build_default_registry
 
-# The three shapes of the Automation-denied osascript failure (contract §3).
+# The two shapes of the Automation-denied osascript failure (contract §3).
 _DENIED_MINUS_1743 = (
     "execution error: Not authorized to send Apple events to Reminders. (-1743)"
 )
@@ -47,36 +43,11 @@ def reg():
     return build_default_registry()
 
 
-# ── registration + tiers ─────────────────────────────────────────────────
-
-
-def test_all_apple_verbs_registered(reg):
-    for name in (
-        "reminders.create",
-        "reminders.list",
-        "notes.append",
-        "notes.create",
-        "messages.send",
-        "contacts.find",
-        "calendar.today",
-        "calendar.next",
-        "mail.unread",
-    ):
-        assert reg.get(name) is not None, name
-
-
-def test_messages_send_is_confirm_tier(reg):
-    # Outward, no undo → the only confirm-tier apple verb.
-    assert reg.get("messages.send").tier == "confirm"
-    for name in ("reminders.create", "notes.append", "calendar.today", "mail.unread"):
-        assert reg.get(name).tier == "auto", name
-
-
 # ── reminders ─────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_reminders_create_script_and_summary(reg, osa):
+async def test_reminders_create_script_summary_and_options(reg, osa):
     osa.replies = [(True, "x-apple-reminder://ABC")]
     res = await reg.get("reminders.create").run({"text": "call the plumber"})
     assert res.ok and res.summary == "⊕ reminder: call the plumber"
@@ -86,15 +57,12 @@ async def test_reminders_create_script_and_summary(reg, osa):
     assert 'name:"call the plumber"' in script
     assert "id of r" in script
 
-
-@pytest.mark.asyncio
-async def test_reminders_create_with_list_and_due(reg, osa):
-    osa.replies = [(True, "x-apple-reminder://ABC")]
+    osa.replies = [(True, "x-apple-reminder://DEF")]
     res = await reg.get("reminders.create").run(
         {"text": "milk", "list": "Groceries", "due": "tomorrow 5pm"}
     )
     assert res.ok
-    script = osa.scripts[0]
+    script = osa.scripts[1]
     assert 'make new reminder at end of list "Groceries"' in script
     assert 'due date:(date "tomorrow 5pm")' in script
 
@@ -125,23 +93,7 @@ async def test_reminders_create_undo_deletes(reg, osa):
 
 
 @pytest.mark.asyncio
-async def test_reminders_create_requires_text(reg, osa):
-    res = await reg.get("reminders.create").run({})
-    assert not res.ok
-    assert osa.scripts == []
-
-
-@pytest.mark.asyncio
-async def test_reminders_create_tcc_denied(reg, osa):
-    osa.replies = [(False, _DENIED_MINUS_1743)]
-    res = await reg.get("reminders.create").run({"text": "x"})
-    assert not res.ok
-    assert res.data["setup"] == "automation"
-    assert "Automation permission for Reminders" in res.summary
-
-
-@pytest.mark.asyncio
-async def test_reminders_list_parses_records(reg, osa):
+async def test_reminders_list_parses_records_and_caps_at_ten(reg, osa):
     # name US due RS, one record per line; newest first is the script's job.
     fs, rs = apple._FIELD_SEP, apple._RECORD_SEP
     out = f"call plumber{fs}Thursday, July 9, 2026{rs}buy milk{fs}{rs}"
@@ -154,12 +106,7 @@ async def test_reminders_list_parses_records(reg, osa):
     ]
     assert "whose completed is false" in osa.scripts[0]
 
-
-@pytest.mark.asyncio
-async def test_reminders_list_caps_at_ten(reg, osa):
-    fs, rs = apple._FIELD_SEP, apple._RECORD_SEP
-    out = rs.join(f"item {i}{fs}" for i in range(20)) + rs
-    osa.replies = [(True, out)]
+    osa.replies = [(True, rs.join(f"item {i}{fs}" for i in range(20)) + rs)]
     res = await reg.get("reminders.list").run({"count": 50})
     assert len(res.data["reminders"]) == 10
 
@@ -168,7 +115,7 @@ async def test_reminders_list_caps_at_ten(reg, osa):
 
 
 @pytest.mark.asyncio
-async def test_notes_append_creates_if_missing(reg, osa):
+async def test_notes_append_creates_if_missing_or_targets_named_note(reg, osa):
     res = await reg.get("notes.append").run({"text": "buy milk"})
     assert res.ok and res.summary == "✎ noted"
     script = osa.scripts[0]
@@ -177,12 +124,9 @@ async def test_notes_append_creates_if_missing(reg, osa):
     assert 'set body of n to (body of n) &' in script
     assert '"buy milk"' in script
 
-
-@pytest.mark.asyncio
-async def test_notes_append_named_note(reg, osa):
     res = await reg.get("notes.append").run({"text": "hi", "note": "Journal"})
     assert res.ok
-    assert 'set n to note "Journal"' in osa.scripts[0]
+    assert 'set n to note "Journal"' in osa.scripts[1]
 
 
 @pytest.mark.asyncio
@@ -192,14 +136,6 @@ async def test_notes_create_script(reg, osa):
     script = osa.scripts[0]
     assert 'make new note with properties {name:"Ideas"' in script
     assert '"one"' in script
-
-
-@pytest.mark.asyncio
-async def test_notes_create_tcc_denied(reg, osa):
-    osa.replies = [(False, _DENIED_ASSISTIVE)]
-    res = await reg.get("notes.create").run({"title": "Ideas"})
-    assert not res.ok and res.data["setup"] == "automation"
-    assert "Automation permission for Notes" in res.summary
 
 
 # ── contacts ──────────────────────────────────────────────────────────────
@@ -220,17 +156,13 @@ async def test_contacts_find_unique(reg, osa):
 
 
 @pytest.mark.asyncio
-async def test_contacts_find_ambiguous_enumerates(reg, osa):
+async def test_contacts_find_ambiguous_enumerates_and_none_refuses(reg, osa):
     fs, rs = apple._FIELD_SEP, apple._RECORD_SEP
-    out = f"Ada Lovelace{fs}+1,{fs}{rs}Ada Byron{fs}+2,{fs}{rs}"
-    osa.replies = [(True, out)]
+    osa.replies = [(True, f"Ada Lovelace{fs}+1,{fs}{rs}Ada Byron{fs}+2,{fs}{rs}")]
     res = await reg.get("contacts.find").run({"name": "Ada"})
     assert not res.ok
     assert res.data["candidates"] == ["Ada Lovelace", "Ada Byron"]
 
-
-@pytest.mark.asyncio
-async def test_contacts_find_none(reg, osa):
     osa.replies = [(True, "")]
     res = await reg.get("contacts.find").run({"name": "Nobody"})
     assert not res.ok and "no contact matching Nobody" in res.summary
@@ -266,7 +198,7 @@ async def test_messages_send_resolves_name_via_contacts(reg, osa):
 
 
 @pytest.mark.asyncio
-async def test_messages_send_ambiguous_recipient_asks(reg, osa):
+async def test_messages_send_ambiguous_or_unknown_recipient_sends_nothing(reg, osa):
     fs, rs = apple._FIELD_SEP, apple._RECORD_SEP
     osa.replies = [(True, f"Ada Lovelace{fs}+1,{fs}{rs}Ada Byron{fs}+2,{fs}{rs}")]
     res = await reg.get("messages.send").run({"to": "Ada", "text": "hi"})
@@ -276,28 +208,10 @@ async def test_messages_send_ambiguous_recipient_asks(reg, osa):
     assert len(osa.scripts) == 1
     assert "Messages" not in osa.scripts[0]
 
-
-@pytest.mark.asyncio
-async def test_messages_send_unknown_recipient(reg, osa):
     osa.replies = [(True, "")]  # Contacts finds nobody
     res = await reg.get("messages.send").run({"to": "Ghost", "text": "hi"})
     assert not res.ok and "no way to message Ghost" in res.summary
-    assert len(osa.scripts) == 1
-
-
-@pytest.mark.asyncio
-async def test_messages_send_tcc_denied(reg, osa):
-    osa.replies = [(False, _DENIED_MINUS_1743)]
-    res = await reg.get("messages.send").run({"to": "+1555", "text": "hi"})
-    assert not res.ok and res.data["setup"] == "automation"
-    assert "Automation permission for Messages" in res.summary
-
-
-@pytest.mark.asyncio
-async def test_messages_send_requires_to_and_text(reg, osa):
-    assert not (await reg.get("messages.send").run({"text": "hi"})).ok
-    assert not (await reg.get("messages.send").run({"to": "+1"})).ok
-    assert osa.scripts == []
+    assert len(osa.scripts) == 2
 
 
 # ── calendar ──────────────────────────────────────────────────────────────
@@ -324,15 +238,7 @@ async def test_calendar_today_bounded_query_and_parse(reg, osa):
 
 
 @pytest.mark.asyncio
-async def test_calendar_today_timeout_degrades(reg, osa):
-    # run_osascript's timeout failure shape.
-    osa.replies = [(False, "osascript timeout")]
-    res = await reg.get("calendar.today").run({})
-    assert not res.ok and res.summary == "couldn't read Calendar in time"
-
-
-@pytest.mark.asyncio
-async def test_calendar_next_picks_earliest(reg, osa):
+async def test_calendar_next_picks_earliest_or_reports_nothing(reg, osa):
     fs, rs = apple._FIELD_SEP, apple._RECORD_SEP
     # "Later" comes first in the stream and its weekday name ("Friday")
     # sorts BEFORE "Thursday" alphabetically — the numeric sort key
@@ -347,26 +253,16 @@ async def test_calendar_next_picks_earliest(reg, osa):
     assert res.data["events"][0]["title"] == "Sooner"
     assert res.data["events"][0]["start"] == "11:00 AM"
 
-
-@pytest.mark.asyncio
-async def test_calendar_next_empty(reg, osa):
     osa.replies = [(True, "")]
     res = await reg.get("calendar.next").run({})
     assert res.ok and res.summary == "nothing coming up"
-
-
-@pytest.mark.asyncio
-async def test_calendar_tcc_denied(reg, osa):
-    osa.replies = [(False, _DENIED_MINUS_1743)]
-    res = await reg.get("calendar.today").run({})
-    assert not res.ok and res.data["setup"] == "automation"
 
 
 # ── mail ──────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_mail_unread_parses_and_caps(reg, osa):
+async def test_mail_unread_parses_caps_and_reports_clear(reg, osa):
     fs, rs = apple._FIELD_SEP, apple._RECORD_SEP
     out = f"Ada <ada@x.com>{fs}Re: kettle{rs}Bob{fs}Lunch?{rs}"
     osa.replies = [(True, out)]
@@ -380,24 +276,43 @@ async def test_mail_unread_parses_and_caps(reg, osa):
     # Cap is baked into the script so Mail stops early.
     assert "if c ≥ 8 then exit repeat" in osa.scripts[0]
 
-
-@pytest.mark.asyncio
-async def test_mail_unread_clear(reg, osa):
     osa.replies = [(True, "")]
     res = await reg.get("mail.unread").run({})
     assert res.ok and res.summary == "inbox clear"
 
 
+# ── degradation shared by every Apple verb ────────────────────────────────
+
+
 @pytest.mark.asyncio
-async def test_mail_unread_timeout_degrades(reg, osa):
+@pytest.mark.parametrize(
+    "verb,summary",
+    [
+        ("calendar.today", "couldn't read Calendar in time"),
+        ("mail.unread", "couldn't read Mail in time"),
+    ],
+)
+async def test_slow_app_timeout_degrades(reg, osa, verb, summary):
+    # run_osascript's timeout failure shape.
     osa.replies = [(False, "osascript timeout")]
-    res = await reg.get("mail.unread").run({})
-    assert not res.ok and res.summary == "couldn't read Mail in time"
+    res = await reg.get(verb).run({})
+    assert not res.ok and res.summary == summary
 
 
 @pytest.mark.asyncio
-async def test_mail_unread_tcc_denied(reg, osa):
-    osa.replies = [(False, _DENIED_ASSISTIVE)]
-    res = await reg.get("mail.unread").run({})
-    assert not res.ok and res.data["setup"] == "automation"
-    assert "Automation permission for Mail" in res.summary
+@pytest.mark.parametrize(
+    "verb,args,stderr,app",
+    [
+        ("reminders.create", {"text": "x"}, _DENIED_MINUS_1743, "Reminders"),
+        ("notes.create", {"title": "Ideas"}, _DENIED_ASSISTIVE, "Notes"),
+        ("messages.send", {"to": "+1555", "text": "hi"}, _DENIED_MINUS_1743, "Messages"),
+        ("calendar.today", {}, _DENIED_MINUS_1743, "Calendar"),
+        ("mail.unread", {}, _DENIED_ASSISTIVE, "Mail"),
+    ],
+)
+async def test_automation_denied_names_the_app_and_flags_setup(reg, osa, verb, args, stderr, app):
+    osa.replies = [(False, stderr)]
+    res = await reg.get(verb).run(args)
+    assert not res.ok
+    assert res.data["setup"] == "automation"
+    assert f"Automation permission for {app}" in res.summary

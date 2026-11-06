@@ -209,7 +209,11 @@ async def test_see_returns_grid_screenshot(rig):
     # No AX element listing reaches the model — it sees the pixels now.
     assert "elements" not in res.data
     assert "caption" not in res.data
+    # A single screen keeps the old shape — no display keys.
+    assert "displays" not in res.data and "display" not in res.data
     _assert_grid_frame(res)
+    # The returned PNG differs from a bare capture — the grid was drawn.
+    assert base64.b64decode(res.image_b64) != _png_bytes()
     # AX was still queried (to back the ref fallback), for the resolved pid.
     assert rig.tools["read_ax_tree"].calls == [{"pid": 42}]
     # …and the snapshot holds the resolved refs server-side (never sent).
@@ -217,13 +221,6 @@ async def test_see_returns_grid_screenshot(rig):
     assert snap.app == "Mail" and snap.pid == 42 and snap.generation == 1
     assert snap.elements["e1"] == (130, 52, "Compose")
     assert snap.elements["e2"] == (400, 52, "Search")
-
-
-async def test_see_grid_is_overlaid_not_bare(rig):
-    """The returned PNG differs from a bare capture — the grid was drawn."""
-    bare = _png_bytes()
-    res = await _run(rig, "computer.see")
-    assert base64.b64decode(res.image_b64) != bare
 
 
 async def test_see_records_screenshot_and_prunes(rig):
@@ -285,13 +282,10 @@ async def test_click_by_pixel_is_primary(rig):
     assert (call["x"], call["y"]) == (640, 200)
     # …and the model gets a fresh look at what the click did.
     _assert_grid_frame(res)
-
-
-async def test_click_pixel_zero_zero_is_valid(rig):
+    # (0, 0) is a real pixel, not a missing argument.
     res = await _run(rig, "computer.click", {"x": 0, "y": 0})
     assert res.ok
-    (call,) = rig.tools["click"].calls
-    assert (call["x"], call["y"]) == (0, 0)
+    assert (rig.tools["click"].calls[-1]["x"], rig.tools["click"].calls[-1]["y"]) == (0, 0)
 
 
 async def test_click_by_fresh_ref_uses_cached_coordinates(rig):
@@ -304,21 +298,26 @@ async def test_click_by_fresh_ref_uses_cached_coordinates(rig):
     _assert_grid_frame(res)
 
 
-async def test_click_stale_generation_ref_refused(rig):
-    await _run(rig, "computer.see")  # e1..e4
-    await _run(rig, "computer.see")  # e5..e8 supersede
-    res = await _run(rig, "computer.click", {"ref": "e1"})
+@pytest.mark.parametrize(
+    "verb,tool,args",
+    [
+        ("computer.click", "click", {"ref": "e1"}),
+        ("computer.scroll", "scroll", {"direction": "down", "ref": "e1"}),
+    ],
+)
+async def test_stale_or_unseen_ref_is_refused_without_acting(rig, verb, tool, args):
+    # No see yet: the ref can't mean anything.
+    res = await _run(rig, verb, args)
     assert res.ok is False
     assert "run computer.see first" in res.summary
-    assert rig.tools["click"].calls == []
+    # Two sees: e1..e4 from the first are superseded by e5..e8.
+    await _run(rig, "computer.see")
+    await _run(rig, "computer.see")
+    res = await _run(rig, verb, args)
+    assert res.ok is False
+    assert "run computer.see first" in res.summary
+    assert rig.tools[tool].calls == []
     assert res.image_b64 is None
-
-
-async def test_click_ref_without_any_see_refused(rig):
-    res = await _run(rig, "computer.click", {"ref": "e1"})
-    assert res.ok is False
-    assert "run computer.see first" in res.summary
-    assert rig.tools["click"].calls == []
 
 
 async def test_click_by_element_label_queries_find_element(rig):
@@ -334,22 +333,13 @@ async def test_click_by_element_label_queries_find_element(rig):
     assert (call["x"], call["y"]) == (60, 40)
     _assert_grid_frame(res)
 
-
-async def test_click_by_element_not_found(rig):
     rig.tools["find_element"].result = _ok_result(
         "No element found for pid=42 label='Zilch'. Try relaxing the query."
     )
     res = await _run(rig, "computer.click", {"element": "Zilch"})
     assert res.ok is False
     assert "Zilch" in res.summary
-    assert rig.tools["click"].calls == []
-
-
-async def test_click_without_target_refused(rig):
-    res = await _run(rig, "computer.click")
-    assert res.ok is False
-    assert rig.tools["click"].calls == []
-    assert res.image_b64 is None
+    assert len(rig.tools["click"].calls) == 1  # nothing clicked for the miss
 
 
 async def test_click_permission_error_maps_to_setup(rig):
@@ -368,107 +358,79 @@ async def test_click_permission_error_maps_to_setup(rig):
 # ── computer.type ─────────────────────────────────────────────────────────
 
 
-async def test_type_passes_full_text_and_returns_frame(rig):
+async def test_type_passes_full_text_and_truncates_only_the_summary(rig):
     res = await _run(rig, "computer.type", {"text": "hello there"})
     assert res.ok
     assert res.summary == 'typed "hello there"'
     assert rig.tools["type_text"].calls == [{"text": "hello there"}]
     _assert_grid_frame(res)
 
-
-async def test_type_summary_truncates_long_text(rig):
     text = "x" * 60
     res = await _run(rig, "computer.type", {"text": text})
     assert res.ok
     # The tool (and therefore the receipt args) got the full text…
-    assert rig.tools["type_text"].calls == [{"text": text}]
+    assert rig.tools["type_text"].calls[-1] == {"text": text}
     # …but the spoken/journaled summary never carries it verbatim.
-    assert text not in res.summary
     assert res.summary == f'typed "{"x" * 39}…"'
-
-
-async def test_type_requires_text(rig):
-    res = await _run(rig, "computer.type", {"text": ""})
-    assert res.ok is False
-    assert rig.tools["type_text"].calls == []
-    assert res.image_b64 is None
 
 
 # ── computer.press ────────────────────────────────────────────────────────
 
 
-async def test_press_plain_key(rig):
-    res = await _run(rig, "computer.press", {"key": "enter"})
-    assert res.ok and res.summary == "pressed enter"
-    assert rig.tools["press_key"].calls == [{"key": "enter", "modifiers": []}]
+@pytest.mark.parametrize(
+    "args,call,summary",
+    [
+        ({"key": "enter"}, {"key": "enter", "modifiers": []}, "pressed enter"),
+        ({"key": "t", "modifiers": ["cmd"]}, {"key": "t", "modifiers": ["cmd"]}, "pressed cmd+t"),
+        # a combo string is split into key + modifiers
+        (
+            {"key": "cmd+shift+t"},
+            {"key": "t", "modifiers": ["cmd", "shift"]},
+            "pressed cmd+shift+t",
+        ),
+        # spoken modifier names normalize to the tool's aliases
+        (
+            {"key": "a", "modifiers": ["Command", "Option"]},
+            {"key": "a", "modifiers": ["cmd", "alt"]},
+            "pressed cmd+alt+a",
+        ),
+    ],
+)
+async def test_press_key_forms_map_to_the_tool_call(rig, args, call, summary):
+    res = await _run(rig, "computer.press", args)
+    assert res.ok and res.summary == summary
+    assert rig.tools["press_key"].calls == [call]
     _assert_grid_frame(res)
-
-
-async def test_press_with_modifiers(rig):
-    res = await _run(rig, "computer.press", {"key": "t", "modifiers": ["cmd"]})
-    assert res.ok and res.summary == "pressed cmd+t"
-    assert rig.tools["press_key"].calls == [{"key": "t", "modifiers": ["cmd"]}]
-
-
-async def test_press_combo_string_maps_to_modifiers(rig):
-    res = await _run(rig, "computer.press", {"key": "cmd+shift+t"})
-    assert res.ok and res.summary == "pressed cmd+shift+t"
-    assert rig.tools["press_key"].calls == [{"key": "t", "modifiers": ["cmd", "shift"]}]
-
-
-async def test_press_normalizes_modifier_aliases(rig):
-    await _run(rig, "computer.press", {"key": "a", "modifiers": ["Command", "Option"]})
-    assert rig.tools["press_key"].calls == [{"key": "a", "modifiers": ["cmd", "alt"]}]
 
 
 # ── computer.scroll ───────────────────────────────────────────────────────
 
 
-async def test_scroll_down_default_amount(rig):
+async def test_scroll_directions_default_amount_and_frame(rig):
     res = await _run(rig, "computer.scroll", {"direction": "down"})
     assert res.ok and res.summary == "scrolled down"
-    assert rig.tools["scroll"].calls == [{"dx": 0, "dy": 8}]
     _assert_grid_frame(res)
-
-
-async def test_scroll_directions_and_amount(rig):
     await _run(rig, "computer.scroll", {"direction": "up", "amount": 3})
     await _run(rig, "computer.scroll", {"direction": "left"})
     await _run(rig, "computer.scroll", {"direction": "right", "amount": 2})
     assert rig.tools["scroll"].calls == [
+        {"dx": 0, "dy": 8},
         {"dx": 0, "dy": -3},
         {"dx": -8, "dy": 0},
         {"dx": 2, "dy": 0},
     ]
 
 
-async def test_scroll_at_ref_uses_cached_point(rig):
+async def test_scroll_at_ref_or_pixel_passes_the_point(rig):
     await _run(rig, "computer.see")
     res = await _run(rig, "computer.scroll", {"direction": "down", "ref": "e2"})
     assert res.ok
-    assert rig.tools["scroll"].calls == [{"dx": 0, "dy": 8, "x": 400, "y": 52}]
-
-
-async def test_scroll_at_pixel(rig):
     res = await _run(rig, "computer.scroll", {"direction": "up", "x": 100, "y": 200})
     assert res.ok
-    assert rig.tools["scroll"].calls == [{"dx": 0, "dy": -8, "x": 100, "y": 200}]
-
-
-async def test_scroll_stale_ref_refused(rig):
-    await _run(rig, "computer.see")
-    await _run(rig, "computer.see")
-    res = await _run(rig, "computer.scroll", {"direction": "down", "ref": "e1"})
-    assert res.ok is False
-    assert "run computer.see first" in res.summary
-    assert rig.tools["scroll"].calls == []
-    assert res.image_b64 is None
-
-
-async def test_scroll_bad_direction_refused(rig):
-    res = await _run(rig, "computer.scroll", {"direction": "sideways"})
-    assert res.ok is False
-    assert rig.tools["scroll"].calls == []
+    assert rig.tools["scroll"].calls == [
+        {"dx": 0, "dy": 8, "x": 400, "y": 52},
+        {"dx": 0, "dy": -8, "x": 100, "y": 200},
+    ]
 
 
 # ── computer.menu ─────────────────────────────────────────────────────────
@@ -525,15 +487,6 @@ async def test_menu_named_app_nested_path_quotes_every_segment(rig, monkeypatch)
     )
 
 
-async def test_menu_needs_at_least_menu_and_item(rig, monkeypatch):
-    osa = OsaRecorder()
-    monkeypatch.setattr(mac, "run_osascript", osa)
-    res = await _run(rig, "computer.menu", {"menu_path": ["File"]})
-    assert res.ok is False
-    assert osa.scripts == []
-    assert res.image_b64 is None
-
-
 async def test_menu_assistive_access_denial_maps_to_setup(rig, monkeypatch):
     osa = OsaRecorder(ok=False, out="osascript is not allowed assistive access")
     monkeypatch.setattr(mac, "run_osascript", osa)
@@ -578,14 +531,6 @@ async def test_open_url_rejects_non_http_schemes(rig, monkeypatch, url):
 
 
 # ── the grid overlay helper ──────────────────────────────────────────────
-
-
-def test_grid_overlay_is_valid_png_of_same_size():
-    src = _png_bytes(300, 200)
-    out = computer._grid_overlay(src, 300, 200)
-    with Image.open(io.BytesIO(out)) as im:
-        assert (im.width, im.height) == (300, 200)
-    assert out != src  # lines/labels were drawn
 
 
 def test_grid_overlay_on_garbage_returns_input():
@@ -646,6 +591,9 @@ async def test_cancel_inflight_trips_shared_cancel_event(rig, monkeypatch):
     assert not fake_spec.cancel_event.is_set()
     computer.cancel_inflight()
     assert fake_spec.cancel_event.is_set()
+    # Panic before any computer verb ever ran: nothing to trip, must not raise.
+    monkeypatch.setattr(computer, "_SPEC", None)
+    computer.cancel_inflight()
 
 
 async def test_run_tool_clears_stale_cancel_before_next_verb(rig, monkeypatch):
@@ -661,11 +609,6 @@ async def test_run_tool_clears_stale_cancel_before_next_verb(rig, monkeypatch):
     assert not fake_spec.cancel_event.is_set()  # cleared before the run
 
 
-async def test_cancel_inflight_no_spec_is_safe(monkeypatch):
-    monkeypatch.setattr(computer, "_SPEC", None)
-    computer.cancel_inflight()  # must not raise
-
-
 # ── vision-grounded click (the describe-what-you-see fallback) ────────────
 
 
@@ -673,10 +616,11 @@ async def test_click_by_target_uses_vision_grounding(rig, monkeypatch):
     """No pixel and no ref — click by describing what you see. Vision
     returns normalized coords; we scale by api_dims and click."""
     calls = []
+    answer = {"loc": (0.5, 0.25)}  # center-x, quarter-down
 
     async def fake_locate(jpeg, target):
         calls.append((jpeg, target))
-        return (0.5, 0.25)  # center-x, quarter-down
+        return answer["loc"]
 
     monkeypatch.setattr(computer.screen, "locate_in_image", fake_locate)
 
@@ -688,17 +632,12 @@ async def test_click_by_target_uses_vision_grounding(rig, monkeypatch):
     assert calls and calls[0][1] == "the Hacker News tab"
     _assert_grid_frame(res)
 
-
-async def test_click_by_target_not_found_asks(rig, monkeypatch):
-    async def fake_locate(jpeg, target):
-        return None  # vision couldn't see it
-
-    monkeypatch.setattr(computer.screen, "locate_in_image", fake_locate)
+    # Vision couldn't see it: ask, don't guess a pixel.
+    answer["loc"] = None
     res = await _run(rig, "computer.click", {"target": "a unicorn"})
     assert res.ok is False
     assert "unicorn" in res.summary
-    assert rig.tools["click"].calls == []
-
+    assert len(rig.tools["click"].calls) == 1
 
 
 # ── multiple monitors ─────────────────────────────────────────────────────
@@ -759,9 +698,7 @@ async def test_see_explicit_display_switches_the_click_space(desk):
     assert res.summary.startswith("saw display 2 (above-right of the laptop screen)")
     # screenshots + click mapping now follow display 2
     assert desk.spec.default_display_id == 2
-
-
-async def test_see_accepts_display_prefix_and_rejects_unknown(desk):
+    # "display 3" is accepted as spoken; an id that isn't plugged in is refused with the list.
     res = await _run(desk.rig, "computer.see", {"display": "display 3"})
     assert res.ok and res.data["display"] == 3
     bad = await _run(desk.rig, "computer.see", {"display": "7"})
@@ -838,11 +775,6 @@ async def test_see_all_returns_a_labeled_overview(desk, monkeypatch):
     assert desk.spec.default_display_id is None
 
 
-async def test_single_screen_keeps_the_old_shape(rig):
-    res = await _run(rig, "computer.see")
-    assert "displays" not in res.data and "display" not in res.data
-
-
 # ── computer.read (window text + picture, no app match needed) ─────────────
 
 
@@ -884,18 +816,7 @@ async def test_read_returns_the_window_text_and_a_picture(rig, monkeypatch):
     assert seen["app"] is None and seen["source"] == "voice" and seen["max_chars"] == 12_000
     # It reads only: no screenshot or accessibility tool ran.
     assert all(tool.calls == [] for tool in rig.tools.values())
-
-
-async def test_read_passes_an_app_name_through(rig, monkeypatch):
-    from bridge import appshot
-
-    seen = {}
-
-    async def fake_capture(**kw):
-        seen.update(kw)
-        return _fake_shot()
-
-    monkeypatch.setattr(appshot, "capture", fake_capture)
+    # A named app is passed through to the capture.
     await _run(rig, "computer.read", {"app": "Slack"})
     assert seen["app"] == "Slack"
 

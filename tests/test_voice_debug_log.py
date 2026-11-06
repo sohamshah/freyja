@@ -1,10 +1,6 @@
 """Debug-log credential redaction (bridge/freyja_bridge._write_debug_log).
 
-The bridge journals every emitted event to ~/.freyja/bridge-events.jsonl
-(default on). voice_session_ready carries the ephemeral OpenAI realtime
-clientSecret and voice_tool_result carries single-use confirm tokens —
-live credentials that must never land on disk, even though the stdout
-copy legitimately delivers them to the renderer.
+The bridge journals every emitted event to ~/.freyja/bridge-events.jsonl (default on). voice_session_ready carries the ephemeral OpenAI realtime clientSecret and voice_tool_result carries single-use confirm tokens — live credentials that must never land on disk, even though the stdout copy legitimately delivers them to the renderer.
 """
 
 from __future__ import annotations
@@ -72,7 +68,7 @@ def test_confirm_token_redacted_in_needs_confirm_and_output(debug_log):
     assert event["needsConfirm"]["token"] == token
 
 
-def test_redaction_matches_secretish_keys_only(debug_log):
+def test_redaction_matches_secretish_keys_only_and_keeps_png_trimming(debug_log):
     event = {
         "type": "voice_session_closed",
         "voiceSessionId": "voice-abc",
@@ -80,15 +76,11 @@ def test_redaction_matches_secretish_keys_only(debug_log):
         "nested": [{"apiKey": "sk-live", "password": "hunter2", "label": "fine"}],
     }
     fb._write_debug_log(event)
-    (row,) = read_lines(debug_log)
+    fb._write_debug_log({"type": "screenshot", "pngBase64": "x" * 5000})
+    row, shot = read_lines(debug_log)
     # count-style *Tokens fields are NOT credentials
     assert row["stats"] == {"seconds": 12, "inputTokens": 900, "outputTokens": 120}
     assert row["nested"][0]["apiKey"] == "<redacted>"
     assert row["nested"][0]["password"] == "<redacted>"
     assert row["nested"][0]["label"] == "fine"
-
-
-def test_existing_png_trimming_still_applies(debug_log):
-    fb._write_debug_log({"type": "screenshot", "pngBase64": "x" * 5000})
-    (row,) = read_lines(debug_log)
-    assert row["pngBase64"] == "<5000 b64 chars>"
+    assert shot["pngBase64"] == "<5000 b64 chars>"

@@ -1,8 +1,6 @@
 """screen.look (bridge/voice/adapters/screen.py).
 
-No real screencapture, no real OpenAI call: ``mac.run_exec`` is the
-capture seam, ``screen._downscale`` the PIL seam, and ``screen.httpx``
-the network seam — same monkeypatch style as the spotify adapter tests.
+No real screencapture, no real OpenAI call: ``mac.run_exec`` is the capture seam, ``screen._downscale`` the PIL seam, and ``screen.httpx`` the network seam — same monkeypatch style as the spotify adapter tests.
 """
 
 from __future__ import annotations
@@ -33,16 +31,18 @@ def api_key(monkeypatch):
 class CaptureRecorder:
     """Stands in for mac.run_exec; on success writes a non-empty 'PNG'."""
 
-    def __init__(self, ok=True, out=""):
+    def __init__(self, ok=True, out="", empty=False):
         self.calls = []
         self.ok = ok
         self.out = out
+        self.empty = empty
 
     async def __call__(self, argv, timeout=6.0):
         self.calls.append(list(argv))
         if self.ok:
             with open(argv[-1], "wb") as fh:
-                fh.write(b"fake-png-bytes")
+                if not self.empty:
+                    fh.write(b"fake-png-bytes")
         return self.ok, self.out
 
 
@@ -78,6 +78,16 @@ class _FakeHttpx:
         self.AsyncClient = Client
 
 
+def _reply(content):
+    return _FakeResponse(payload={"choices": [{"message": {"content": content}}]})
+
+
+def _install_http(monkeypatch, response):
+    fake = _FakeHttpx(response)
+    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
+    return fake
+
+
 @pytest.fixture
 def look_rig(monkeypatch, api_key):
     """Happy-path rig: recording capture + downscale + httpx fakes."""
@@ -90,21 +100,17 @@ def look_rig(monkeypatch, api_key):
         return b"downscaled-jpeg"
 
     monkeypatch.setattr(screen, "_downscale", fake_downscale)
-    fake = _FakeHttpx(
-        _FakeResponse(payload={"choices": [{"message": {"content": "Terminal, tests passing."}}]})
-    )
-    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
+    fake = _install_http(monkeypatch, _reply("Terminal, tests passing."))
     return SimpleNamespace(capture=capture, downscale_calls=downscale_calls, http=fake)
 
 
 # ── capture failure ───────────────────────────────────────────────────────
 
 
-async def test_capture_failure_is_clean(reg, monkeypatch, api_key):
+async def test_capture_failure_or_empty_file_is_clean(reg, monkeypatch, api_key):
     capture = CaptureRecorder(ok=False, out="could not create image from display")
     monkeypatch.setattr(mac, "run_exec", capture)
-    fake = _FakeHttpx(_FakeResponse())
-    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
+    fake = _install_http(monkeypatch, _FakeResponse())
     res = await reg.get("screen.look").run({})
     assert not res.ok
     assert res.summary == "screen capture unavailable — needs Screen Recording permission"
@@ -112,19 +118,12 @@ async def test_capture_failure_is_clean(reg, monkeypatch, api_key):
     tmppath = capture.calls[0][-1]
     assert not os.path.exists(tmppath)  # cleaned up even on failure
 
-
-async def test_empty_capture_file_counts_as_failure(reg, monkeypatch, api_key):
-    class EmptyCapture(CaptureRecorder):
-        async def __call__(self, argv, timeout=6.0):
-            self.calls.append(list(argv))
-            open(argv[-1], "wb").close()  # zero bytes — TCC wrote nothing
-            return True, ""
-
-    capture = EmptyCapture()
-    monkeypatch.setattr(mac, "run_exec", capture)
+    # A zero-byte capture (TCC wrote nothing) counts as the same failure.
+    monkeypatch.setattr(mac, "run_exec", CaptureRecorder(empty=True))
     res = await reg.get("screen.look").run({})
     assert not res.ok
     assert "Screen Recording" in res.summary
+    assert fake.posts == []
 
 
 async def test_look_without_api_key(reg, monkeypatch):
@@ -169,31 +168,22 @@ async def test_look_happy_path(reg, look_rig):
     assert look_rig.http.timeout == 25.0
 
 
-async def test_look_threads_question_and_model_env(reg, look_rig, monkeypatch):
+async def test_look_threads_question_and_model_env_and_truncates_summary(reg, look_rig, monkeypatch):
     monkeypatch.setenv("FREYJA_VOICE_LOOK_MODEL", "gpt-5.2")
+    long_text = "long " * 40
+    fake = _install_http(monkeypatch, _reply(long_text))
     res = await reg.get("screen.look").run({"question": "is the build green?"})
     assert res.ok
-    (post,) = look_rig.http.posts
+    (post,) = fake.posts
     assert post["json"]["model"] == "gpt-5.2"
     text_part = post["json"]["messages"][1]["content"][1]
     assert text_part == {"type": "text", "text": "is the build green?"}
-
-
-async def test_look_summary_truncates_to_80(reg, look_rig, monkeypatch):
-    long_text = "long " * 40
-    fake = _FakeHttpx(
-        _FakeResponse(payload={"choices": [{"message": {"content": long_text}}]})
-    )
-    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
-    res = await reg.get("screen.look").run({})
-    assert res.ok
     assert res.summary == long_text.strip()[:80]
     assert res.data["text"] == long_text.strip()
 
 
 async def test_look_api_error_is_terse_and_cleans_up(reg, look_rig, monkeypatch):
-    fake = _FakeHttpx(_FakeResponse(status_code=429, text="rate limited"))
-    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
+    _install_http(monkeypatch, _FakeResponse(status_code=429, text="rate limited"))
     res = await reg.get("screen.look").run({})
     assert not res.ok
     assert res.summary == "look failed: OpenAI returned 429"
@@ -224,40 +214,23 @@ def test_downscale_resizes_and_recompresses(tmp_path):
 # ── locate_in_image (vision grounding for AX-opaque clicking) ─────────────
 
 
-async def test_locate_in_image_parses_normalized_coords(monkeypatch, api_key):
-    fake = _FakeHttpx(
-        _FakeResponse(payload={"choices": [{"message": {"content": '{"found": true, "x": 0.42, "y": 0.6}'}}]})
-    )
-    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
-    loc = await screen.locate_in_image(b"jpeg-bytes", "the Send button")
-    assert loc == (0.42, 0.6)
+@pytest.mark.parametrize(
+    "content,expected",
+    [
+        ('{"found": true, "x": 0.42, "y": 0.6}', (0.42, 0.6)),
+        ('{"found": false}', None),
+        ('```json\n{"found":true,"x":0.1,"y":0.9}\n```', (0.1, 0.9)),  # tolerates a code fence
+        ('{"found":true,"x":1.4,"y":-0.2}', (1.0, 0.0)),  # clamps out-of-range coords
+    ],
+)
+async def test_locate_in_image_parses_model_reply(monkeypatch, api_key, content, expected):
+    fake = _install_http(monkeypatch, _reply(content))
+    assert await screen.locate_in_image(b"jpeg-bytes", "the Send button") == expected
     # the target rode in the user text
     assert "Send button" in fake.posts[0]["json"]["messages"][1]["content"][1]["text"]
 
 
-async def test_locate_in_image_not_found(monkeypatch, api_key):
-    fake = _FakeHttpx(_FakeResponse(payload={"choices": [{"message": {"content": '{"found": false}'}}]}))
-    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
-    assert await screen.locate_in_image(b"x", "a unicorn") is None
-
-
-async def test_locate_in_image_tolerates_code_fence(monkeypatch, api_key):
-    fake = _FakeHttpx(
-        _FakeResponse(payload={"choices": [{"message": {"content": '```json\n{"found":true,"x":0.1,"y":0.9}\n```'}}]})
-    )
-    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
-    loc = await screen.locate_in_image(b"x", "thing")
-    assert loc == (0.1, 0.9)
-
-
-async def test_locate_in_image_clamps_out_of_range(monkeypatch, api_key):
-    fake = _FakeHttpx(_FakeResponse(payload={"choices": [{"message": {"content": '{"found":true,"x":1.4,"y":-0.2}'}}]}))
-    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
-    assert await screen.locate_in_image(b"x", "thing") == (1.0, 0.0)
-
-
 async def test_locate_in_image_http_error_raises(monkeypatch, api_key):
-    fake = _FakeHttpx(_FakeResponse(status_code=429))
-    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
+    _install_http(monkeypatch, _FakeResponse(status_code=429))
     with pytest.raises(RuntimeError):
         await screen.locate_in_image(b"x", "thing")

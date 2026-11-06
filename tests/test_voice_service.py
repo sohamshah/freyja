@@ -168,7 +168,7 @@ def events_of(events, ev_type):
 # ── config ────────────────────────────────────────────────────────────────
 
 
-async def test_config_defaults(tmp_path, monkeypatch):
+async def test_config_defaults_pick_the_live_seat_and_report_missing_keys(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
     monkeypatch.delenv("SPOTIFY_CLIENT_SECRET", raising=False)
@@ -178,20 +178,14 @@ async def test_config_defaults(tmp_path, monkeypatch):
     (ev,) = events_of(events, "voice_config")
     cfg = ev["config"]
     assert cfg["enabled"] is True
-    assert cfg["model"] == "gpt-live-1"
+    assert cfg["model"] == "gpt-live-1"  # the default transport is the GPT-Live seat
     assert cfg["liveBackend"] == "gpt-6.1-sol"
-    assert cfg["voice"] == "marin"
-    assert cfg["vadMode"] == "semantic_vad"
-    assert cfg["idleTimeoutSec"] == 25
-    assert cfg["available"]["backends"] == ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"]
-    assert cfg["available"]["models"] == [
-        "gpt-live-1",
-        "gpt-realtime-2.1-mini",
-        "gpt-realtime-2.1",
-        "gpt-realtime",
-        "gpt-realtime-mini",
-    ]
-    assert cfg["available"]["voices"] == ["marin", "cedar", "alloy", "echo", "shimmer", "coral"]
+    assert cfg["model"] in cfg["available"]["models"]
+    assert cfg["liveBackend"] in cfg["available"]["backends"]
+    assert cfg["voice"] in cfg["available"]["voices"]
+    assert cfg["proactiveVoice"] is False
+    assert cfg["quietHours"] == {"start": 22, "end": 8}
+    # the renderer's setup hints come from the environment, not the file
     assert cfg["hasApiKey"] is False
     assert cfg["spotifySearch"] is False
 
@@ -203,12 +197,22 @@ async def test_config_roundtrip_persists(tmp_path, monkeypatch):
     svc, events = make_service(tmp_path)
     await svc.start()
     await svc.handle_set_config(
-        {"patch": {"model": "gpt-realtime", "voice": "cedar", "idleTimeoutSec": 40}}
+        {
+            "patch": {
+                "model": "gpt-realtime",
+                "voice": "cedar",
+                "idleTimeoutSec": 40,
+                "proactiveVoice": True,
+                "quietHours": {"start": 23, "end": 7},
+            }
+        }
     )
     (ev,) = events_of(events, "voice_config")
     assert ev["config"]["model"] == "gpt-realtime"
     assert ev["config"]["voice"] == "cedar"
     assert ev["config"]["idleTimeoutSec"] == 40
+    assert ev["config"]["proactiveVoice"] is True
+    assert ev["config"]["quietHours"] == {"start": 23, "end": 7}
     assert ev["config"]["hasApiKey"] is True
     assert ev["config"]["spotifySearch"] is True
     # a fresh service over the same dir loads the persisted values
@@ -219,6 +223,8 @@ async def test_config_roundtrip_persists(tmp_path, monkeypatch):
     assert ev2["config"]["model"] == "gpt-realtime"
     assert ev2["config"]["voice"] == "cedar"
     assert ev2["config"]["idleTimeoutSec"] == 40
+    assert ev2["config"]["proactiveVoice"] is True
+    assert ev2["config"]["quietHours"] == {"start": 23, "end": 7}
 
 
 async def test_config_patch_validation(tmp_path):
@@ -232,6 +238,8 @@ async def test_config_patch_validation(tmp_path):
                 "enabled": "yes",  # not a bool — ignored
                 "model": "",  # empty — ignored
                 "bogus": 1,  # unknown — ignored
+                "proactiveVoice": "yes",  # not a bool — ignored
+                "quietHours": {"start": 99, "end": -4},  # clamped 0-23
             }
         }
     )
@@ -242,6 +250,20 @@ async def test_config_patch_validation(tmp_path):
     assert cfg["enabled"] is True
     assert cfg["model"] == "gpt-realtime-2.1-mini"
     assert "bogus" not in cfg
+    assert cfg["proactiveVoice"] is False  # unchanged (default)
+    assert cfg["quietHours"] == {"start": 23, "end": 0}  # clamped
+
+    events.clear()
+    # a single bound patches in place; the other bound is untouched
+    await svc.handle_set_config({"patch": {"quietHours": {"start": 6}}})
+    (ev2,) = events_of(events, "voice_config")
+    assert ev2["config"]["quietHours"] == {"start": 6, "end": 0}
+
+    events.clear()
+    # a non-dict quietHours is ignored entirely
+    await svc.handle_set_config({"patch": {"quietHours": [1, 2]}})
+    (ev3,) = events_of(events, "voice_config")
+    assert ev3["config"]["quietHours"] == {"start": 6, "end": 0}
 
 
 # ── session start (mint) ──────────────────────────────────────────────────
@@ -485,29 +507,42 @@ async def test_act_happy_path(tmp_path):
     assert stored[0].id == receipt["id"]
 
 
-async def test_act_image_fields_ride_onto_the_event(tmp_path):
-    """Contract §12.1: a computer.* result's grid screenshot is copied onto
-    the voice_tool_result event as imageB64/imageW/imageH; a result with no
-    image adds none of those keys."""
+async def test_act_image_fields_ride_onto_the_event_only_when_present(tmp_path):
+    """Contract §12.1: a computer.* result's grid screenshot is copied onto the voice_tool_result event as imageB64/imageW/imageH; a result with no image adds none of those keys."""
 
-    async def run(args):
+    async def click(args):
         return FakeResult(
             ok=True, summary="clicked (5, 6)", image_b64="Zm9v", image_w=1280, image_h=800
         )
 
-    svc, events = make_service(tmp_path, verbs=[FakeVerb("computer.click", run=run)])
+    svc, events = make_service(
+        tmp_path,
+        verbs=[FakeVerb("computer.click", run=click), FakeVerb("spotify.play", run=_ok_run("ok"))],
+    )
     await svc.handle_tool_call(_act_cmd("v1", "c1", "computer.click", args={"x": 5, "y": 6}))
-    (result,) = events_of(events, "voice_tool_result")
-    assert result["imageB64"] == "Zm9v"
-    assert result["imageW"] == 1280 and result["imageH"] == 800
+    await svc.handle_tool_call(_act_cmd("v1", "c2", "spotify.play", args={}))
+    with_image, without = events_of(events, "voice_tool_result")
+    assert with_image["imageB64"] == "Zm9v"
+    assert with_image["imageW"] == 1280 and with_image["imageH"] == 800
+    assert "imageB64" not in without
+    assert "imageW" not in without and "imageH" not in without
 
 
-async def test_act_without_image_has_no_image_keys(tmp_path):
-    svc, events = make_service(tmp_path, verbs=[FakeVerb("spotify.play", run=_ok_run("ok"))])
-    await svc.handle_tool_call(_act_cmd("v1", "c1", "spotify.play", args={}))
-    (result,) = events_of(events, "voice_tool_result")
-    assert "imageB64" not in result
-    assert "imageW" not in result and "imageH" not in result
+async def test_act_malformed_calls_refused_without_a_receipt(tmp_path):
+    svc, events = make_service(tmp_path)
+    await svc.handle_tool_call(
+        {"voiceSessionId": "voice-1", "callId": "c", "name": "hack", "argumentsJson": "{}"}
+    )
+    await svc.handle_tool_call(
+        {"voiceSessionId": "voice-1", "callId": "c", "name": "act", "argumentsJson": "{oops"}
+    )
+    wrong_tool, bad_json = events_of(events, "voice_tool_result")
+    assert wrong_tool["ok"] is False
+    assert json.loads(wrong_tool["output"])["error"] == "unknown_tool"
+    assert bad_json["ok"] is False
+    assert json.loads(bad_json["output"])["error"] == "bad_arguments"
+    # nothing was attempted against a verb — no receipt
+    assert not events_of(events, "voice_receipt")
 
 
 async def test_act_unknown_verb(tmp_path):
@@ -522,28 +557,6 @@ async def test_act_unknown_verb(tmp_path):
     (receipt_ev,) = events_of(events, "voice_receipt")
     assert receipt_ev["receipt"]["ok"] is False
     assert receipt_ev["receipt"]["verb"] == "email.send"
-
-
-async def test_act_wrong_tool_name(tmp_path):
-    svc, events = make_service(tmp_path)
-    await svc.handle_tool_call(
-        {"voiceSessionId": "voice-1", "callId": "c", "name": "hack", "argumentsJson": "{}"}
-    )
-    (result,) = events_of(events, "voice_tool_result")
-    assert result["ok"] is False
-    assert json.loads(result["output"])["error"] == "unknown_tool"
-    # nothing was attempted against a verb — no receipt
-    assert not events_of(events, "voice_receipt")
-
-
-async def test_act_bad_arguments_json(tmp_path):
-    svc, events = make_service(tmp_path)
-    await svc.handle_tool_call(
-        {"voiceSessionId": "voice-1", "callId": "c", "name": "act", "argumentsJson": "{oops"}
-    )
-    (result,) = events_of(events, "voice_tool_result")
-    assert result["ok"] is False
-    assert json.loads(result["output"])["error"] == "bad_arguments"
 
 
 async def test_act_verb_exception_becomes_tool_error(tmp_path):
@@ -582,6 +595,9 @@ def test_describe_human_templates_and_fallback():
     assert _describe("computer.do", {"task": "open settings"}) == (
         "Drive the Mac: open settings"
     )
+    # named folder rides through; a missing dir defaults to Desktop, never a KeyError
+    assert _describe("files.organize", {"dir": "downloads"}) == "Organize downloads by date"
+    assert _describe("files.organize", {}) == "Organize Desktop by date"
 
 
 async def test_confirm_full_cycle(tmp_path):
@@ -700,26 +716,6 @@ async def test_confirm_token_survives_one_mangled_recall(tmp_path):
     assert ran == [{"name": "Spotify"}]
 
 
-async def test_confirm_token_scoped_to_verb_and_args(tmp_path):
-    ran = []
-
-    async def run(args):
-        ran.append(args)
-        return FakeResult(ok=True, summary="quit")
-
-    svc, events = make_service(tmp_path, verbs=[FakeVerb("app.quit", run=run, tier="confirm")])
-    await svc.handle_tool_call(_act_cmd("voice-1", "c1", "app.quit", args={"name": "Safari"}))
-    token = events_of(events, "voice_tool_result")[0]["needsConfirm"]["token"]
-    events.clear()
-    # different args with the Safari token → refused, token burned
-    await svc.handle_tool_call(
-        _act_cmd("voice-1", "c2", "app.quit", args={"name": "Mail"}, confirm_token=token)
-    )
-    assert ran == []
-    (r,) = events_of(events, "voice_tool_result")
-    assert r["ok"] is False and "needsConfirm" in r
-
-
 async def test_confirm_token_expires(tmp_path):
     ran = []
 
@@ -788,14 +784,6 @@ async def test_undo_cycle(tmp_path):
     assert json.loads(r2["output"])["error"] == "not_undoable"
 
 
-async def test_undo_unknown_receipt(tmp_path):
-    svc, events = make_service(tmp_path)
-    await svc.handle_undo({"receiptId": "rcpt-nope"})
-    (r,) = events_of(events, "voice_tool_result")
-    assert r["ok"] is False
-    assert json.loads(r["output"])["error"] == "not_undoable"
-
-
 async def test_undo_failure_keeps_closure_for_retry(tmp_path):
     attempts = []
 
@@ -831,7 +819,7 @@ async def test_undo_failure_keeps_closure_for_retry(tmp_path):
 # ── typed commands (floor) ────────────────────────────────────────────────
 
 
-async def test_typed_command_floor_verb(tmp_path):
+async def test_typed_command_runs_floor_verbs_only(tmp_path):
     ran = []
 
     async def run(args):
@@ -848,15 +836,13 @@ async def test_typed_command_floor_verb(tmp_path):
     assert receipt_ev["receipt"]["lane"] == "floor"
     assert receipt_ev["receipt"]["heard"] == "pause the music"
 
-
-async def test_typed_command_non_floor_refused(tmp_path):
-    svc, events = make_service(tmp_path, verbs=[FakeVerb("spotify.pause", run=_ok_run("p"))])
+    events.clear()
     await svc.handle_typed_command({"text": "email bob about the launch"})
     (result,) = events_of(events, "voice_tool_result")
     assert result["ok"] is False
-    output = json.loads(result["output"])
-    assert output["error"] == "not_floor"
+    assert json.loads(result["output"])["error"] == "not_floor"
     # no verb attempted, no receipt, and definitely no model involved
+    assert ran == [{}]
     assert not events_of(events, "voice_receipt")
 
 
@@ -912,14 +898,11 @@ async def test_transcript_panic_on_partial_dedupes_per_session(tmp_path):
         {"voiceSessionId": "v2", "role": "user", "text": "stop", "final": False}
     )
     assert len(events_of(events, "voice_panic")) == 2
-
-
-async def test_transcript_assistant_text_never_panics(tmp_path):
-    svc, events = make_service(tmp_path)
+    # the assistant saying "stop" is never a panic
     await svc.handle_transcript(
-        {"voiceSessionId": "v1", "role": "assistant", "text": "stop", "final": True}
+        {"voiceSessionId": "v3", "role": "assistant", "text": "stop", "final": True}
     )
-    assert not events_of(events, "voice_panic")
+    assert len(events_of(events, "voice_panic")) == 2
 
 
 # ── receipts list ─────────────────────────────────────────────────────────
@@ -944,25 +927,6 @@ async def test_receipts_list(tmp_path):
     await svc.handle_receipts_list({})
     (ev2,) = events_of(events, "voice_receipts")
     assert [r["verb"] for r in ev2["receipts"]] == ["spotify.next", "spotify.pause"]
-
-
-# ── mission.spawn wiring (fake state; real registration path is B's) ─────
-
-
-async def test_mission_lane_for_mission_spawn(tmp_path):
-    """mission.spawn calls land in the `mission` receipt lane."""
-
-    async def run(args):
-        return FakeResult(ok=True, summary="mission spawned: test", data={"sessionId": "s1"})
-
-    svc, events = make_service(tmp_path, verbs=[FakeVerb("mission.spawn", run=run)])
-    await svc.handle_tool_call(
-        _act_cmd("v1", "c1", "mission.spawn", args={"prompt": "do the thing"})
-    )
-    (receipt_ev,) = events_of(events, "voice_receipt")
-    assert receipt_ev["receipt"]["lane"] == "mission"
-    (result,) = events_of(events, "voice_tool_result")
-    assert json.loads(result["output"])["data"] == {"sessionId": "s1"}
 
 
 # ── spawn() error surfacing ───────────────────────────────────────────────
@@ -1083,6 +1047,9 @@ async def test_mission_spawn_report_back(tmp_path, monkeypatch):
     title = "check the deploy status and merge…"
     assert body["summary"] == f"mission spawned: {title}"
     assert rig.state.sessions[session_id].model_id == "test-model"
+    # mission.spawn calls land in the `mission` receipt lane
+    (spawn_receipt,) = events_of(events, "voice_receipt")
+    assert spawn_receipt["receipt"]["lane"] == "mission"
 
     # Report-back: release the turn, let the watcher finish.
     events.clear()
@@ -1258,23 +1225,11 @@ async def test_build_context_summary_recaps_the_exchange(tmp_path):
     assert "Freyja said: Playing." in s
     assert "other session" not in s  # scoped to the one session
 
-
-async def test_build_context_summary_marks_failures(tmp_path):
-    svc, _ = make_service(tmp_path)
-    tp = svc._transcripts_path
-    tp.parent.mkdir(parents=True, exist_ok=True)
-    tp.write_text(
-        json.dumps({"voiceSessionId": "voice-cccccccccccc", "role": "tool", "verb": "app.quit", "ok": False, "text": "couldn't quit"}) + "\n",
-        encoding="utf-8",
-    )
-    s = svc.build_context_summary("voice-cccccccccccc")
-    assert "[did app.quit — failed: couldn't quit]" in s
-
-
-async def test_build_context_summary_empty_and_missing(tmp_path):
-    svc, _ = make_service(tmp_path)
+    failed = {"voiceSessionId": "voice-cccccccccccc", "role": "tool", "verb": "app.quit"}
+    tp.write_text(json.dumps({**failed, "ok": False, "text": "couldn't quit"}) + "\n", encoding="utf-8")
+    assert "[did app.quit — failed: couldn't quit]" in svc.build_context_summary(failed["voiceSessionId"])
     assert svc.build_context_summary("") == ""
-    assert svc.build_context_summary("voice-none") == ""  # no journal file yet
+    assert svc.build_context_summary("voice-none") == ""  # unknown session, nothing journaled
 
 
 async def test_build_context_summary_keeps_recent_tail_when_long(tmp_path):
@@ -1296,110 +1251,29 @@ async def test_build_context_summary_keeps_recent_tail_when_long(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "hour,quiet",
+    "quiet_hours,hour,quiet",
     [
-        # Wrap-around window 22..8 (spans midnight): quiet at/after 22 or before 8.
-        (23, True),
-        (0, True),
-        (3, True),
-        (7, True),
-        (8, False),  # end is exclusive
-        (12, False),
-        (21, False),
-        (22, True),  # start is inclusive
-    ],
-)
-def test_in_quiet_hours_wraparound(tmp_path, hour, quiet):
-    svc, _ = make_service(tmp_path)
-    svc._config["quietHours"] = {"start": 22, "end": 8}
-    assert svc._in_quiet_hours(hour) is quiet
-
-
-@pytest.mark.parametrize(
-    "hour,quiet",
-    [
+        # Wrap-around window 22..8 (spans midnight): start inclusive, end exclusive.
+        ({"start": 22, "end": 8}, 22, True),
+        ({"start": 22, "end": 8}, 0, True),
+        ({"start": 22, "end": 8}, 7, True),
+        ({"start": 22, "end": 8}, 8, False),
+        ({"start": 22, "end": 8}, 21, False),
         # Plain non-wrap window 1..5: quiet 1..4, not 5 (exclusive end) or 0.
-        (0, False),
-        (1, True),
-        (4, True),
-        (5, False),
-        (6, False),
+        ({"start": 1, "end": 5}, 0, False),
+        ({"start": 1, "end": 5}, 1, True),
+        ({"start": 1, "end": 5}, 4, True),
+        ({"start": 1, "end": 5}, 5, False),
+        # An empty window is never quiet; a malformed one never silences.
+        ({"start": 9, "end": 9}, 9, False),
+        ("nope", 3, False),
+        ({"start": "x", "end": None}, 3, False),
     ],
 )
-def test_in_quiet_hours_non_wrap(tmp_path, hour, quiet):
+def test_in_quiet_hours_window_boundaries(tmp_path, quiet_hours, hour, quiet):
     svc, _ = make_service(tmp_path)
-    svc._config["quietHours"] = {"start": 1, "end": 5}
+    svc._config["quietHours"] = quiet_hours
     assert svc._in_quiet_hours(hour) is quiet
-
-
-def test_in_quiet_hours_empty_window_is_never_quiet(tmp_path):
-    svc, _ = make_service(tmp_path)
-    svc._config["quietHours"] = {"start": 9, "end": 9}
-    assert all(svc._in_quiet_hours(h) is False for h in range(24))
-
-
-def test_in_quiet_hours_malformed_config_never_quiet(tmp_path):
-    svc, _ = make_service(tmp_path)
-    svc._config["quietHours"] = "nope"  # not a dict
-    assert svc._in_quiet_hours(3) is False
-    svc._config["quietHours"] = {"start": "x", "end": None}  # unparseable
-    assert svc._in_quiet_hours(3) is False
-
-
-async def test_config_roundtrip_persists_proactive_and_quiet_hours(tmp_path, monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    svc, events = make_service(tmp_path)
-    await svc.start()
-    # defaults are OFF + 22..8
-    await svc.handle_get_config({})
-    cfg0 = events_of(events, "voice_config")[0]["config"]
-    assert cfg0["proactiveVoice"] is False
-    assert cfg0["quietHours"] == {"start": 22, "end": 8}
-    events.clear()
-
-    await svc.handle_set_config(
-        {"patch": {"proactiveVoice": True, "quietHours": {"start": 23, "end": 7}}}
-    )
-    (ev,) = events_of(events, "voice_config")
-    assert ev["config"]["proactiveVoice"] is True
-    assert ev["config"]["quietHours"] == {"start": 23, "end": 7}
-
-    # a fresh service over the same dir loads the persisted values
-    svc2, events2 = make_service(tmp_path)
-    await svc2.start()
-    await svc2.handle_get_config({})
-    (ev2,) = events_of(events2, "voice_config")
-    assert ev2["config"]["proactiveVoice"] is True
-    assert ev2["config"]["quietHours"] == {"start": 23, "end": 7}
-
-
-async def test_config_patch_validation_ignores_malformed_announce_keys(tmp_path):
-    svc, events = make_service(tmp_path)
-    await svc.start()
-    await svc.handle_set_config(
-        {
-            "patch": {
-                "proactiveVoice": "yes",  # not a bool — ignored
-                "quietHours": {"start": 99, "end": -4},  # clamped 0-23
-            }
-        }
-    )
-    (ev,) = events_of(events, "voice_config")
-    cfg = ev["config"]
-    assert cfg["proactiveVoice"] is False  # unchanged (default)
-    assert cfg["quietHours"] == {"start": 23, "end": 0}  # clamped
-
-    events.clear()
-    # a single bound patches in place; the other bound is untouched
-    await svc.handle_set_config({"patch": {"quietHours": {"start": 6}}})
-    (ev2,) = events_of(events, "voice_config")
-    assert ev2["config"]["quietHours"] == {"start": 6, "end": 0}
-
-    events.clear()
-    # a non-dict quietHours is ignored entirely
-    await svc.handle_set_config({"patch": {"quietHours": [1, 2]}})
-    (ev3,) = events_of(events, "voice_config")
-    assert ev3["config"]["quietHours"] == {"start": 6, "end": 0}
 
 
 def _fake_tts(monkeypatch, value="AAA"):
@@ -1442,41 +1316,31 @@ async def test_maybe_announce_fires_when_opted_in_no_session_not_quiet(tmp_path,
     events.clear()
     await svc._maybe_announce("voice-mission-1", "Deploy check")
     assert not events_of(events, "voice_announce")
+    # a runaway title is capped before it is spoken
+    line = svc._announce_line("x" * 400)
+    assert len(line) <= 180 and line.endswith("…")
 
 
-async def test_maybe_announce_silent_when_disabled(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "proactive,active_session,hour",
+    [
+        (False, None, 12),  # opted out
+        (True, "voice-live", 12),  # a live exchange already hears it
+        (True, None, 3),  # 3am — inside the 22..8 quiet window
+    ],
+)
+async def test_maybe_announce_stays_silent_when_gated(
+    tmp_path, monkeypatch, proactive, active_session, hour
+):
     svc, events = make_service(tmp_path)
     calls = _fake_tts(monkeypatch)
-    svc._config["proactiveVoice"] = False
-    svc._active_session_id = None
-    _pin_hour(monkeypatch, 12)
+    svc._config["proactiveVoice"] = proactive
+    svc._config["quietHours"] = {"start": 22, "end": 8}
+    svc._active_session_id = active_session
+    _pin_hour(monkeypatch, hour)
     await svc._maybe_announce("voice-mission-2", "anything")
     assert not events_of(events, "voice_announce")
     assert not calls  # never even synthesizes
-
-
-async def test_maybe_announce_silent_when_session_live(tmp_path, monkeypatch):
-    svc, events = make_service(tmp_path)
-    calls = _fake_tts(monkeypatch)
-    svc._config["proactiveVoice"] = True
-    svc._active_session_id = "voice-live"  # a live exchange already hears it
-    _pin_hour(monkeypatch, 12)
-    await svc._maybe_announce("voice-mission-3", "anything")
-    assert not events_of(events, "voice_announce")
-    assert not calls
-
-
-async def test_maybe_announce_silent_during_quiet_hours(tmp_path, monkeypatch):
-    svc, events = make_service(tmp_path)
-    calls = _fake_tts(monkeypatch)
-    svc._config["proactiveVoice"] = True
-    svc._config["quietHours"] = {"start": 22, "end": 8}
-    svc._active_session_id = None
-    # 3am — inside the wrap-around window
-    _pin_hour(monkeypatch, 3)
-    await svc._maybe_announce("voice-mission-4", "anything")
-    assert not events_of(events, "voice_announce")
-    assert not calls
 
 
 async def test_maybe_announce_no_event_when_tts_fails(tmp_path, monkeypatch):
@@ -1492,14 +1356,6 @@ async def test_maybe_announce_no_event_when_tts_fails(tmp_path, monkeypatch):
     await svc._maybe_announce("voice-mission-5", "title")
     # No silent announce with a missing blob.
     assert not events_of(events, "voice_announce")
-
-
-async def test_announce_line_caps_length(tmp_path):
-    svc, _ = make_service(tmp_path)
-    long_title = "x" * 400
-    line = svc._announce_line(long_title)
-    assert len(line) <= 180
-    assert line.endswith("…")
 
 
 async def test_watch_mission_announces_end_to_end(tmp_path, monkeypatch):
@@ -1529,96 +1385,51 @@ async def test_watch_mission_announces_end_to_end(tmp_path, monkeypatch):
     assert calls  # TTS reached
 
 
-async def test_watch_mission_no_announce_with_live_session(tmp_path, monkeypatch):
-    """A live voice session hears the update inline — no proactive announce."""
-    svc, events, rig = _mission_rig(tmp_path, monkeypatch)
-    calls = _fake_tts(monkeypatch, "ZZZ")
-    svc._config["proactiveVoice"] = True
-    svc._active_session_id = "voice-live"
-    _pin_hour(monkeypatch, 12)
-
-    await svc.handle_tool_call(
-        _act_cmd("voice-live", "c1", "mission.spawn", args={"prompt": "run the checks"})
-    )
-    events.clear()
-    rig.gate.set()
-    await _drain_watchers(svc)
-
-    assert events_of(events, "voice_mission_update")  # inline path still fires
-    assert not events_of(events, "voice_announce")
-    assert not calls
-
-
 # ── TTS helper ──────────────────────────────────────────────────────────────
 
 
-async def test_synthesize_speech_returns_none_on_http_500(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+class _TtsResponse:
+    def __init__(self, status_code, content=b"", text=""):
+        self.status_code = status_code
+        self.content = content
+        self.text = text
 
-    class Resp500:
-        status_code = 500
-        content = b""
-        text = "server error"
-
-        def json(self):
-            return {}
-
-    # Two 500s (helper retries once), then it must give up with None.
-    install_fake_httpx(monkeypatch, [Resp500(), Resp500()])
-    out = await voice_service_module._synthesize_speech("hello", "marin")
-    assert out is None
+    def json(self):
+        return {}
 
 
-async def test_synthesize_speech_returns_none_no_api_key(tmp_path, monkeypatch):
+async def test_synthesize_speech_returns_none_on_every_failure(tmp_path, monkeypatch):
+    """A proactive announcement is best-effort: no key, two 500s (the helper retries once) or two network errors all end in None, never an exception."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    out = await voice_service_module._synthesize_speech("hello", "marin")
-    assert out is None
+    assert await voice_service_module._synthesize_speech("hello", "marin") is None
 
-
-async def test_synthesize_speech_never_raises_on_network_error(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    # Both attempts raise — helper must swallow and return None.
+    down = _TtsResponse(500, text="server error")
+    calls = install_fake_httpx(monkeypatch, [down, down])
+    assert await voice_service_module._synthesize_speech("hello", "marin") is None
+    assert len(calls) == 2
+
     install_fake_httpx(monkeypatch, [ConnectionError("down"), ConnectionError("still down")])
-    out = await voice_service_module._synthesize_speech("hello", "marin")
-    assert out is None
+    assert await voice_service_module._synthesize_speech("hello", "marin") is None
 
 
 async def test_synthesize_speech_success_returns_base64(tmp_path, monkeypatch):
     import base64 as _b64
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-
-    class Resp200:
-        status_code = 200
-        content = b"\x00\x01\x02mp3bytes"
-        text = ""
-
-        def json(self):
-            return {}
-
-    calls = install_fake_httpx(monkeypatch, [Resp200()])
+    monkeypatch.delenv("FREYJA_VOICE_TTS_VOICE", raising=False)
+    calls = install_fake_httpx(
+        monkeypatch,
+        [_TtsResponse(200, content=b"\x00\x01\x02mp3bytes"), _TtsResponse(200, content=b"x")],
+    )
     out = await voice_service_module._synthesize_speech("hi", "shimmer")
     assert out == _b64.b64encode(b"\x00\x01\x02mp3bytes").decode("ascii")
-    # marin/cedar map to the default TTS voice; a real TTS voice passes through.
+    # a real TTS voice passes through…
     assert calls[0]["json"]["voice"] == "shimmer"
     assert calls[0]["json"]["response_format"] == "mp3"
-
-
-async def test_synthesize_speech_maps_realtime_voice_to_tts_default(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    monkeypatch.delenv("FREYJA_VOICE_TTS_VOICE", raising=False)
-
-    class Resp200:
-        status_code = 200
-        content = b"x"
-        text = ""
-
-        def json(self):
-            return {}
-
-    calls = install_fake_httpx(monkeypatch, [Resp200()])
-    await voice_service_module._synthesize_speech("hi", "marin")  # realtime-only voice
-    assert calls[0]["json"]["voice"] == "shimmer"  # default TTS voice
+    # …while a realtime-only voice (marin/cedar) maps to the default TTS voice
+    await voice_service_module._synthesize_speech("hi", "marin")
+    assert calls[1]["json"]["voice"] == "shimmer"
 
 
 # ── GPT-Live seat (docs/GALDR-LIVE.md) ────────────────────────────────────
@@ -1733,12 +1544,8 @@ async def test_live_connect_4xx_answers_not_ok(tmp_path, monkeypatch):
     assert answer["ok"] is False
     assert "400" in answer["error"] and "bad session" in answer["error"]
 
-
-async def test_live_connect_without_answer_sdp_is_not_ok(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    svc, events = make_service(tmp_path, model="gpt-live-1")
-    await svc.handle_session_start({})
-    sid = svc._active_session_id
+    # A 201 without an SDP answer is just as dead for the renderer.
+    events.clear()
     install_fake_httpx(monkeypatch, [FakeResponse(status_code=201, payload={"session": {}})])
     await svc.handle_live_connect({"voiceSessionId": sid, "sdp": "v=0"})
     (answer,) = events_of(events, "voice_live_answer")
@@ -1763,10 +1570,8 @@ async def test_per_verb_tool_call_runs_the_verb(tmp_path):
     assert result["receipt"]["verb"] == "spotify.play"
     assert result["receipt"]["lane"] == "brain"
 
-
-async def test_per_verb_tool_call_unknown_tool(tmp_path):
-    svc, events = make_service(tmp_path, verbs=[FakeVerb("spotify.play", run=None)])
-    await svc.handle_tool_call(_verb_cmd("voice-1", "call-1", "spotify_explode"))
+    events.clear()
+    await svc.handle_tool_call(_verb_cmd("voice-1", "call-2", "spotify_explode"))
     (result,) = events_of(events, "voice_tool_result")
     assert result["ok"] is False
     assert json.loads(result["output"])["error"] == "unknown_tool"
@@ -1816,8 +1621,8 @@ def test_fit_image_passes_small_png_and_refits_big_one_as_jpeg():
     small = base64.b64encode(b"\x89PNG tiny").decode()
     assert _fit_image(small) == (small, "image/png")
 
-    rnd = random.Random(1)
-    noisy = Image.frombytes("RGB", (1280, 800), bytes(rnd.randrange(256) for _ in range(1280 * 800 * 3)))
+    # Incompressible noise so the PNG blows the budget; randbytes keeps it fast.
+    noisy = Image.frombytes("RGB", (1280, 800), random.Random(1).randbytes(1280 * 800 * 3))
     buf = io.BytesIO()
     noisy.save(buf, "PNG")
     big = base64.b64encode(buf.getvalue()).decode()

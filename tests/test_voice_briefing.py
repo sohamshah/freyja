@@ -1,12 +1,12 @@
 """briefing.read verb (bridge/voice/adapters/briefing.py).
 
-Reads the briefer's on-disk edition; tests point FREYJA_HOME at a tmp dir
-so nothing touches the real ~/.freyja/briefing.
+Reads the briefer's on-disk edition; tests point FREYJA_HOME at a tmp dir so nothing touches the real ~/.freyja/briefing.
 """
 
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -35,6 +35,12 @@ def _write(home, date, edition):
     (d / "briefing.json").write_text(json.dumps(edition), encoding="utf-8")
 
 
+def _pin_today(monkeypatch, day):
+    monkeypatch.setattr(
+        time, "localtime", lambda *a: time.struct_time((2026, 7, day, 9, 0, 0, 0, 0, 0))
+    )
+
+
 _EDITION = {
     "date": "2026-07-08",
     "since_label": "06:00 yesterday",
@@ -53,11 +59,10 @@ _EDITION = {
 }
 
 
-async def test_read_todays_edition(reg, home, monkeypatch):
-    import time as _t
-
-    monkeypatch.setattr(_t, "localtime", lambda *a: _t.struct_time((2026, 7, 8, 9, 0, 0, 0, 0, 0)))
+async def test_read_todays_edition_or_an_explicit_date(reg, home, monkeypatch):
+    _pin_today(monkeypatch, 8)
     _write(home, "2026-07-08", _EDITION)
+    _write(home, "2026-07-04", {**_EDITION, "date": "2026-07-04"})
     res = await reg.get("briefing.read").run({})
     assert res.ok
     assert res.summary == "briefing for 2026-07-08"
@@ -68,23 +73,18 @@ async def test_read_todays_edition(reg, home, monkeypatch):
     assert "09:00 ship the fix" in res.say
     assert len(res.data["projects"]) == 2 and len(res.data["decisions"]) == 1
 
+    res = await reg.get("briefing.read").run({"date": "2026-07-04"})
+    assert res.ok and res.data["date"] == "2026-07-04"
+
 
 async def test_read_falls_back_to_latest_when_today_missing(reg, home, monkeypatch):
-    import time as _t
-
     # "today" is the 9th, but only the 8th exists → offer it, flagged stale.
-    monkeypatch.setattr(_t, "localtime", lambda *a: _t.struct_time((2026, 7, 9, 9, 0, 0, 0, 0, 0)))
+    _pin_today(monkeypatch, 9)
     _write(home, "2026-07-08", _EDITION)
     res = await reg.get("briefing.read").run({})
     assert res.ok
     assert res.data["stale"] is True
     assert res.say.startswith("(from 2026-07-08, not today) ")
-
-
-async def test_read_explicit_date(reg, home):
-    _write(home, "2026-07-04", {**_EDITION, "date": "2026-07-04"})
-    res = await reg.get("briefing.read").run({"date": "2026-07-04"})
-    assert res.ok and res.data["date"] == "2026-07-04"
 
 
 async def test_read_no_briefing_at_all(reg, home):
@@ -94,9 +94,7 @@ async def test_read_no_briefing_at_all(reg, home):
 
 
 async def test_read_singular_counts(reg, home, monkeypatch):
-    import time as _t
-
-    monkeypatch.setattr(_t, "localtime", lambda *a: _t.struct_time((2026, 7, 8, 9, 0, 0, 0, 0, 0)))
+    _pin_today(monkeypatch, 8)
     _write(
         home,
         "2026-07-08",

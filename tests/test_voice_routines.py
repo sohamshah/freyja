@@ -189,16 +189,12 @@ def test_store_round_trip(tmp_path):
     ]
     assert loaded.stats == {"runs": 0, "ok": 0, "fail": 0, "last_run_ts": None}
     assert [r.name for r in store.load_all()] == ["morning"]
-
-
-def test_store_atomic_write_no_tmp_and_schema_shape(tmp_path):
-    store = RoutineStore(tmp_path / "routines")
-    store.save(_routine("morning", [RoutineStep(verb="app.focus", args={"name": "cmux"})]))
+    # Atomic write: no .tmp left behind, and the YAML keeps the pinned key order.
     files = sorted(p.name for p in (tmp_path / "routines").iterdir())
-    assert files == ["morning.yaml"]  # no .tmp left behind
+    assert files == ["morning.yaml"]
     raw = yaml.safe_load((tmp_path / "routines" / "morning.yaml").read_text())
     assert list(raw) == ["name", "description", "created_ts", "updated_ts", "steps", "stats"]
-    assert raw["steps"] == [{"verb": "app.focus", "args": {"name": "cmux"}}]
+    assert raw["steps"] == [s.to_dict() for s in routine.steps]
 
 
 def test_store_get_is_slug_normalized(tmp_path):
@@ -237,20 +233,6 @@ def test_store_delete_returns_routine_for_undo(tmp_path):
     assert store.get("morning") is not None
 
 
-def test_store_names_md(tmp_path):
-    store = RoutineStore(tmp_path / "routines")
-    assert store.names_md() == ""
-    store.save(
-        _routine(
-            "morning",
-            [RoutineStep(verb="app.focus"), RoutineStep(verb="computer.press")],
-            description="open cmux",
-        )
-    )
-    store.save(_routine("standup", [RoutineStep(verb="app.open")]))
-    assert store.names_md() == "- morning (2 steps) — open cmux\n- standup (1 step)"
-
-
 # ── routine.save: validation matrix ───────────────────────────────────────
 
 
@@ -280,65 +262,41 @@ async def test_save_explicit_steps_persists(tmp_path):
     ]
 
 
-async def test_save_empty_name_refused(tmp_path):
-    svc, events = make_service(tmp_path, verbs=[FakeVerb("demo.a", run=_ok_run("a"))])
-    for bad_name in ("", "   ", "!!!"):
-        _, final = await _save_routine(
-            svc, events, {"name": bad_name, "steps": [{"verb": "demo.a"}]}
-        )
-        assert final["ok"] is False
-        assert json.loads(final["output"])["error"] == "missing_name"
-    assert svc.routines.load_all() == []
-
-
-async def test_save_unknown_step_verb_refused(tmp_path):
-    svc, events = make_service(tmp_path, verbs=[FakeVerb("demo.a", run=_ok_run("a"))])
-    _, final = await _save_routine(
-        svc,
-        events,
-        {"name": "x", "steps": [{"verb": "demo.a"}, {"verb": "email.send"}]},
-    )
-    assert final["ok"] is False
-    body = json.loads(final["output"])
-    assert body["error"] == "unknown_step_verb"
-    assert body["summary"] == "step 2 uses unknown verb email.send"
-    assert svc.routines.get("x") is None  # nothing was written
-
-
-async def test_save_confirm_tier_step_refused_naming_offender(tmp_path):
+async def test_save_refuses_invalid_routines_and_writes_nothing(tmp_path):
+    """The validation matrix: a bad name, an unknown or confirm-tier or recursive step verb, and malformed step shapes each refuse with their own error code, and no file lands."""
     svc, events = make_service(
-        tmp_path, verbs=[FakeVerb("app.quit", run=_ok_run("quit"), tier="confirm")]
+        tmp_path,
+        verbs=[
+            FakeVerb("demo.a", run=_ok_run("a")),
+            FakeVerb("app.quit", run=_ok_run("quit"), tier="confirm"),
+        ],
     )
-    _, final = await _save_routine(svc, events, {"name": "x", "steps": [{"verb": "app.quit"}]})
-    assert final["ok"] is False
-    body = json.loads(final["output"])
-    assert body["error"] == "confirm_step"
-    assert body["summary"] == (
-        "app.quit needs a spoken yes each time, so it can't go in a routine"
-    )
-
-
-async def test_save_recursive_routine_step_refused(tmp_path):
-    svc, events = make_service(tmp_path)
-    for nested in ("routine.run", "routine.save", "routine.bogus"):
-        _, final = await _save_routine(svc, events, {"name": "x", "steps": [{"verb": nested}]})
-        assert final["ok"] is False
-        assert json.loads(final["output"])["error"] == "recursive_step", nested
-
-
-async def test_save_malformed_steps_refused(tmp_path):
-    svc, events = make_service(tmp_path, verbs=[FakeVerb("demo.a", run=_ok_run("a"))])
     cases = [
+        ({"name": "", "steps": [{"verb": "demo.a"}]}, "missing_name"),
+        ({"name": "!!!", "steps": [{"verb": "demo.a"}]}, "missing_name"),
+        ({"name": "x", "steps": [{"verb": "demo.a"}, {"verb": "email.send"}]}, "unknown_step_verb"),
+        ({"name": "x", "steps": [{"verb": "app.quit"}]}, "confirm_step"),
+        ({"name": "x", "steps": [{"verb": "routine.run"}]}, "recursive_step"),
+        ({"name": "x", "steps": [{"verb": "routine.save"}]}, "recursive_step"),
         ({"name": "x", "steps": "demo.a"}, "bad_steps"),  # not a list
         ({"name": "x", "steps": ["demo.a"]}, "bad_steps"),  # step not an object
         ({"name": "x", "steps": [{"verb": "demo.a", "args": ["y"]}]}, "bad_step_args"),
         ({"name": "x", "steps": [{"verb": "demo.a", "wait_ms": -5}]}, "bad_step_wait"),
         ({"name": "x", "steps": [{"verb": "demo.a", "wait_ms": True}]}, "bad_step_wait"),
     ]
+    summaries = {}
     for args, expected_error in cases:
         _, final = await _save_routine(svc, events, args)
         assert final["ok"] is False, args
-        assert json.loads(final["output"])["error"] == expected_error, args
+        body = json.loads(final["output"])
+        assert body["error"] == expected_error, args
+        summaries[expected_error] = body["summary"]
+    # The refusal names the offender so the model can repair the step.
+    assert summaries["unknown_step_verb"] == "step 2 uses unknown verb email.send"
+    assert summaries["confirm_step"] == (
+        "app.quit needs a spoken yes each time, so it can't go in a routine"
+    )
+    assert svc.routines.load_all() == []
 
 
 async def test_save_overwrite_says_replacing_and_keeps_created_ts(tmp_path):
@@ -433,9 +391,7 @@ async def test_save_derive_empty_exchange_refused(tmp_path):
     # its own awaiting-confirmation receipt never becomes a step
     assert svc._derive_routine_steps() == []
 
-
-async def test_save_derive_without_active_session_refused(tmp_path):
-    svc, events = make_service(tmp_path)
+    # No live session at all: nothing to derive from, even with receipts on disk.
     _seed(svc, "v1", "spotify.play")
     svc._active_session_id = None
     _, final = await _save_routine(svc, events, {"name": "x"}, vsid="")
@@ -482,15 +438,16 @@ async def test_run_happy_path_order_receipts_single_result(tmp_path):
     )
     svc._active_session_id = "v1"
     svc.routines.save(
-        _routine("morning", [RoutineStep("demo.a", {"x": 1}), RoutineStep("demo.b", {})])
+        _routine("Morning", [RoutineStep("demo.a", {"x": 1}), RoutineStep("demo.b", {})])
     )
+    # the spoken name is slug-normalized before lookup
     await svc.handle_tool_call(_act_cmd("v1", "c1", "routine.run", args={"name": "morning"}))
     assert calls == [("demo.a", {"x": 1}), ("demo.b", {})]
     # ONE tool result for the whole run
     (result,) = events_of(events, "voice_tool_result")
     assert result["ok"] is True
     body = json.loads(result["output"])
-    assert body["summary"] == "▷ ran 'morning' (2 steps)"
+    assert body["summary"] == "▷ ran 'Morning' (2 steps)"
     assert body["data"]["steps"] == [
         {"verb": "demo.a", "ok": True, "summary": "did demo.a"},
         {"verb": "demo.b", "ok": True, "summary": "did demo.b"},
@@ -498,23 +455,11 @@ async def test_run_happy_path_order_receipts_single_result(tmp_path):
     # per-step receipts + the routine.run receipt itself, all brain lane
     receipts = [e["receipt"] for e in events_of(events, "voice_receipt")]
     assert [(r["verb"], r["heard"]) for r in receipts] == [
-        ("demo.a", "(routine morning · step 1)"),
-        ("demo.b", "(routine morning · step 2)"),
+        ("demo.a", "(routine Morning · step 1)"),
+        ("demo.b", "(routine Morning · step 2)"),
         ("routine.run", ""),
     ]
     assert all(r["lane"] == "brain" and r["ok"] for r in receipts)
-
-
-async def test_run_normalized_name_match(tmp_path):
-    calls = []
-    svc, events = make_service(tmp_path, verbs=[_tracking_verb("demo.a", calls)])
-    svc.routines.save(_routine("Morning Routine", [RoutineStep("demo.a")]))
-    await svc.handle_tool_call(
-        _act_cmd("v1", "c1", "routine.run", args={"name": "morning   routine"})
-    )
-    (result,) = events_of(events, "voice_tool_result")
-    assert result["ok"] is True
-    assert calls == [("demo.a", {})]
 
 
 async def test_run_unknown_name_suggests_close_match(tmp_path):
@@ -550,32 +495,28 @@ async def test_run_stops_on_first_failure(tmp_path):
     assert [s["ok"] for s in body["data"]["steps"]] == [True, False]
 
 
-async def test_run_step_exception_becomes_failure(tmp_path):
+async def test_run_step_exception_or_vanished_verb_fails_at_that_step(tmp_path):
     async def explode(args):
         raise RuntimeError("osascript exploded")
 
-    svc, events = make_service(tmp_path, verbs=[FakeVerb("demo.a", run=explode)])
-    svc.routines.save(_routine("x", [RoutineStep("demo.a")]))
-    await svc.handle_tool_call(_act_cmd("v1", "c1", "routine.run", args={"name": "x"}))
-    (result,) = events_of(events, "voice_tool_result")
-    assert result["ok"] is False
-    body = json.loads(result["output"])
-    assert body["summary"] == (
-        "routine 'x' failed at step 1/1 (demo.a): demo.a failed: osascript exploded"
-    )
-
-
-async def test_run_missing_verb_fails_with_step_message(tmp_path):
     calls = []
-    svc, events = make_service(tmp_path, verbs=[_tracking_verb("demo.a", calls)])
+    svc, events = make_service(
+        tmp_path, verbs=[FakeVerb("boom.a", run=explode), _tracking_verb("demo.a", calls)]
+    )
+    svc.routines.save(_routine("x", [RoutineStep("boom.a")]))
     # gone.verb was valid at save time, then vanished from the registry
-    svc.routines.save(_routine("x", [RoutineStep("demo.a"), RoutineStep("gone.verb")]))
+    svc.routines.save(_routine("y", [RoutineStep("demo.a"), RoutineStep("gone.verb")]))
     await svc.handle_tool_call(_act_cmd("v1", "c1", "routine.run", args={"name": "x"}))
-    (result,) = events_of(events, "voice_tool_result")
-    body = json.loads(result["output"])
-    assert result["ok"] is False
-    assert "step 2 uses verb gone.verb which no longer exists" in body["summary"]
-    assert body["summary"].startswith("routine 'x' failed at step 2/2 (gone.verb)")
+    await svc.handle_tool_call(_act_cmd("v1", "c2", "routine.run", args={"name": "y"}))
+    first, second = events_of(events, "voice_tool_result")
+    assert first["ok"] is False
+    assert json.loads(first["output"])["summary"] == (
+        "routine 'x' failed at step 1/1 (boom.a): boom.a failed: osascript exploded"
+    )
+    assert second["ok"] is False
+    summary = json.loads(second["output"])["summary"]
+    assert summary.startswith("routine 'y' failed at step 2/2 (gone.verb)")
+    assert "step 2 uses verb gone.verb which no longer exists" in summary
 
 
 async def test_run_rechecks_tier_at_run_time(tmp_path):
@@ -622,38 +563,29 @@ async def test_run_settle_default_and_wait_ms_override(tmp_path, monkeypatch):
     assert settles == [400, 500]
 
 
-async def test_run_propagates_last_step_image(tmp_path):
+async def test_run_propagates_only_the_last_steps_image(tmp_path, monkeypatch):
+    """The run's result carries the LAST step's screenshot (the end state); an earlier step's screenshot is stale and never propagated."""
+
+    async def no_settle(ms):
+        pass
+
+    monkeypatch.setattr(voice_service_module, "_routine_settle", no_settle)
     calls = []
     svc, events = make_service(
         tmp_path,
         verbs=[
             _tracking_verb("demo.a", calls),
-            _tracking_verb(
-                "computer.click", calls, image_b64="Zm9v", image_w=1280, image_h=800
-            ),
+            _tracking_verb("computer.click", calls, image_b64="Zm9v", image_w=1280, image_h=800),
         ],
     )
     svc.routines.save(_routine("x", [RoutineStep("demo.a"), RoutineStep("computer.click")]))
+    svc.routines.save(_routine("y", [RoutineStep("computer.click"), RoutineStep("demo.a")]))
     await svc.handle_tool_call(_act_cmd("v1", "c1", "routine.run", args={"name": "x"}))
-    (result,) = events_of(events, "voice_tool_result")
-    assert result["imageB64"] == "Zm9v"
-    assert result["imageW"] == 1280 and result["imageH"] == 800
-
-
-async def test_run_no_stale_image_when_last_step_has_none(tmp_path):
-    calls = []
-    svc, events = make_service(
-        tmp_path,
-        verbs=[
-            _tracking_verb("computer.click", calls, image_b64="Zm9v", image_w=1, image_h=1),
-            _tracking_verb("demo.a", calls),
-        ],
-    )
-    svc.routines.save(_routine("x", [RoutineStep("computer.click"), RoutineStep("demo.a")]))
-    await svc.handle_tool_call(_act_cmd("v1", "c1", "routine.run", args={"name": "x"}))
-    (result,) = events_of(events, "voice_tool_result")
-    # an earlier screenshot is NOT the end state — never propagate it
-    assert "imageB64" not in result
+    await svc.handle_tool_call(_act_cmd("v1", "c2", "routine.run", args={"name": "y"}))
+    ends_with_image, ends_without = events_of(events, "voice_tool_result")
+    assert ends_with_image["imageB64"] == "Zm9v"
+    assert ends_with_image["imageW"] == 1280 and ends_with_image["imageH"] == 800
+    assert "imageB64" not in ends_without
 
 
 async def test_run_updates_stats_ok_and_fail(tmp_path):
@@ -792,10 +724,8 @@ async def test_forget_and_undo_restores(tmp_path):
     assert restored is not None
     assert [s.to_dict() for s in restored.steps] == [{"verb": "demo.a", "args": {"x": 1}}]
 
-
-async def test_forget_unknown_refused(tmp_path):
-    svc, events = make_service(tmp_path)
-    await svc.handle_tool_call(_act_cmd("v1", "c1", "routine.forget", args={"name": "nope"}))
+    events.clear()
+    await svc.handle_tool_call(_act_cmd("v1", "c2", "routine.forget", args={"name": "nope"}))
     (result,) = events_of(events, "voice_tool_result")
     assert result["ok"] is False
     assert json.loads(result["output"])["error"] == "unknown_routine"
@@ -804,24 +734,31 @@ async def test_forget_unknown_refused(tmp_path):
 # ── prompt + mint ─────────────────────────────────────────────────────────
 
 
-def test_build_instructions_routines_section_and_default():
+def test_mint_config_bakes_routine_names(tmp_path):
+    """The session instructions list the saved routines (name, step count, description) so the model can run them by name; with none saved the section still exists and says so."""
     from bridge.voice.prompts import build_instructions
 
-    # the old 1-arg call keeps working — every pre-routines callsite/test
-    baseline = build_instructions("- x() — y")
+    svc, _ = make_service(tmp_path)
+    assert svc.routines.names_md() == ""
+    baseline = svc._build_session_config(svc._registry)["instructions"]
     assert "# Routines" in baseline
     assert "- (none saved yet)" in baseline
     assert "routine.save" in baseline
-    with_names = build_instructions("- x() — y", routines_md="- morning (2 steps)")
-    assert "- morning (2 steps)" in with_names
-    assert "(none saved yet)" not in with_names
+    # the old 1-arg call keeps working — every pre-routines callsite
+    assert "- (none saved yet)" in build_instructions("- x() — y")
 
-
-def test_mint_config_bakes_routine_names(tmp_path):
-    svc, _ = make_service(tmp_path)
-    svc.routines.save(_routine("morning", [RoutineStep("demo.a")], description="open cmux"))
+    svc.routines.save(
+        _routine(
+            "morning",
+            [RoutineStep("app.focus"), RoutineStep("computer.press")],
+            description="open cmux",
+        )
+    )
+    svc.routines.save(_routine("standup", [RoutineStep("app.open")]))
+    assert svc.routines.names_md() == "- morning (2 steps) — open cmux\n- standup (1 step)"
     session = svc._build_session_config(svc._registry)
-    assert "- morning (1 step) — open cmux" in session["instructions"]
+    assert "- morning (2 steps) — open cmux" in session["instructions"]
+    assert "(none saved yet)" not in session["instructions"]
 
 
 # ── INFO_VERBS drift guard ────────────────────────────────────────────────

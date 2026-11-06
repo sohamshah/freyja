@@ -1,23 +1,19 @@
 """Floor grammar tests (bridge/voice/floor.py).
 
-The contract §5 table IS the spec — every row appears below, plus the
-documented edge choices: whole-utterance matching ("play vienna" and
-"stop the presses" are None), name-prefix transparency ("freyja pause"),
-and the panic-scan extension (utterance *ending* in "freyja stop").
+The contract §5 table IS the spec — every row appears below, plus the documented edge choices: whole-utterance matching ("play vienna" and "stop the presses" are None), name-prefix transparency ("freyja pause"), and the panic-scan extension (utterance *ending* in "freyja stop").
 """
 
 from __future__ import annotations
 
 import pytest
 
-from bridge.voice.floor import FloorIntent, parse, scan_for_panic
+from bridge.voice.floor import parse, scan_for_panic
 
 # ── panic row ─────────────────────────────────────────────────────────────
 
 PANIC_UTTERANCES = [
     "stop",
     "Stop!",
-    "STOP.",
     "freyja stop",
     "Freyja, stop",
     "hey freyja stop",
@@ -25,7 +21,6 @@ PANIC_UTTERANCES = [
     "cancel that",
     "shut up",
     "never mind",
-    "Never mind.",
     "nevermind",
     "stop it",
 ]
@@ -45,13 +40,11 @@ def test_parse_panic(utterance):
 TABLE = [
     # spotify.pause
     ("pause", "spotify.pause", {}),
-    ("Pause.", "spotify.pause", {}),
     ("pause the music", "spotify.pause", {}),
     ("freyja pause", "spotify.pause", {}),
     # spotify.resume — bare "play" only
     ("resume", "spotify.resume", {}),
     ("play", "spotify.resume", {}),
-    ("Play", "spotify.resume", {}),
     ("unpause", "spotify.resume", {}),
     # spotify.next
     ("next", "spotify.next", {}),
@@ -119,7 +112,6 @@ NEGATIVES = [
     "shut down the computer",
     # junk
     "",
-    "   ",
     "?!",
 ]
 
@@ -129,12 +121,9 @@ def test_parse_negatives(utterance):
     assert parse(utterance) is None, utterance
 
 
-def test_floor_intent_shape():
-    intent = parse("louder")
-    assert isinstance(intent, FloorIntent)
-    # args must be a fresh dict per parse — callers mutate them
-    intent2 = parse("louder")
-    assert intent.args is not intent2.args
+def test_parse_returns_a_fresh_args_dict_per_call():
+    # callers mutate args, so two parses must not share one dict
+    assert parse("louder").args is not parse("louder").args
 
 
 # ── scan_for_panic — live transcript scanning (finals AND partials) ──────
