@@ -75,6 +75,8 @@ from bridge.mcp.config import (
 )
 from bridge.mcp.connection import (
     DEFAULT_ELICITATION_TIMEOUT_S,
+    STOP_CANCEL_WAIT_S,
+    STOP_GRACE_S,
     McpConnection,
     State,
     describe_error,
@@ -99,6 +101,10 @@ a connect, a network probe or a browser); the rest reply inline."""
 
 DEFAULT_LOGIN_TIMEOUT_S = 300.0
 DEFAULT_PROBE_TIMEOUT_S = 5.0
+TEST_TEARDOWN_MARGIN_S = 2.0
+"""How long a server test's teardown waits past stop()'s own bounds
+(STOP_GRACE_S, then STOP_CANCEL_WAIT_S after its cancel), so a stuck
+supervisor ends in stop()'s cleanup and warning, not in a teardown timeout."""
 RESERVED_NAME_PREFIX = "mcp__"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _URL_RE = re.compile(r"^https?://[^/\s]+", re.IGNORECASE)
@@ -986,7 +992,10 @@ async def run_server_test(
         return report
     finally:
         try:
-            await asyncio.wait_for(conn.stop(), timeout=15.0)
+            await asyncio.wait_for(
+                conn.stop(),
+                timeout=STOP_GRACE_S + STOP_CANCEL_WAIT_S + TEST_TEARDOWN_MARGIN_S,
+            )
         except Exception:  # noqa: BLE001
             logger.exception("mcp test '%s': teardown failed", spec.name)
         report["elapsed_ms"] = round((time.monotonic() - started) * 1000.0, 1)

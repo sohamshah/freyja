@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "fixtures"))
 
 from test_mcp_http_transport import _shared_server, _wait_until  # noqa: E402
 
+import bridge.mcp.commands as commands_mod  # noqa: E402
+import bridge.mcp.connection as connection_mod  # noqa: E402
 from bridge.mcp.commands import (  # noqa: E402
     BACKGROUND_ACTIONS,
     VALID_ACTIONS,
@@ -39,10 +41,11 @@ from bridge.mcp.commands import (  # noqa: E402
     parse_mcp_command,
     parse_resource_metadata,
     probe_http_server,
+    run_server_test,
     validate_server_name,
 )
-from bridge.mcp.config import load_catalog  # noqa: E402
-from bridge.mcp.connection import State  # noqa: E402
+from bridge.mcp.config import McpServerSpec, load_catalog  # noqa: E402
+from bridge.mcp.connection import McpConnection, State  # noqa: E402
 from bridge.mcp.manager import McpManager  # noqa: E402
 from bridge.tools.base import ToolRegistry  # noqa: E402
 
@@ -639,6 +642,37 @@ async def test_test_reports_needs_auth_and_unreachable(tmp_path):
     assert result["data"]["state"] in ("failed", "backoff", "timeout")
     assert result["message"].startswith("test 'ghost': FAILED")
     await asyncio.wait_for(manager.stop(), timeout=30)
+
+
+async def test_test_teardown_lets_stop_finish_on_a_stuck_supervisor(tmp_path, monkeypatch, caplog):
+    """The teardown limit sits above stop()'s grace plus its wait after the
+    cancel, so a supervisor that ignores the cancel ends in stop()'s own
+    cleanup and warning instead of tripping the limit as "teardown failed"."""
+    for mod in (commands_mod, connection_mod):
+        monkeypatch.setattr(mod, "STOP_GRACE_S", 0.05)
+        monkeypatch.setattr(mod, "STOP_CANCEL_WAIT_S", 0.2)
+    supervisors: list[asyncio.Task] = []
+
+    async def stubborn() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await asyncio.sleep(1.0)  # ignores the cancel past STOP_CANCEL_WAIT_S
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(stubborn())
+        supervisors.append(self._task)
+        self._set_state(State.FAILED, reason="stub")
+
+    monkeypatch.setattr(McpConnection, "start", start)
+    manager = _manager(_write_catalog(tmp_path, {}), tmp_path)
+    spec = McpServerSpec(name="stuck", command=sys.executable, trust="trusted")
+    with caplog.at_level("WARNING"):
+        report = await asyncio.wait_for(run_server_test(manager, spec, timeout_s=1), 10)
+    assert report["state"] == "failed"
+    assert "supervisor still running 0.2s after cancel" in caplog.text
+    assert "teardown failed" not in caplog.text
+    await asyncio.wait_for(supervisors[0], 5)
 
 
 # ---------------------------------------------------------------------------
