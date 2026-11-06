@@ -24,14 +24,16 @@ import os from 'node:os'
  *   parsing on every event, which on a busy session is still tiny.
  *
  * Offset persistence:
- *   ~/.freyja/control/desktop-tail.offset stores the last byte we've
- *   consumed and the inode of the .1 we had read. On first start (no
- *   offset file) we jump to EOF so we don't replay days of historical log
- *   lines. Across desktop restarts we resume cleanly so a brief restart
- *   doesn't miss in-flight events, nor those of a rotation while the app
- *   was closed: a .1 that is not the one we had read is read on from the
- *   offset, then the log from its start. A bare offset (written before
- *   the inode was saved) takes the .1 there now as read.
+ *   ~/.freyja/control/desktop-tail.offset stores the end of the last whole
+ *   line we've consumed and the inode of the .1 we had read: a line the
+ *   gateway is still writing, or one a batch cuts, is read again whole at
+ *   the next start. On first start (no offset file) we jump to EOF so we
+ *   don't replay days of historical log lines. Across desktop restarts we
+ *   resume cleanly so a brief restart doesn't miss in-flight events, nor
+ *   those of a rotation while the app was closed: a .1 that is not the one
+ *   we had read is read on from the offset, then the log from its start. A
+ *   bare offset (written before the inode was saved) takes the .1 there
+ *   now as read.
  *
  * Rotation:
  *   The gateway rotates its log in place (rotate_log_if_large in
@@ -60,10 +62,14 @@ export class GatewayLogTailer {
   private offset = 0
   private timer: NodeJS.Timeout | null = null
   private stopped = false
-  private partial = '' // Accumulator for the trailing partial line.
+  // The bytes of the trailing partial line, decoded once it ends: a
+  // character a batch cuts in two is whole then.
+  private partial = Buffer.alloc(0)
   // The inode of the .1 the tail has read to its end, or that was there
   // when it first started; saved with the offset.
   private segment: number | null = null
+  // The offset and .1 at the end of the last whole line read: what is saved.
+  private lineEnd: { offset: number, segment: number | null } = { offset: 0, segment: null }
   // Every sessionId we've seen emit a daemon-side event. Includes both
   // gateway root sessions (``freyja:<platform>:...``) and sub-agents
   // spawned beneath them (``sub_<hex>_<n>``). Used by the desktop main
@@ -133,6 +139,7 @@ export class GatewayLogTailer {
       if (Number.isFinite(n) && n >= 0) {
         this.offset = n
         this.segment = 'segment' in saved ? saved.segment : statOf(GATEWAY_LOG_SEGMENT)?.ino ?? null
+        this.lineEnd = { offset: this.offset, segment: this.segment }
         return
       }
     } catch {
@@ -144,12 +151,13 @@ export class GatewayLogTailer {
       this.offset = 0
     }
     this.segment = statOf(GATEWAY_LOG_SEGMENT)?.ino ?? null
+    this.lineEnd = { offset: this.offset, segment: this.segment }
     this.persistOffset()
   }
 
   private persistOffset(): void {
     try {
-      fs.writeFileSync(OFFSET_FILE, JSON.stringify({ offset: this.offset, segment: this.segment }), 'utf8')
+      fs.writeFileSync(OFFSET_FILE, JSON.stringify(this.lineEnd), 'utf8')
     } catch {
       // Non-fatal — at worst we replay a small window on the next start.
     }
@@ -186,10 +194,12 @@ export class GatewayLogTailer {
       }
       this.segment = segment.ino
       this.offset = 0
+      if (!this.partial.length) this.lineEnd = { offset: 0, segment: this.segment }
     } else if (size < this.offset) {
       // Truncated by hand: read it again from its start.
       this.offset = 0
-      this.partial = ''
+      this.partial = Buffer.alloc(0)
+      this.lineEnd = { offset: 0, segment: this.segment }
     }
     if (size > this.offset) this.read(GATEWAY_LOG, size)
   }
@@ -213,13 +223,18 @@ export class GatewayLogTailer {
     }
     if (read <= 0) return 0
 
-    const chunk = buf.toString('utf8', 0, read)
+    // Only whole lines are decoded; the bytes after the last newline wait
+    // for the next read.
+    const end = buf.lastIndexOf(0x0a, read - 1) + 1
+    let lines: string[] = []
+    if (end > 0) {
+      lines = Buffer.concat([this.partial, buf.subarray(0, end)]).toString('utf8').split('\n')
+      this.partial = Buffer.from(buf.subarray(end, read))
+      this.lineEnd = { offset: this.offset + end, segment: this.segment }
+    } else {
+      this.partial = Buffer.concat([this.partial, buf.subarray(0, read)])
+    }
     this.offset += read
-
-    const combined = this.partial + chunk
-    const lines = combined.split('\n')
-    // The last element is the trailing partial — keep it for next cycle.
-    this.partial = lines.pop() ?? ''
 
     for (const line of lines) {
       const trimmed = line.trim()

@@ -40,7 +40,9 @@ const MAX_BATCH_BYTES = 1 * 1024 * 1024
 
 export class SchedulerDaemonLogTailer {
   private offset = 0
-  private partial = '' // The trailing partial line.
+  // The bytes of the trailing partial line, decoded once it ends: a
+  // character a batch cuts in two is whole then.
+  private partial = Buffer.alloc(0)
   // The inode of the .1 the tail has read to its end, or that was there
   // when it started.
   private segment: number | null = null
@@ -86,7 +88,7 @@ export class SchedulerDaemonLogTailer {
     } else if (size < this.offset) {
       // Emptied by hand: read it again from its start.
       this.offset = 0
-      this.partial = ''
+      this.partial = Buffer.alloc(0)
     }
     if (size > this.offset) this.read(DAEMON_LOG, size)
   }
@@ -104,8 +106,16 @@ export class SchedulerDaemonLogTailer {
     }
     if (read <= 0) return 0
     this.offset += read
-    const lines = (this.partial + buf.toString('utf8', 0, read)).split('\n')
-    this.partial = lines.pop() ?? ''
+    // Only whole lines are decoded; the bytes after the last newline wait
+    // for the next read.
+    const end = buf.lastIndexOf(0x0a, read - 1) + 1
+    let lines: string[] = []
+    if (end > 0) {
+      lines = Buffer.concat([this.partial, buf.subarray(0, end)]).toString('utf8').split('\n')
+      this.partial = Buffer.from(buf.subarray(end, read))
+    } else {
+      this.partial = Buffer.concat([this.partial, buf.subarray(0, read)])
+    }
     for (const line of lines) {
       // Cheap gate first: most lines are the daemon's session streams.
       if (line[0] !== '{' || !line.includes('"scheduler_')) continue
