@@ -1137,7 +1137,7 @@ def _extract_last_assistant_text(sess: Any, before: set[str] | None = None) -> t
 class _RunCost:
     """What a run's own model calls cost and the tokens they used, added
     up from its session's llm_call_metric events: the calls of the turn
-    that runs the fire's prompt, and of the turns after it that no
+    that runs the fire's prompt, and of the turns right after it that no
     message started (the wakes its sub-agents' reports start, a goal
     loop's continuations). A run's cost was how much the session's total
     grew while it ran, so a fire into the operator's session was billed
@@ -1165,7 +1165,10 @@ class _RunCost:
     The run's turn is the one that says the run's id (run_turn): it ran the
     run's prompt. It was the session's next turn to start, and a turn that
     failed before it started said nothing, so the next one, another's, was
-    taken for the run's."""
+    taken for the run's. A turn no message started is the run's only when
+    no other turn ran since the run's last one. Taken whenever the run had
+    had a turn, the wake for a memo of the operator's sub-agent, after the
+    operator's turn ran in the run's wait, gave the run its reply and cost."""
 
     def __init__(self, run_id: str, budget: BudgetSpec | None, sess: Any = None) -> None:
         self.cost = 0.0
@@ -1178,6 +1181,8 @@ class _RunCost:
         # emit() also runs on worker threads (compaction's calls).
         self._loop = asyncio.get_running_loop()
         self._turns: set[str] = set()
+        # Whether the session's last turn to start was one of the run's.
+        self._last_turn_ours = False
         self._prompt_runs = False
         self._prompt_left_queue = False
         self.dropped = False
@@ -1212,12 +1217,13 @@ class _RunCost:
 
     def runs_turn(self, sess: Any) -> bool:
         """Whether the session's running turn is the fire's: its prompt's,
-        or one that started on its own after it (a wake for its sub-agents'
-        memos), not one the operator started after it. Before the fire's
-        turn has started, its prompt runs while it is out of the queue and
-        has not failed. A stop of the run's turn ended the run: the turn the
-        drain starts next (a queued one, a wake for agents' messages) is not
-        the run's, and may not have said so yet."""
+        or one that started on its own right after it (a wake for its
+        sub-agents' memos), not one the operator started after it, nor one
+        that started on its own after that. Before the fire's turn has
+        started, its prompt runs while it is out of the queue and has not
+        failed. A stop of the run's turn ended the run: the turn the drain
+        starts next (a queued one, a wake for agents' messages) is not the
+        run's, and may not have said so yet."""
         if self.stopped:
             return False
         if self._turns:
@@ -1228,7 +1234,8 @@ class _RunCost:
         kind = event.get("type")
         ours = event.get("runId") == self._run_id
         if kind == "turn_start":
-            if ours or (self._turns and event.get("automatic")):
+            self._last_turn_ours = ours or bool(self._last_turn_ours and event.get("automatic"))
+            if self._last_turn_ours:
                 self._turns.add(event.get("turnId"))
                 # Its reply is what it adds. A turn that failed before its
                 # prompt reached the transcript has none: the last reply

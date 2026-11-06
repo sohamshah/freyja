@@ -371,3 +371,46 @@ async def test_a_run_into_a_session_another_process_runs_fails_with_why(operator
 
     assert (run.status, run.output_text) == ("failed", "")
     assert "runs in the Slack gateway" in run.error
+
+
+# ─── a wake turn after another's turn ─────────────────────────────────
+
+
+async def test_a_wake_after_the_operators_turn_is_not_the_runs(operator_session):
+    # A turn no message started counted as the run's once the run had had a
+    # turn: the wake for the memo of the operator's sub-agent, after the
+    # operator's turn that ran in the run's wait, gave the run its reply and
+    # its cost.
+    import bridge.freyja_bridge as fb
+    from bridge.inbox import KIND_MEMO, InboxMessage, new_message_id
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+
+    async def operators_subagent_reports():
+        # It finished after the operator's turn's last step.
+        sess.inbox.push(InboxMessage(
+            id=new_message_id(), from_session="sub_1", from_label="reviewer", from_role="agent",
+            content="[sub-agent memo · reviewer] The review found two bugs", kind=KIND_MEMO,
+            meta={"subagentId": "sub_1", "agentType": "general"},
+        ))
+
+    async def wake_takes_the_memo():
+        sess.inbox.drain()
+
+    sess.replies = {"write the digest": "Here is the digest", "review the PR": "I asked a reviewer",
+                    "sub-agent work you dispatched": "The reviewer found two bugs"}
+    sess.costs = {"sub-agent work you dispatched": 40}
+    sess.holds = {"write the digest": asyncio.Event()}
+    sess.tool_calls = {"review the PR": operators_subagent_reports,
+                       "sub-agent work you dispatched": wake_takes_the_memo}
+    fire = asyncio.create_task(fire_job(_Service({"s1": sess}), _job()))
+    while sess.pending_task is None:
+        await asyncio.sleep(0.01)
+    fb._schedule_or_queue_turn(sess, "review the PR")  # Sent while the run's turn runs.
+    sess.holds["write the digest"].set()
+
+    run = await asyncio.wait_for(fire, 10)
+
+    assert _last_reply(sess) == "The reviewer found two bugs"  # The wake ran in the run's wait.
+    assert (run.output_text, run.cost_usd) == ("Here is the digest", 0)
