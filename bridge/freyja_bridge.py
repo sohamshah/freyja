@@ -2089,9 +2089,11 @@ async def _main() -> None:
         log("warning", f"mcp manager init failed: {exc}")
     await state.ensure_session(boot_session_id)
     # Boot the scheduler service. Loads persisted jobs from disk,
-    # recomputes next_fire_at for everyone, starts the run loop.
+    # recomputes next_fire_at for everyone, starts the run loop. Only
+    # when no LaunchAgent runs a scheduler: runs this process owns die
+    # when the app quits.
     try:
-        await state.scheduler.start()
+        await state.scheduler.start(always_on=False)
         # Wire the durable-job hook so the first time a job is created
         # we install the macOS LaunchAgent (background daemon). Auto-
         # install matches the user's "very easy install" mandate.

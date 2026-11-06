@@ -94,6 +94,17 @@ def daemon_pid_path() -> Path:
     return freyja_home() / ".scheduler-daemon.pid"
 
 
+def always_on_scheduler_installed() -> bool:
+    """True when a LaunchAgent that outlives the app runs a scheduler:
+    this daemon or the gateway. The desktop bridge then leaves the tick
+    to them (``SchedulerService.start``)."""
+    if not is_supported_platform():
+        return False
+    from bridge.gateway.setup.launchd import plist_path as gateway_plist_path
+
+    return plist_path().exists() or gateway_plist_path().exists()
+
+
 # NOTE: the prior single-writer takeover mechanism (bridge_lock_path +
 # on_app_start_takeover + on_app_quit_handoff) was removed in favor of
 # a stateless SchedulerService that reads from disk on every operation

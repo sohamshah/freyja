@@ -58,6 +58,7 @@ from bridge.scheduler.models import (
     SlackSinkSpec,
     new_job_id,
 )
+from bridge.scheduler.daemon import always_on_scheduler_installed
 from bridge.scheduler.persistence import (
     FileLock,
     append_event,
@@ -100,6 +101,11 @@ _TICK_CAP_SECONDS = 1.0
 # How often a CRUD-only scheduler tries the owner lock again. When the
 # owner exits and nothing restarts it, jobs wait at most this long.
 _OWNER_RETRY_SECONDS = 15.0
+
+# How long stop() waits for in-flight runs before the process drops
+# them. Below launchd's 20 s exit timeout, so a stopping gateway still
+# gets to disconnect its adapters.
+_STOP_RUN_GRACE_SECONDS = 5.0
 
 # A job whose last runs all failed is stopped and says so where it
 # reports. Without this a job that cannot run fires until max_fires,
@@ -174,12 +180,18 @@ class SchedulerService:
 
     # ─── Lifecycle ────────────────────────────────────────────────────
 
-    async def start(self) -> None:
+    async def start(self, *, always_on: bool = True) -> None:
         """Boot the run loop. Acquires the cross-process owner lock; if
         another scheduler in another process already holds it, this
         instance runs in CRUD-only mode (no tick loop) and tries the
         lock again every ``_OWNER_RETRY_SECONDS``, so it takes over the
         tick when the owner exits.
+
+        The desktop bridge passes ``always_on=False``: it lives only
+        while the app is open, and a run it owns dies when the app
+        quits. It takes the lock only when no LaunchAgent runs a
+        scheduler, and never retries. Retrying, it took the lock while
+        the gateway restarted, and the gateway came back CRUD-only.
 
         A second call while started does nothing. It used to open
         owner.lock again: a flock belongs to the open file description,
@@ -197,22 +209,25 @@ class SchedulerService:
         # don't run a tick. This avoids two processes burning CPU on
         # parallel disk scans for the same jobs.
         self._owner_lock = FileLock(owner_lock_path())
-        if self._owner_lock.acquire():
+        leave_to_launch_agents = not always_on and always_on_scheduler_installed()
+        if not leave_to_launch_agents and self._owner_lock.acquire():
             self._boot_as_owner(mode="owner")
             return
         logger.info(
-            "scheduler started in CRUD-only mode "
-            "(pid %d; peer holds owner lock at %s)",
-            os.getpid(), owner_lock_path(),
+            "scheduler started in CRUD-only mode (pid %d; %s)",
+            os.getpid(),
+            "a LaunchAgent runs the scheduler" if leave_to_launch_agents
+            else f"peer holds owner lock at {owner_lock_path()}",
         )
         append_event({
             "type": "scheduler_started",
             "mode": "crud_only",
             "job_count": _count_jobs_on_disk(),
         })
-        self._claim_task = asyncio.create_task(
-            self._claim_owner_lock_when_free(), name="scheduler-claim-owner",
-        )
+        if always_on:
+            self._claim_task = asyncio.create_task(
+                self._claim_owner_lock_when_free(), name="scheduler-claim-owner",
+            )
 
     async def _claim_owner_lock_when_free(self) -> None:
         """Retry the owner lock until it is ours, then run the tick."""
@@ -282,19 +297,23 @@ class SchedulerService:
                 await asyncio.wait_for(self._loop_task, timeout=5.0)
             except asyncio.TimeoutError:
                 self._loop_task.cancel()
-        # Don't kill in-flight runs — they're agent turns and they
-        # need to finish cleanly. Wait briefly, then let the process
-        # drop them.
-        if self._in_flight_runs:
-            await asyncio.gather(
-                *self._in_flight_runs.values(),
-                return_exceptions=True,
-            )
         logger.info("scheduler stopped (pid %d, owner=%s)", os.getpid(), self._is_owner)
+        # Hand the tick to a peer before waiting on runs. Each in-flight
+        # run holds its job's lock, so the new owner cannot fire it
+        # again. Released after the runs, the lock kept every peer idle
+        # until the slowest run ended or launchd killed this process.
         if self._owner_lock is not None:
             self._owner_lock.release()
             self._owner_lock = None
             self._is_owner = False
+        # Don't kill in-flight runs — they're agent turns and they
+        # need to finish cleanly. Wait briefly, then let the process
+        # drop them.
+        if self._in_flight_runs:
+            await asyncio.wait(
+                list(self._in_flight_runs.values()),
+                timeout=_STOP_RUN_GRACE_SECONDS,
+            )
         append_event({"type": "scheduler_stopped"})
 
     # ─── Main loop ────────────────────────────────────────────────────

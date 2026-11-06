@@ -3197,7 +3197,16 @@ class GatewayDaemon:
 
     async def shutdown(self) -> None:
         logger.info("gateway shutdown beginning")
-        # Stop the control channel first so a late command can't fire
+        # Give up the scheduler's owner lock now, so the scheduler daemon
+        # takes over the tick while we finish. Kept until the process
+        # exited, it left no process firing jobs in between.
+        scheduler = getattr(self.state, "scheduler", None)
+        if scheduler is not None:
+            try:
+                await scheduler.stop()
+            except Exception:  # noqa: BLE001
+                logger.exception("scheduler stop raised")
+        # Stop the control channel next so a late command can't fire
         # against half-shut-down state.
         if self.control_channel is not None:
             try:
