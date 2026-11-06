@@ -269,6 +269,30 @@ async def test_a_loop_given_another_schedule_while_it_ran_keeps_it(monkeypatch, 
     assert saved.fire_count == 1
 
 
+async def test_complete_keeps_the_reason_a_loop_was_stopped_while_it_ran(monkeypatch) -> None:
+    # "complete" set "disabled_max_fires" over the stop: the dashboard said the
+    # loop had finished, not why it was stopped.
+    from bridge.scheduler.runtime import fire_job
+    from bridge.tools.schedule_tool import COMPLETE_LOOP_TOOL
+
+    sess = _session(cost_so_far=0.0)
+    job = _job()
+
+    def stop() -> None:
+        stopped = load_job(job.id)
+        stopped.enabled, stopped.status, stopped.next_fire_at = False, "disabled_budget_exhausted", None
+        save_job(stopped)
+
+    _drive_fire(monkeypatch, sess, loop_call=(COMPLETE_LOOP_TOOL, {"reason": "done"}), cost=0.1,
+                meanwhile=stop)
+
+    await fire_job(_Service({"s1": sess}), job)
+
+    saved = load_job(job.id)
+    assert (saved.enabled, saved.status, saved.next_fire_at) == (False, "disabled_budget_exhausted", None)
+    assert saved.fire_count == 1
+
+
 async def test_a_fire_nothing_answered_leaves_no_prompt_behind(monkeypatch) -> None:
     from bridge.scheduler.runtime import fire_job
 

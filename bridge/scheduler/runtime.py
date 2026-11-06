@@ -518,10 +518,12 @@ async def fire_job(
     # On the record as it is now: an edit made while the job ran stays.
     def _record_fire(fresh: JobRecord) -> None:
         # A loop paused or stopped while it ran gets no next fire; its
-        # agent's "complete" still ends it. A job given another schedule
+        # agent's "complete" still ends a paused one, and leaves a stopped
+        # one the reason it was stopped. A job given another schedule
         # meanwhile is no loop now: its next fire is that schedule's.
         if loop_decision is not None and isinstance(fresh.schedule, SelfPacedSchedule) and (
-            loop_decision.kind == "complete" or (fresh.enabled and fresh.status == "active")
+            (loop_decision.kind == "complete" and fresh.status in ("active", "paused"))
+            or (fresh.enabled and fresh.status == "active")
         ):
             _apply_loop_decision(service, fresh, loop_decision)
         if abort_job:
