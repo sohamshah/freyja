@@ -145,8 +145,8 @@ See [Slack gateway setup](#slack-gateway) below for the guided wizard.
 | `FREYJA_DEBUG_LOG` | `0` | Set to `1` for verbose bridge logging |
 | `FREYJA_COMPUTER_ENABLED` | `0` | Set to `1` to enable computer-use tools |
 | `FREYJA_IMAGE_MODEL` | `gpt-image-2.5-sunburst` | Default for `generate_image`; a call's `model` overrides it. Use Sunburst for precise edits, `gpt-image-2.5-flare` for fast everyday generation, or `gemini-nano-banana-2.1` (Google's Nano Banana 2.1, needs `GEMINI_API_KEY`). |
-| `FREYJA_FRAME_DUMP` | `0` | Set to `1` to dump computer-use frames to disk |
-| `FREYJA_FRAME_DUMP_DIR` | _(temp dir)_ | Directory for frame dumps |
+| `FREYJA_FRAME_DUMP` | `1` | Writes every computer-use frame to disk. Set to `0` to turn it off |
+| `FREYJA_FRAME_DUMP_DIR` | `~/.freyja/last-frames` | Directory for frame dumps. Each session keeps its newest 20 frames, and `latest.jpg` is the last frame of any session. Frames of earlier sessions are not removed |
 | `FREYJA_HEADLESS` | `0` | Run bridge without Electron UI |
 | `FREYJA_PERMISSION_TIMEOUT_SEC` | `30` | Seconds to wait for permission approvals |
 
