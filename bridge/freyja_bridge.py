@@ -5056,6 +5056,7 @@ class _BridgeSession:
                 getattr(self.runner, "compaction", None) if self.runner else None
             ),
             summarize_context_pressure_getter=lambda: self._current_pressure_pct(),
+            summarize_context_window_getter=lambda: self._effective_window(),
             summarize_context_telemetry=self._on_summarize_context_call,
             # Gap N: inline marker so agent-driven compactions appear
             # in the conversation timeline alongside runtime ones.
@@ -12527,6 +12528,27 @@ class _BridgeSession:
         except Exception:  # noqa: BLE001
             return None
 
+    def _effective_window(self) -> int | None:
+        """The live provider's window less the reply's reserve, as
+        ``Runner._compaction_event_details`` reads it: what the agent's
+        compaction events measure their pressure against. None if the runner
+        isn't ready."""
+        try:
+            runner = self.runner
+            if runner is None:
+                return None
+            provider = (
+                runner.fallback_chain.current
+                if getattr(runner, "fallback_chain", None) else runner.provider
+            )
+            window = int(getattr(provider, "context_window", 0) or 0)
+            if window <= 0:
+                return None
+            reserved = int(getattr(runner.config, "max_tokens_per_turn", 0) or 0)
+            return max(1, window - reserved)
+        except Exception:  # noqa: BLE001
+            return None
+
     def _on_summarize_context_call(self, payload: dict[str, Any]) -> None:
         """Persist a ``summarize_context_call`` JSONL row per agent decision.
 
@@ -12692,6 +12714,9 @@ class _BridgeSession:
                     "model": self.model_id,
                     "tokens_before": int(details.get("tokens_before") or 0),
                     "tokens_after": int(details.get("tokens_after") or 0),
+                    "effective_window": details.get("effective_window"),
+                    "pressure_pct_before": details.get("pressure_pct_before"),
+                    "pressure_pct_after": details.get("pressure_pct_after"),
                     "mechanism": details.get("mechanism") or subtype,
                     "trigger": details.get("trigger") or "agent_summarize_context",
                     "scope": details.get("scope"),
@@ -12732,6 +12757,9 @@ class _BridgeSession:
                     "mechanism": details.get("mechanism") or subtype,
                     "tokens_before": int(details.get("tokens_before") or 0),
                     "tokens_after": int(details.get("tokens_after") or 0),
+                    "effective_window": details.get("effective_window"),
+                    "pressure_pct_before": details.get("pressure_pct_before"),
+                    "pressure_pct_after": details.get("pressure_pct_after"),
                     "entries_removed": int(details.get("entries_removed") or 0),
                     "summary_text": full_summary or details.get("summary_excerpt") or "",
                     "scope": details.get("scope"),

@@ -81,6 +81,7 @@ class SummarizeContextTool:
         get_compactor: Callable[[], Any],
         on_summarize_call: Callable[[dict[str, Any]], None] | None = None,
         get_current_pressure_pct: Callable[[], float | None] | None = None,
+        get_effective_window: Callable[[], int | None] | None = None,
         on_system_event: Callable[[dict[str, Any]], None] | None = None,
         on_pin_changed: Callable[[dict[str, Any]], None] | None = None,
         on_summarizer_llm_call: Callable[[dict[str, Any]], None] | None = None,
@@ -94,6 +95,9 @@ class SummarizeContextTool:
         self._get_compactor = get_compactor
         self._on_summarize_call = on_summarize_call
         self._get_current_pressure_pct = get_current_pressure_pct
+        # The runner's window less the reply's reserve: the events' pressure
+        # before and after is their size over it, as the runtime's are.
+        self._get_effective_window = get_effective_window
         # Persists preserve_facts to the durable action ledger when a cheap
         # scope leaves them nowhere to attach (the silent-no-op fix). And a
         # reader for the runtime ledger's confirmed actions, seeded into the
@@ -285,6 +289,7 @@ class SummarizeContextTool:
         pressure_pct = (
             self._get_current_pressure_pct() if self._get_current_pressure_pct else None
         )
+        window = self._effective_window()
         started_at = time.time()
 
         # Gap N: emit a compaction_start system event so the agent-driven
@@ -304,6 +309,8 @@ class SummarizeContextTool:
                 "trigger": "agent_summarize_context",
                 "scope": scope,
                 "tokens_before": tokens_before,
+                "effective_window": window,
+                "pressure_pct_before": _pressure_pct(tokens_before, window),
                 "reason": reason[:240] if reason else None,
                 "pressure_pct_at_call": pressure_pct,
             },
@@ -477,6 +484,9 @@ class SummarizeContextTool:
                 # events carry them (Runner._compaction_event_details).
                 "context_tokens_before": tokens_before,
                 "context_tokens_after": tokens_after,
+                "effective_window": window,
+                "pressure_pct_before": _pressure_pct(tokens_before, window),
+                "pressure_pct_after": _pressure_pct(tokens_after, window),
                 "entries_removed": result.entries_removed,
                 "resumed_from_previous": getattr(result, "resumed_from_previous", False),
                 # Whether the summary continued the session's cached prompt
@@ -524,6 +534,17 @@ class SummarizeContextTool:
             content=json.dumps(body, indent=2),
             is_error=False,
         )
+
+    def _effective_window(self) -> int | None:
+        """The runner's window less the reply's reserve, when wired. Never
+        raises: the pressure is telemetry."""
+        if self._get_effective_window is None:
+            return None
+        try:
+            return self._get_effective_window()
+        except Exception:
+            logger.exception("summarize_context effective window read failed")
+            return None
 
     def _emit_system_event(self, event: dict[str, Any]) -> None:
         """Fire the on_system_event callback if wired. Swallows all
@@ -780,6 +801,12 @@ def _request_tokens(session: Any, transcript: Any) -> int:
         return int(session.estimate_tokens())
     except Exception:
         return int(transcript.estimate_tokens())
+
+
+def _pressure_pct(tokens: int, window: int | None) -> float | None:
+    """``tokens`` as a percent of the usable window, as
+    ``Runner._compaction_event_details`` rounds it."""
+    return round(tokens / window * 100, 1) if window and window > 0 else None
 
 
 def _media_removed_note(content: Any) -> str:

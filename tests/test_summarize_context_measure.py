@@ -141,3 +141,63 @@ async def test_the_agents_compaction_event_carries_the_sizes_the_chat_card_reads
     assert (details.get("context_tokens_before"), details.get("context_tokens_after")) == (
         request_before, request_after)
     assert (details["tokens_before"], details["tokens_after"]) == (request_before, request_after)
+
+
+@pytest.mark.parametrize("scope, subtype", [("all", "compaction_complete"),
+                                             ("tool_results_only", "context_pruning")])
+async def test_the_agents_compaction_rows_carry_the_window_and_pressure(
+    telemetry_rows, tmp_path, monkeypatch, scope, subtype,
+):
+    """The runtime's compaction events carry the usable window and the
+    pressure before and after (Runner._compaction_event_details), and their
+    telemetry rows keep them. The agent's carried neither, so its rows had no
+    pressure: none of the 359 agent-driven compaction_complete and
+    context_pruning rows on disk has one."""
+    import bridge.freyja_bridge as fb
+    from engine.runner import AsyncAgentRunner
+    from engine.types import AgentConfig
+
+    monkeypatch.setattr("bridge.tools.summarize_context_tool.SummarizeContextTool._save_original",
+                        lambda _self, _text, _name: str(tmp_path / "saved.txt"))
+    sess = _bridge_session(tmp_path, tool_results=scope == "tool_results_only")
+    logged: list[dict] = []
+    sess._append_compaction_log = logged.append
+    sess.runner = AsyncAgentRunner(_Provider(), config=AgentConfig())
+    window = _Provider.context_window - AgentConfig().max_tokens_per_turn
+    assert sess._effective_window() == window
+    tool = _wired_tool(sess)
+
+    with patch.object(fb, "emit") as emitted:
+        result = await tool.execute("sc1", {"scope": scope})
+
+    assert not result.is_error, result.content
+    [done] = [c.args[0]["details"] for c in emitted.call_args_list
+              if c.args[0].get("subtype") == subtype]
+    before, after = done["tokens_before"], done["tokens_after"]
+    assert done.get("effective_window") == window
+    assert done.get("pressure_pct_before") == round(before / window * 100, 1)
+    assert done.get("pressure_pct_after") == round(after / window * 100, 1)
+    pressure = (window, done["pressure_pct_before"], done["pressure_pct_after"])
+    [row] = [r for r in telemetry_rows if r.get("subtype") == subtype]
+    [log_row] = [r for r in logged if r.get("subtype") == subtype]
+    for entry in (row, log_row):
+        assert (entry.get("effective_window"), entry.get("pressure_pct_before"),
+                entry.get("pressure_pct_after")) == pressure
+    [start] = [r for r in telemetry_rows if r.get("subtype") == "compaction_start"]
+    assert (start.get("effective_window"), start.get("pressure_pct_before")) == pressure[:2]
+
+
+def _wired_tool(sess):
+    """The tool as the desktop registry builds it from the bridge's getters."""
+    from bridge.tools.registry import build_desktop_registry
+
+    registry = build_desktop_registry(
+        workspace=str(sess.workspace), include_web=False, include_computer=False,
+        include_subagents=False,
+        summarize_context_session_getter=lambda: sess.session,
+        summarize_context_provider_getter=_Provider,
+        summarize_context_compactor_getter=SummaryCompaction,
+        summarize_context_window_getter=lambda: sess._effective_window(),
+        summarize_context_on_system_event=sess._emit_summarize_event,
+    )
+    return registry._tools["summarize_context"]  # noqa: SLF001
