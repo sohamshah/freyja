@@ -1141,6 +1141,10 @@ class SessionKanbanBoard:
             parent.children.append(child_id)
         if parent_id not in child.parents:
             child.parents.append(parent_id)
+        # The journal row carries only the ids; link() also moved the child.
+        # A parent whose create row was lost leaves the status alone.
+        if all(pid in self._tasks for pid in child.parents):
+            child.status = "ready" if self._parents_done(child) else "triage"
 
     def _task_from_snapshot(self, snapshot: dict[str, Any]) -> KanbanTask:
         # `to_dict()` emits timestamps in milliseconds and a few field

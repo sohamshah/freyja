@@ -265,3 +265,68 @@ async def test_replay_keeps_the_children_a_write_moved(tmp_path) -> None:
         assert [e.kind for e in card.events] == [e.kind for e in live_card.events]
     assert (await restored.get(promoted)).status == "ready"
     assert (await restored.get(orphaned)).events[-1].kind == "orphaned"
+
+
+@pytest.mark.asyncio
+async def test_replay_moves_a_linked_child_to_the_lane_link_gave_it(tmp_path) -> None:
+    """Linking sets the child's status (triage until its new parent is
+    done, else ready) and journals only the ids. Replay must apply the
+    same status, or after a restart the child sits in its old lane until
+    its next update."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    tool = KanbanTool(live, actor_id="parent", actor_label="parent")
+
+    async def create(title: str) -> str:
+        result = await tool.execute(title, {"action": "create", "title": title})
+        return json.loads(result.content)["task"]["id"]
+
+    parent = await create("parent")
+    child = await create("child")
+    before = (await live.get(child)).status
+    await tool.execute(
+        "link", {"action": "link", "parent_id": parent, "child_id": child}
+    )
+    assert (await live.get(child)).status == "triage" != before
+
+    journal = KanbanJournal(tmp_path / "kanban.jsonl")
+    restored = SessionKanbanBoard(journal=journal)
+    restored.replay_events(journal.read_all())
+
+    card = await restored.get(child)
+    assert card is not None
+    assert card.parents == [parent]
+    assert card.status == "triage"
+
+
+@pytest.mark.asyncio
+async def test_replaying_a_link_survives_a_parent_whose_create_row_was_lost(
+    tmp_path,
+) -> None:
+    """The journal skips a malformed line, so a card can name a parent
+    replay never created. Its link row must not stop the replay."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    tool = KanbanTool(live, actor_id="parent", actor_label="parent")
+
+    async def create(title: str, parents: list[str] | None = None) -> str:
+        result = await tool.execute(
+            title, {"action": "create", "title": title, "parents": parents or []}
+        )
+        return json.loads(result.content)["task"]["id"]
+
+    lost = await create("lost")
+    child = await create("child", [lost])
+    other = await create("other")
+    await tool.execute(
+        "link", {"action": "link", "parent_id": other, "child_id": child}
+    )
+
+    events = [
+        e for e in KanbanJournal(tmp_path / "kanban.jsonl").read_all()
+        if (e.get("task") or {}).get("id") != lost
+    ]
+    restored = SessionKanbanBoard()
+    restored.replay_events(events)
+
+    card = await restored.get(child)
+    assert card is not None
+    assert card.parents == [lost, other]
