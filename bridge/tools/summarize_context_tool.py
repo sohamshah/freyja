@@ -473,6 +473,10 @@ class SummarizeContextTool:
                 ),
                 "tokens_before": tokens_before,
                 "tokens_after": tokens_after,
+                # The sizes the chat's compacted card reads, as the runtime's
+                # events carry them (Runner._compaction_event_details).
+                "context_tokens_before": tokens_before,
+                "context_tokens_after": tokens_after,
                 "entries_removed": result.entries_removed,
                 "resumed_from_previous": getattr(result, "resumed_from_previous", False),
                 # Whether the summary continued the session's cached prompt

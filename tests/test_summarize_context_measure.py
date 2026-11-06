@@ -113,3 +113,31 @@ async def test_the_agents_compaction_counts_the_whole_request_on_both_sides(
     assert body["tokens_freed"] == request_before - request_after
     # What no compaction removes is on both sides.
     assert done["tokens_after"] >= fixed
+
+
+@pytest.mark.parametrize("scope, subtype", [("all", "compaction_complete"),
+                                             ("tool_results_only", "context_pruning")])
+async def test_the_agents_compaction_event_carries_the_sizes_the_chat_card_reads(
+    telemetry_rows, tmp_path, monkeypatch, scope, subtype,
+):
+    """The chat's compacted card reads the sizes from context_tokens_before and
+    context_tokens_after, which the runtime's events carry. The agent's events
+    carried only tokens_before and tokens_after, so its card showed no size
+    change."""
+    import bridge.freyja_bridge as fb
+
+    monkeypatch.setattr("bridge.tools.summarize_context_tool.SummarizeContextTool._save_original",
+                        lambda _self, _text, _name: str(tmp_path / "saved.txt"))
+    sess = _bridge_session(tmp_path, tool_results=scope == "tool_results_only")
+    request_before = sess.session.estimate_tokens()
+
+    with patch.object(fb, "emit") as emitted:
+        result = await _tool(sess, []).execute("sc1", {"scope": scope})
+
+    assert not result.is_error, result.content
+    request_after = sess.session.estimate_tokens()
+    [done] = [c.args[0] for c in emitted.call_args_list if c.args[0].get("subtype") == subtype]
+    details = done["details"]
+    assert (details.get("context_tokens_before"), details.get("context_tokens_after")) == (
+        request_before, request_after)
+    assert (details["tokens_before"], details["tokens_after"]) == (request_before, request_after)
