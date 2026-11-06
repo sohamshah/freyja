@@ -330,3 +330,73 @@ async def test_replaying_a_link_survives_a_parent_whose_create_row_was_lost(
     card = await restored.get(child)
     assert card is not None
     assert card.parents == [lost, other]
+
+
+async def _restore_without(tmp_path, lost: str) -> SessionKanbanBoard:
+    """Cut `lost`'s rows short, so the journal skips them as malformed,
+    and restore a board from it the way the bridge does."""
+    path = tmp_path / "kanban.jsonl"
+    lines = path.read_text().splitlines()
+    path.write_text(
+        "\n".join(
+            line[:40] if json.loads(line).get("task", {}).get("id") == lost else line
+            for line in lines
+        )
+        + "\n"
+    )
+    journal = KanbanJournal(path)
+    restored = SessionKanbanBoard(journal=journal)
+    restored.replay_events(journal.read_all())
+    return restored
+
+
+@pytest.mark.asyncio
+async def test_a_live_update_survives_a_child_whose_parent_create_row_was_lost(
+    tmp_path,
+) -> None:
+    """After a restart a card can name a parent the board never saw. A
+    parent's `done` then promotes its children; the one naming the lost
+    parent stays where it is, as replay leaves it, and its siblings still
+    move."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    lost = (await live.create(title="lost")).id
+    first = (await live.create(title="first")).id
+    child = (await live.create(title="child", parents=[lost, first])).id
+    sibling = (await live.create(title="sibling", parents=[first])).id
+    # The claim's snapshot is the journal row that holds first's children.
+    await live.update(first, actor="worker", status="running")
+    restored = await _restore_without(tmp_path, lost)
+
+    task = await restored.update(first, actor="kanban-judge", status="done")
+
+    assert task is not None and task.status == "done"
+    assert (await restored.get(child)).status == "triage"
+    assert (await restored.get(sibling)).status == "ready"
+
+
+@pytest.mark.asyncio
+async def test_a_live_link_survives_a_child_whose_parent_create_row_was_lost(
+    tmp_path,
+) -> None:
+    """Linking a card that names a parent the board never saw leaves its
+    lane alone, as replaying the link row does, so a restart keeps it."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    lost = (await live.create(title="lost")).id
+    await live.update(lost, actor="kanban-judge", status="done")
+    child = (await live.create(title="child", parents=[lost])).id
+    other = (await live.create(title="other")).id
+    restored = await _restore_without(tmp_path, lost)
+    tool = KanbanTool(restored, actor_id="parent", actor_label="parent")
+
+    result = await tool.execute(
+        "link", {"action": "link", "parent_id": other, "child_id": child}
+    )
+
+    assert not result.is_error, result.content
+    card = await restored.get(child)
+    assert card.parents == [lost, other]
+    assert card.status == "ready"
+    journal = KanbanJournal(tmp_path / "kanban.jsonl")
+    again = SessionKanbanBoard(journal=journal)
+    again.replay_events(journal.read_all())
+    assert (await again.get(child)).status == card.status

@@ -731,7 +731,10 @@ class SessionKanbanBoard:
                 parent.children.append(child_id)
             if parent_id not in child.parents:
                 child.parents.append(parent_id)
-            child.status = "ready" if self._parents_done(child) else "triage"
+            # A parent whose create row was lost leaves the status alone,
+            # as replaying this link row does.
+            if all(pid in self._tasks for pid in child.parents):
+                child.status = "ready" if self._parents_done(child) else "triage"
             parent.updated_at = child.updated_at = time.time()
             parent.append_event(KanbanEvent("linked", actor, f"Linked to {child_id}"))
             child.append_event(KanbanEvent("linked", actor, f"Depends on {parent_id}"))
@@ -960,10 +963,14 @@ class SessionKanbanBoard:
     def _parents_done(self, task: KanbanTask) -> bool:
         # Mission root counts as "always satisfied" so it can stay `running`
         # as the mission container without blocking its children from
-        # entering `ready`.
+        # entering `ready`. A parent whose create row was lost is not done,
+        # so its child stays where it is.
         return all(
             parent_id == self._mission_root_id
-            or self._tasks[parent_id].status == "done"
+            or (
+                (parent := self._tasks.get(parent_id)) is not None
+                and parent.status == "done"
+            )
             for parent_id in task.parents
         )
 
