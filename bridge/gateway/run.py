@@ -2944,11 +2944,18 @@ class GatewayDaemon:
         # (which also boots a GatewayDaemon) consumed
         # skill_candidate_resolve commands meant for the real gateway
         # and failed them with not_found. Only the gateway PID-lock
-        # owner (or a process starting where no gateway runs) reads.
-        if not self._owns_gateway_lock():
+        # owner reads. The daemon also read when it started while no
+        # gateway ran, and went on reading after one took the lock, so
+        # both ran every command, and in the daemon a Slack session is
+        # only a copy. Commands sent while no gateway runs wait in the
+        # file; the gateway reads them from the saved offset when it
+        # starts.
+        from bridge.freyja_bridge import _process_owns_gateway
+
+        if not _process_owns_gateway():
             logger.info(
-                "control channel NOT started — another gateway pid owns "
-                "commands.jsonl (this instance is a co-resident daemon)"
+                "control channel NOT started — this process does not hold "
+                "the gateway lock (it is a co-resident daemon)"
             )
             return
         reader = ControlChannelReader()
