@@ -59,6 +59,12 @@ _BUNDLE_ID = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+){2,}")
 # person is using the machine; the guard then stops instead of taking focus back.
 HUMAN_INPUT_WINDOW_S = 3.0
 ACTIVATION_SETTLE_S = 0.3
+# How long one AXPress or page scroll may take. The native search has its own
+# 8 s budget, so this fires only when the app stops answering. A press or page
+# scroll on Arc took ~31 s each time (2026-10-09) and nothing bounded it, so a
+# slower app held the whole run. The abandoned call can still land, so a timed
+# out press is not repeated with the pointer.
+AX_ACTION_TIMEOUT_S = 30.0
 
 
 class Cancelled(RuntimeError):
@@ -149,6 +155,7 @@ class Actuator:
         # Frames of the target app's AX windows, from the last observation.
         self.window_frames: list[tuple[float, float, float, float]] = []
         self._last_input: float | None = None
+        self.ax_action_timeout_s = AX_ACTION_TIMEOUT_S
 
     def set_target(self, pid: int, bundle: str, name: str) -> None:
         self.target_pid, self.target_bundle, self.target_name = pid, bundle, name
@@ -319,6 +326,12 @@ class Actuator:
             error=error,
         )
 
+    def _ax_late(self, what: str) -> str:
+        return (
+            f"{self.target_name or 'the app'} did not answer the accessibility {what} within "
+            f"{self.ax_action_timeout_s:.0f}s; it may still happen, so it was not sent again"
+        )
+
     async def settle(self, ms: int | None = None) -> None:
         await asyncio.sleep((self.settle_ms if ms is None else ms) / 1000.0)
 
@@ -342,9 +355,12 @@ class Actuator:
         if press and not double and el.role in PRESS_ROLES and self.target_pid is not None:
             await self._guard("click", t0)
             try:
-                pressed = await asyncio.to_thread(
-                    press, self.target_pid, x, y, el.role, el.bounds
+                pressed = await asyncio.wait_for(
+                    asyncio.to_thread(press, self.target_pid, x, y, el.role, el.bounds),
+                    timeout=self.ax_action_timeout_s,
                 )
+            except asyncio.TimeoutError:
+                return await self._executed("click", t0, ok=False, error=self._ax_late("press"))
             except Exception:  # noqa: BLE001
                 pressed = False
             if pressed:
@@ -443,10 +459,16 @@ class Actuator:
             await self._guard("scroll", t0)
             ax, ay = area[0] + area[2] / 2, area[1] + area[3] / 2
             try:
-                paged = await asyncio.to_thread(
-                    perform, self.target_pid, ax, ay, "AXScrollArea", area,
-                    f"AXScroll{way.capitalize()}ByPage",
+                paged = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        perform, self.target_pid, ax, ay, "AXScrollArea", area,
+                        f"AXScroll{way.capitalize()}ByPage",
+                    ),
+                    timeout=self.ax_action_timeout_s,
                 )
+            except asyncio.TimeoutError:
+                late = self._ax_late("page scroll")
+                return await self._executed("scroll", t0, ok=False, error=late)
             except Exception:  # noqa: BLE001
                 paged = False
             if paged:

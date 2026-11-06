@@ -1654,6 +1654,38 @@ def test_a_hung_ax_read_times_out_and_the_run_ends_blocked(tmp_path, monkeypatch
     assert took < 5.0
 
 
+def test_a_hung_ax_press_times_out_and_is_not_sent_again(tmp_path, monkeypatch):
+    """2026-10-09: every press and page scroll on Arc took ~31 s and nothing
+    bounded the wait. A press that timed out may still land, so it is not
+    repeated as a pointer click."""
+    import threading
+
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    entered, release = threading.Event(), threading.Event()
+
+    class HungPress(PressingCalculator):
+        def ax_press(self, pid, x, y, role, bounds):
+            entered.set()
+            release.wait(30)
+            return False
+
+    native = HungPress()
+    op, _ = make_operator(native, ScriptedProvider([("click", "7"), ("done", None)]))
+    op.actuator.ax_action_timeout_s = 0.2
+
+    async def bounded():
+        try:
+            return await asyncio.wait_for(op.run(), 10.0)
+        finally:
+            release.set()
+
+    res = asyncio.run(bounded())
+    assert entered.is_set()
+    assert native.pointer_clicks == 0
+    click = next(h for h in res.history if h["kind"] == "click")
+    assert click["ok"] is False and "did not answer the accessibility press" in click["error"]
+
+
 def test_the_run_stops_at_its_wall_clock_budget(tmp_path, monkeypatch):
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
     native = FakeCalculator()

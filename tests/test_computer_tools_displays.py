@@ -196,6 +196,28 @@ async def test_scroll_at_the_cursor_needs_no_display(monkeypatch):
     assert hands.sent == [("scroll", None, None)]
 
 
+async def test_find_element_on_an_app_that_does_not_answer_times_out(monkeypatch):
+    # The search ran with no time limit; an app that answered slowly held the
+    # agent's tool call for as long as the walk took.
+    import threading
+
+    release = threading.Event()
+
+    class Stalled(_Desk):
+        def find_ax_element(self, pid, **kw):
+            release.wait(30)
+            return None
+
+    monkeypatch.setattr(ct, "AX_TOOL_TIMEOUT_S", 0.1)
+    tool = _tool(monkeypatch, ct.FindElementTool, native=Stalled())
+    try:
+        res = await asyncio.wait_for(tool.execute("c1", {"pid": 1, "label": "OK"}), 10.0)
+    finally:
+        release.set()  # the loop joins the abandoned thread when it closes
+    assert res.is_error
+    assert res.content.startswith("find_element timed out")
+
+
 class _Monitors(_Hands):
     """Displays 1 (primary) and 2 (left of it) that a test can unplug, move or
     resize. A capture returns a stand-in frame of the display's preview size

@@ -135,6 +135,14 @@ pub(crate) struct Budget {
 }
 
 impl Budget {
+    pub(crate) fn new(budget_ms: u64, max_nodes: usize) -> Self {
+        Budget {
+            deadline: Instant::now() + Duration::from_millis(budget_ms),
+            nodes_left: max_nodes,
+            exhausted: false,
+        }
+    }
+
     pub(crate) fn spend(&mut self) -> bool {
         if self.exhausted {
             return false;
@@ -150,6 +158,14 @@ impl Budget {
 
 /// How long one AX call may wait on a busy app. The system default is 6 s.
 pub(crate) const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.5;
+
+/// Limits for the searches that find one element: the press or page scroll
+/// (`perform_at`) and `find_ax_element`. They walk up to this many elements,
+/// several AX calls each. Without a time limit a press or page scroll on Arc
+/// took about 31 s every time (2026-10-09), and an app that answers slowly
+/// could hold the call, and the run waiting on it, for as long as the walk took.
+const FIND_BUDGET_MS: u64 = 8000;
+const FIND_MAX_NODES: usize = 4000;
 
 /// Check whether our process currently has Accessibility permission.
 /// Uses the non-prompting variant.
@@ -187,11 +203,7 @@ pub fn read_ax_tree(
     unsafe {
         AXUIElementSetMessagingTimeout(root.as_concrete_TypeRef(), AX_MESSAGING_TIMEOUT_SECS);
     }
-    let mut budget = Budget {
-        deadline: Instant::now() + Duration::from_millis(budget_ms),
-        nodes_left: max_nodes,
-        exhausted: false,
-    };
+    let mut budget = Budget::new(budget_ms, max_nodes);
     let names: Vec<CFString> = NODE_ATTRS.iter().map(|n| CFString::new(n)).collect();
     let names = CFArray::from_CFTypes(&names);
     let (mut node, _) = walk(&root, max_depth, &mut budget, &names, None);
@@ -229,6 +241,10 @@ pub fn perform_at(
     action: &str,
 ) -> Result<bool, AxError> {
     let app = AXUIElement::application(pid);
+    unsafe {
+        AXUIElementSetMessagingTimeout(app.as_concrete_TypeRef(), AX_MESSAGING_TIMEOUT_SECS);
+    }
+    let mut budget = Budget::new(FIND_BUDGET_MS, FIND_MAX_NODES);
     let mut hit: AXUIElementRef = std::ptr::null_mut();
     let err = unsafe {
         AXUIElementCopyElementAtPosition(app.as_concrete_TypeRef(), x as f32, y as f32, &mut hit)
@@ -238,6 +254,9 @@ pub fn perform_at(
     }
     let mut elem = unsafe { AXUIElement::wrap_under_create_rule(hit) };
     for _ in 0..8 {
+        if Instant::now() >= budget.deadline {
+            return Ok(false);
+        }
         if is_match(&elem, role, frame) {
             return Ok(perform(&elem, action));
         }
@@ -249,7 +268,7 @@ pub fn perform_at(
     // The hit test lands on whatever is on top, e.g. another window of the same
     // app covering a sheet. Find the element in the tree instead; act on it only
     // if exactly one element has this role and frame.
-    match find_unique(&app, role, frame) {
+    match find_unique(&app, role, frame, &mut budget) {
         Some(elem) => Ok(perform(&elem, action)),
         None => Ok(false),
     }
@@ -275,17 +294,18 @@ fn perform(elem: &AXUIElement, action: &str) -> bool {
     done || action.starts_with("AXScroll")
 }
 
+/// The one element with this role and frame, or None when there are two or
+/// more, or the budget ran out first (a twin may lie in the part not read).
 fn find_unique(
     root: &AXUIElement,
     role: &str,
     frame: (f64, f64, f64, f64),
+    budget: &mut Budget,
 ) -> Option<AXUIElement> {
     let mut stack: Vec<AXUIElement> = vec![root.clone()];
     let mut found: Option<AXUIElement> = None;
-    let mut seen = 0;
     while let Some(elem) = stack.pop() {
-        seen += 1;
-        if seen > 4000 {
+        if !budget.spend() {
             return None;
         }
         if is_match(&elem, role, frame) {
@@ -317,12 +337,13 @@ pub fn find_ax_element(
     title: Option<&str>,
 ) -> Result<Option<(f64, f64, f64, f64)>, AxError> {
     let root = AXUIElement::application(pid);
+    unsafe {
+        AXUIElementSetMessagingTimeout(root.as_concrete_TypeRef(), AX_MESSAGING_TIMEOUT_SECS);
+    }
+    let mut budget = Budget::new(FIND_BUDGET_MS, FIND_MAX_NODES);
     let mut stack: Vec<AXUIElement> = vec![root];
-    let max_nodes = 4000;
-    let mut seen = 0;
     while let Some(elem) = stack.pop() {
-        seen += 1;
-        if seen > max_nodes {
+        if !budget.spend() {
             break;
         }
 
@@ -589,4 +610,32 @@ pub(crate) fn frame_of(elem: &AXUIElement) -> Option<(f64, f64, f64, f64)> {
 #[allow(dead_code)]
 fn _touch() {
     let _ = CFArray::<CFType>::from_CFTypes(&[]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_budget_stops_at_its_deadline() {
+        let mut budget = Budget::new(0, FIND_MAX_NODES);
+        assert!(!budget.spend());
+        assert!(budget.exhausted);
+        let mut budget = Budget::new(60_000, FIND_MAX_NODES);
+        assert!(budget.spend());
+        budget.deadline = Instant::now();
+        assert!(!budget.spend());
+        // Once spent it stays spent, so a walk cannot resume past its limit.
+        budget.deadline = Instant::now() + Duration::from_secs(60);
+        assert!(!budget.spend());
+    }
+
+    #[test]
+    fn a_budget_stops_at_its_node_cap() {
+        let mut budget = Budget::new(60_000, 2);
+        assert!(budget.spend());
+        assert!(budget.spend());
+        assert!(!budget.spend());
+        assert!(budget.exhausted);
+    }
 }

@@ -88,6 +88,10 @@ ACTION_HIGHLIGHT_MS = 200
 # UI updates instantly, or a larger one for slow transitions.
 DEFAULT_POST_ACTION_SETTLE_MS = 1000
 
+# How long read_ax_tree and find_element wait for the app. The native walks
+# have their own 8 s budgets; this fires only when the app stops answering.
+AX_TOOL_TIMEOUT_S = 30.0
+
 # Long-edge pixel cap for screenshots streamed to the UI and to the
 # model. 1280px matches Anthropic's recommended WXGA for computer-use
 # (https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool)
@@ -2675,14 +2679,14 @@ Pass `pid` from `list_windows` or `get_frontmost_window`.
         try:
             tree_json = await asyncio.wait_for(
                 asyncio.to_thread(native.read_ax_tree, pid, max_depth=max_depth),
-                timeout=30.0,
+                timeout=AX_TOOL_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
             return ToolResult(
                 call_id=call_id,
                 content=(
-                    "read_ax_tree timed out after 30s: the app is not answering "
-                    "accessibility requests (busy or hung). Use a screenshot "
+                    f"read_ax_tree timed out after {AX_TOOL_TIMEOUT_S:.0f}s: the app is not "
+                    "answering accessibility requests (busy or hung). Use a screenshot "
                     "instead, or retry later."
                 ),
                 is_error=True,
@@ -2800,12 +2804,25 @@ Example: `find_element(pid=123, role="AXButton", label="Submit")`
                 call_id=call_id, content="Error: pid is required", is_error=True
             )
         try:
-            bounds = await asyncio.to_thread(
-                native.find_ax_element,
-                pid,
-                role=role,
-                label=label,
-                title=title,
+            bounds = await asyncio.wait_for(
+                asyncio.to_thread(
+                    native.find_ax_element,
+                    pid,
+                    role=role,
+                    label=label,
+                    title=title,
+                ),
+                timeout=AX_TOOL_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            return ToolResult(
+                call_id=call_id,
+                content=(
+                    f"find_element timed out after {AX_TOOL_TIMEOUT_S:.0f}s: the app is not "
+                    "answering accessibility requests (busy or hung). Use a screenshot "
+                    "instead, or retry later."
+                ),
+                is_error=True,
             )
         except Exception as exc:  # noqa: BLE001
             return ToolResult(
