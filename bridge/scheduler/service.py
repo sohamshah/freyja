@@ -870,9 +870,10 @@ class SchedulerService:
         """True when ``job`` has spent its max_cost_usd_per_day today (the
         Mac's local day), so its run does not start. With on_exceeded
         abort_run the slot is skipped and the job runs again at a slot on
-        a day it has budget left; with abort_job the job is stopped and
-        says why, as after a run over its per-run budget. Nothing read the
-        daily budget: a job ran every slot, whatever it had spent."""
+        a day it has budget left (a self-paced loop at the start of the
+        next day); with abort_job the job is stopped and says why, as
+        after a run over its per-run budget. Nothing read the daily
+        budget: a job ran every slot, whatever it had spent."""
         budget = job.budget
         if budget is None or budget.max_cost_usd_per_day is None:
             return False
@@ -891,6 +892,17 @@ class SchedulerService:
                 "spent_today": spent,
                 "max_cost_usd_per_day": budget.max_cost_usd_per_day,
             })
+            if isinstance(job.schedule, SelfPacedSchedule):
+                # A loop's next fire after the claim is its minimum delay, a
+                # placeholder its run replaces: skipped, the loop was claimed
+                # and skipped again every minimum delay for the rest of the day.
+                tomorrow = _start_of_tomorrow()
+
+                def _wait_for_tomorrow(fresh: JobRecord) -> None:
+                    if fresh.enabled and fresh.status == "active":
+                        fresh.next_fire_at = tomorrow
+
+                await update_job_record(job.id, _wait_for_tomorrow)
             return True
         # The stop is a run that went over its budget before it started:
         # the notice, the dashboard and the schedule tool point to it.
@@ -1580,6 +1592,12 @@ def _over_budget_said(budget: BudgetSpec, run: RunRecord) -> str:
 def _start_of_today() -> float:
     """When the Mac's local day began, in POSIX seconds."""
     return datetime.datetime.combine(datetime.date.today(), datetime.time.min).timestamp()
+
+
+def _start_of_tomorrow() -> float:
+    """When the Mac's next local day begins, in POSIX seconds."""
+    tomorrow = datetime.date.today() + datetime.timedelta(days=1)
+    return datetime.datetime.combine(tomorrow, datetime.time.min).timestamp()
 
 
 def _stopped_only_by_passing_failures(job: JobRecord) -> bool:

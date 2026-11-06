@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import date, datetime, time as dt_time
+from datetime import date, datetime, time as dt_time, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +25,7 @@ from bridge.scheduler.models import (
     JobRecord,
     NoopSinkSpec,
     RunRecord,
+    SelfPacedSchedule,
 )
 from bridge.scheduler.persistence import load_job, load_runs_for_job, save_job, save_run
 from bridge.scheduler.service import SchedulerService
@@ -33,6 +34,7 @@ from engine.tools import ToolRegistry
 from engine.types import Message
 
 START_OF_TODAY = datetime.combine(date.today(), dt_time.min).timestamp()
+START_OF_TOMORROW = datetime.combine(date.today() + timedelta(days=1), dt_time.min).timestamp()
 
 
 @pytest.fixture
@@ -155,3 +157,19 @@ async def test_a_job_that_spent_its_daily_budget_is_stopped_and_says_so(service)
     assert DesktopSinkSpec(session_id="session-abc") in told
     assert "digest" in text
     assert "spent $0.70 today, the budget is $0.60 a day" in text
+
+
+async def test_a_loop_that_spent_its_daily_budget_waits_for_the_next_day(service):
+    # A loop's next fire after a claim is its minimum delay, a placeholder
+    # its run replaces. Skipped, the loop was claimed and skipped again
+    # every minimum delay for the rest of the day.
+    job = _job("abort_run")
+    job.schedule = SelfPacedSchedule(min_delay_seconds=60, max_delay_seconds=600)
+    save_job(job)
+    _spent(job, 0.70, at=time.time() - 600)
+
+    saved = await _when_due(service, job)
+
+    assert (saved.enabled, saved.status) == (True, "active")
+    assert saved.next_fire_at == START_OF_TOMORROW
+    assert [r.run_id for r in load_runs_for_job(job.id)] == ["run_spent_1"]
