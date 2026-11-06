@@ -328,13 +328,17 @@ export function SubagentCard({ id }: { id: string }) {
       )}
       {/* Rejection feedback callout. Quoted in the same column as the
           worker's body so reading it feels like turning the page and
-          seeing the editor's notes. */}
+          seeing the editor's notes. The judge's reason runs to about
+          2,000 characters, so the note stops at the app's usual 280px
+          and scrolls. */}
       {rejected && cardSnapshot?.rejectionFeedback && (
         <div className="mt-2 rounded-md border-l-2 border-danger/55 bg-danger/[0.06] px-3 py-2 text-[11px] leading-[1.55] text-fg-1">
           <div className="mb-1 font-mono text-[9.5px] uppercase tracking-[0.08em] text-danger/85">
             rejected — verifier note
           </div>
-          <div className="whitespace-pre-wrap">{cardSnapshot.rejectionFeedback}</div>
+          <div className="max-h-[280px] overflow-y-auto whitespace-pre-wrap">
+            {cardSnapshot.rejectionFeedback}
+          </div>
         </div>
       )}
       {/* Phase chain — verifier and any subsequent worker re-spawns on
