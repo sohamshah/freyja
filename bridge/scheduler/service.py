@@ -176,6 +176,14 @@ _FAILURE_WINDOW_RUNS = (
 # retried without counting.
 _RUNS_WAIT_AT_MOST_SECONDS = 30 * 60
 
+# A fire the gateway or the app refused, or that never reached it, is
+# due again, and handed again on the loop's next look. Back again, it waits
+# a second more, twice as long each time after, at most a minute. Handed
+# again every second, a refusal that never cleared wrote a control-channel
+# line and log lines each time.
+_REFUSED_RETRY_FIRST_SECONDS = 1.0
+_REFUSED_RETRY_MAX_SECONDS = 60.0
+
 # A run whose process exited before it ended (a crash, a quit app, a
 # restart) is still "claimed", "running" or "delivering" on disk. Every
 # scheduler start looks for such runs among each job's latest this many:
@@ -262,6 +270,10 @@ class SchedulerService:
         self._runs_wait_for: str | None = None
         # When each due job began to wait for the Mac, by time.monotonic().
         self._waiting_since: dict[str, float] = {}
+        # Each job's last fire handed to the gateway or the app: its slot,
+        # how many times in a row that slot was handed, and when it may be
+        # handed again if it comes back due, by time.monotonic().
+        self._handed: dict[str, tuple[float | None, int, float]] = {}
         # Wake-mtime watermark: peers bump ``.wake`` on every CRUD;
         # we use it to know whether to bother re-scanning even if our
         # sleep timed out early. Currently informational — the tick
@@ -610,6 +622,9 @@ class SchedulerService:
             # says how late it is.
             slot = job.next_fire_at
             attempt = job.retry_attempt
+            if (in_gateway or in_app) and self._hand_over_later(job.id, slot):
+                self._waiting_job_ids.add(job.id)
+                return
             # Pre-advance + persist BEFORE firing — at-most-once.
             job.waiting_slot = None
             self._recompute_next_fire(job, force=True, after_fire=True)
@@ -619,6 +634,7 @@ class SchedulerService:
                 # The gateway or the app takes the run lock for the run.
                 run_lock.release()
                 run_lock = None
+                self._note_handed(job, slot)
                 if not _hand_over(job, slot, attempt, to_app=in_app) and _due_again(job, slot, attempt):
                     save_job(job)
                 # Due again if not sent or refused: looked at again on the
@@ -653,6 +669,30 @@ class SchedulerService:
             lock.release()
             if run_lock is not None:
                 run_lock.release()
+
+    def _hand_over_later(self, job_id: str, slot: float | None) -> bool:
+        """True when the fire of ``job_id`` for ``slot`` was handed to the
+        gateway or the app, came back due (refused, or not sent), and may
+        not be handed again yet."""
+        handed = self._handed.get(job_id)
+        return handed is not None and handed[0] == slot and time.monotonic() < handed[2]
+
+    def _note_handed(self, job: JobRecord, slot: float | None) -> None:
+        """Note that ``job``'s fire for ``slot`` is handed over now, and when
+        it may be handed again should it come back due. Each time in a row
+        is logged once."""
+        last = self._handed.get(job.id)
+        times = last[1] + 1 if last is not None and last[0] == slot else 1
+        wait = 0.0 if times == 1 else min(
+            _REFUSED_RETRY_MAX_SECONDS,
+            _REFUSED_RETRY_FIRST_SECONDS * 2 ** (times - 2),
+        )
+        self._handed[job.id] = (slot, times, time.monotonic() + wait)
+        if times > 1:
+            logger.info(
+                "job %s: the fire for slot %s came back %d times; handed again, "
+                "and again in %d s if it comes back", job.id, slot, times - 1, wait,
+            )
 
     def _came_due_while_running(self, job: JobRecord) -> None:
         """``job`` is due while its last run still goes on (the caller
