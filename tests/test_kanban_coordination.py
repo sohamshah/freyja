@@ -182,6 +182,25 @@ async def test_an_orphaned_child_is_told_an_action_that_works_for_its_status() -
 
 
 @pytest.mark.asyncio
+async def test_a_parent_marks_its_children_orphaned_once_when_it_fails() -> None:
+    """Every update to a cancelled or failed card, even a comment, added
+    another orphaned event to each of its children, and sent each child
+    and journalled it again."""
+    changed: list[str] = []
+    board = SessionKanbanBoard(on_child_changed=lambda child: changed.append(child.id))
+    dropped = (await board.create(title="dropped")).id
+    child = (await board.create(title="child", parents=[dropped])).id
+    await board.update(dropped, actor="parent", status="cancelled")
+
+    await board.update(dropped, actor="parent", comment="dropped for the new plan")
+    await board.update(dropped, actor="parent", status="cancelled", summary="superseded")
+
+    kinds = [event.kind for event in (await board.get(child)).events]
+    assert kinds.count("orphaned") == 1
+    assert changed == [child]
+
+
+@pytest.mark.asyncio
 async def test_board_reports_each_child_a_write_changes_on_its_own() -> None:
     """A write to one card can change its children: done promotes them out
     of triage, a failure marks them orphaned. Whoever wrote the card sends

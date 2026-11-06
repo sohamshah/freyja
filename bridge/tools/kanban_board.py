@@ -614,6 +614,7 @@ class SessionKanbanBoard:
             if task is None:
                 return None
             now = time.time()
+            previous_status = task.status
             changes: dict[str, Any] = {}
             tripped_breaker = False
             if status:
@@ -725,7 +726,12 @@ class SessionKanbanBoard:
             )
             if task.status == "done":
                 self._promote_unblocked_children(task.id, actor)
-            elif task.status in TERMINAL_FAILURE_STATUSES:
+            elif (
+                task.status in TERMINAL_FAILURE_STATUSES
+                and task.status != previous_status
+            ):
+                # Only when the card first reaches it: a later write to
+                # the card, such as a comment, marked every child again.
                 self._mark_children_orphaned(task.id, actor)
             return task
 
