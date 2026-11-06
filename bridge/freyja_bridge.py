@@ -11319,13 +11319,17 @@ class _BridgeSession:
         *,
         pre_formed_message: Any = None,
         is_goal_continuation: bool = False,
+        run_id: str | None = None,
     ) -> None:
+        """Run one turn. ``run_id`` is the scheduled run whose prompt
+        ``user_content`` is (_schedule_or_queue_turn); its turn_start says
+        so."""
         await self.initialize()
         if self.session is None:
             emit_error("session not initialized", session_id=self.id)
             return
         if self.runtime != "native":
-            await self._run_harness_turn(user_content, attachments)
+            await self._run_harness_turn(user_content, attachments, run_id)
             return
         if self.runner is None:
             emit_error("runner not initialized", session_id=self.id)
@@ -11432,6 +11436,8 @@ class _BridgeSession:
             # No message started it (a wake, a goal continuation): a
             # scheduled run counts such turns after its own as its cost.
             "automatic": synthetic_wake or is_goal_continuation,
+            # The scheduled run whose prompt it runs (_RunCost), or None.
+            "runId": run_id,
         })
 
         if pre_formed_message is not None:
@@ -11862,6 +11868,7 @@ class _BridgeSession:
         self,
         user_content: str,
         attachments: list[dict[str, Any]] | None,
+        run_id: str | None = None,
     ) -> None:
         """Drive one turn through the external harness CLI.
 
@@ -11882,6 +11889,7 @@ class _BridgeSession:
                 "type": "turn_start",
                 "sessionId": self.id,
                 "turnId": self.current_turn_id,
+                "runId": run_id,
             }
         )
 
@@ -14907,7 +14915,9 @@ def _run_pre_turn_hook(hook: Any, sess: "_BridgeSession") -> None:
         log("warn", f"pre-turn hook raised on session={sess.id}: {exc}")
 
 
-def _emit_turn_failed(sess: "_BridgeSession", exc: BaseException) -> None:
+def _emit_turn_failed(
+    sess: "_BridgeSession", exc: BaseException, run_id: str | None = None,
+) -> None:
     """Emit a SESSION-SCOPED failure event for a turn that raised past
     run_turn's own handler, so chat surfaces can show it. No
     turn_complete follows, so the Slack consumer and the app also end
@@ -14922,7 +14932,8 @@ def _emit_turn_failed(sess: "_BridgeSession", exc: BaseException) -> None:
     nothing in Slack.
 
     Kept deliberately narrow: this reports that the turn died, it does
-    not try to recover it.
+    not try to recover it. ``run_id`` is the scheduled run whose prompt the
+    turn ran: one that failed before it started says nothing else.
     """
     detail = str(exc).strip() or exc.__class__.__name__
     hint = ""
@@ -14946,6 +14957,7 @@ def _emit_turn_failed(sess: "_BridgeSession", exc: BaseException) -> None:
                 "message": detail,
                 "hint": hint,
                 "model": getattr(sess, "model_id", None),
+                "runId": run_id,
             }
         )
     except Exception:  # noqa: BLE001
@@ -15181,27 +15193,30 @@ async def _run_turn_queue(
     sess: "_BridgeSession",
     content: str,
     attachments: list[dict[str, Any]] | None,
+    run_id: str | None = None,
 ) -> None:
     cancelled = False
     try:
-        await sess.run_turn(content, attachments)
+        await sess.run_turn(content, attachments, run_id=run_id)
     except asyncio.CancelledError:
         cancelled = True
         _uncancel_current_task()
         log("info", f"turn cancelled (session={sess.id})")
-        _tell_turn_stopped(sess)
+        _tell_turn_stopped(sess, run_id)
     except Exception as exc:  # noqa: BLE001
         log("error", f"turn failed (session={sess.id}): {exc}")
-        _emit_turn_failed(sess, exc)
+        _emit_turn_failed(sess, exc, run_id)
     await _drain_after_turn(sess, cancelled=cancelled)
 
 
-def _tell_turn_stopped(sess: "_BridgeSession") -> None:
+def _tell_turn_stopped(sess: "_BridgeSession", run_id: str | None = None) -> None:
     """Tell this process's listeners of ``sess`` that the turn its task ran
-    was stopped. A turn stopped before it said turn_start says nothing
-    else: a scheduled run whose prompt it ran (_RunCost) took the reply
-    before it for its output, or the next turn for its own."""
-    notify_session_listeners(sess.id, {"type": "turn_stopped", "sessionId": sess.id})
+    was stopped; ``run_id`` is the scheduled run whose prompt it ran, if
+    any. A turn stopped before it said turn_start says nothing else: that
+    run (_RunCost) took the reply before it for its output."""
+    notify_session_listeners(
+        sess.id, {"type": "turn_stopped", "sessionId": sess.id, "runId": run_id},
+    )
 
 
 def _uncancel_current_task() -> None:
@@ -15361,7 +15376,7 @@ async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
         if not sess.queued_messages:
             continue
         entry = sess.queued_messages.pop(0)
-        # Queue entries are (content, attachments[, on_turn_start]).
+        # Queue entries are (content, attachments[, on_turn_start[, run_id]]).
         # The hook is what installs per-turn state right before
         # run_turn — see _on_inbound in gateway/run.py for the
         # use case (set session.gateway_source for the QUEUED
@@ -15370,11 +15385,7 @@ async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
         # at message-arrival time would have already overwritten
         # the in-flight turn's state and routed its output to the
         # wrong thread.
-        if len(entry) == 3:
-            q_content, q_attachments, q_hook = entry
-        else:
-            q_content, q_attachments = entry
-            q_hook = None
+        q_content, q_attachments, q_hook, q_run_id = (*entry, None, None)[:4]
         log(
             "info",
             f"processing queued message on session={sess.id} "
@@ -15382,7 +15393,7 @@ async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
         )
         _run_pre_turn_hook(q_hook, sess)
         try:
-            await sess.run_turn(q_content, q_attachments)
+            await sess.run_turn(q_content, q_attachments, run_id=q_run_id)
         except asyncio.CancelledError:
             # The stop is for this turn, as a stop of the turn the queue
             # waited on is: the turns queued behind it still run, each
@@ -15391,10 +15402,10 @@ async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
             _uncancel_current_task()
             cancelled = True
             log("info", f"queued turn cancelled (session={sess.id})")
-            _tell_turn_stopped(sess)
+            _tell_turn_stopped(sess, q_run_id)
         except Exception as exc:  # noqa: BLE001
             log("error", f"queued turn failed (session={sess.id}): {exc}")
-            _emit_turn_failed(sess, exc)
+            _emit_turn_failed(sess, exc, q_run_id)
 
 
 def _schedule_or_queue_turn(
@@ -15402,6 +15413,7 @@ def _schedule_or_queue_turn(
     content: str,
     attachments: list[dict[str, Any]] | None = None,
     on_turn_start: Any = None,
+    run_id: str | None = None,
 ) -> bool:
     """Schedule a turn, or queue it if one is already in flight.
 
@@ -15411,6 +15423,11 @@ def _schedule_or_queue_turn(
     true. Use it to mutate session-level state (gateway_source) and
     register per-turn event listeners (Slack stream consumer)
     without racing the previous turn's tail-end events.
+
+    ``run_id`` is the scheduled run whose prompt ``content`` is. It goes
+    with the prompt, and the turn that runs it says so (run_turn), so the
+    run knows its own turn. It took the session's next turn for its own:
+    when its turn failed before it started, that was another's.
     """
     held = getattr(sess, "_held_elsewhere", None)
     if held:
@@ -15423,7 +15440,7 @@ def _schedule_or_queue_turn(
         # held goes with it, and agents wake the session again.
         sess._agent_wakes_held = False
     if sess.pending_task and not sess.pending_task.done():
-        sess.queued_messages.append((content, attachments, on_turn_start))
+        sess.queued_messages.append((content, attachments, on_turn_start, run_id))
         log(
             "info",
             f"queued message on session={sess.id} "
@@ -15444,7 +15461,7 @@ def _schedule_or_queue_turn(
     # per-turn state is in place when run_turn begins emitting events.
     _run_pre_turn_hook(on_turn_start, sess)
     sess.pending_task = asyncio.create_task(
-        _run_turn_queue(sess, content, attachments),
+        _run_turn_queue(sess, content, attachments, run_id),
         name=f"turn-{sess.id}",
     )
     return True

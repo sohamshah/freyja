@@ -57,7 +57,9 @@ async def test_a_run_s_tier_reaches_its_session_and_no_other(monkeypatch) -> Non
     state = service.state
     seen: dict[str, str] = {}
 
-    async def turn(sess, prompt: str) -> None:
+    async def turn(sess, prompt: str, run_id: str) -> None:
+        said = {"sessionId": "scheduler:sched_tier.ephemeral", "turnId": "turn-1"}
+        fb.emit({"type": "turn_start", **said, "runId": run_id})
         seen["run session"] = sess.permission_tier
         # Meanwhile the operator opens a new chat, then raises the tier
         # in Settings.
@@ -67,9 +69,11 @@ async def test_a_run_s_tier_reaches_its_session_and_no_other(monkeypatch) -> Non
         transcript = sess.session.transcript
         transcript.append_message(Message(role="user", content=prompt))
         transcript.append_message(Message(role="assistant", content="Done."))
+        fb.emit({"type": "turn_complete", **said})
 
-    def schedule_turn(sess, prompt, attachments=None, on_turn_start=None):
-        sess.pending_task = asyncio.ensure_future(turn(sess, prompt))
+    def schedule_turn(sess, prompt, attachments=None, on_turn_start=None, run_id=None):
+        on_turn_start()
+        sess.pending_task = asyncio.ensure_future(turn(sess, prompt, run_id))
         return True
 
     async def quiescent(sess, **_kw):

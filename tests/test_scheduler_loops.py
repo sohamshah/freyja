@@ -84,10 +84,14 @@ def _drive_fire(
 
     offered: list[str] = []
 
-    async def turn(prompt: str) -> None:
-        # A turn says it started before it calls any tool.
+    async def turn(prompt: str, run_id: str) -> None:
+        # A turn says it started before it calls any tool, and says it ended.
         sess.current_turn_id = "turn-1"
-        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-1"})
+        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-1", "runId": run_id})
+        await reply(prompt)
+        fb.emit({"type": "turn_complete", "sessionId": "s1", "turnId": "turn-1"})
+
+    async def reply(prompt: str) -> None:
         transcript = sess.session.transcript
         transcript.append_message(Message(role="user", content=prompt))
         if operator_says is not None:
@@ -106,9 +110,9 @@ def _drive_fire(
         fb.emit({"type": "llm_call_metric", "sessionId": "s1", "turnId": "turn-1", "costUsd": cost})
         transcript.append_message(Message(role="assistant", content="Checked the queue."))
 
-    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None, run_id=None):
         on_turn_start()
-        s.pending_task = asyncio.ensure_future(turn(prompt))
+        s.pending_task = asyncio.ensure_future(turn(prompt, run_id))
         return True
 
     async def quiescent(s, **_kw):
@@ -229,8 +233,8 @@ async def test_a_loop_run_queued_behind_the_turn_that_started_it_keeps_its_loop_
     sess = _session(cost_so_far=0.0)
     sess.queued_messages = []
 
-    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
-        s.queued_messages.append((prompt, attachments, on_turn_start))
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None, run_id=None):
+        s.queued_messages.append((prompt, attachments, on_turn_start, run_id))
         return False
 
     monkeypatch.setattr(fb, "_schedule_or_queue_turn", schedule_turn)
@@ -244,10 +248,10 @@ async def test_a_loop_run_queued_behind_the_turn_that_started_it_keeps_its_loop_
         answered = run.status
         await asyncio.sleep(0)  # Its next model call: the run queues its prompt.
         # The turn ends, and its task runs the queued prompt (_drain_turns).
-        _prompt, _attachments, on_turn_start = sess.queued_messages.pop(0)
+        _prompt, _attachments, on_turn_start, run_id = sess.queued_messages.pop(0)
         on_turn_start()
         sess.current_turn_id = "turn-2"
-        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-2"})
+        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-2", "runId": run_id})
         offered.extend(d.name for d in sess.tool_registry.list_definitions())
         tool = sess.tool_registry.get(CONTINUE_LOOP_TOOL)
         if decides == "continue" and tool is not None:
@@ -281,8 +285,8 @@ async def test_the_turn_that_queued_a_loops_run_cannot_decide_for_it(monkeypatch
     sess = _session(cost_so_far=0.0)
     sess.queued_messages = []
 
-    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
-        s.queued_messages.append((prompt, attachments, on_turn_start))
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None, run_id=None):
+        s.queued_messages.append((prompt, attachments, on_turn_start, run_id))
         return False
 
     monkeypatch.setattr(fb, "_schedule_or_queue_turn", schedule_turn)
@@ -296,10 +300,10 @@ async def test_the_turn_that_queued_a_loops_run_cannot_decide_for_it(monkeypatch
         said = await sess.tool_registry.get(COMPLETE_LOOP_TOOL).execute("call-1", {"reason": "done"})
         # The turn ends, and its task runs the queued prompt, which decides
         # nothing.
-        _prompt, _attachments, on_turn_start = sess.queued_messages.pop(0)
+        _prompt, _attachments, on_turn_start, run_id = sess.queued_messages.pop(0)
         on_turn_start()
         sess.current_turn_id = "turn-2"
-        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-2"})
+        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-2", "runId": run_id})
         return said
 
     sess.pending_task = asyncio.ensure_future(calling_turn())

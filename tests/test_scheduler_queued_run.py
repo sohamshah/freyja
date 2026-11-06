@@ -86,8 +86,8 @@ async def test_a_run_queued_behind_the_turn_that_started_it_has_a_known_status(m
 
     sess = _stub_session()
 
-    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
-        s.queued_messages.append((prompt, attachments, on_turn_start))
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None, run_id=None):
+        s.queued_messages.append((prompt, attachments, on_turn_start, run_id))
         return False
 
     monkeypatch.setattr(fb, "_schedule_or_queue_turn", schedule_turn)
@@ -198,8 +198,8 @@ async def test_a_loops_fire_due_while_its_run_is_queued_waits_for_that_run(monke
 
     sess = _stub_session()
 
-    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
-        s.queued_messages.append((prompt, attachments, on_turn_start))
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None, run_id=None):
+        s.queued_messages.append((prompt, attachments, on_turn_start, run_id))
         return False
 
     monkeypatch.setattr(fb, "_schedule_or_queue_turn", schedule_turn)

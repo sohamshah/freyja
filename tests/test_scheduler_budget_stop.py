@@ -49,15 +49,16 @@ def service(monkeypatch):
         _save_transcript=lambda: None,
     )
 
-    async def turn(prompt: str) -> None:
+    async def turn(prompt: str, run_id: str) -> None:
         sess.session.transcript.append_message(Message(role="user", content=prompt))
-        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-1"})
+        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-1", "runId": run_id})
         fb.emit({"type": "llm_call_metric", "sessionId": "s1", "turnId": "turn-1", "costUsd": 0.50})
         sess.session.transcript.append_message(Message(role="assistant", content="Done."))
+        fb.emit({"type": "turn_complete", "sessionId": "s1", "turnId": "turn-1"})
 
-    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None, run_id=None):
         on_turn_start()
-        s.pending_task = asyncio.ensure_future(turn(prompt))
+        s.pending_task = asyncio.ensure_future(turn(prompt, run_id))
         return True
 
     async def quiescent(s, **_kw):

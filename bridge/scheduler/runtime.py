@@ -326,6 +326,7 @@ async def _run_fire(
         entries_before = _entry_ids(sess)
         _schedule_or_queue_turn(
             sess, prompt, attachments=None, on_turn_start=run_cost.our_turn_starts,
+            run_id=run.run_id,
         )
         pending = getattr(sess, "pending_task", None)
         if pending is not None:
@@ -397,9 +398,10 @@ async def _run_fire(
         else:
             # The reply of the run's last turn, read as that turn ended. Read
             # once the session was quiet, it was the reply of a turn queued
-            # behind the run's, which ran in the run's wait. Read now only
-            # when no turn of the run said it ended.
-            output_text, iteration_count = run_cost.reply or _extract_last_assistant_text(sess)
+            # behind the run's, which ran in the run's wait. A run none of
+            # whose turns ended has none: the last reply in the transcript
+            # then is another turn's.
+            output_text, iteration_count = run_cost.reply or ("", 0)
         still_running = getattr(sess, "_running_background_work", None)
         leftover = [
             w for w in (still_running() if callable(still_running) else [])
@@ -470,7 +472,7 @@ async def _run_fire(
     # downstream recovery can re-fire.
     if run.status in ("running", "queued") and iteration_count == 0 and not (output_text or "").strip():
         run.status = "failed"
-        turn_error = getattr(sess, "last_turn_error", None)
+        turn_error = run_cost.error or getattr(sess, "last_turn_error", None)
         run.error = (
             f"the turn failed before the model replied — {turn_error}"
             if turn_error
@@ -1132,9 +1134,15 @@ class _RunCost:
     session's queue before it ran. ``unqueued``: the run was stopped while
     its prompt was queued, and took it back out (take_prompt_back).
     ``stopped``: a turn of the run was stopped (the app's Stop, Slack's,
-    /stop), which ends the run cancelled. ``reply``: the reply of the last
-    turn of the run to end in ``sess``, and how many assistant messages it
-    had, read as that turn ended."""
+    /stop), which ends the run cancelled. ``error``: why the run's turn
+    failed before it could reply, as its turn_failed said. ``reply``: the
+    reply of the last turn of the run to end in ``sess``, and how many
+    assistant messages it had, read as that turn ended.
+
+    The run's turn is the one that says the run's id (run_turn): it ran the
+    run's prompt. It was the session's next turn to start, and a turn that
+    failed before it started said nothing, so the next one, another's, was
+    taken for the run's."""
 
     def __init__(self, run_id: str, budget: BudgetSpec | None, sess: Any = None) -> None:
         self.cost = 0.0
@@ -1147,18 +1155,19 @@ class _RunCost:
         # emit() also runs on worker threads (compaction's calls).
         self._loop = asyncio.get_running_loop()
         self._turns: set[str] = set()
-        self._next_turn_is_ours = False
+        self._prompt_runs = False
         self._prompt_left_queue = False
         self.dropped = False
         self.unqueued = False
         self.stopped = False
+        self.error: str | None = None
         self._sess = sess
         self.reply: tuple[str, int] | None = None
 
     def our_turn_starts(self) -> None:
-        """The on_turn_start hook of the fire's prompt: the session's next
-        turn is the fire's."""
-        self._next_turn_is_ours = True
+        """The on_turn_start hook of the fire's prompt: it left the queue,
+        and the session runs it now."""
+        self._prompt_runs = True
         self._prompt_left_queue = True
 
     def take_prompt_back(self, sess: Any) -> bool:
@@ -1181,22 +1190,24 @@ class _RunCost:
         """Whether the session's running turn is the fire's: its prompt's,
         or one that started on its own after it (a wake for its sub-agents'
         memos), not one the operator started after it. Before the fire's
-        turn has started, a prompt that is not queued is running. A stop of
-        the run's turn ended the run: the turn the drain starts next (a
-        queued one, a wake for agents' messages) is not the run's, and may
-        not have said so yet."""
+        turn has started, its prompt runs while it is out of the queue and
+        has not failed. A stop of the run's turn ended the run: the turn the
+        drain starts next (a queued one, a wake for agents' messages) is not
+        the run's, and may not have said so yet."""
         if self.stopped:
             return False
-        if self._turns and not self._next_turn_is_ours:
+        if self._turns:
             return getattr(sess, "current_turn_id", None) in self._turns
-        return not self.dropped
+        return self._prompt_runs
 
     def on_event(self, event: dict[str, Any]) -> None:
         kind = event.get("type")
+        ours = event.get("runId") == self._run_id
         if kind == "turn_start":
-            if self._next_turn_is_ours or (self._turns and event.get("automatic")):
+            if ours or (self._turns and event.get("automatic")):
                 self._turns.add(event.get("turnId"))
-            self._next_turn_is_ours = False
+            if ours:
+                self._prompt_runs = False
         elif kind == "turn_complete" and event.get("stopped") and event.get("turnId") in self._turns:
             # The run is cancelled, as the emergency stop's runs are. It went
             # on as a finished run, took the stopped turn's partial answer
@@ -1206,16 +1217,21 @@ class _RunCost:
             stop_run_now(self._run_id)
         elif kind == "turn_complete" and event.get("turnId") in self._turns:
             self.reply = _extract_last_assistant_text(self._sess)
-        elif kind == "turn_stopped" and self._next_turn_is_ours:
+        elif kind == "turn_stopped" and ours and self._prompt_runs:
             # The run's turn was stopped before it said turn_start, so it said
             # nothing (turn_stopped comes from the task that ran it). The run
-            # took the reply before it for its output, or the next turn for
-            # its own. It is cancelled, as for a stop of its started turn,
-            # with no reply.
-            self._next_turn_is_ours = False
+            # took the reply before it for its output. It is cancelled, as for
+            # a stop of its started turn, with no reply.
+            self._prompt_runs = False
             self.stopped = True
             self.reply = ("", 0)
             stop_run_now(self._run_id)
+        elif kind == "turn_failed" and ours:
+            # Raised out of run_turn: before it started (its session could not
+            # be set up), its turn said nothing else, and the run ended with
+            # no turn and no reason.
+            self._prompt_runs = False
+            self.error = str(event.get("message") or "") or None
         elif kind == "system_event" and event.get("subtype") == "queued_turns_dropped":
             # The whole queue goes, so a prompt still in it went too.
             self.dropped = self.dropped or not self._prompt_left_queue

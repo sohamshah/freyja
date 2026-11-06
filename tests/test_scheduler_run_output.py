@@ -173,3 +173,61 @@ async def test_a_turn_queued_behind_a_run_stopped_as_its_turn_starts_is_not_the_
 
     assert _last_reply(sess) == "The tests pass"  # The stop was for the run's turn only.
     assert (run.status, run.output_text, run.delivery_reports) == ("cancelled", "", [])
+
+
+# ─── a run whose turn fails before it starts ──────────────────────────
+
+
+def _fails_to_start_once(sess, error: Exception) -> None:
+    """The session's next turn fails as it starts (initialize raises: its
+    model's provider cannot be built); the ones after it start."""
+    initialize = sess.initialize
+
+    async def fail():
+        sess.initialize = initialize
+        raise error
+
+    sess.initialize = fail
+
+
+async def test_a_run_whose_turn_fails_before_it_starts_does_not_take_the_turn_queued_behind_it(operator_session):
+    # The run took the next turn that started for its own: the operator's
+    # turn queued behind its prompt, whose reply it delivered as its output.
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.replies = {"how is the build": "The build is green", "write the digest": "Here is the digest",
+                    "and the tests": "The tests pass"}
+    sess.costs = {"and the tests": 30}
+    sess.holds = {"how is the build": asyncio.Event()}
+    fb._schedule_or_queue_turn(sess, "how is the build?")
+    fire = asyncio.create_task(fire_job(_Service({"s1": sess}), _job()))
+    while not sess.queued_messages:
+        await asyncio.sleep(0.01)
+    fb._schedule_or_queue_turn(sess, "and the tests?")  # Queued behind the run's prompt.
+    _fails_to_start_once(sess, ValueError("GEMINI_API_KEY is not set"))
+    sess.holds["how is the build"].set()
+
+    run = await asyncio.wait_for(fire, 10)
+
+    assert _last_reply(sess) == "The tests pass"
+    assert (run.status, run.output_text, run.delivery_reports) == ("failed", "", [])
+    assert "GEMINI_API_KEY is not set" in run.error
+    assert run.cost_usd == 0
+
+
+async def test_a_run_whose_turn_fails_before_it_starts_fails_with_the_turns_error(operator_session):
+    # With no turn after it, the run said it was most likely asleep through
+    # its time, and not why its turn failed.
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.replies = {"write the digest": "Here is the digest"}
+    _fails_to_start_once(sess, ValueError("GEMINI_API_KEY is not set"))
+
+    run = await asyncio.wait_for(fire_job(_Service({"s1": sess}), _job()), 10)
+
+    assert (run.status, run.output_text) == ("failed", "")
+    assert "GEMINI_API_KEY is not set" in run.error
+

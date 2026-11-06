@@ -49,7 +49,8 @@ def _session_with_a_long_turn(monkeypatch):
         sess.started.set()
         await asyncio.sleep(60)
 
-    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None, run_id=None):
+        on_turn_start()
         s.pending_task = asyncio.ensure_future(turn(prompt))
         return True
 
@@ -249,7 +250,8 @@ async def test_a_run_that_times_out_after_its_turn_leaves_the_operators_next_tur
         nonlocal turn_no
         turn_no += 1
         sess.current_turn_id = f"turn-{turn_no}"
-        fb.emit({"type": "turn_start", "sessionId": sess.id, "turnId": sess.current_turn_id})
+        fb.emit({"type": "turn_start", "sessionId": sess.id, "turnId": sess.current_turn_id,
+                 "runId": _kw.get("run_id")})
         if content == "the operator's next question":
             await asyncio.sleep(60)
         else:
