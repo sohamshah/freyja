@@ -1355,7 +1355,10 @@ def _take_in_queued_inbox_messages(state: Any) -> None:
         if queued and root is not None:
             log("info", f"inbox watch: {len(queued)} message(s) queued in {sid}'s inbox file")
             _install_talk_wake_hook(state, root)
-            root.wake_for_inbox()
+            # A stop's notice from a copy elsewhere waits for the next turn,
+            # as one a stop here leaves (_wake_for_memos).
+            if any(not (m.meta or {}).get("stoppedBatch") for m in queued):
+                root.wake_for_inbox()
     state._inbox_mtimes = seen  # noqa: SLF001
 
 
@@ -6714,7 +6717,7 @@ class _BridgeSession:
             for msg in list(self.inbox.unread):
                 if msg.from_session == bg.id and (msg.meta or {}).get("monitorEvent"):
                     self.inbox.remove(msg.id)
-            self._note_stopped_by_operator(
+            await self._note_stopped_by_operator(
                 bg.summary or "shell command", bg.id, "monitor" if monitor else "command",
             )
             return
@@ -6741,45 +6744,51 @@ class _BridgeSession:
         self.inbox.push(memo)
         self._schedule_memo_wake()
 
-    def _note_stopped_by_operator(self, label: str, work_id: str, what: str) -> None:
+    async def _note_stopped_by_operator(self, label: str, work_id: str, what: str) -> None:
         """Fold background work the operator stopped into ONE unread notice.
 
         Stopping twelve agents is one decision; twelve memos (each a wake-up
         candidate) would be noise. The notice rides into the next turn —
         it never wakes the session, since the operator just asked for quiet.
+        On a copy of a session another process runs, each notice goes on
+        its own where _push_memo sends a memo: only an inbox here folds
+        them, and the copy's inbox, which is never saved, lost them.
         """
         from bridge.inbox import KIND_MEMO, InboxMessage, new_message_id
 
-        for m in self.inbox.unread:
-            if m.kind == KIND_MEMO and (m.meta or {}).get("stoppedBatch"):
-                m.content += f"\n- {label} ({what}, id {work_id})"
-                m.meta["count"] = int(m.meta.get("count", 1)) + 1
-                self._save_inbox()
-                return
-        self.inbox.push(
-            InboxMessage(
-                id=new_message_id(),
-                from_session=self.id,
-                from_label="operator stop",
-                from_role="agent",
-                content=(
-                    "[background work stopped by the operator]\n"
-                    "The operator stopped this background work. Anything it "
-                    "had not finished is not done — its partial work is in its "
-                    "session / log. (Automatic notice — no human input beyond "
-                    "the stop.)\n"
-                    f"- {label} ({what}, id {work_id})"
-                ),
-                kind=KIND_MEMO,
-                meta={
-                    "stoppedBatch": True,
-                    "count": 1,
-                    "label": "stopped by the operator",
-                    "state": "cancelled",
-                    "agentType": "stop",
-                },
-            )
+        if not self._held_elsewhere:
+            for m in self.inbox.unread:
+                if m.kind == KIND_MEMO and (m.meta or {}).get("stoppedBatch"):
+                    m.content += f"\n- {label} ({what}, id {work_id})"
+                    m.meta["count"] = int(m.meta.get("count", 1)) + 1
+                    self._save_inbox()
+                    return
+        notice = InboxMessage(
+            id=new_message_id(),
+            from_session=self.id,
+            from_label="operator stop",
+            from_role="agent",
+            content=(
+                "[background work stopped by the operator]\n"
+                "The operator stopped this background work. Anything it "
+                "had not finished is not done — its partial work is in its "
+                "session / log. (Automatic notice — no human input beyond "
+                "the stop.)\n"
+                f"- {label} ({what}, id {work_id})"
+            ),
+            kind=KIND_MEMO,
+            meta={
+                "stoppedBatch": True,
+                "count": 1,
+                "label": "stopped by the operator",
+                "state": "cancelled",
+                "agentType": "stop",
+            },
         )
+        if self._held_elsewhere:
+            await self._push_memo(notice)
+            return
+        self.inbox.push(notice)
 
     def _schedule_memo_wake(self) -> None:
         try:
@@ -6977,7 +6986,7 @@ class _BridgeSession:
             except Exception:  # noqa: BLE001
                 still_running = []
         if record.cancel_origin == "operator":
-            self._note_stopped_by_operator(record.label, record.id, "sub-agent")
+            await self._note_stopped_by_operator(record.label, record.id, "sub-agent")
             return
         try:
             memo = build_subagent_memo(record, still_running=still_running)

@@ -389,6 +389,43 @@ async def test_background_work_left_under_a_job_session_after_the_handover_repor
     assert sess.inbox.unread == []
 
 
+async def test_a_stop_in_the_app_on_a_job_session_copy_tells_the_session_through_its_inbox_file(
+    app_bridge, monkeypatch, tmp_path
+):
+    # A run in the app left a sub-agent and a shell command under its copy
+    # of the job's session, and the tick went to a LaunchAgent. The stop
+    # pressed in the app put its notice in the copy's inbox, which a copy
+    # never saves: the session never learned the work was stopped.
+    import time
+
+    from bridge.tools.background_shell import BackgroundCommand
+    from bridge.tools.sub_agent_registry import SubAgentRegistry, SubAgentState
+
+    _owner_saved()
+    sess = _copy(tmp_path, owns_tick=False)
+    state = sess.state
+    state.sessions[SCHED] = sess
+    sess.subagent_registry = SubAgentRegistry()
+    child = sess.subagent_registry.register(SCHED_SUB, "worker", "t", "general")
+    child.notify_parent = True
+    shell = BackgroundCommand(
+        id="bg_bash", command="make", summary="build", pid=1, output_path=str(tmp_path / "bg.log"),
+        started_at=time.time(), backgrounded_at=time.time(), reason="cut_in",
+    )
+    sess.background_commands[shell.id] = shell
+
+    await fb._handle_command(state, {"type": "cancel", "sessionId": SCHED})
+    sess.subagent_registry.mark_done(SCHED_SUB, "Cancelled", SubAgentState.CANCELLED)
+    await sess._on_child_terminal(child)
+    await sess._on_background_exit(shell)
+
+    notices = _inbox_file()
+    assert len(notices) == 2
+    assert all("[background work stopped by the operator]" in n for n in notices)
+    assert "worker (sub-agent" in notices[0] and "build (command" in notices[1]
+    assert sess.inbox.unread == []
+
+
 async def _take_the_tick(service, monkeypatch) -> None:
     """``service`` starts while a peer owns the tick, and takes it when the
     peer exits (the scheduler daemon restarts, and the gateway takes over)."""

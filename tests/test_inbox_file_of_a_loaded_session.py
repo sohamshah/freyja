@@ -87,6 +87,23 @@ def test_a_loaded_owner_takes_in_a_queued_message_and_wakes(monkeypatch, tmp_pat
     assert [e["action"] for e in events if e.get("type") == "inbox_event"] == ["enqueued"]
 
 
+def test_a_loaded_owner_takes_in_a_queued_stop_notice_without_waking(monkeypatch, tmp_path):
+    # The app's copy sends the notice of work its stop ended here. A stop
+    # asks for quiet: the notice rides into the next turn, as one a
+    # stop in this process leaves.
+    state, sess, _ = _owner(monkeypatch, tmp_path)
+    woke: list[str] = []
+    monkeypatch.setattr(sess, "wake_for_inbox", lambda: woke.append(sess.id) or "woke")
+    notice = _msg("[background work stopped by the operator]")
+    notice.meta = {"stoppedBatch": True, "count": 1}
+
+    queue_to_inbox_sidecar(SCHED, notice)
+    fb._take_in_queued_inbox_messages(state)
+
+    assert [m.content for m in sess.inbox.unread] == ["[background work stopped by the operator]"]
+    assert woke == []
+
+
 def test_a_copy_held_elsewhere_takes_in_nothing(monkeypatch, tmp_path):
     # The app's copy of a job's session that the tick owner runs: the file
     # is the owner's mailbox.
