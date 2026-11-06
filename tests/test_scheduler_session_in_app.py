@@ -455,6 +455,42 @@ async def test_a_process_that_takes_the_tick_stops_the_sub_agents_under_a_copy_i
     await state.scheduler.stop()
 
 
+async def test_a_process_that_takes_the_tick_stops_the_shell_commands_and_monitors_under_a_copy_it_drops(
+    app_bridge, monkeypatch, tmp_path
+):
+    # Left running under the dropped copy, which nothing here reaches any
+    # more, a command ran on with no way to stop it from the app, and a
+    # monitor watched for up to half an hour with each event dropped. Each
+    # exit was silent: the copy is closed.
+    import time
+
+    from bridge.tools import background_shell
+    from bridge.tools.background_shell import BackgroundCommand
+
+    _owner_saved()
+    sess = _copy(tmp_path, owns_tick=False)
+    work = [
+        BackgroundCommand(
+            id=f"bg_{kind}", command="make", summary=kind, pid=1, output_path=str(tmp_path / "bg.log"),
+            started_at=time.time(), backgrounded_at=time.time(), reason="cut_in", kind=kind,
+            _process=SimpleNamespace(proc=SimpleNamespace(pid=1)),
+        )
+        for kind in ("bash", "monitor")
+    ]
+    sess.background_commands.update({bg.id: bg for bg in work})
+    stopped: list = []
+    monkeypatch.setattr(background_shell, "stop_process_group", stopped.append)
+    state = sess.state
+    state.sessions[SCHED] = sess
+
+    await _take_the_tick(state.scheduler, monkeypatch)
+
+    assert SCHED not in state.sessions
+    assert [bg.state for bg in work] == ["stopped", "stopped"]
+    assert stopped == [bg._process.proc for bg in work]
+    await state.scheduler.stop()
+
+
 async def test_a_process_that_takes_the_tick_keeps_a_job_session_its_own_run_holds(
     app_bridge, monkeypatch, tmp_path
 ):
