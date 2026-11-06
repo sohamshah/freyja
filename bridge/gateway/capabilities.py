@@ -24,19 +24,21 @@ logger = logging.getLogger(__name__)
 # is stripped from the registry at session-init time (see
 # ``_BridgeSession.initialize`` in ``bridge/freyja_bridge.py``).
 #
-# Three buckets:
+# Four buckets:
 #
 #   1. READ — safe reads of the local workspace. The agent can
 #      reference code, docs, and previously-produced artifacts.
 #   2. RESEARCH — internet access for context. No persistent
 #      side effects on the user's machine.
-#   3. WRITE_SCOPED — limited writes confined to project output
-#      dir. Lets the agent persist artifacts (notes, generated
-#      assets) without touching the user's source tree.
+#   3. WRITE — write_file, edit_file and edit_json. A relative path
+#      lands in the session's project output dir, but an absolute
+#      path writes any file the process can, the source tree and
+#      ~/.freyja included. This is not a sandbox.
 #   4. SYNTHESIS — sub-agent spawn so the agent can fan out to
-#      explore-fast / verify / code profiles. Sub-agents inherit
-#      this same capability set when they themselves are spawned
-#      from a gateway session.
+#      explore-fast / verify / code profiles. A sub-agent of a
+#      filtered session gets only tools on this list too
+#      (SubAgentSpec.tool_allowlist_getter). A job the session or
+#      its sub-agents schedule keeps the filter (JobRecord.tool_filter).
 #
 # Notably ABSENT:
 #   · bash — too broad; even read-only intent gets misused
@@ -46,7 +48,9 @@ logger = logging.getLogger(__name__)
 #   · generate_image / analyze_video — fine in principle but not
 #     part of the demo surface; reintroduce after operator opts in
 #   · memory mutators (record_user_preference) — agent shouldn't
-#     mutate the operator's memory store unattended
+#     mutate the operator's memory store unattended. ``memory``
+#     below is listed all the same, and it can record, update and
+#     delete memories
 #   · session_memory — same reason
 #
 # Future: this becomes per-platform / per-workspace / per-workflow.
@@ -76,7 +80,7 @@ SLACK_TOOL_ALLOWLIST: frozenset[str] = frozenset({
     "call_tool",
     # SCHEDULING — durable jobs created from Slack are core UX.
     "schedule",
-    # KNOWLEDGE (read-only)
+    # KNOWLEDGE (skills read-only; memory can also write)
     "list_skills",
     "search_skills",
     "load_skill",
