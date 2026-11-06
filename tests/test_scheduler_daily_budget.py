@@ -7,6 +7,9 @@ slot whatever it had spent.
 
 Held by it, a cron or interval job was claimed and skipped, with a log
 line, at every slot for the rest of the day.
+
+A budget raised or removed while it held a job left the job waiting for
+the next day.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from bridge.scheduler.models import (
     DesktopSinkSpec,
     ExistingSession,
     IntervalSchedule,
+    JobPatch,
     JobRecord,
     NoopSinkSpec,
     RunRecord,
@@ -203,3 +207,51 @@ async def test_a_loop_that_spent_its_daily_budget_waits_for_the_next_day(service
     assert (saved.enabled, saved.status) == (True, "active")
     assert saved.next_fire_at == START_OF_TOMORROW
     assert [r.run_id for r in load_runs_for_job(job.id)] == ["run_spent_1"]
+
+
+_LOOP = SelfPacedSchedule(min_delay_seconds=60, max_delay_seconds=600)
+_EVERY_15_MIN = CronSchedule(expression="*/15 * * * *")
+
+
+@pytest.mark.parametrize("schedule", [_LOOP, _EVERY_15_MIN], ids=["loop", "cron"])
+@pytest.mark.parametrize("patch", [
+    JobPatch(budget=BudgetSpec(max_cost_usd_per_day=2.0)),
+    JobPatch(clear_budget=True),
+], ids=["raised", "removed"])
+async def test_a_job_its_daily_budget_holds_runs_again_today_once_the_budget_allows(
+    service, schedule, patch,
+):
+    job = _job("abort_run")
+    job.schedule = schedule
+    save_job(job)
+    _spent(job, 0.70, at=time.time() - 600)
+    held = await _when_due(service, job)
+    assert held.next_fire_at == START_OF_TOMORROW
+
+    updated = await service.update_job(job.id, patch)
+
+    assert time.time() < updated.next_fire_at <= time.time() + 15 * 60
+
+
+async def test_a_job_still_over_its_new_daily_budget_waits_for_the_next_day(service):
+    job = _job("abort_run")
+    job.schedule = _LOOP
+    save_job(job)
+    _spent(job, 0.70, at=time.time() - 600)
+    await _when_due(service, job)
+
+    updated = await service.update_job(job.id, JobPatch(budget=BudgetSpec(max_cost_usd_per_day=0.65)))
+
+    assert updated.next_fire_at == START_OF_TOMORROW
+
+
+async def test_a_new_budget_leaves_the_next_fire_a_loop_chose_for_itself(service):
+    job = _job("abort_run")
+    job.schedule = _LOOP
+    job.next_fire_at = START_OF_TOMORROW + 3600
+    save_job(job)
+    _spent(job, 0.70, at=time.time() - 600)
+
+    updated = await service.update_job(job.id, JobPatch(budget=BudgetSpec(max_cost_usd_per_day=2.0)))
+
+    assert updated.next_fire_at == START_OF_TOMORROW + 3600

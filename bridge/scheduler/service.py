@@ -878,8 +878,8 @@ class SchedulerService:
         budget = job.budget
         if budget is None or budget.max_cost_usd_per_day is None:
             return False
-        spent = sum(r.cost_usd for r in load_runs_started_since(job.id, _start_of_today()))
-        if spent < budget.max_cost_usd_per_day:
+        spent = _spent_today(job.id)
+        if not _over_daily_budget(budget, spent):
             return False
         said = (
             f"it spent ${spent:.2f} today, the budget is "
@@ -1054,6 +1054,19 @@ class SchedulerService:
             job = load_job(job_id)
             if job is None:
                 raise KeyError(job_id)
+            # A job its daily budget holds waits for its first fire
+            # tomorrow. When the patch raises or removes the budget so the
+            # job can run today, its next fire is set from now (below):
+            # left as it was, the job waited for the next day all the same.
+            spent = held = None
+            if patch.budget is not None or patch.clear_budget:
+                spent = _spent_today(job.id)
+                held = (
+                    job.enabled and job.status == "active"
+                    and _over_daily_budget(job.budget, spent)
+                    and job.next_fire_at is not None
+                    and job.next_fire_at == _first_fire_tomorrow(job)
+                )
             for field_name in (
                 "name", "description", "max_fires", "prompt",
                 "permission_snapshot", "model_id", "coordination_strategy",
@@ -1067,6 +1080,10 @@ class SchedulerService:
             for field_name in CLEARABLE_FIELDS:
                 if getattr(patch, f"clear_{field_name}"):
                     setattr(job, field_name, None)
+            if held and not _over_daily_budget(job.budget, spent):
+                job.next_fire_at = compute_next_fire(
+                    job.schedule, now=time.time(), last_fire=job.last_fire_at,
+                ) or job.next_fire_at
             # A cap lowered to the fires the job ran stops it now, as the
             # end of the run that reaches the cap does. Nothing checks
             # max_fires when a run is claimed: left active, it fired again.
@@ -1609,6 +1626,20 @@ def _start_of_tomorrow() -> float:
     """When the Mac's next local day begins, in POSIX seconds."""
     tomorrow = datetime.date.today() + datetime.timedelta(days=1)
     return datetime.datetime.combine(tomorrow, datetime.time.min).timestamp()
+
+
+def _spent_today(job_id: str) -> float:
+    """What the runs of ``job_id`` started since local midnight cost."""
+    return sum(r.cost_usd for r in load_runs_started_since(job_id, _start_of_today()))
+
+
+def _over_daily_budget(budget: BudgetSpec | None, spent: float) -> bool:
+    """True when ``spent`` today reaches ``budget``'s max_cost_usd_per_day."""
+    return (
+        budget is not None
+        and budget.max_cost_usd_per_day is not None
+        and spent >= budget.max_cost_usd_per_day
+    )
 
 
 def _first_fire_tomorrow(job: JobRecord) -> float | None:
