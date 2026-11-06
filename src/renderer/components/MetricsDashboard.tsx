@@ -795,7 +795,14 @@ export function aggregateRows(
         })
       }
     } else if (row.type === 'compaction_event') {
-      const sub = row.subtype || ''
+      // An overflow recovery that only dropped old images ran no summary.
+      // Before 2026-11-06 it wrote a compaction_complete row; it is an
+      // image prune, as its rows are now.
+      const sub =
+        row.subtype === 'compaction_complete' &&
+        row.trigger === 'overflow_cascade_image_elision'
+          ? 'media_pruning'
+          : row.subtype || ''
       // A compaction counts once, by its outcome: a summary's complete
       // row, or a prune's row. Start, skipped and failed rows (and thrash
       // skips) record attempts; a start row carries no tokens_after, so

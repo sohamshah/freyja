@@ -62,7 +62,7 @@ The sync `AgentRunner` (`_handle_context_pressure`) halves after each call past 
 | Path | Trigger label | Code | Fires when |
 |---|---|---|---|
 | **A** Pre-request | `pre_request` | `engine/runner.py:_ensure_context_room` | The context is past 70% before a call. |
-| **B** Overflow | `overflow_cascade` | `engine/runner.py:_handle_overflow_cascade` | The provider rejected a request as too long. It first removes the oldest images when they hold the bytes (trigger `overflow_cascade_image_elision`), then summarizes, then moves down the fallback chain. |
+| **B** Overflow | `overflow_cascade` | `engine/runner.py:_handle_overflow_cascade` | The provider rejected a request as too long. It first removes the oldest images when they hold the bytes (trigger `overflow_cascade_image_elision`), then summarizes, then moves down the fallback chain. Removing images runs no summary, so it reports `media_pruning` (strategy `cumulative_image_prune`), as the other image recoveries do. |
 | **C** Agent | `agent_summarize_context` | `bridge/tools/summarize_context_tool.py` | The agent calls `summarize_context` with scope `since_last_compaction`, `all` or `early`. |
 | **D** Manual | `manual` | `bridge/freyja_bridge.py:force_compact` | The user runs `/compact`. It is skipped while a turn runs. |
 | **E** Restore | `restore` | `bridge/freyja_bridge.py:try_restore_transcript` | A transcript is loaded from disk and the runner's measure (`context_outlook`) is past 70% of the usable window (reason `pressure`). Or a Slack session was idle 6 hours or more and has more than 50 messages (reason `slack_idle_revisit`). |
@@ -277,7 +277,7 @@ ts                         <unix epoch float>
 | Element | Source rows | Aggregation |
 |---|---|---|
 | Total spend tile | `llm_call_metric` | Sum of `cost_usd`. |
-| Compactions tile | `compaction_event` outcome rows | Each compaction counts once, by its outcome: a `compaction_complete` row ("llm" in the subline) or a `context_pruning` or `media_pruning` row ("prune"). Start, skipped and failed rows are attempts and do not count. The subline also counts `thrash_skip` rows. |
+| Compactions tile | `compaction_event` outcome rows | Each compaction counts once, by its outcome: a `compaction_complete` row ("llm" in the subline) or a `context_pruning` or `media_pruning` row ("prune"). Start, skipped and failed rows are attempts and do not count. The subline also counts `thrash_skip` rows. Before 2026-11-06 an overflow recovery that only removed images wrote a `compaction_complete` row with trigger `overflow_cascade_image_elision`; the dashboard reads such a row as `media_pruning`, so it is a prune and not one of the runtime's summaries. |
 | Tokens saved tile | `compaction_event` outcome rows | Sum of `tokens_before - tokens_after` over rows where it is positive. Halving rows count, since they carry both sizes. A start row has no `tokens_after`, so counting it counted its whole size as saved. |
 | Cooperation | `compaction_event` complete rows | The agent's share of every summary. Agent-driven is `agent_summarize_context`; manual is `manual`; every other trigger is the runtime's (`pre_request`, `overflow_cascade`, `restore`, the old `context_pressure`). |
 | Trigger source bars | `compaction_event` outcome rows | Grouped by `trigger`. |

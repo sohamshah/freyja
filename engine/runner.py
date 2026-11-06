@@ -3073,11 +3073,11 @@ class AsyncAgentRunner:
         if image_prune is not None:
             elided = image_prune.images_before - image_prune.images_after
             if elided > 0:
-                # Emit a compaction event so the dashboard reflects
-                # this recovery in the same telemetry stream as text
-                # summarization. The trigger label distinguishes it.
+                # An image prune, as the other image recoveries report
+                # theirs: no summary ran. As a compaction_complete it was
+                # counted and shown as a summary.
                 await self._emit_system_event(SystemEvent(
-                    type="compaction_complete",
+                    type="media_pruning",
                     message=(
                         f"Overflow-cascade image elision: pruned "
                         f"{elided} oldest image block(s) to free request "
@@ -3085,8 +3085,10 @@ class AsyncAgentRunner:
                     ),
                     details={
                         "trigger": "overflow_cascade_image_elision",
+                        "strategy": "cumulative_image_prune",
                         "images_before": image_prune.images_before,
                         "images_after": image_prune.images_after,
+                        "omitted_images": elided,
                         "elided": elided,
                         "target_bytes": image_prune.hard_limit,
                     },

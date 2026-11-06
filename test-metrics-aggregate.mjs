@@ -90,6 +90,27 @@ check('a has-compaction filter keeps a session whose only rows are attempts out'
   assert.deepEqual(only.perSession.map((s) => s.sessionId), [])
 })
 
+check('an overflow recovery that only dropped images counts as a prune, not a summary', () => {
+  // Before 2026-11-06 it wrote a compaction_complete row; now a media_pruning row.
+  const elisions = aggregateRows([
+    pressure('s4', 75),
+    { ...event('s4', 'compaction_complete', 'overflow_cascade_image_elision'), mechanism: 'summary' },
+    { ...event('s4', 'media_pruning', 'overflow_cascade_image_elision'), mechanism: 'cumulative_image_prune' },
+    event('s4', 'compaction_start', 'overflow_cascade', 300_000),
+    event('s4', 'compaction_complete', 'overflow_cascade', 300_000, 40_000),
+  ], 'all')
+  assert.equal(elisions.summaryCount, 1)
+  assert.equal(elisions.pruneCount, 2)
+  assert.equal(elisions.compactions, 3)
+  assert.deepEqual(elisions.triggerCounts, { overflow_cascade_image_elision: 2, overflow_cascade: 1 })
+  assert.equal(elisions.cooperativeStats.runtimeFallbackCount, 1)
+  const [s4] = elisions.perSession
+  assert.deepEqual(
+    s4.compactionRows.map((c) => c.subtype),
+    ['media_pruning', 'media_pruning', 'compaction_start', 'compaction_complete'],
+  )
+})
+
 if (failures > 0) {
   console.log(`\n${failures} check(s) failed`)
   process.exit(1)
