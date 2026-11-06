@@ -465,8 +465,9 @@ function ScheduleCard(props: {
             <h3 className="m-0 truncate font-serif text-[17px] font-normal leading-tight text-fg-0">
               {job.name}
             </h3>
-            <span className={`rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.12em] ${statusPillClass(job.status)}`}>
-              {job.enabled ? job.status : 'paused'}
+            <span title={stoppedHint(job)}
+              className={`rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.12em] ${statusPillClass(job.status)}`}>
+              {statusWord(job)}
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10.5px] text-fg-2">
@@ -563,6 +564,22 @@ function CardButton(props: {
       {props.label}
     </button>
   )
+}
+
+/** The pill's word for a job. A job stopped over its budget read
+ *  "paused", as every disabled job did. */
+function statusWord(job: SchedulerJob): string {
+  if (job.status === 'disabled_budget_exhausted') return 'over budget'
+  return job.enabled ? job.status : 'paused'
+}
+
+/** What stopped a job and what runs it again, when "resume" alone is not
+ *  the whole answer. */
+function stoppedHint(job: SchedulerJob): string | undefined {
+  if (job.status === 'disabled_budget_exhausted') {
+    return 'A run went over this job’s budget, so it stopped. Ask Freyja to raise or remove the budget, then resume it.'
+  }
+  return undefined
 }
 
 function StatusDot(props: { status: string; enabled: boolean }) {
@@ -845,7 +862,7 @@ function ScheduleDetail(props: {
           />
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-fg-2">
             <span className={`rounded px-1.5 py-0.5 text-[9.5px] uppercase tracking-[0.12em] ${statusPillClass(job.status)}`}>
-              {job.enabled ? job.status : 'paused'}
+              {statusWord(job)}
             </span>
             <span>{cadenceSummary}</span>
             <span className="text-fg-3">·</span>
@@ -869,6 +886,9 @@ function ScheduleDetail(props: {
               </>
             )}
           </div>
+          {stoppedHint(job) && (
+            <p className="m-0 font-mono text-[11px] text-warn">{stoppedHint(job)}</p>
+          )}
         </div>
         <div className="flex shrink-0 gap-2">
           {job.enabled ? (

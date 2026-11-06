@@ -245,6 +245,18 @@ def _find_job_by_token(jobs: list[Any], token: str) -> Any | None:
     return None
 
 
+def _job_status(j: Any) -> str:
+    """A job's status as Slack shows it. A job stopped over its budget
+    read as disabled_budget_exhausted, which said nothing of how to run
+    it again."""
+    if j.status == "disabled_budget_exhausted":
+        return (
+            "stopped over budget (a run went over its budget; raise or remove "
+            f"the budget, then `/freyja schedule resume {j.id}`)"
+        )
+    return j.status
+
+
 def _format_jobs_table(jobs: list[Any]) -> str:
     if not jobs:
         return "_No scheduled jobs yet. Try `/freyja schedule add …` or `/freyja remind …`._"
@@ -254,7 +266,7 @@ def _format_jobs_table(jobs: list[Any]) -> str:
         from bridge.scheduler.scheduling import cadence_label
         lines.append(
             f"• `{j.id}` *{j.name}* — {cadence_label(j.schedule)}\n"
-            f"  status: {j.status} · next: {next_at} · sinks: "
+            f"  status: {_job_status(j)} · next: {next_at} · sinks: "
             f"{','.join(s.kind for s in j.sinks) or 'none'}"
         )
     return "\n".join(lines)
@@ -264,7 +276,7 @@ def _format_job_detail(j: Any) -> str:
     from bridge.scheduler.scheduling import cadence_label
     return (
         f"*{j.name}* (`{j.id}`)\n"
-        f"• Status: {j.status} · enabled: {j.enabled}\n"
+        f"• Status: {_job_status(j)} · enabled: {j.enabled}\n"
         f"• Cadence: {cadence_label(j.schedule)}\n"
         f"• Next fire: {_format_ts(j.next_fire_at)}\n"
         f"• Last fire: {_format_ts(j.last_fire_at)} · fires: {j.fire_count}\n"

@@ -414,7 +414,7 @@ class ScheduleTool:
 
 
 def _job_summary(j: JobRecord) -> dict[str, Any]:
-    return {
+    summary = {
         "id": j.id,
         "name": j.name,
         "description": j.description,
@@ -434,6 +434,13 @@ def _job_summary(j: JobRecord) -> dict[str, Any]:
         "tags": list(j.tags),
         "creator_surface": j.creator.surface,
     }
+    if j.status == "disabled_budget_exhausted":
+        summary["stopped"] = (
+            "over budget: a run went over the job's budget, whose "
+            "on_exceeded is abort_job. To run it again, raise or remove the "
+            "budget with action='update', then action='resume'."
+        )
+    return summary
 
 
 def _run_summary(r) -> dict[str, Any]:

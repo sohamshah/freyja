@@ -439,8 +439,11 @@ async def fire_job(
         if loop_decision is not None:
             _apply_loop_decision(service, fresh, loop_decision)
         if abort_job:
+            # No next fire, like every stopped job: the one the claim set
+            # was shown as a paused job's.
             fresh.enabled = False
             fresh.status = "disabled_budget_exhausted"
+            fresh.next_fire_at = None
         fresh.fire_count += 1
         fresh.last_fire_at = run.started_at
         if fresh.max_fires is not None and fresh.fire_count >= fresh.max_fires:
