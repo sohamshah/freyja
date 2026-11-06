@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from bridge.scheduler.models import (
     CLEARABLE_FIELDS,
@@ -926,10 +926,14 @@ class _LoopControlTool:
         schedule: SelfPacedSchedule,
         decision: LoopDecision,
         mode: str,
+        in_its_turn: Callable[[], bool] | None = None,
     ) -> None:
         self._schedule = schedule
         self._decision = decision
         self._mode = mode  # "continue" | "complete"
+        # Whether the session's running turn is the fire's: no other turn
+        # may decide for it.
+        self._in_its_turn = in_its_turn
 
     @property
     def definition(self) -> ToolDefinition:
@@ -977,6 +981,13 @@ class _LoopControlTool:
     async def execute(self, call_id: str, arguments: dict[str, Any]) -> ToolResult:
         import json
 
+        if self._in_its_turn is not None and not self._in_its_turn():
+            return _err(
+                call_id,
+                "this tool belongs to a scheduled run of a self-paced loop, and "
+                "this turn is not that run's. Only the run's own turn can "
+                "continue or complete the loop; do not call it here.",
+            )
         self._decision.reason = str(arguments.get("reason") or "")
         if self._mode == "complete":
             self._decision.kind = "complete"
@@ -995,9 +1006,13 @@ class _LoopControlTool:
         return ToolResult(call_id=call_id, content=json.dumps({"delay_seconds": delay}))
 
 
-def build_continue_loop_tool(*, schedule: SelfPacedSchedule, decision: LoopDecision):
-    return _LoopControlTool(schedule=schedule, decision=decision, mode="continue")
+def build_continue_loop_tool(
+    *, schedule: SelfPacedSchedule, decision: LoopDecision, in_its_turn: Callable[[], bool] | None = None,
+):
+    return _LoopControlTool(schedule=schedule, decision=decision, mode="continue", in_its_turn=in_its_turn)
 
 
-def build_complete_loop_tool(*, schedule: SelfPacedSchedule, decision: LoopDecision):
-    return _LoopControlTool(schedule=schedule, decision=decision, mode="complete")
+def build_complete_loop_tool(
+    *, schedule: SelfPacedSchedule, decision: LoopDecision, in_its_turn: Callable[[], bool] | None = None,
+):
+    return _LoopControlTool(schedule=schedule, decision=decision, mode="complete", in_its_turn=in_its_turn)

@@ -85,6 +85,9 @@ def _drive_fire(
     offered: list[str] = []
 
     async def turn(prompt: str) -> None:
+        # A turn says it started before it calls any tool.
+        sess.current_turn_id = "turn-1"
+        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-1"})
         transcript = sess.session.transcript
         transcript.append_message(Message(role="user", content=prompt))
         if operator_says is not None:
@@ -100,7 +103,6 @@ def _drive_fire(
             name, args = loop_call
             await sess.tool_registry.get(name).execute("call-1", args)
         sess.cumulative_cost += cost
-        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-1"})
         fb.emit({"type": "llm_call_metric", "sessionId": "s1", "turnId": "turn-1", "costUsd": cost})
         transcript.append_message(Message(role="assistant", content="Checked the queue."))
 
@@ -244,6 +246,8 @@ async def test_a_loop_run_queued_behind_the_turn_that_started_it_keeps_its_loop_
         # The turn ends, and its task runs the queued prompt (_drain_turns).
         _prompt, _attachments, on_turn_start = sess.queued_messages.pop(0)
         on_turn_start()
+        sess.current_turn_id = "turn-2"
+        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-2"})
         offered.extend(d.name for d in sess.tool_registry.list_definitions())
         tool = sess.tool_registry.get(CONTINUE_LOOP_TOOL)
         if decides == "continue" and tool is not None:
@@ -264,6 +268,51 @@ async def test_a_loop_run_queued_behind_the_turn_that_started_it_keeps_its_loop_
     delay = 300 if decides == "continue" else 600
     assert time.time() + delay - 10 < saved.next_fire_at <= time.time() + delay
     assert saved.fire_count == 1
+
+
+async def test_the_turn_that_queued_a_loops_run_cannot_decide_for_it(monkeypatch) -> None:
+    # The run's loop tools are in the session from its run now on, so the
+    # rest of the calling turn saw them and its "complete" ended the loop
+    # before the run's own turn had run.
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.runtime import fire_job
+    from bridge.tools.schedule_tool import COMPLETE_LOOP_TOOL
+
+    sess = _session(cost_so_far=0.0)
+    sess.queued_messages = []
+
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
+        s.queued_messages.append((prompt, attachments, on_turn_start))
+        return False
+
+    monkeypatch.setattr(fb, "_schedule_or_queue_turn", schedule_turn)
+    job = _job()
+    save_job(job)
+
+    async def calling_turn():
+        sess.current_turn_id = "turn-1"
+        await fire_job(_Service({"s1": sess}), job)  # Its tool call.
+        await asyncio.sleep(0)  # Its next model call: the run queues its prompt.
+        said = await sess.tool_registry.get(COMPLETE_LOOP_TOOL).execute("call-1", {"reason": "done"})
+        # The turn ends, and its task runs the queued prompt, which decides
+        # nothing.
+        _prompt, _attachments, on_turn_start = sess.queued_messages.pop(0)
+        on_turn_start()
+        sess.current_turn_id = "turn-2"
+        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-2"})
+        return said
+
+    sess.pending_task = asyncio.ensure_future(calling_turn())
+    said = await sess.pending_task
+    for _ in range(50):  # The run's end follows the session's turn task.
+        if load_job(job.id).fire_count:
+            break
+        await asyncio.sleep(0.02)
+
+    assert said.is_error and "scheduled run" in said.content
+    saved = load_job(job.id)
+    assert (saved.enabled, saved.status, saved.fire_count) == (True, "active", 1)
+    assert saved.next_fire_at > time.time() + 590  # The maximum delay: no decision.
 
 
 @pytest.mark.parametrize("decides", ["continue", "nothing"])

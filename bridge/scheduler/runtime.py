@@ -165,6 +165,7 @@ async def fire_job(
     run.execution_session_id = sess_id
     run.status = "running"
     save_run(run)
+    run_cost = _RunCost(run.run_id, job.budget, sess)
 
     # For self-paced loops, register the loop-control tools on this
     # session's tool registry for the duration of the fire. They record
@@ -200,8 +201,15 @@ async def fire_job(
                     job.id, sess_id,
                 )
             else:
-                cont = build_continue_loop_tool(schedule=job.schedule, decision=loop_decision)
-                comp = build_complete_loop_tool(schedule=job.schedule, decision=loop_decision)
+                # They act only in the run's own turns. Every turn of the
+                # session sees them: the rest of the turn whose run now
+                # queued the prompt could end the loop before the run ran.
+                cont = build_continue_loop_tool(
+                    schedule=job.schedule, decision=loop_decision, in_its_turn=run_cost.in_its_turn,
+                )
+                comp = build_complete_loop_tool(
+                    schedule=job.schedule, decision=loop_decision, in_its_turn=run_cost.in_its_turn,
+                )
                 inner_reg.register(cont)
                 inner_reg.register(comp)
                 registered_loop_tools.extend([
@@ -244,14 +252,14 @@ async def fire_job(
             details={"jobId": job.id, "runId": run.run_id},
         )
         rest = asyncio.ensure_future(_run_fire(
-            service, job, run, sess, sess_id, owns_session, prompt,
+            service, job, run, sess, sess_id, owns_session, prompt, run_cost,
             loop_decision, registered_loop_tools,
         ))
         _queued_runs[run.run_id] = rest
         rest.add_done_callback(lambda _t: _queued_runs.pop(run.run_id, None))
         return run
     return await _run_fire(
-        service, job, run, sess, sess_id, owns_session, prompt,
+        service, job, run, sess, sess_id, owns_session, prompt, run_cost,
         loop_decision, registered_loop_tools,
     )
 
@@ -284,13 +292,15 @@ async def _run_fire(
     sess_id: str,
     owns_session: bool,
     prompt: str,
+    run_cost: "_RunCost",
     loop_decision: Any,
     registered_loop_tools: list[str],
 ) -> RunRecord:
     """Run ``prompt``, the fire of ``job`` that ``run`` records, in ``sess``,
-    and end the run: its output and cost, its sinks, the job's record.
-    ``registered_loop_tools`` are a loop's tools, removed once its turns are
-    done, and ``loop_decision`` what its agent chose with them."""
+    and end the run: its output and cost (``run_cost``), its sinks, the
+    job's record. ``registered_loop_tools`` are a loop's tools, removed once
+    its turns are done, and ``loop_decision`` what its agent chose with
+    them."""
     # ── Run the agent turn ────────────────────────────────────────────
     output_text = ""
     output_attachments: list[dict[str, Any]] = []
@@ -299,7 +309,6 @@ async def _run_fire(
     abort_job = False
     from bridge.freyja_bridge import register_session_listener, unregister_session_listener
 
-    run_cost = _RunCost(run.run_id, job.budget, sess)
     register_session_listener(sess_id, run_cost.on_event)
     try:
         from bridge.freyja_bridge import _schedule_or_queue_turn
@@ -1162,6 +1171,11 @@ class _RunCost:
                 self.unqueued = True
                 return True
         return False
+
+    def in_its_turn(self) -> bool:
+        """Whether the session's running turn is one of the run's own, which
+        has not been stopped."""
+        return not self.stopped and getattr(self._sess, "current_turn_id", None) in self._turns
 
     def runs_turn(self, sess: Any) -> bool:
         """Whether the session's running turn is the fire's: its prompt's,
