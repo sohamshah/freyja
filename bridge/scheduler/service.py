@@ -235,6 +235,9 @@ class SchedulerService:
         # Owner: recompute next_fire_at for every job and persist —
         # the prior process may have crashed mid-update, leaving stale
         # values. We hold each job's flock briefly while we rewrite.
+        # A job not yet due keeps its next fire: recomputing it from now
+        # pushed an interval job a whole interval out and dropped a
+        # self-paced job's chosen delay on every change of owner.
         # A slot missed while no process ticked is left due when the
         # job's misfire policy catches up, so the tick fires it; under
         # "skip" the recompute moves past it.
@@ -249,7 +252,7 @@ class SchedulerService:
                     continue
                 fresh = load_job(job.id) or job
                 if not _catches_up(fresh, now):
-                    self._recompute_next_fire(fresh, force=True)
+                    self._recompute_next_fire(fresh)
                 save_job(fresh)
                 boot_count += 1
         touch_wake()

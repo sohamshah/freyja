@@ -14,10 +14,19 @@ import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 import bridge.scheduler.runtime as runtime
 import bridge.scheduler.service as service_mod
-from bridge.scheduler.models import JobRecord, NoopSinkSpec, OnceSchedule, RunRecord
-from bridge.scheduler.persistence import FileLock, owner_lock_path, save_job
+from bridge.scheduler.models import (
+    IntervalSchedule,
+    JobRecord,
+    NoopSinkSpec,
+    OnceSchedule,
+    RunRecord,
+    SelfPacedSchedule,
+)
+from bridge.scheduler.persistence import FileLock, load_job, owner_lock_path, save_job
 from bridge.scheduler.service import SchedulerService
 
 
@@ -80,3 +89,31 @@ async def test_stop_ends_the_retry_of_a_crud_only_scheduler(tmp_path, monkeypatc
     peer = FileLock(owner_lock_path())
     assert peer.acquire()
     peer.release()
+
+
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        pytest.param(IntervalSchedule(seconds=3600), id="interval"),
+        pytest.param(SelfPacedSchedule(min_delay_seconds=60, max_delay_seconds=3600), id="self-paced"),
+    ],
+)
+async def test_a_new_owner_keeps_the_next_fire_of_a_job_not_yet_due(tmp_path, monkeypatch, schedule):
+    # The owner boot recomputed every job's next fire from now: an hourly
+    # job due in 6 minutes moved to an hour from now, and a self-paced job
+    # lost the delay its agent chose. Ownership changes hands on every
+    # restart and takeover, so such a job could be pushed out forever.
+    monkeypatch.setenv("FREYJA_HOME", str(tmp_path))
+    now = time.time()
+    job = JobRecord(id="sched_not_due", name="hourly check", schedule=schedule,
+                    prompt="check", sinks=[NoopSinkSpec()])
+    job.last_fire_at = now - 3240
+    job.next_fire_at = now + 360
+    save_job(job)
+    service = SchedulerService(SimpleNamespace())
+
+    await service.start()
+
+    assert service._is_owner
+    assert load_job(job.id).next_fire_at == job.next_fire_at
+    await service.stop()
