@@ -685,6 +685,14 @@ def predates_reset(sidecar: dict[str, Any], reset: int) -> bool:
     return reset > 0 and int(sidecar.get("savedAt") or 0) <= reset
 
 
+def parent_reset_since(sidecar: dict[str, Any]) -> bool:
+    """A sub-agent's saved state is from before its parent's last reset
+    (predates_reset): the conversation it belongs to was set aside, and
+    nothing wakes it again."""
+    parent = str(sidecar.get("parentSessionId") or "")
+    return bool(parent) and predates_reset(sidecar, reset_at(parent))
+
+
 def remap_ids(obj: Any, id_remap: dict[str, str]) -> Any:
     """Return a deep copy of ``obj`` with every string that exactly equals
     an old session id replaced by its new id.

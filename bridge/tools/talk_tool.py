@@ -125,6 +125,13 @@ def _session_exists_on_disk(session_id: str) -> bool:
 # Status prefix of a message that was only written to disk. Nothing is
 # running to read it, so waiting for a reply can only time out.
 _QUEUED_ONLY = "queued to inbox sidecar"
+# Status of a message to a sub-agent whose parent's conversation was reset
+# since it ran (parent_reset_since).
+_QUEUED_PARENT_RESET = (
+    f"{_QUEUED_ONLY} — not woken: it belongs to a conversation that was "
+    "reset since it ran (Slack's /reset, or a new session under its "
+    "parent's id), and nothing runs it to read the message"
+)
 
 
 def queue_to_inbox_sidecar(
@@ -831,6 +838,20 @@ class TalkTool:
                     "run would read it"
                 )
                 continue
+
+            # A sub-agent of a conversation reset since it ran: nothing
+            # wakes it (_wake_archived_subagent). The talk said the re-wake
+            # failed and it would read the message when it next runs, or,
+            # from another process, that it was forwarded to be delivered.
+            if archived is not None:
+                from bridge.transcript_persistence import parent_reset_since
+
+                if parent_reset_since(archived):
+                    status = queue_to_inbox_sidecar(target_id, msg) or ""
+                    if status.startswith(_QUEUED_ONLY):
+                        status = _QUEUED_PARENT_RESET
+                    results.append(f"'{ref}' → {target_id}: {status}")
+                    continue
 
             # Cross-process routing first: a local mirror of a session
             # owned by another process must NOT swallow the message.

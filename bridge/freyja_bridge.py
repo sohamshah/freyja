@@ -1556,7 +1556,8 @@ async def _route_operator_message_to_subagent(
         # re-woken here, it ran under a copy of that session.
         _refuse_send(sid, client_id, _SEND_SCHEDULER_ELSEWHERE)
         return True
-    if _resolve_archived_subagent(sid) is None:
+    sidecar = _resolve_archived_subagent(sid)
+    if sidecar is None:
         if _gateway_holds(sid):
             # A Slack thread's sub-agent on its first run: the gateway
             # runs it (_route_operator_message_to_gateway).
@@ -1585,7 +1586,22 @@ async def _route_operator_message_to_subagent(
                 ],
             }
         )
-    if await _wake_archived_subagent(state, sid, msg):
+    from bridge.transcript_persistence import parent_reset_since
+
+    if parent_reset_since(sidecar):
+        # Its parent's conversation was reset since it ran: nothing wakes
+        # it (_wake_archived_subagent). Handed to the gateway, a Slack
+        # thread's sub-agent was reported woken, and the gateway left the
+        # message in its inbox file without a word.
+        from bridge.tools.talk_tool import queue_to_inbox_sidecar
+
+        queue_to_inbox_sidecar(sid, msg)
+        emit_error(
+            f"Sub-agent {sid} belongs to a conversation that was reset since "
+            "it ran, so it was not woken. Your message is waiting in its inbox.",
+            recoverable=True,
+        )
+    elif await _wake_archived_subagent(state, sid, msg):
         log("info", f"operator message → re-woke sub-agent {sid}")
     else:
         emit_error(

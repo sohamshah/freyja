@@ -279,6 +279,26 @@ async def test_a_talk_to_an_old_sub_agent_does_not_wake_it_under_the_fresh_conve
     assert [m["content"] for m in tp.load_inbox_state(old)["unread"]] == ["one more thing"]
 
 
+async def test_a_talk_to_an_old_sub_agent_says_its_conversation_was_reset(monkeypatch, tmp_path):
+    # The talk said the re-wake failed because no session could host it,
+    # and that it would read the message when it next runs: nothing runs
+    # it again.
+    monkeypatch.setattr(fb, "_SUBAGENT_PARENTS", {})
+    state, _sess = await _thread(monkeypatch, tmp_path)
+    old = _subagent(KEY, "sub_old_1")
+    await _gateway(state)._reset_session(KEY)
+    fresh = await state.ensure_session(KEY)
+    await fresh.initialize()
+
+    out = await fresh.tool_registry._tools["talk"].execute(
+        "c1", {"to": old, "content": "one more thing", "wait_for_reply": True, "reply_timeout_s": 1},
+    )
+
+    assert "reset" in out.content and "inbox" in out.content
+    assert "when it next runs" not in out.content
+    assert [m["content"] for m in tp.load_inbox_state(old)["unread"]] == ["one more thing"]
+
+
 @pytest.mark.parametrize("loaded", [True, False])
 async def test_reset_parses_no_transcript_on_the_gateways_loop(monkeypatch, tmp_path, loaded):
     # /reset read the thread's settings from its saved transcript on the

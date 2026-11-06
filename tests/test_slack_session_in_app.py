@@ -502,6 +502,32 @@ async def test_a_message_for_a_slack_sub_agent_goes_to_a_gateway_that_started_be
     assert [cmd["message"]["content"] for cmd in _forwarded()] == ["also check X"]
 
 
+async def test_a_message_typed_for_a_slack_sub_agent_of_a_reset_thread_says_so(app_bridge, monkeypatch):
+    # The thread was reset (Slack's /reset) since the sub-agent ran. The
+    # app said nothing: the gateway took the message, and left it in the
+    # sub-agent's inbox file without a word, as it wakes no sub-agent of
+    # the conversation set aside.
+    import time
+
+    state, events, _built = app_bridge
+    _gateway_running(monkeypatch, os.getpid() + 1)
+    tp.save_transcript(SLACK, {"version": 1, "session_id": SLACK, "transcript": {"entries": [{"id": "e1"}]}})
+    _gateway_sub_agent_saved()
+    tp.save_subagent_state(SLACK_SUB, {**tp.load_subagent_state(SLACK_SUB), "savedAt": int(time.time() * 1000)})
+    time.sleep(0.002)
+    tp.set_transcript_aside(SLACK)  # /reset
+    resumed = _app_root_that_could_host(state)
+
+    await fb._handle_command(
+        state, {"type": "send_message", "sessionId": SLACK_SUB, "content": "also check X", "clientId": "m6"},
+    )
+
+    assert resumed == [] and _forwarded() == []
+    assert [m["content"] for m in tp.load_inbox_state(SLACK_SUB)["unread"]] == ["also check X"]
+    (err,) = [e for e in events if e["type"] == "error"]
+    assert "reset" in err["message"] and "inbox" in err["message"]
+
+
 def _gateway_sub_agent_running(sub: str = SLACK_SUB, parent: str = SLACK) -> None:
     """A first run still going in the gateway: its transcript is saved,
     and its sidecar is not yet."""
