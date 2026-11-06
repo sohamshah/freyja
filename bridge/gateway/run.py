@@ -2967,6 +2967,7 @@ class GatewayDaemon:
         reader.register("artifact_note", self._on_artifact_note)
         reader.register("cancel_turn", self._on_cancel_turn)
         reader.register("scheduler_fire", self._on_scheduler_fire)
+        reader.register("set_model", self._on_set_model)
         from bridge.freyja_bridge import _KANBAN_COMMANDS
 
         for kind in _KANBAN_COMMANDS:
@@ -3011,6 +3012,60 @@ class GatewayDaemon:
                 "subtype": "turn_cancelled",
                 "message": f"Cancelled {int(cancelled)} in-flight operation(s)",
                 "details": {"fired": int(cancelled), "kind": kind, "scope": "turn"},
+            }
+        )
+
+    async def _on_set_model(self, cmd: dict[str, Any]) -> None:
+        """A model picked in the app for a Slack session. It changes the
+        thread's model as ``/model`` does (_handle_model_command): checked
+        first, then ensure_session, which parks it while a turn runs. The
+        app's bridge changed only its copy, so the app showed the new model
+        while the thread kept the old one."""
+        from bridge.freyja_bridge import _normalize_reasoning_level, emit
+        from bridge.gateway.session_router import source_from_session_key
+        from engine.providers import MODEL_REGISTRY, resolve_retired_model
+
+        session_id = str(cmd.get("sessionId") or "")
+        asked = str(cmd.get("model") or "").strip()
+        if not session_id or not asked or self.state is None:
+            return
+        target = resolve_retired_model(asked)
+        if target not in MODEL_REGISTRY:
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": session_id,
+                    "subtype": "model_change_refused",
+                    "message": f"Unknown model `{target}`: the session stays on its current model.",
+                    "details": {"model": target, "chatVisible": True},
+                }
+            )
+            return
+        reasoning_level = cmd.get("reasoningLevel") or None
+        # The Slack source matters only when this loads the thread: its
+        # first initialize applies the Slack tool filter from it.
+        session = await self.state.ensure_session(
+            session_id=session_id,
+            model_id=target,
+            reasoning_level=reasoning_level,
+            gateway_source=source_from_session_key(session_id),
+        )
+        if (getattr(session, "pending_config", None) or {}).get("model_id") == target:
+            reasoning = _normalize_reasoning_level(target, reasoning_level or "auto")
+            message = f"model will change to {target} ({reasoning}) when the running turn ends"
+        else:
+            reasoning = session.reasoning_level
+            message = f"model changed to {target} ({reasoning})"
+        if asked != target:
+            message += f" ({asked} was retired)"
+        logger.info("[gateway] app model change: session=%s %s", session_id, message)
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": session_id,
+                "subtype": "model_changed",
+                "message": message,
+                "details": {"model": target, "reasoningLevel": reasoning},
             }
         )
 

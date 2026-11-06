@@ -189,3 +189,89 @@ async def test_the_gateway_says_so_when_the_thread_is_not_loaded(app, monkeypatc
     await daemon._on_kanban_command({"type": "kanban_operator_create", "sessionId": SLACK, "title": "t"})
     (note,) = [e for e in events if e.get("subtype") == "control_command_skipped"]
     assert note["sessionId"] == SLACK and note["details"]["chatVisible"]
+
+
+# ── model ────────────────────────────────────────────────────────────
+
+
+async def test_a_model_picked_in_the_app_for_a_slack_session_goes_to_the_gateway(app, monkeypatch):
+    state, events = app
+    _gateway_running(monkeypatch, os.getpid() + 1)
+    await fb._handle_command(
+        state,
+        {"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5", "reasoningLevel": "high",
+         "coordinationStrategy": "bus"},
+    )
+    # No copy changed, and the app does not say the model changed: the
+    # gateway does, once it has.
+    assert state.sessions == {}
+    assert not [e for e in events if e.get("subtype") == "model_changed"]
+    (cmd,) = _forwarded()
+    assert cmd == {"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5", "reasoningLevel": "high"}
+
+
+async def test_a_model_change_is_refused_when_no_gateway_runs(app, monkeypatch):
+    state, events = app
+    _gateway_running(monkeypatch, None)
+    await fb._handle_command(state, {"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5"})
+    assert state.sessions == {} and _forwarded() == []
+    (err,) = [e for e in events if e["type"] == "error"]
+    assert "Slack gateway" in err["message"]
+
+
+def _gateway_state(monkeypatch, *, turn_running: bool = False):
+    """The gateway's bridge state, holding the thread: ensure_session as
+    the real one changes a model, or parks the change while a turn runs."""
+    from bridge.gateway.run import GatewayDaemon
+
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
+    thread = SimpleNamespace(id=SLACK, model_id="claude-sonnet-5-5", reasoning_level="auto", pending_config=None)
+    calls: list[dict] = []
+
+    async def ensure_session(session_id, **kw):
+        calls.append({"session_id": session_id, **kw})
+        if turn_running:
+            thread.pending_config = {"model_id": kw["model_id"], "reasoning_level": kw.get("reasoning_level")}
+        else:
+            thread.model_id = kw["model_id"]
+            thread.reasoning_level = kw.get("reasoning_level") or "auto"
+        return thread
+
+    daemon = GatewayDaemon()
+    daemon.state = SimpleNamespace(sessions={SLACK: thread}, ensure_session=ensure_session)
+    return daemon, thread, calls
+
+
+async def test_the_gateway_changes_the_threads_model_as_slash_model_does(app, monkeypatch):
+    _state, events = app
+    daemon, thread, calls = _gateway_state(monkeypatch)
+    await daemon._on_set_model({"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5", "reasoningLevel": "high"})
+    (call,) = calls
+    assert (call["session_id"], call["model_id"], call["reasoning_level"]) == (SLACK, "claude-opus-5-5", "high")
+    # A thread loaded here for the first time gets its Slack source, so its
+    # first initialize applies the Slack tool filter.
+    assert call["gateway_source"].chat_id == "C1"
+    assert thread.model_id == "claude-opus-5-5"
+    (changed,) = [e for e in events if e.get("subtype") == "model_changed"]
+    assert changed["sessionId"] == SLACK
+    assert changed["details"] == {"model": "claude-opus-5-5", "reasoningLevel": "high"}
+
+
+async def test_the_gateway_says_a_model_change_waits_for_the_running_turn(app, monkeypatch):
+    _state, events = app
+    daemon, thread, _calls = _gateway_state(monkeypatch, turn_running=True)
+    await daemon._on_set_model({"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5"})
+    assert thread.model_id == "claude-sonnet-5-5"
+    (changed,) = [e for e in events if e.get("subtype") == "model_changed"]
+    assert changed["details"]["model"] == "claude-opus-5-5"
+    assert "turn" in changed["message"]
+
+
+async def test_the_gateway_refuses_a_model_it_does_not_know(app, monkeypatch):
+    _state, events = app
+    daemon, thread, calls = _gateway_state(monkeypatch)
+    await daemon._on_set_model({"type": "set_model", "sessionId": SLACK, "model": "claude-opus-9-9"})
+    assert calls == [] and thread.model_id == "claude-sonnet-5-5"
+    assert not [e for e in events if e.get("subtype") == "model_changed"]
+    (note,) = [e for e in events if e.get("subtype") == "model_change_refused"]
+    assert note["sessionId"] == SLACK and "claude-opus-9-9" in note["message"]

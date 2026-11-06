@@ -13282,6 +13282,10 @@ _STOP_GATEWAY_DOWN = (
     "Not stopped: this session's turn runs in the Slack gateway, which is "
     "not running."
 )
+_MODEL_GATEWAY_DOWN = (
+    "Model not changed: this session runs in the Slack gateway, which is not "
+    "running."
+)
 _KANBAN_GATEWAY_DOWN = (
     "Not done: this session's kanban board is in the Slack gateway, which is "
     "not running."
@@ -14577,6 +14581,14 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if not new_model:
             return
         reasoning_level = cmd.get("reasoningLevel")
+        # A Slack session runs on the gateway's model. Changed on a copy
+        # here, the app showed the new model while the thread kept the old.
+        if session_id and _route_command_to_gateway(
+            session_id,
+            {"type": "set_model", "model": new_model, "reasoningLevel": reasoning_level},
+            _MODEL_GATEWAY_DOWN,
+        ):
+            return
         if session_id:
             sess = await state.ensure_session(
                 session_id,
