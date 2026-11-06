@@ -1457,3 +1457,33 @@ async def test_force_dispatch_sends_a_crashed_or_timed_out_card_as_the_tick_does
     ticked = [(call["agent_type"], call["label"]) for call in sub_tool.calls]
 
     assert forced == ticked == [("code", f"code {card}")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["running", "done"])
+async def test_cancel_stops_the_worker_only_once_the_card_is_cancelled(monkeypatch, status: str) -> None:
+    """Cancel stopped the card's worker before it moved the card. On a
+    card that cannot move to cancelled (one the judge passed after the app
+    drew it as running, while its worker still ran) the worker was stopped
+    and the card stayed where it was. The worker is now stopped only once
+    the card is cancelled."""
+    board = SessionKanbanBoard()
+    card = (await board.create(title="card", assignee="code")).id
+    await board.update(card, actor="worker", status="running", worker_session_id="sub_w")
+    if status == "done":
+        await board.update(card, actor="kanban-judge", status="done")
+    session = _make_session(board=board, sub_tool=_StubSubAgentTool())
+    killed: list[str] = []
+    session.subagent_registry.kill = killed.append
+
+    sent = await _operator_command(monkeypatch, session, type="kanban_operator_cancel", cardId=card)
+
+    if status == "done":
+        [refused] = sent
+        assert refused["subtype"] == "kanban_operator_cancel_failed"
+        assert killed == []
+        assert (await board.get(card)).status == "done"
+    else:
+        assert sent[-1]["subtype"] == "kanban_operator_cancelled"
+        assert killed == ["sub_w"]
+        assert (await board.get(card)).status == "cancelled"

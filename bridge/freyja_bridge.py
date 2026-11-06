@@ -15490,13 +15490,14 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         return
 
     if ctype == "kanban_operator_cancel":
-        # Operator wants to kill an in-flight card. We send the
-        # subagent kill signal (cancel_event — sub_agent_tool's
-        # watchdog picks it up + unwinds the runner) AND mark the
-        # card cancelled on the board so the renderer reflects the
-        # decision immediately. Drop the dispatched-set entry so the
-        # next autopilot tick can pick the card up again if the
-        # operator unblocks/re-readies it.
+        # Operator wants to kill an in-flight card. We mark the card
+        # cancelled on the board so the renderer reflects the decision
+        # immediately, AND send the subagent kill signal (cancel_event —
+        # sub_agent_tool's watchdog picks it up + unwinds the runner).
+        # The kill waits for the move: a card that cannot be cancelled
+        # (done, failed, already cancelled) keeps its worker. Drop the
+        # dispatched-set entry so the next autopilot tick can pick the
+        # card up again if the operator unblocks/re-readies it.
         if not session_id:
             return
         card_id = str(cmd.get("cardId") or "").strip()
@@ -15515,11 +15516,6 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             )
             return
         worker_sid = (getattr(task, "worker_session_id", "") or "").strip()
-        if worker_sid and sess.subagent_registry is not None:
-            try:
-                sess.subagent_registry.kill(worker_sid)
-            except Exception as exc:  # noqa: BLE001
-                log("warn", f"kanban_operator_cancel: kill({worker_sid}) raised: {exc}")
         try:
             task = await sess.kanban_board.update(
                 card_id,
@@ -15537,6 +15533,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 details={"cardId": card_id, "reason": str(exc)},
             )
             return
+        if worker_sid and sess.subagent_registry is not None:
+            try:
+                sess.subagent_registry.kill(worker_sid)
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"kanban_operator_cancel: kill({worker_sid}) raised: {exc}")
         sess._kanban_dispatched.discard(card_id)  # noqa: SLF001
         sess._emit_kanban_event(  # noqa: SLF001
             "kanban_operator_cancelled",
