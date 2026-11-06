@@ -2165,11 +2165,26 @@ export type CompactionTelemetryRow =
       model?: string
       tokens_before: number
       tokens_after: number
+      /** The window less the reply's reserve, and the sizes before and
+       *  after as a percent of it. Null when the event carried none. */
+      effective_window?: number | null
+      pressure_pct_before?: number | null
+      pressure_pct_after?: number | null
+      /** The reading that set a pre-request or overflow compaction off,
+       *  and its percent of the window. The sizes before and after are
+       *  both the tokenizer's count, so the size before is not this. */
+      trigger_tokens?: number | null
+      trigger_pressure_pct?: number | null
+      summary_tokens?: number
       mechanism: string
-      trigger?: string
+      trigger?: string | null
       scope?: string | null
       reason?: string | null
       resumed_from_previous?: boolean
+      summarizer_input_tokens?: number
+      summarizer_output_tokens?: number
+      summarizer_duration_ms?: number
+      summarizer_cost_usd?: number | null
       /** First ~240 chars of the produced summary — for at-a-glance
        *  lists where the full text is too long. */
       summary_excerpt?: string | null
@@ -2177,6 +2192,8 @@ export type CompactionTelemetryRow =
        *  compaction-log rows in the dashboard so users can inspect
        *  exactly what was summarized. */
       summary_text?: string | null
+      /** thrash_skip rows: how many compactions in a row saved < 10%. */
+      ineffective_run?: number
     }
   | {
       type: 'llm_call_metric'

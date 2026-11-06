@@ -545,7 +545,7 @@ interface CompactionEventRow {
   ts: number
   subtype: string
   mechanism: string
-  trigger?: string
+  trigger?: string | null
   tokens_before: number
   tokens_after: number
   /** Full produced summary, for the clickable detail view. */
@@ -728,7 +728,7 @@ export function aggregateRows(
   // pressure_pct_at_call when it's not on the row directly.
   const lastSeenPressureBySession = new Map<string, number>()
 
-  for (const row of sorted as any[]) {
+  for (const row of sorted) {
     if (!row || !row.type) continue
     const sid: string | undefined = row.session_id
     const ts: number = row.ts || 0
@@ -855,10 +855,10 @@ export function aggregateRows(
           tokens_after: after,
           // New fields from the enriched compaction_event JSONL row —
           // surfaced in the clickable compaction-log detail panel.
-          summary_text: (row as any).summary_text ?? (row as any).summary_excerpt ?? null,
-          scope: (row as any).scope ?? null,
-          reason: (row as any).reason ?? null,
-          resumed_from_previous: Boolean((row as any).resumed_from_previous),
+          summary_text: row.summary_text ?? row.summary_excerpt ?? null,
+          scope: row.scope ?? null,
+          reason: row.reason ?? null,
+          resumed_from_previous: Boolean(row.resumed_from_previous),
         })
       }
     } else if (row.type === 'summarize_context_call') {
