@@ -531,6 +531,34 @@ def delete_transcript(session_id: str) -> None:
         pass
 
 
+def set_transcript_aside(session_id: str) -> Path | None:
+    """Start a session's next load on an empty conversation, keeping the
+    saved one: its file moves to ``<file>.reset-<ms>``, a name no load or
+    listing reads, and its model, reasoning level and mode stay in its
+    place in a file with no entries (as _save_settings_alone writes one).
+    Returns where the conversation went, or None when none was saved."""
+    data = load_transcript(session_id)
+    if data is None or not (data.get("transcript") or {}).get("entries"):
+        return None
+    path = _transcript_path(session_id)
+    aside = path.with_name(f"{path.name}.reset-{int(time.time() * 1000)}")
+    try:
+        path.replace(aside)
+    except OSError:
+        logger.exception("Failed to set the transcript of %s aside", session_id)
+        return None
+    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    save_transcript(session_id, {
+        "version": 1,
+        "session_id": session_id,
+        "metadata": {
+            k: meta[k] for k in ("model_id", "reasoning_level", "coordination_strategy") if k in meta
+        },
+        "transcript": {"entries": []},
+    })
+    return aside
+
+
 def remap_ids(obj: Any, id_remap: dict[str, str]) -> Any:
     """Return a deep copy of ``obj`` with every string that exactly equals
     an old session id replaced by its new id.

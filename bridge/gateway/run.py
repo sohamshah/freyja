@@ -1619,10 +1619,9 @@ class GatewayDaemon:
             )
             return True
 
-        # /reset → clear the session's transcript so the next message
-        # starts fresh. v1: just drop the session from the dict so the
-        # next message creates a new one (transcript persists on disk
-        # but the in-memory pending state resets).
+        # /reset → the next message starts a fresh conversation: the
+        # session leaves the dict and its saved transcript is set aside
+        # (kept on disk), the thread's model and mode stay.
         if cmd == "reset":
             from bridge.gateway.session_router import session_key_for
             key = session_key_for(message.source)
@@ -2244,10 +2243,20 @@ class GatewayDaemon:
             from bridge.freyja_bridge import _drop_queued_turns, _stop_background_work
 
             sessions[session_key]._background_closed = True
+            # Saves nothing more: the turn this cancels saved its question
+            # into the old conversation as it unwound.
+            sessions[session_key]._discarded = True
             _drop_queued_turns(sessions[session_key])
             self._cancel_session(session_key)
             _stop_background_work(sessions[session_key])
             sessions.pop(session_key, None)
+        # The thread's next message loaded the old conversation back from
+        # its file, loaded here or not. It stays on disk, set aside.
+        from bridge.transcript_persistence import set_transcript_aside
+
+        aside = set_transcript_aside(session_key)
+        if aside is not None:
+            logger.info("[gateway] /reset: %s's conversation set aside at %s", session_key, aside.name)
 
     async def _handle_verbose_subcommand(
         self,
