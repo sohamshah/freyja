@@ -35,7 +35,7 @@ async def test_a_crud_only_scheduler_takes_over_when_the_owner_exits(tmp_path, m
     monkeypatch.setattr(service_mod, "_OWNER_RETRY_SECONDS", 0.05, raising=False)
     fired: list[str] = []
 
-    async def fake_fire(_service, job):
+    async def fake_fire(_service, job, **_kw):
         fired.append(job.id)
         return RunRecord(run_id="run_1", job_id=job.id, job_name=job.name,
                          started_at=time.time(), status="succeeded")

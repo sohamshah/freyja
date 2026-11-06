@@ -394,13 +394,16 @@ class SchedulerService:
             now = time.time()
             if job.next_fire_at is None or job.next_fire_at > now:
                 return
-            if job.misfire_policy == "fire_all":
+            if _misfire_policy(job) == "fire_all":
                 _bound_catch_up(job, now)
                 if job.next_fire_at is None or job.next_fire_at > now:
                     # Every missed slot was too old to run.
                     save_job(job)
                     touch_wake()
                     return
+            # The slot this fire is for: a run that starts long after it
+            # says how late it is.
+            slot = job.next_fire_at
             # Pre-advance + persist BEFORE firing — at-most-once.
             self._recompute_next_fire(job, force=True, after_fire=True)
             save_job(job)
@@ -410,7 +413,7 @@ class SchedulerService:
             # run completes (so cancel_run flag polling sees the same
             # owner).
             task = asyncio.create_task(
-                self._fire_with_concurrency(job, lock),
+                self._fire_with_concurrency(job, lock, slot),
                 name=f"scheduler-fire-{job.id}",
             )
             self._in_flight_runs[task.get_name()] = task
@@ -420,24 +423,26 @@ class SchedulerService:
             if lock is not None:
                 lock.release()
 
-    async def _fire_with_concurrency(self, job: JobRecord, fire_lock: FileLock) -> None:
+    async def _fire_with_concurrency(
+        self, job: JobRecord, fire_lock: FileLock, slot: float | None,
+    ) -> None:
         """Owns the per-job flock for the duration of the fire."""
         task_name = asyncio.current_task().get_name()
         try:
             async with self._concurrency:
-                await self._fire_under_lock(job)
+                await self._fire_under_lock(job, slot)
         except Exception as exc:  # noqa: BLE001
             logger.exception("fire crashed (job=%s): %s", job.id, exc)
         finally:
             fire_lock.release()
             self._in_flight_runs.pop(task_name, None)
 
-    async def _fire_under_lock(self, job: JobRecord) -> None:
-        """Run the agent turn for ``job``. The per-job flock is already
-        held by our caller, so the failure stop and retry-policy writes
-        are race-free."""
+    async def _fire_under_lock(self, job: JobRecord, slot: float | None) -> None:
+        """Run the agent turn for ``job``'s ``slot``. The per-job flock is
+        already held by our caller, so the failure stop and retry-policy
+        writes are race-free."""
         from bridge.scheduler.runtime import fire_job
-        run = await fire_job(self, job)
+        run = await fire_job(self, job, scheduled_for=slot)
         if await self._stop_if_failing(job, run):
             return
         # Retry policy. If the run failed and the user configured
@@ -805,7 +810,7 @@ class SchedulerService:
         # missed slot has had its run (within _bound_catch_up's limits).
         if (
             after_fire
-            and job.misfire_policy == "fire_all"
+            and _misfire_policy(job) == "fire_all"
             and job.next_fire_at is not None
             and not isinstance(job.schedule, SelfPacedSchedule)
         ):
@@ -864,10 +869,19 @@ class SchedulerService:
         })
 
 
+def _misfire_policy(job: JobRecord) -> str:
+    """``job``'s misfire policy, or its default when never set. A one-shot
+    defaults to fire_once: under skip, a reminder whose time passed while
+    no scheduler ran was disabled without ever running or saying so."""
+    if job.misfire_policy:
+        return job.misfire_policy
+    return "fire_once" if isinstance(job.schedule, OnceSchedule) else "skip"
+
+
 def _catches_up(job: JobRecord, now: float) -> bool:
     """True when ``job`` missed a slot and its misfire policy runs it."""
     return (
-        job.misfire_policy in ("fire_once", "fire_all")
+        _misfire_policy(job) in ("fire_once", "fire_all")
         and job.enabled
         and job.status == "active"
         and job.next_fire_at is not None

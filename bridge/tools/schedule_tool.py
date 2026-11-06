@@ -177,7 +177,7 @@ class ScheduleTool:
             artifact=artifact,
             memory=memory,
             sinks=sinks,
-            misfire_policy=args.get("misfire_policy", "skip"),
+            misfire_policy=args.get("misfire_policy") or None,
             overlap_policy=args.get("overlap_policy", "queue"),
             timeout_seconds=args.get("timeout_seconds"),
             allow_creates_schedules=bool(args.get("allow_creates_schedules", False)),

@@ -467,8 +467,9 @@ class JobRecord:
     # Delivery
     sinks: list[SinkSpec] = field(default_factory=list)
 
-    # Behavior
-    misfire_policy: Literal["skip", "fire_once", "fire_all"] = "skip"
+    # Behavior. A misfire_policy of None was never set: a one-shot job
+    # then runs late (fire_once), any other job skips missed slots.
+    misfire_policy: Literal["skip", "fire_once", "fire_all"] | None = None
     overlap_policy: Literal["queue", "skip_if_running", "cancel_running"] = "queue"
     timeout_seconds: int | None = None
     retry_policy: RetryPolicy | None = None
@@ -542,7 +543,7 @@ class JobRecord:
                 else MemorySpec()
             ),
             sinks=[sink_from_dict(s) for s in (d.get("sinks") or [])],
-            misfire_policy=d.get("misfire_policy", "skip"),
+            misfire_policy=d.get("misfire_policy") or None,
             overlap_policy=d.get("overlap_policy", "queue"),
             timeout_seconds=d.get("timeout_seconds"),
             retry_policy=RetryPolicy.from_dict(d["retry_policy"]) if d.get("retry_policy") else None,

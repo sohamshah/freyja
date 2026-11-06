@@ -6,8 +6,8 @@ no scheduler ran (the Mac off, every process restarting) was dropped
 whatever the policy said, and a late tick (after sleep) fired once
 whatever the policy said.
 
-  · skip (the default) keeps that behavior, including the one run after
-    sleep, so existing jobs behave as before;
+  · skip (the default for recurring jobs) keeps that behavior, including
+    the one run after sleep, so existing jobs behave as before;
   · fire_once fires one run for the missed slots;
   · fire_all fires one run per missed slot.
 """
@@ -41,7 +41,7 @@ def fired(tmp_path, monkeypatch) -> list[str]:
     monkeypatch.setenv("FREYJA_HOME", str(tmp_path))
     out: list[str] = []
 
-    async def fake_fire(_service, job):
+    async def fake_fire(_service, job, **_kw):
         out.append(job.id)
         return RunRecord(run_id=f"run_{len(out)}", job_id=job.id, job_name=job.name,
                          started_at=time.time(), status="succeeded")

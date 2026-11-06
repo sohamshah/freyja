@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from bridge.scheduler.models import (
@@ -41,6 +42,11 @@ logger = logging.getLogger("freyja.scheduler.runtime")
 # spot scheduler-owned sessions in the activity panel.
 _SCHED_SESSION_PREFIX = "scheduler:"
 
+# A fire that starts this long after its slot tells the agent it is
+# late. A tick is at most a second late, a takeover 15 s, and a run that
+# waited a few minutes for the job's previous run is not stale.
+_LATE_AFTER_SECONDS = 5 * 60
+
 
 def scheduler_session_id(job_id: str) -> str:
     return f"{_SCHED_SESSION_PREFIX}{job_id}"
@@ -51,11 +57,15 @@ async def fire_job(
     job: JobRecord,
     *,
     iteration: int = 0,
+    scheduled_for: float | None = None,
 ) -> RunRecord:
     """Run one fire of ``job``. Returns the run record. The caller
     (SchedulerService.tick / run_job_now) is responsible for
     pre-advancing the next_fire_at and persisting BEFORE this call,
     so a crash mid-fire doesn't double-fire.
+
+    ``scheduled_for`` is the slot a scheduled fire is for; None for a
+    manual run.
     """
     from bridge.scheduler.models import new_run_id
 
@@ -76,6 +86,7 @@ async def fire_job(
         "run_id": run.run_id,
         "fire_number": run.fire_number,
         "iteration": iteration,
+        "scheduled_for": scheduled_for,
     })
     service.emit_event(
         subtype="scheduler_run_claimed",
@@ -154,7 +165,7 @@ async def fire_job(
         snapshot_notes(job, run.run_id)
     except Exception as exc:  # noqa: BLE001
         logger.debug("notes snapshot failed: %s", exc)
-    prompt = _compose_fire_prompt(job, run, service)
+    prompt = _compose_fire_prompt(job, run, service, scheduled_for=scheduled_for)
 
     # ── Run the agent turn ────────────────────────────────────────────
     output_text = ""
@@ -588,6 +599,8 @@ def _compose_fire_prompt(
     job: JobRecord,
     run: RunRecord,
     service: "SchedulerService",
+    *,
+    scheduled_for: float | None = None,
 ) -> str:
     parts: list[str] = []
 
@@ -670,10 +683,31 @@ def _compose_fire_prompt(
     except Exception as exc:  # noqa: BLE001
         logger.debug("fire context prelude failed: %s", exc)
 
+    # A late run says so, right before the task: a reminder that fires
+    # hours after its time must not read as if it were on time.
+    if scheduled_for is not None and run.started_at - scheduled_for >= _LATE_AFTER_SECONDS:
+        due = datetime.fromtimestamp(scheduled_for).astimezone()
+        parts.append(
+            "# This run is late\n\n"
+            f"It was due at {due:%Y-%m-%d %H:%M %Z} and starts "
+            f"{_how_late(run.started_at - scheduled_for)} after that. "
+            "Open your reply by saying that it is late and when it was due."
+        )
+
     # The job's actual prompt goes last so it's what the model sees
     # most prominently.
     parts.append("# Your task\n\n" + job.prompt)
     return "\n\n".join(parts)
+
+
+def _how_late(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes} min"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 48:
+        return f"{hours} h {minutes} min"
+    return f"{hours // 24} days {hours % 24} h"
 
 
 def _artifact_block(job: JobRecord) -> str:

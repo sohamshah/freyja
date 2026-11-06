@@ -121,7 +121,7 @@ from bridge.scheduler.models import RunRecord, new_run_id
 
 # Replace fire_job with a no-op that records the fire to a file. This
 # avoids needing a real agent / bridge runtime for these tests.
-async def fake_fire(service, job):
+async def fake_fire(service, job, **_kw):
     run = RunRecord(
         run_id=new_run_id(),
         job_id=job.id, job_name=job.name,
