@@ -2387,11 +2387,20 @@ class SlackAdapter:
             "user_id": str(event.get("user") or ""),
             "team_id": self._team_for(event, channel_id),
         }
+        # Freyja's own rename, if Slack reports it back, is stored already.
+        own_bot_ids = set(self._team_bot_user_ids.values())
+        if self._bot_user_id:
+            own_bot_ids.add(self._bot_user_id)
+        if info["user_id"] in own_bot_ids:
+            return
         if not await self._session_action_allowed(
             info["team_id"], info["user_id"], channel_id, thread_ts,
             what="a rename", notice="Only Freyja's owner can rename this session.",
             user_team=self._user_team(event, body),
         ):
+            await self._restore_title(
+                channel_id, thread_ts, title, info["previous_title"], info["team_id"],
+            )
             return
         self.bindings.set_title(channel_id, thread_ts, title, by_user=True)
         if self.on_session_title_changed is None:
@@ -2400,6 +2409,35 @@ class SlackAdapter:
             await self.on_session_title_changed(info)
         except Exception:  # noqa: BLE001
             logger.exception("[slack] on_session_title_changed raised")
+
+    async def _restore_title(
+        self,
+        channel_id: str,
+        thread_ts: str | None,
+        refused: str,
+        previous: str,
+        team_id: str,
+    ) -> None:
+        """Rename a session back after a refused rename: to the stored
+        title, or else to the one Slack says it had before. Slack applies
+        a sidebar rename before it sends the event, so refusing it in the
+        gateway alone leaves the new title showing to everyone."""
+        title = self.bindings.title_for(channel_id, thread_ts) or self._clean_title(previous)
+        if not title or title == refused:
+            return
+        client = self._get_client(channel_id, team_id or None)
+        if client is None:
+            return
+        kwargs: dict[str, Any] = {"channel_id": channel_id, "title": title}
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        try:
+            await client.agents_sessions_rename(**kwargs)
+        except Exception:  # noqa: BLE001
+            logger.debug("[slack] putting the session title back failed", exc_info=True)
+            return
+        if self.bindings.title_for(channel_id, thread_ts) is None:
+            self.bindings.set_title(channel_id, thread_ts, title, by_user=False)
 
     async def _handle_home_opened(self, event: dict[str, Any]) -> None:
         channel_id = str(event.get("channel") or "")

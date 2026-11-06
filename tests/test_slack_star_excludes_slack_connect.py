@@ -211,7 +211,7 @@ async def test_a_rename_from_a_slack_connect_user_is_not_kept(tmp_path):
     a, _client, seen = _adapter(tmp_path, ["*"])
     await _deliver(a, "agent_session_title_changed", event=_rename(EXTERNAL), body=SHARED)
     assert seen == []
-    assert a.bindings.title_for("C1", "5.5") is None
+    assert a.bindings.title_for("C1", "5.5") != "Erin's now"
 
 
 async def test_a_reaction_from_a_slack_connect_user_is_not_feedback(tmp_path):
