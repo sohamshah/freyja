@@ -27,16 +27,18 @@ async def test_journal_writes_one_line_per_mutation(tmp_path) -> None:
 
     await tool.execute("c1", {"action": "create", "title": "first"})
     await tool.execute("c2", {"action": "create", "title": "second"})
-    # `complete` is an `update` under the hood so it should add an update line.
+    # `claim` and `complete` are `update`s under the hood, so each adds an
+    # update line. (The orchestrator must claim before it can complete.)
     cards = await board.list()
+    await tool.execute("c3", {"action": "claim", "task_id": cards[0].id})
     await tool.execute(
-        "c3", {"action": "complete", "task_id": cards[0].id, "summary": "done"}
+        "c4", {"action": "complete", "task_id": cards[0].id, "summary": "done"}
     )
 
     lines = (tmp_path / "kanban.jsonl").read_text().strip().splitlines()
-    assert len(lines) == 3
+    assert len(lines) == 4
     kinds = [json.loads(line)["kind"] for line in lines]
-    assert kinds == ["create", "create", "update"]
+    assert kinds == ["create", "create", "update", "update"]
 
 
 @pytest.mark.asyncio
@@ -63,12 +65,12 @@ async def test_replay_reconstructs_board_state(tmp_path) -> None:
     )
     work_id = json.loads(work.content)["task"]["id"]
 
-    await tool.execute(
-        "c3", {"action": "update", "task_id": work_id, "status": "running"},
-    )
+    await tool.execute("c3", {"action": "claim", "task_id": work_id})
     await tool.execute(
         "c4", {"action": "complete", "task_id": work_id, "summary": "finished"},
     )
+    # The judge's pass verdict seals it (Move R: complete lands in review).
+    await live.update(work_id, actor="kanban-judge", status="done")
 
     # Now build a fresh board and replay the journal.
     journal_two = KanbanJournal(tmp_path / "kanban.jsonl")

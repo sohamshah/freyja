@@ -101,11 +101,11 @@ async def test_dispatcher_skips_triage_cards_with_unsatisfied_parents() -> None:
 
 
 @pytest.mark.asyncio
-async def test_complete_with_verification_flag_lands_card_in_dispatcher_verifier_lane() -> None:
-    """Integration check across the opt-in seam: a card created with
+async def test_complete_with_verification_flag_lands_card_in_dispatcher_review_lane() -> None:
+    """Integration check across the Move R seam: a card created with
     `requires_verification=True` and completed via the worker path lands
-    in `done_unverified` and the dispatcher's verifier lane picks it up
-    on the next tick."""
+    in `review`, and the dispatcher's review lane hands it to the judge
+    on the next tick (not the verifier lane: the flag is informational)."""
     board = SessionKanbanBoard()
     tool = KanbanTool(board, actor_id="parent", actor_label="parent")
     create = await tool.execute(
@@ -117,23 +117,31 @@ async def test_complete_with_verification_flag_lands_card_in_dispatcher_verifier
         },
     )
     card_id = json.loads(create.content)["task"]["id"]
+    worker = KanbanTool(
+        board, actor_id="worker", actor_label="worker", owned_task_id=card_id
+    )
     await tool.execute(
         "c2", {"action": "update", "task_id": card_id, "status": "running"},
     )
-    await tool.execute(
-        "c3", {"action": "complete", "task_id": card_id, "summary": "done"},
-    )
+    await worker.execute("c3", {"action": "complete", "summary": "done"})
     show = await tool.execute("c4", {"action": "show", "task_id": card_id})
-    assert json.loads(show.content)["task"]["status"] == "done_unverified"
+    assert json.loads(show.content)["task"]["status"] == "review"
 
     sub_tool = _StubSubAgentTool()
     session = _make_session(board=board, sub_tool=sub_tool)
+    judged: list[str] = []
+
+    async def _judge(card: Any, *, sub_tool: Any) -> None:
+        judged.append(card.id)
+
+    session._run_kanban_judge_for_card = _judge
     await session._kanban_tick(source="test")
-    # The dispatcher's verifier lane fires exactly once for the card.
-    assert len(sub_tool.calls) == 1
-    call = sub_tool.calls[0]
-    assert call["agent_type"] == "verify"
-    assert call["kanban_task_id"] == card_id
+    await asyncio.sleep(0)
+    # The review lane hands the card to the judge exactly once; no
+    # verifier or worker spawn.
+    assert judged == [card_id]
+    assert card_id in session._kanban_judge_pending
+    assert sub_tool.calls == []
 
 
 @pytest.mark.asyncio
