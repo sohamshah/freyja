@@ -461,12 +461,7 @@ async def fire_job(
             fresh.enabled = False
             fresh.status = "disabled_budget_exhausted"
             fresh.next_fire_at = None
-        fresh.fire_count += 1
-        fresh.last_fire_at = run.started_at
-        if fresh.max_fires is not None and fresh.fire_count >= fresh.max_fires:
-            fresh.status = "disabled_max_fires"
-            fresh.enabled = False
-            fresh.next_fire_at = None
+        count_fire(fresh, run)
 
     await update_job_record(job.id, _record_fire)
 
@@ -487,6 +482,17 @@ async def fire_job(
         },
     )
     return run
+
+
+def count_fire(job: JobRecord, run: RunRecord) -> None:
+    """Count ``run``, ended, as a fire of ``job``: a job that ran its
+    max_fires is done."""
+    job.fire_count += 1
+    job.last_fire_at = run.started_at
+    if job.max_fires is not None and job.fire_count >= job.max_fires:
+        job.status = "disabled_max_fires"
+        job.enabled = False
+        job.next_fire_at = None
 
 
 def _apply_loop_decision(service: "SchedulerService", job: JobRecord, decision: Any) -> None:

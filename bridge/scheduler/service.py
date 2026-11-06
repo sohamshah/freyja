@@ -858,17 +858,24 @@ class SchedulerService:
                 await self._fire_under_lock(job, slot, attempt)
         except Exception as exc:  # noqa: BLE001
             logger.exception("fire crashed (job=%s): %s", job.id, exc)
-            self._finish_crashed_run(job, started, exc)
+            await self._finish_crashed_run(job, started, exc, scheduled=True)
         finally:
             run_lock.release()
             self._in_flight_runs.pop(task_name, None)
 
-    def _finish_crashed_run(self, job: JobRecord, since: float, exc: Exception) -> None:
+    async def _finish_crashed_run(
+        self, job: JobRecord, since: float, exc: Exception, *, scheduled: bool = False,
+    ) -> None:
         """End the run of ``job`` that started at ``since`` or later and has
-        not ended, as failed with ``exc``, the error its fire raised. Our
+        not ended, as failed with ``exc``, the error its fire raised, and
+        count it as a fire, as a failed run is. A ``scheduled`` fire's run
+        then goes through what follows a scheduled run (_after_run). Our
         caller holds the job's run lock, so that run is the fire's own.
         Left so, it said "running" until the next scheduler start marked it
-        interrupted."""
+        interrupted; ended without the rest, it was not counted against
+        max_fires nor retried, and a one-shot it used up said nothing."""
+        from bridge.scheduler.runtime import count_fire
+
         for run in load_runs_started_since(job.id, since):
             if run.finished_at is not None:
                 continue
@@ -877,6 +884,7 @@ class SchedulerService:
             run.finished_at = time.time()
             run.duration_seconds = run.finished_at - run.started_at
             save_run(run)
+            await update_job_record(job.id, lambda fresh: count_fire(fresh, run))
             append_event({
                 "type": "scheduler_run_failed",
                 "job_id": job.id,
@@ -888,6 +896,8 @@ class SchedulerService:
                 message=f"Scheduled job '{job.name}' failed (crashed)",
                 details={"jobId": job.id, "runId": run.run_id, "error": run.error},
             )
+            if scheduled:
+                await self._after_run(job, run)
 
     async def _fire_under_lock(
         self, job: JobRecord, slot: float | None, attempt: int = 0,
@@ -902,6 +912,12 @@ class SchedulerService:
         if await self._held_by_daily_budget(job, attempt):
             return
         run = await fire_job(self, job, scheduled_for=slot, attempt=attempt)
+        await self._after_run(job, run)
+
+    async def _after_run(self, job: JobRecord, run: RunRecord) -> None:
+        """What follows ``run``, a scheduled run of ``job``, once it ended:
+        the notice of a stop over its budget, a retry, the stop for
+        failing, or the notice of a one-shot that did not complete."""
         if await self._tell_if_stopped_over_budget(job, run):
             return
         passing = _failed_for_a_passing_reason(run)
@@ -1636,7 +1652,7 @@ class SchedulerService:
                 fresh = load_job(job.id) or job
                 return await fire_job(self, fresh, **kw)
         except Exception as exc:
-            self._finish_crashed_run(job, started, exc)
+            await self._finish_crashed_run(job, started, exc)
             raise
         finally:
             lock.release()
