@@ -3004,48 +3004,6 @@ function mergeKanbanEvents(
 const KANBAN_STALE_WARN_SECONDS = 90
 const KANBAN_STALE_HARD_SECONDS = 180
 
-function KanbanVerifyOnCompletePill({ card }: { card: KanbanCardView }) {
-  // Only surface the pill while the card is still pre-verification.
-  // After it lands in `done_unverified`/`done` the verdict badge takes
-  // over and this pill would be redundant noise.
-  if (!card.requiresVerification) return null
-  if (
-    card.status === 'done' ||
-    card.status === 'done_unverified' ||
-    card.status === 'cancelled' ||
-    card.status === 'failed'
-  ) {
-    return null
-  }
-  return (
-    <span
-      className="rounded-full bg-warn/[0.08] px-1.5 py-0.5 font-mono text-[8.5px] uppercase text-warn/85 ring-1 ring-warn/20"
-      title="Parent marked this card as requiring verification — complete will route to the verifier instead of sealing directly to done."
-    >
-      verify on complete
-    </span>
-  )
-}
-
-function KanbanRetryPill({ card }: { card: KanbanCardView }) {
-  const failures = card.consecutiveFailures ?? 0
-  if (failures <= 0) return null
-  // Bridge threshold is 3 — one more failure trips the breaker. Mark
-  // the last attempt with red text so it's unmissable.
-  const lastAttempt = failures >= 2
-  const cls = lastAttempt
-    ? 'bg-danger/[0.18] text-danger ring-1 ring-danger/40'
-    : 'bg-warn/[0.12] text-warn ring-1 ring-warn/25'
-  return (
-    <span
-      className={`rounded-full px-1.5 py-0.5 font-mono text-[8.5px] uppercase ${cls}`}
-      title={`${failures}/3 failures — circuit breaker trips on next failure`}
-    >
-      retry {failures}/3
-    </span>
-  )
-}
-
 function formatLivenessAge(seconds: number): string {
   if (seconds < 60) return `${seconds}s`
   const minutes = Math.floor(seconds / 60)
@@ -3136,78 +3094,6 @@ function kanbanRestartCount(events: TelemetryEventView[]): number {
     if (typeof count === 'number') return count
   }
   return 0
-}
-
-function detectVerifierRejection(
-  card: KanbanCardView,
-): { text: string; actor?: string } | null {
-  // A verifier rejection lives in the comment the verifier left when
-  // it transitioned the card back to `running`. Find the most recent
-  // verifier-authored comment on a card that's currently `running`
-  // and has a prior `done_unverified -> running` transition in its
-  // event tail.
-  if (card.status !== 'running') return null
-  const comments = (card.comments ?? []).slice().reverse()
-  for (const comment of comments) {
-    const author = (comment.author || '').toLowerCase()
-    if (author.includes('verify')) {
-      return { text: comment.body, actor: comment.author }
-    }
-  }
-  return null
-}
-
-function detectVerifierVerdict(
-  card: KanbanCardView,
-): { kind: 'verified' | 'rejected'; actor?: string } | null {
-  // Walk events newest-first. We classify the most recent verifier-driven
-  // transition:
-  //   • running card whose latest verifier event was an "updated -> running"
-  //     is one the verifier just rejected.
-  //   • done card whose latest verifier event was an "updated -> done" is
-  //     one the verifier just sealed.
-  const events = (card.events ?? []).slice().reverse()
-  for (const event of events) {
-    const actor = (event.actor || '').toLowerCase()
-    const message = (event.message || '').toLowerCase()
-    const detailsRaw = event.details
-    const details =
-      detailsRaw && typeof detailsRaw === 'object' ? (detailsRaw as Record<string, unknown>) : {}
-    const nextStatus =
-      typeof details.status === 'string' ? details.status.toLowerCase() : ''
-    const isVerifier = actor.includes('verify') || message.includes('verify')
-    if (!isVerifier) continue
-    if (card.status === 'done' && nextStatus === 'done') {
-      return { kind: 'verified', actor: event.actor }
-    }
-    if (card.status === 'running' && nextStatus === 'running') {
-      return { kind: 'rejected', actor: event.actor }
-    }
-  }
-  return null
-}
-
-function KanbanVerdictBadge({ card }: { card: KanbanCardView }) {
-  const verdict = detectVerifierVerdict(card)
-  if (!verdict) return null
-  if (verdict.kind === 'verified') {
-    return (
-      <span
-        className="rounded-full bg-ok/[0.12] px-1.5 py-0.5 font-mono text-[8.5px] uppercase text-ok ring-1 ring-ok/25"
-        title={verdict.actor ? `verified by ${verdict.actor}` : 'verified'}
-      >
-        ✓ verified
-      </span>
-    )
-  }
-  return (
-    <span
-      className="rounded-full bg-warn/[0.12] px-1.5 py-0.5 font-mono text-[8.5px] uppercase text-warn ring-1 ring-warn/25"
-      title="verifier rejected — see latest comment for feedback"
-    >
-      ✗ rejected
-    </span>
-  )
 }
 
 function latestKanbanActivity(card: KanbanCardView): { label: string; text: string } | null {
