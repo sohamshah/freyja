@@ -997,6 +997,7 @@ function kanbanCardsFromJournal(id: string): Record<string, Record<string, unkno
   const ids = (list: unknown, add: string) => [
     ...new Set([...(Array.isArray(list) ? list : []), add]),
   ]
+  let missionRoot = ''
   for (const line of raw.split('\n')) {
     let row: any
     try {
@@ -1007,11 +1008,20 @@ function kanbanCardsFromJournal(id: string): Record<string, Record<string, unkno
     const taskId = typeof row?.task?.id === 'string' ? row.task.id : ''
     if (row?.kind === 'create' && taskId && !cards[taskId]) {
       cards[taskId] = row.task
+      if (!missionRoot && row.task.metadata?.role === 'mission_root') missionRoot = taskId
     } else if (row?.kind === 'update' && cards[taskId]) {
       cards[taskId] = row.task
     } else if (row?.kind === 'link' && cards[row.parent] && cards[row.child]) {
       cards[row.parent] = { ...cards[row.parent], children: ids(cards[row.parent].children, row.child) }
-      cards[row.child] = { ...cards[row.child], parents: ids(cards[row.child].parents, row.parent) }
+      const parents = ids(cards[row.child].parents, row.parent)
+      cards[row.child] = { ...cards[row.child], parents }
+      // The row carries only the ids; link() also moved the child (the
+      // mission root counts as done). A parent whose create row was lost
+      // leaves the status alone.
+      if (parents.every((pid) => cards[pid])) {
+        const done = parents.every((pid) => pid === missionRoot || cards[pid].status === 'done')
+        cards[row.child].status = done ? 'ready' : 'triage'
+      }
     } else if (row?.kind === 'unblock' && cards[row.id]) {
       cards[row.id] = { ...cards[row.id], status: 'ready' }
     }

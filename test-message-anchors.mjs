@@ -3,6 +3,7 @@
 // real store actions and checks the commands. Run from the repo root:
 //   npx tsx test-message-anchors.mjs
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -304,6 +305,56 @@ await check('a Slack session the app saved gets the cards its kanban journal hol
   assert.equal(kanbanCards.card_002.status, 'running')
   assert.deepEqual(kanbanCards.card_002.events, [{ kind: 'created' }, { kind: 'claimed' }])
   assert.equal(kanbanCards.card_003.status, 'ready')
+})
+
+await check("a Slack session's linked kanban card is in the lane link() gave it, as the bridge's replay has it", async () => {
+  // link() moves the child to triage until all its parents are done (the
+  // mission root counts as done), else ready, but its row has only the ids.
+  // card_004's create row was cut short, so card_005 names a parent
+  // nobody can see: its lane stays as it was.
+  const sessionsDir = path.join(home, '.freyja', 'sessions')
+  const card = (id, status, parents, children = [], metadata = {}) => ({ id, title: id, status, parents, children, metadata, events: [] })
+  fs.writeFileSync(
+    path.join(sessionsDir, 'freyja_slack_T1_channel_C3_3.0.json'),
+    JSON.stringify({ version: 1, id: 'freyja:slack:T1:channel:C3:3.0', agentType: 'gateway-slack', slice: { messages: [], kanbanCards: {} } }),
+  )
+  const rows = [
+    { kind: 'create', task: card('card_001', 'running', [], [], { role: 'mission_root' }) },
+    { kind: 'create', task: card('card_002', 'ready', ['card_001']) },
+    { kind: 'create', task: card('card_003', 'ready', ['card_001']) },
+    { kind: 'link', parent: 'card_002', child: 'card_003', actor: 'parent' },
+    { kind: 'create', task: card('card_005', 'ready', ['card_004']) },
+    { kind: 'link', parent: 'card_003', child: 'card_005', actor: 'parent' },
+    { kind: 'update', id: 'card_002', task: card('card_002', 'done', ['card_001'], ['card_003']) },
+    { kind: 'create', task: card('card_006', 'triage', ['card_001']) },
+    { kind: 'link', parent: 'card_002', child: 'card_006', actor: 'parent' },
+  ].map((row) => JSON.stringify(row))
+  rows.splice(4, 0, JSON.stringify({ kind: 'create', task: card('card_004', 'done', []) }).slice(0, 40))
+  const journal = path.join(sessionsDir, 'freyjaslackT1channelC33.0.kanban.jsonl')
+  fs.writeFileSync(journal, rows.join('\n') + '\n')
+  const { loadSession } = await import('./src/main/persistence.ts')
+  const { kanbanCards } = loadSession('freyja:slack:T1:channel:C3:3.0').slice
+  const lanes = (cards) => Object.fromEntries(
+    Object.values(cards).map(({ id, status, parents, children }) => [id, { status, parents, children }]),
+  )
+  const app = lanes(kanbanCards)
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(app).map(([id, c]) => [id, c.status])),
+    { card_001: 'running', card_002: 'done', card_003: 'triage', card_005: 'ready', card_006: 'ready' },
+  )
+  // The bridge's replay (SessionKanbanBoard.replay_events) on the same
+  // journal, under this test's HOME.
+  const replay = [
+    'import asyncio, json, sys',
+    'from pathlib import Path',
+    'from bridge.kanban_journal import KanbanJournal',
+    'from bridge.tools.kanban_board import SessionKanbanBoard',
+    'board = SessionKanbanBoard()',
+    'board.replay_events(KanbanJournal(Path(sys.argv[1])).read_all())',
+    'print(json.dumps([t.to_dict() for t in asyncio.run(board.list())]))',
+  ].join('\n')
+  const out = execFileSync('uv', ['run', '--extra', 'dev', 'python', '-c', replay, journal], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  assert.deepEqual(app, lanes(JSON.parse(out)))
 })
 
 if (failures) {
