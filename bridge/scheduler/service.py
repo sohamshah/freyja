@@ -1126,7 +1126,9 @@ class SchedulerService:
                 switched = True
             if patch.schedule is not None:
                 job.schedule = patch.schedule
-            if patch.schedule is not None or switched:
+            if switched and patch.enabled:
+                self._resume_next_fire(job)
+            elif patch.schedule is not None or switched:
                 self._recompute_next_fire(job, force=True)
             if patch.execution is not None:
                 job.execution = patch.execution
@@ -1180,7 +1182,7 @@ class SchedulerService:
                 job.resumed_at = time.time()
             job.enabled = True
             job.status = "active"
-            self._recompute_next_fire(job, force=True)
+            self._resume_next_fire(job)
             save_job(job)
         touch_wake()
         append_event({"type": "scheduler_job_resumed", "job_id": job_id})
@@ -1308,6 +1310,19 @@ class SchedulerService:
         )
 
     # ─── Utility ──────────────────────────────────────────────────────
+
+    def _resume_next_fire(self, job: JobRecord) -> None:
+        """Set the next fire of ``job``, just resumed: from its schedule,
+        or for a one-shot whose time passed and that has not run, that
+        time, so it runs once now and says how late it is. From the
+        schedule, which has no slot left, it was marked done without
+        running, and the resume said it worked."""
+        slot = _missed_one_shot_slot(job)
+        if slot is None:
+            self._recompute_next_fire(job, force=True)
+            return
+        job.retry_attempt = 0
+        job.next_fire_at = slot
 
     def _recompute_next_fire(
         self,
@@ -1734,6 +1749,30 @@ def _one_shot_used_up(job: JobRecord) -> bool:
         and job.status == "disabled_max_fires"
         and (job.max_fires is None or job.fire_count < job.max_fires)
     )
+
+
+def _missed_one_shot_slot(job: JobRecord) -> float | None:
+    """The time of ``job``, a one-shot, when it has passed and no run of
+    it since then succeeded; None for any other job. Refuses a one-shot
+    that ran, saying when, and one whose run goes on: resumed during the
+    run of its slot, it ran again after."""
+    if not isinstance(job.schedule, OnceSchedule):
+        return None
+    # Its only slot: the first fire of its schedule from the epoch.
+    slot = compute_next_fire(job.schedule, now=0)
+    if slot is None or slot > time.time():
+        return None
+    with FileLock(job_run_lock_path(job.id)) as free:
+        if not free:
+            raise ValueError("a run of it is going on; try again when that run ends")
+    for run in load_runs_started_since(job.id, slot):
+        if run.status in ("succeeded", "partial_failure"):
+            ran = datetime.datetime.fromtimestamp(run.started_at)
+            raise ValueError(
+                f"it already ran at {ran:%Y-%m-%d %H:%M}, and a one-shot runs "
+                "once; give it a new time first"
+            )
+    return slot
 
 
 def _creator_conversation(creator: CreatorRef) -> SinkSpec | None:
