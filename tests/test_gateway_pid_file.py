@@ -108,3 +108,48 @@ def test_other_processes_see_the_apps_bridge_while_it_holds_its_lock(monkeypatch
         assert _runs_elsewhere() == "True"
     finally:
         gp._desktop_lock.close()
+
+
+def test_a_gateway_that_starts_beside_another_does_not_take_the_lock_too(monkeypatch):
+    """Two gateways starting at the same moment both read no PID file, and
+    each wrote its own: both ran, both read Slack and the control channel,
+    and both saved every thread."""
+    import subprocess
+    import sys
+
+    other = subprocess.Popen(
+        [sys.executable, "-c", "import sys; from bridge.gateway import pid; print(pid.acquire_lock(), flush=True); sys.stdin.read()"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert other.stdout.readline().strip() == "True"
+        # This one read the PID file before the other wrote it.
+        monkeypatch.setattr(gp, "get_running_pid", lambda: None)
+        assert not gp.acquire_lock()
+        assert not gp.holds_lock()
+    finally:
+        other.stdin.close()
+        other.wait(timeout=10)
+    assert gp.acquire_lock()
+    gp.release_lock()
+
+
+def test_a_gateway_started_with_replace_takes_the_lock_once_the_old_one_is_gone():
+    import subprocess
+    import sys
+
+    other = subprocess.Popen(
+        [sys.executable, "-c", "import sys; from bridge.gateway import pid; print(pid.acquire_lock(), flush=True); sys.stdin.read()"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    reaper = threading.Thread(target=other.wait)
+    try:
+        assert other.stdout.readline().strip() == "True"
+        reaper.start()
+        assert gp.acquire_lock(replace=True)
+        assert gp.holds_lock() and gp.get_running_pid() == os.getpid()
+    finally:
+        gp.release_lock()
+        if other.returncode is None:
+            other.kill()
+        reaper.join(timeout=10)

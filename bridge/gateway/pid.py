@@ -7,6 +7,12 @@ boot the daemon either acquires the lock (file empty / process dead /
 ``--replace`` requested) or refuses to start (file holds a live
 foreign PID, no replace).
 
+The lock itself is an exclusive flock on ``~/.freyja/.gateway.lock``,
+held for the daemon's life and let go by the kernel when it dies. The PID
+file is what other processes read to find the gateway. Checked and then
+written, the PID file alone let two daemons that started at the same
+moment both take the lock.
+
 A "takeover marker" lets the new daemon politely terminate a running
 predecessor without that predecessor's launchd restarting it: the
 incoming daemon writes the marker file before sending SIGTERM, the
@@ -37,6 +43,10 @@ def freyja_home() -> Path:
 
 def pid_path() -> Path:
     return freyja_home() / ".gateway.pid"
+
+
+def gateway_lock_path() -> Path:
+    return freyja_home() / ".gateway.lock"
 
 
 def takeover_marker_path() -> Path:
@@ -142,6 +152,8 @@ def get_running_pid() -> int | None:
 
 # The process that took the lock in acquire_lock, until release_lock.
 _lock_holder: int | None = None
+# Its open gateway_lock_path, flocked, until release_lock.
+_gateway_lock: Any = None
 
 
 def holds_lock() -> bool:
@@ -282,6 +294,27 @@ def terminate_pid(pid: int, *, force: bool = False, wait_seconds: float = 10.0) 
     return not _process_alive(pid)
 
 
+def _flock_gateway_lock(wait_seconds: float) -> Any:
+    """The gateway lock file, open and flocked by this process, or None
+    when another process holds it for ``wait_seconds``."""
+    import fcntl
+
+    try:
+        fp = gateway_lock_path().open("a")
+    except OSError:
+        return None
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fp
+        except OSError:
+            if time.monotonic() >= deadline:
+                fp.close()
+                return None
+            time.sleep(0.1)
+
+
 def acquire_lock(*, replace: bool = False) -> bool:
     """Try to claim the gateway PID lock for the current process.
 
@@ -293,8 +326,11 @@ def acquire_lock(*, replace: bool = False) -> bool:
     daemon's shutdown handler will see the marker and exit 0; launchd
     won't restart it. We wait up to 10s for it to actually exit, then
     write our own PID.
+
+    The flock decides. A gateway that started at the same moment, and so
+    is not in the PID file yet, holds it, and this one does not start.
     """
-    global _lock_holder
+    global _lock_holder, _gateway_lock
     existing = get_running_pid()
     if existing is not None and existing != os.getpid():
         if not replace:
@@ -313,15 +349,29 @@ def acquire_lock(*, replace: bool = False) -> bool:
             )
             terminate_pid(existing, force=True, wait_seconds=2.0)
 
+    if _gateway_lock is None:
+        # A gateway being replaced lets go as it exits.
+        _gateway_lock = _flock_gateway_lock(5.0 if replace else 0.0)
+        if _gateway_lock is None:
+            logger.error(
+                "another gateway holds %s — use `freyja gateway stop` or "
+                "pass --replace to take over",
+                gateway_lock_path(),
+            )
+            return False
     write_pid(os.getpid())
     _lock_holder = os.getpid()
     return True
 
 
 def release_lock() -> None:
-    """Clear the PID file if we own it."""
-    global _lock_holder
+    """Clear the PID file if we own it, then let go of the flock. In that
+    order, a gateway taking over writes its PID only after ours is gone."""
+    global _lock_holder, _gateway_lock
     _lock_holder = None
     existing = get_running_pid()
     if existing == os.getpid():
         clear_pid()
+    if _gateway_lock is not None:
+        _gateway_lock.close()
+        _gateway_lock = None
