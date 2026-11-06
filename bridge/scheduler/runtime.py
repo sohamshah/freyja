@@ -182,7 +182,9 @@ async def fire_job(
     abort_job = False
     from bridge.freyja_bridge import register_session_listener, unregister_session_listener
 
-    run_cost = _RunCost()
+    run_cost = _RunCost(
+        run.run_id, job.budget.max_cost_usd_per_run if job.budget else None,
+    )
     register_session_listener(sess_id, run_cost.on_event)
     try:
         from bridge.freyja_bridge import _schedule_or_queue_turn
@@ -312,11 +314,13 @@ async def fire_job(
             pass
         run.cost_usd = run_cost.cost
 
-        # Budget enforcement (post-hoc) — if a per-run cap was set and
-        # the run blew through it, mark the run budget_exceeded and, if
+        # Budget enforcement — if a per-run cap was set and the run blew
+        # through it, mark the run budget_exceeded and, if
         # on_exceeded=abort_job, disable the job (with the run's other
         # writes to the record, below). Marked timed_out, it was retried
-        # by a retry_policy for timeouts and spent the budget again.
+        # by a retry_policy for timeouts and spent the budget again. A run
+        # over its cost cap was stopped at the call that took it over
+        # (_RunCost); its tokens are counted only here.
         if job.budget is not None:
             b = job.budget
             exceeded = (
@@ -934,10 +938,17 @@ class _RunCost:
     its sub-agents' reports start, a goal loop's continuations). A run's
     cost was how much the session's total grew while it ran, so a fire
     into the operator's session was billed the turns of the messages the
-    operator sent while it waited."""
+    operator sent while it waited.
 
-    def __init__(self) -> None:
+    The call that takes the run over ``cap`` stops it. Checked only when
+    the run ended, a run over its budget had spent the money by then."""
+
+    def __init__(self, run_id: str, cap: float | None) -> None:
         self.cost = 0.0
+        self._run_id = run_id
+        self._cap = cap
+        # emit() also runs on worker threads (compaction's calls).
+        self._loop = asyncio.get_running_loop()
         self._turns: set[str] = set()
         self._next_turn_is_ours = False
 
@@ -954,6 +965,8 @@ class _RunCost:
             self._next_turn_is_ours = False
         elif kind == "llm_call_metric" and event.get("turnId") in self._turns:
             self.cost += float(event.get("costUsd") or 0.0)
+            if self._cap is not None and self.cost > self._cap:
+                self._loop.call_soon_threadsafe(stop_run_now, self._run_id, "budget_exceeded")
 
 
 def _extract_run_usage(sess: Any) -> tuple[int, int, int]:
@@ -1054,15 +1067,16 @@ _CANCEL_POLL_INTERVAL = 1.0
 _stop_now: dict[str, asyncio.Future] = {}
 
 
-def stop_run_now(run_id: str) -> bool:
+def stop_run_now(run_id: str, outcome: str = "cancelled") -> bool:
     """Stop ``run_id`` at once when it runs in this process and waits on
-    its turn: it ends as cancelled, as if it saw its cancel flag. Returns
-    True if it does. Cancelling the run's task would end the run where it
-    stands, its record left "running" and the job's not updated."""
+    its turn: it ends as ``outcome``, "cancelled" as if it saw its cancel
+    flag, or "budget_exceeded". Returns True if it does. Cancelling the
+    run's task would end the run where it stands, its record left
+    "running" and the job's not updated."""
     stop = _stop_now.get(run_id)
     if stop is None or stop.done():
         return False
-    stop.set_result(None)
+    stop.set_result(outcome)
     return True
 
 
@@ -1087,6 +1101,8 @@ async def _await_pending_with_cancel_poll(
       · "cancelled"  — another process set cancel_requested; we
         cancelled the local turn
       · "timed_out"  — wall-clock budget exceeded; we cancelled
+      · "budget_exceeded" — the run's calls went over its cost cap
+        (stop_run_now); we cancelled
 
     The poll uses a per-loop ``asyncio.wait`` with a 1s timeout so the
     scheduler tick / other tasks aren't starved.
@@ -1119,6 +1135,7 @@ async def _await_pending_with_cancel_poll(
                     return "timed_out"
             # Cross-process cancel-flag check, or stop_run_now in this one.
             if stop_now.done() or read_run_cancel_requested(job_id, run_id):
+                outcome = stop_now.result() if stop_now.done() else "cancelled"
                 _run_abort(on_abort)
                 try:
                     pending.cancel()
@@ -1128,7 +1145,7 @@ async def _await_pending_with_cancel_poll(
                     await asyncio.wait_for(asyncio.shield(pending), timeout=2.0)
                 except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
                     pass
-                return "cancelled"
+                return outcome
             # Sleep until next poll OR the task completes OR stop_run_now
             # — whichever comes first. ``asyncio.wait`` lets us race them.
             poll_window = _CANCEL_POLL_INTERVAL

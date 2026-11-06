@@ -333,8 +333,10 @@ def sink_from_dict(d: dict[str, Any]) -> SinkSpec:
 @dataclass
 class BudgetSpec:
     """All None = unlimited (user explicitly chose 'no defaults'). The
-    per-run caps are checked when a run ends, the daily cap before a
-    scheduled run starts (the job's run costs since local midnight)."""
+    per-run cost cap is checked after each of the run's model calls, and
+    the call that crosses it stops the run; the token cap when a run
+    ends; the daily cap before a scheduled run starts (the job's run
+    costs since local midnight)."""
 
     max_tokens_per_run: int | None = None
     max_cost_usd_per_run: float | None = None
