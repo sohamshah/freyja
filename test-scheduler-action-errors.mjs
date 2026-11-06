@@ -3,7 +3,10 @@
 // refused resume (a job that ran all its max fires) did nothing visible.
 // The Morning room's resume of the stopped briefer dropped it too, and so
 // did the card's delete. The detail view's delete went back to the list
-// even when refused, so its reason was set in a view no longer shown.
+// even when refused, so its reason was set in a view no longer shown. The
+// Morning room's run now dropped a refusal: a refused generate said
+// "Briefer running" and polled for ten minutes, and a refused job intent
+// said "Job started" and counted as dispatched.
 // Run from the repo root:
 //   npx tsx test-scheduler-action-errors.mjs
 
@@ -39,6 +42,7 @@ const { MorningRoom } = await import('./src/renderer/components/MorningRoom.tsx'
 const { useHarness } = await import('./src/renderer/state/store.ts')
 
 const REFUSED = 'it ran all 1 of its max fires; raise or clear max fires first'
+const RUN_REFUSED = 'job sched_digest is running; try again when its run ends'
 const job = {
   id: 'sched_digest', name: 'digest', enabled: false, status: 'disabled_max_fires',
   schedule: { kind: 'interval', seconds: 3600 }, fire_count: 1, max_fires: 1,
@@ -54,6 +58,7 @@ const answers = {
   'scheduler.daemon_status': () => ({ subtype: 'daemon_status' }),
   'scheduler.resume_job': () => ({ subtype: 'resume_job', error: REFUSED }),
   'scheduler.remove_job': (cmd) => ({ subtype: 'remove_job', error: `job ${cmd.jobId} is locked by a peer; retry shortly` }),
+  'scheduler.run_job_now': () => ({ subtype: 'run_job_now', error: RUN_REFUSED }),
 }
 bindSchedulerBridge({
   send(cmd) {
@@ -147,6 +152,68 @@ await check('a refused resume of the stopped briefer says why', async () => {
   clickButton(host, '▸ resume')
   await sleep(20)
   assert.ok(useHarness.getState().toast?.message.includes(REFUSED), 'the bridge’s reason is shown')
+  unmount()
+})
+
+// The Morning room with today's briefing, whose decision and today line
+// run the job.
+const runIt = { kind: 'fire_job', job_id: job.id }
+const briefing = {
+  version: 1, date: new Date().toLocaleDateString('en-CA'), generated_at_iso: '2026-11-06T06:00:00-08:00',
+  decisions: [{ verb: 'Run', project: 'digest', body: 'the digest', actions: [{ label: 'run digest', kind: 'primary', intent: runIt }] }],
+  today: [{ project: 'digest', what: 'the digest', intent: runIt }],
+}
+function mountMorningRoom() {
+  window.harness.getBriefing = async () => ({
+    dates: [briefing.date], date: briefing.date, json: briefing, markdown: null,
+    brieferJobId: job.id, brieferStopped: null,
+  })
+  // Its headline reads the reduced-motion setting, which jsdom has not.
+  window.matchMedia = () => ({ matches: true })
+  useHarness.setState({ toast: null })
+  return mount(MorningRoom)
+}
+
+await check('a refused rebrief in the Morning room says why and does not poll', async () => {
+  const intervals = []
+  const realSetInterval = globalThis.setInterval
+  globalThis.setInterval = (fn, ms, ...rest) => {
+    intervals.push(ms)
+    return realSetInterval(fn, ms, ...rest)
+  }
+  try {
+    const { host, unmount } = mountMorningRoom()
+    await sleep(20)
+    clickButton(host, '↻ rebrief')
+    await sleep(20)
+    const toast = useHarness.getState().toast
+    assert.ok(toast?.message.includes(RUN_REFUSED), `the bridge’s reason is shown (toast: ${toast?.message})`)
+    assert.ok(!toast.message.includes('Briefer running'), 'it does not say the briefer runs')
+    assert.ok(!intervals.includes(5000), 'no poll for a new briefing')
+    assert.ok(host.textContent.includes('↻ rebrief'), 'the button is not left generating')
+    unmount()
+  } finally {
+    globalThis.setInterval = realSetInterval
+  }
+})
+
+await check('a refused job intent in the Morning room says why and is not counted', async () => {
+  const { host, unmount } = mountMorningRoom()
+  await sleep(20)
+  clickButton(host, 'run digest')
+  await sleep(20)
+  let toast = useHarness.getState().toast
+  assert.ok(toast?.message.includes(RUN_REFUSED), `the bridge’s reason is shown (toast: ${toast?.message})`)
+  assert.ok(!toast.message.includes('Job started'), 'it does not say the job started')
+  assert.ok(host.textContent.includes('run digest') && !host.textContent.includes('✓ run digest'), 'its button is live again')
+
+  clickButton(host, 'run all 1 in parallel')
+  await sleep(20)
+  toast = useHarness.getState().toast
+  assert.ok(toast?.message.includes(RUN_REFUSED), `the bridge’s reason is shown (toast: ${toast?.message})`)
+  assert.ok(!toast.message.includes('1 run dispatched'), 'the refused run is not counted')
+  const todayRun = [...host.querySelectorAll('button.mroom-run')]
+  assert.ok(todayRun.length === 1 && todayRun[0].textContent === 'run' && !todayRun[0].disabled, 'its today line is live again')
   unmount()
 })
 

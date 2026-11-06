@@ -163,7 +163,13 @@ export function MorningRoom() {
           toggleMorningRoom(false)
         } else if (intent.kind === 'fire_job' && intent.job_id) {
           const { schedulerApi } = await import('../state/scheduler-store')
-          await schedulerApi.runJobNow(intent.job_id)
+          // A run the bridge refuses answers with an error; it does not throw.
+          const { error } = await schedulerApi.runJobNow(intent.job_id)
+          if (error) {
+            showToast(`Job did not start: ${String(error).slice(0, 80)}`, 'warn')
+            unmarkDispatched(key)
+            return
+          }
           showToast('Job started', 'info')
         } else if (intent.kind === 'prompt' && intent.prompt) {
           await newSession()
@@ -189,6 +195,7 @@ export function MorningRoom() {
   const runAllToday = useCallback(async () => {
     const items = b.doc?.today ?? []
     let started = 0
+    let refused: string | null = null
     for (let i = 0; i < items.length; i++) {
       const intent = items[i]?.intent
       // open_session items need the user present — batch dispatch skips
@@ -202,7 +209,12 @@ export function MorningRoom() {
       try {
         if (intent.kind === 'fire_job' && intent.job_id) {
           const { schedulerApi } = await import('../state/scheduler-store')
-          await schedulerApi.runJobNow(intent.job_id)
+          const { error } = await schedulerApi.runJobNow(intent.job_id)
+          if (error) {
+            refused = String(error)
+            unmarkDispatched(key)
+            continue
+          }
           started++
         } else if (intent.kind === 'prompt' && intent.prompt) {
           await newSession()
@@ -212,6 +224,13 @@ export function MorningRoom() {
       } catch {
         unmarkDispatched(key) // per-item failure shouldn't halt the batch
       }
+    }
+    if (refused !== null) {
+      showToast(
+        `${started > 0 ? `${started} dispatched; ` : ''}a job did not start: ${refused.slice(0, 80)}`,
+        'warn',
+      )
+      return
     }
     showToast(
       started > 0 ? `${started} run${started === 1 ? '' : 's'} dispatched` : 'Nothing to dispatch',
@@ -230,7 +249,12 @@ export function MorningRoom() {
     const beforeDate = b.date
     try {
       const { schedulerApi } = await import('../state/scheduler-store')
-      await schedulerApi.runJobNow(b.brieferJobId)
+      const { error } = await schedulerApi.runJobNow(b.brieferJobId)
+      if (error) {
+        setGenerating(false)
+        showToast(`Briefer did not start: ${String(error).slice(0, 80)}`, 'warn')
+        return
+      }
       showToast('Briefer running — this takes a couple of minutes', 'info')
       // Timers held in a ref + cleared on unmount so closing the room
       // doesn't leave a 10-minute orphan interval calling setState.
