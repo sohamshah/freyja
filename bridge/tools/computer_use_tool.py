@@ -684,17 +684,30 @@ click/type/scroll tools until the memo arrives.
                 del collected_text[text_mark["at"]:]
                 await _fire(self._sub_spec.emit_event, {"type": "stream_reset", "sessionId": record.id})
 
+        from bridge.transcript_persistence import (
+            COMPACTION_LOG_SUBTYPES,
+            append_subagent_compaction,
+        )
+
         async def on_system_event(event: Any) -> None:
+            subtype = getattr(event, "type", "unknown")
+            details = getattr(event, "details", {}) or {}
             await _fire(
                 self._sub_spec.emit_event,
                 {
                     "type": "system_event",
                     "sessionId": record.id,
-                    "subtype": getattr(event, "type", "unknown"),
+                    "subtype": subtype,
                     "message": getattr(event, "message", ""),
-                    "details": getattr(event, "details", {}) or {},
+                    "details": details,
                 },
             )
+            # The child's compaction log, as sub_agent_tool keeps one.
+            if subtype in COMPACTION_LOG_SUBTYPES:
+                append_subagent_compaction(
+                    record.id, model=self._sub_spec.standard_tier_model or "",
+                    subtype=subtype, details=details, default_trigger="runtime",
+                )
 
         inbox_ref = record.inbox
 

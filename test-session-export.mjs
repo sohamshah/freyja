@@ -602,6 +602,9 @@ fs.writeFileSync(path.join(sessionsDir, `${subId}.json`), JSON.stringify({
     toolCallOrder: ['s-read'], subagents: {}, usage: {}, systemEvents: [],
   },
 }))
+// Its compaction log is beside its sidecars too.
+fs.writeFileSync(path.join(sessionsDir, `${subId}.compactions.jsonl`),
+  JSON.stringify({ ts: 4, session_id: subId, subtype: 'compaction_complete', summary_text: 'U'.repeat(3000) }) + '\n')
 await check('its export has each tool result whole, from its raw log', async () => {
   const r = await persistence.exportSessionToFile(subId, path.join(home, 'sub-out.json'))
   assert.equal(r.ok, true, JSON.stringify(r))
@@ -610,6 +613,13 @@ await check('its export has each tool result whole, from its raw log', async () 
   assert.deepEqual([tc.resultSource, tc.resultComplete], ['transcript', true])
   assert.equal(readJson(r.bundlePath).raw_transcript.length, 3)
   assert.ok(fs.readFileSync(r.tracePath, 'utf8').includes('THE END'))
+})
+await check('its export and download have its compaction summaries, whole', async () => {
+  const r = await persistence.exportSessionToFile(subId, path.join(home, 'sub-out2.json'))
+  assert.deepEqual(readJson(r.bundlePath).compactions.map((c) => c.summary_text), ['U'.repeat(3000)])
+  const out = path.join(home, 'sub-download2.json')
+  assert.equal((await persistence.writeSessionDownload(subId, out)).ok, true)
+  assert.deepEqual(readJson(out).compactions.map((c) => c.summary_text), ['U'.repeat(3000)])
 })
 await check('its download has each tool result whole, and its raw transcript', async () => {
   const out = path.join(home, 'sub-download.json')

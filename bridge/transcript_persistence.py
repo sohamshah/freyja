@@ -202,6 +202,77 @@ def append_subagent_raw_message(session_id: str, message: Any) -> None:
         logger.debug("raw_messages append failed for %s", session_id, exc_info=True)
 
 
+def compactions_path(session_id: str) -> Path:
+    """A sub-agent's compaction log, beside its other sidecars. A root
+    session's is ``<project dir>/compactions.jsonl``."""
+    return SESSIONS_DIR / f"{_sanitize_session_id(session_id)}.compactions.jsonl"
+
+
+# The system events a compaction log records, as a root session's
+# _on_system_event mirrors them (bridge/freyja_bridge.py).
+COMPACTION_LOG_SUBTYPES = frozenset({
+    "compaction_start", "compaction_complete", "compaction_skipped",
+    "context_pruning", "media_pruning",
+})
+
+
+def append_subagent_compaction(
+    session_id: str,
+    *,
+    model: str,
+    subtype: str,
+    details: dict[str, Any],
+    default_trigger: str,
+    summary_text: str | None = None,
+) -> None:
+    """Append one compaction event to a sub-agent's compaction log, with the
+    fields a root session's row has (``_mirror_compaction_event``,
+    ``_emit_summarize_event``). ``summary_text`` is the full summary when the
+    event carries only an excerpt. Never raises; the agent loop must not stop
+    on it."""
+    try:
+        row = {
+            "session_id": session_id,
+            "model": model,
+            "turn_id": None,
+            "ts": time.time(),
+            "subtype": subtype,
+            "trigger": details.get("trigger") or default_trigger,
+            "mechanism": details.get("strategy") or details.get("mechanism") or subtype,
+            "tokens_before": int(
+                details.get("tokens_before") or details.get("context_tokens_before") or 0
+            ),
+            "tokens_after": int(
+                details.get("tokens_after") or details.get("context_tokens_after") or 0
+            ),
+            "effective_window": details.get("effective_window"),
+            "pressure_pct_before": details.get("pressure_pct_before"),
+            "pressure_pct_after": details.get("pressure_pct_after"),
+            "entries_removed": int(details.get("entries_removed") or 0),
+            "summary_text": (
+                summary_text
+                or details.get("summary_text")
+                or details.get("summary_preview")
+                or details.get("summary_excerpt")
+                or ""
+            ),
+            "summary_tokens": int(details.get("summary_tokens") or 0),
+            "scope": details.get("scope"),
+            "reason": details.get("reason"),
+            "resumed_from_previous": bool(details.get("resumed_from_previous") or False),
+            "summarizer_input_tokens": int(details.get("summarizer_input_tokens") or 0),
+            "summarizer_output_tokens": int(details.get("summarizer_output_tokens") or 0),
+            "summarizer_cost_usd": details.get("summarizer_cost_usd"),
+        }
+        path = compactions_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False, default=str))
+            fh.write("\n")
+    except Exception:  # noqa: BLE001
+        logger.debug("compactions log append failed for %s", session_id, exc_info=True)
+
+
 def _subagent_path(session_id: str) -> Path:
     """Sidecar path for a paused / completed sub-agent that may be
     re-woken later via a talk() message."""

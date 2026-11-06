@@ -33,16 +33,27 @@ export function projectDirFor(id: string): string {
   return path.join(os.homedir(), '.freyja', 'projects', sanitizeForFsId(id))
 }
 
-/** Where a session's raw log is. A root session's is in its project
- *  directory. A sub-agent has no project directory of its own: the bridge
- *  writes its log beside its other sidecars, with the sidecars' file-name rule
- *  (bridge/transcript_persistence.py). Both are read, the sidecar first. */
-function rawLogPathsFor(id: string): string[] {
+/** Where a session's log `name` is (`raw_messages.jsonl`,
+ *  `compactions.jsonl`). A root session's is in its project directory. A
+ *  sub-agent has no project directory of its own: the bridge writes its logs
+ *  beside its other sidecars, as `<id>.<name>`, with the sidecars' file-name
+ *  rule (bridge/transcript_persistence.py). Both are read, the sidecar first. */
+function sessionLogPathsFor(id: string, name: string): string[] {
   const sidecarId = id.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 160)
   return [
-    path.join(os.homedir(), '.freyja', 'sessions', `${sidecarId}.raw_messages.jsonl`),
-    path.join(projectDirFor(id), 'raw_messages.jsonl'),
+    path.join(os.homedir(), '.freyja', 'sessions', `${sidecarId}.${name}`),
+    path.join(projectDirFor(id), name),
   ]
+}
+
+function rawLogPathsFor(id: string): string[] {
+  return sessionLogPathsFor(id, 'raw_messages.jsonl')
+}
+
+/** A session's compaction log: one row per compaction event, with its full
+ *  summary. */
+export function readCompactions(id: string): unknown[] {
+  return sessionLogPathsFor(id, 'compactions.jsonl').flatMap((p) => readJsonl(p))
 }
 
 // The engine writes the full output of a cut tool result here. Read from HOME

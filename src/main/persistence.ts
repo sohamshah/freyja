@@ -8,7 +8,7 @@ import { stripAppshotBlocks } from '../shared/appshot.js'
 import { readCompactionTelemetry } from './telemetryReader.js'
 import {
   LazyObject,
-  projectDirFor,
+  readCompactions,
   readJsonl,
   readRawRecord,
   sanitizeForFsId,
@@ -1475,7 +1475,8 @@ function* rawRowsWithImages(raw: RawRecord): Generator<unknown> {
  *   - ``telemetry``: the session's telemetry rows by type, one
  *     ``llm_call_metric`` per model call.
  *   - ``compactions``: every successful compaction (runtime and agent driven)
- *     with its full summary text, from ``compactions.jsonl``.
+ *     with its full summary text, from ``compactions.jsonl`` (a sub-agent's
+ *     is beside its sidecars).
  */
 async function sessionBundle(sess: PersistedSession, raw: RawRecord): Promise<unknown> {
   const slice = (sess as any).slice ?? {}
@@ -1502,7 +1503,7 @@ async function sessionBundle(sess: PersistedSession, raw: RawRecord): Promise<un
     full_tool_results: raw.restoredResults(),
     live_transcript: Array.isArray(slice.messages) ? slice.messages : [],
     telemetry: await sessionTelemetry(sess.id),
-    compactions: readJsonl(path.join(projectDirFor(sess.id), 'compactions.jsonl')),
+    compactions: readCompactions(sess.id),
   }
 }
 
@@ -1572,7 +1573,7 @@ export async function writeSessionDownload(
       ...built,
       rawTranscript: rawRowsWithImages(raw),
       telemetry: await sessionTelemetry(id),
-      compactions: readJsonl(path.join(projectDirFor(id), 'compactions.jsonl')),
+      compactions: readCompactions(id),
     })
     return { ok: true, path: destPath }
   } catch (err) {

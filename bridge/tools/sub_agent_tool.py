@@ -1587,16 +1587,53 @@ Parameters:
                 del collected_text[text_mark["at"]:]
                 await _fire(self._spec.emit_event, {"type": "stream_reset", "sessionId": record.id})
 
+        from bridge.transcript_persistence import (
+            COMPACTION_LOG_SUBTYPES,
+            append_subagent_compaction,
+        )
+
         async def on_system_event(event: Any) -> None:
+            subtype = getattr(event, "type", "unknown")
+            details = getattr(event, "details", {}) or {}
             await _fire(
                 self._spec.emit_event,
                 {
                     "type": "system_event",
                     "sessionId": record.id,
-                    "subtype": getattr(event, "type", "unknown"),
+                    "subtype": subtype,
                     "message": getattr(event, "message", ""),
-                    "details": getattr(event, "details", {}) or {},
+                    "details": details,
                 },
+            )
+            # The child's compaction log, as a root session keeps one in its
+            # project dir. Its export reads the summaries from it.
+            if subtype in COMPACTION_LOG_SUBTYPES:
+                append_subagent_compaction(
+                    record.id, model=child_model, subtype=subtype, details=details,
+                    default_trigger="runtime",
+                )
+
+        def _on_sub_summarize_event(event: dict[str, Any]) -> None:
+            # The compactions the child asks for, logged as the runner's are.
+            # The event carries an excerpt; the full summary is the newest
+            # compaction entry in the child's transcript.
+            subtype = event.get("subtype")
+            if subtype not in COMPACTION_LOG_SUBTYPES:
+                return
+            summary_text = None
+            if subtype == "compaction_complete":
+                summary_text = next(
+                    (
+                        e.compaction_summary
+                        for e in reversed(session.transcript.entries)
+                        if e.is_compaction and e.compaction_summary
+                    ),
+                    None,
+                )
+            append_subagent_compaction(
+                record.id, model=child_model, subtype=subtype,
+                details=event.get("details") or {},
+                default_trigger="agent_summarize_context", summary_text=summary_text,
             )
 
         # Build thinking config for the child runner
@@ -1787,6 +1824,7 @@ Parameters:
             ),
             on_summarize_call=_on_sub_summarize_call,
             get_current_pressure_pct=_sub_summarize_pressure_pct,
+            on_system_event=_on_sub_summarize_event,
         )
 
         # Register the subagent-scoped instances IN PLACE so existing
