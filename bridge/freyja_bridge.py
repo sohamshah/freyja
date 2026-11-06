@@ -15752,6 +15752,17 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             cutoff_ms=cutoff_ms,
             records_cutoff_ms=records_cutoff_ms,
         )
+        # The fork's board is the journal rows stamped before the cut.
+        # Send it, so the app's copy of the cards stops there too instead
+        # of showing card states from after the fork point.
+        fork_kanban_cards: list[dict[str, Any]] | None = None
+        if cutoff_ms is not None:
+            from bridge.kanban_journal import KanbanJournal, journal_path
+            from bridge.tools.kanban_board import SessionKanbanBoard
+
+            fork_board = SessionKanbanBoard()
+            fork_board.replay_events(KanbanJournal(journal_path(new_parent_id)).read_all())
+            fork_kanban_cards = [task.to_dict() for task in await fork_board.list()]
 
         cloned_children: list[dict[str, str]] = []
         final_remap: dict[str, str] = {session_id: new_parent_id}
@@ -15822,6 +15833,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "messageOrdinal": ordinal,
                 "messageCreatedAt": cutoff_ms,
                 "compactionRecordsUntil": records_cutoff_ms,
+                "kanbanCards": fork_kanban_cards,
                 "idRemap": final_remap,
                 "childMappings": cloned_children,
                 "projectSessionId": new_parent_id if clone_project else old_project_id,

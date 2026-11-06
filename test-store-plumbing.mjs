@@ -177,6 +177,38 @@ await check('a card sent with its history replaces the history the app had', asy
   assert.deepEqual(H().kanbanCards.card_002.events, fresh)
   assert.deepEqual(H().kanbanCards.card_002.comments, [])
 })
+await check('a fork at a message shows the cards as they stood there, as the bridge cut its journal', async () => {
+  // card_001 was made before the fork point and passed after it; card_002
+  // was made after it. The bridge sends the board it replayed from the
+  // journal rows stamped before the cut.
+  const before = { id: 'card_001', title: 'Plan', status: 'running', createdAt: 1_000, updatedAt: 1_500, events: [], comments: [] }
+  const passed = { ...before, status: 'done', updatedAt: 3_000 }
+  const later = { id: 'card_002', title: 'Ship', status: 'ready', createdAt: 2_500, updatedAt: 2_500, events: [], comments: [] }
+  useHarness.setState({
+    activeSessionId: 'src',
+    sessions: [row('src')],
+    sessionArchive: {},
+    messages: [
+      { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'plan it' }], createdAt: 900 },
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ship it' }], createdAt: 2_000 },
+    ],
+    systemEvents: [
+      { id: 'e1', subtype: 'kanban_create', message: '', at: 1_000, details: { task: before } },
+      { id: 'e2', subtype: 'kanban_create', message: '', at: 2_500, details: { task: later } },
+      { id: 'e3', subtype: 'kanban_update', message: '', at: 3_000, details: { task: passed } },
+    ],
+    kanbanCards: { card_001: passed, card_002: later },
+  })
+  H().handleEvent({
+    type: 'session_branched', originalSessionId: 'src', newSessionId: 'src-b', newName: 'fork',
+    messageOrdinal: 1, messageCreatedAt: 2_000, idRemap: { src: 'src-b' }, childMappings: [],
+    kanbanCards: [before],
+  })
+  const fork = H().sessionArchive['src-b']
+  assert.deepEqual(Object.keys(fork.kanbanCards), ['card_001'])
+  assert.equal(fork.kanbanCards.card_001.status, 'running')
+  assert.deepEqual(H().kanbanCards, { card_001: passed, card_002: later }, 'the source keeps its cards')
+})
 
 console.log('\ncoalesced saves')
 await check('repeated schedules for one session become one save', async () => {

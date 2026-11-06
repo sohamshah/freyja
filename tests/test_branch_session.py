@@ -893,6 +893,39 @@ async def test_a_fork_of_a_slack_session_is_cut_from_the_gateways_transcript(ses
     assert [e["id"] for e in fork["transcript"]["entries"]] == ["c1", "u2", "a2", "u3", "a3"]
 
 
+async def test_a_fork_at_a_message_sends_its_board_cut_there(sessions_dir, monkeypatch):
+    # The app shows the fork's cards from this board, not from the
+    # source's current cards: card_001 passed and card_002 was made after
+    # the fork point, and the fork's journal has neither.
+    import bridge.freyja_bridge as fb
+    import bridge.kanban_journal as kj
+    import bridge.project_paths as pp
+
+    monkeypatch.setattr(kj, "SESSIONS_DIR", sessions_dir)
+    monkeypatch.setattr(pp, "project_output_dir", lambda sid: sessions_dir / "projects" / str(sid))
+    events: list[dict] = []
+    monkeypatch.setattr(fb, "emit", events.append)
+    tp.save_transcript("src", _transcript("src", BEFORE))
+    card = {"id": "card_001", "title": "Plan", "status": "running"}
+    _write(
+        sessions_dir / "src.kanban.jsonl",
+        "".join(
+            json.dumps(row) + "\n"
+            for row in [
+                {"ts": 100_000, "kind": "create", "task": card},
+                {"ts": 102_500, "kind": "create", "task": {"id": "card_002", "title": "Ship"}},
+                {"ts": 103_500, "kind": "update", "id": "card_001", "task": {**card, "status": "done"}},
+            ]
+        ),
+    )
+    state = SimpleNamespace(get=lambda sid: None, sessions={})
+    await fb._handle_command(
+        state, {"type": "branch_session", "sessionId": "src", "messageOrdinal": 2, "messageCreatedAt": ON_U2 * 1000}
+    )
+    (branched,) = [e for e in events if e["type"] == "session_branched"]
+    assert [(c["id"], c["status"]) for c in branched["kanbanCards"]] == [("card_001", "running")]
+
+
 async def test_live_commands_still_act_on_the_first_kept_message(sessions_dir, monkeypatch):
     fb, sess, state, events = _live(monkeypatch, AFTER)
     await _send(fb, sess, state, {"type": "toggle_entry_pin", "pinned": True, "messageCreatedAt": ON_U2 * 1000})

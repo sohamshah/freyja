@@ -1580,6 +1580,9 @@ export type BridgeEvent = Received & (
        *  anchor when the fork keeps a summary made after it, since that
        *  compaction is then part of the fork's history. */
       compactionRecordsUntil?: number | null
+      /** The fork's kanban board, replayed from the journal rows kept
+       *  before the anchor; null for a whole fork. */
+      kanbanCards?: Array<Record<string, unknown>> | null
       idRemap: Record<string, string>
       childMappings: Array<{ oldId: string; newId: string }>
       /** Project dir the fork writes into (its own id when cloned). */

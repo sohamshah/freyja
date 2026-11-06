@@ -966,12 +966,15 @@ export function remapIdsDeep<T>(obj: T, remap: Record<string, string>): T {
  *  the cutoff when the fork keeps a summary made after the anchor.
  *  Sub-agent cards survive only for children the bridge actually
  *  cloned (present in `remap`), and all ids are rewritten to the
- *  fork's. Streaming state is reset — a fork is never mid-turn. */
+ *  fork's. Kanban cards are `kanbanCards` when given: the board the
+ *  bridge replayed from the journal rows it kept, so they stop at the
+ *  cut too. Streaming state is reset — a fork is never mid-turn. */
 export function forkSliceForBranch(
   source: SessionSlice,
   remap: Record<string, string>,
   cutoffMs: number | null,
   compactionRecordsUntil: number | null = null,
+  kanbanCards: Array<Record<string, unknown>> | null = null,
 ): SessionSlice {
   const before = (t: number | undefined) =>
     cutoffMs == null || typeof t !== 'number' || t < cutoffMs
@@ -1012,6 +1015,9 @@ export function forkSliceForBranch(
     systemEvents: source.systemEvents.filter((e) =>
       e.subtype.startsWith('compaction_') ? recordBefore(e.at) : before(e.at),
     ),
+    kanbanCards: kanbanCards
+      ? Object.fromEntries(kanbanCards.map((task) => [String(task.id), task]))
+      : source.kanbanCards,
     busMessages: source.busMessages.filter((b) => before(b.timestamp)),
     inboxEvents: source.inboxEvents.filter((e) => before(e.timestamp)),
     artifacts: source.artifacts.filter((a) => before(a.createdAt)),
@@ -3719,7 +3725,13 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
             : undefined
           const source = sliceForSession(prev, oldId)
           const seeded = source
-            ? forkSliceForBranch(source, remap, isParent ? cutoff : null, isParent ? recordsUntil : null)
+            ? forkSliceForBranch(
+                source,
+                remap,
+                isParent ? cutoff : null,
+                isParent ? recordsUntil : null,
+                isParent && Array.isArray(ev.kanbanCards) ? ev.kanbanCards : null,
+              )
             : undefined
           if (seeded) nextArchive[newId] = seeded
           const childIds = prev.sessions
