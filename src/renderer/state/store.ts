@@ -2274,6 +2274,9 @@ function endTurnsOfOldBridge<T extends HarnessState>(state: T): T {
   }
 }
 
+/** The error each session last reported, until its next `turn_failed`. */
+const sessionErrors = new Map<string, string>()
+
 /** A session's `error` or a `turn_failed`: the message appended to the
  *  reply being streamed, and the turn ended as `turn_complete` ends it.
  *  No turn_complete follows a turn_failed, and the one that follows an
@@ -3630,8 +3633,15 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       // the turn.
       if (ev.type === 'error' || ev.type === 'turn_failed') {
         const message = ev.type === 'turn_failed' ? `turn failed: ${ev.message}` : ev.message
+        const target = ev.sessionId
+        // A provider that cannot be built is reported twice: as the
+        // session's error from initialize, then as turn_failed from the
+        // turn queue. One failure, so one log entry.
+        const logged = ev.type === 'turn_failed' && !!target && sessionErrors.get(target) === ev.message
+        if (target && ev.type === 'error') sessionErrors.set(target, ev.message)
+        else if (target) sessionErrors.delete(target)
         const notice = {
-          logs: [...prev.logs.slice(-200), { level: 'error' as const, message, at: receivedAt(ev) }],
+          logs: logged ? prev.logs : [...prev.logs.slice(-200), { level: 'error' as const, message, at: receivedAt(ev) }],
           toast: {
             id: nextId('toast'),
             message,
@@ -3643,7 +3653,6 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         // that session's: a sub-agent failing in the background used to
         // cut off the reply streaming on screen. Without a session it is
         // a notice (a delivery that failed, a bridge that crashed).
-        const target = ev.sessionId
         if (!target) return { ...prev, ...notice }
         if (target === prev.activeSessionId) {
           return { ...prev, ...notice, ...endTurnWithError(sliceFromState(prev), message) }

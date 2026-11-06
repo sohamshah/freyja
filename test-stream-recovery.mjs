@@ -249,6 +249,22 @@ await check('turn_failed before the turn started shows why and adds nothing', ()
   assert.equal(h().sessionArchive.cold, undefined)
 })
 
+await check('a provider that cannot be built is logged once, not again as turn_failed', () => {
+  // What the bridge sends: initialize's error, its own log line, then the
+  // turn queue's turn_failed for the same failure.
+  seed({ logs: [] })
+  const key = 'ANTHROPIC_API_KEY is not set'
+  const reports = () => h().logs.filter((l) => l.message === key || l.message === `turn failed: ${key}`)
+  emit({ type: 'error', sessionId: P, message: key, recoverable: true })
+  emit({ type: 'log', level: 'error', message: `turn failed (session=p): ${key}` })
+  emit({ type: 'turn_failed', sessionId: P, message: key, hint: '', model: 'claude-sonnet-5-5' })
+  assert.equal(reports().length, 1)
+  assert.equal(h().toast?.message, `turn failed: ${key}`)
+  // The next turn's failure is logged.
+  emit({ type: 'turn_failed', sessionId: P, message: key, hint: '', model: 'claude-sonnet-5-5' })
+  assert.equal(reports().length, 2)
+})
+
 // ── A new bridge ends the old bridge's turns ────────────────────────────
 
 await check('ready ends every turn still marked live, and settles its chips', () => {
