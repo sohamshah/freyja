@@ -2199,7 +2199,9 @@ def _build_user_message_with_attachments(
     """Convert renderer attachments into engine content blocks.
 
     Images flow into every provider — they get downscaled to fit
-    Anthropic's 5MiB base64 cap and routed as ImageBlocks. Video
+    Anthropic's 5MiB base64 cap and routed as ImageBlocks. An image's
+    ``label`` goes in as its own text block right before it (the gateway
+    names who posted an image that is not from the operator). Video
     attachments are Gemini-only: when the active session's model isn't
     in the google family, video attachments are dropped with a text
     annotation so the operator sees the silent skip in the transcript.
@@ -2211,7 +2213,7 @@ def _build_user_message_with_attachments(
 
     is_gemini = _family_for_model(model_id) == "google" if model_id else False
 
-    image_blocks: list[ImageBlock] = []
+    image_blocks: list[ImageBlock | TextBlock] = []
     video_blocks: list[VideoBlock] = []
     dropped_video_names: list[str] = []
     appshot_blocks: list[str] = []
@@ -2244,6 +2246,9 @@ def _build_user_message_with_attachments(
             # sent an oversize image, fix it here before it enters the
             # transcript.
             data, media_type, _ = _downscale_b64_image(data, media_type)
+            label = str(attachment.get("label") or "").strip()
+            if label:
+                image_blocks.append(TextBlock(text=label))
             image_blocks.append(ImageBlock.from_base64(data, media_type))
             continue
 
