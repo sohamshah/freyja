@@ -395,3 +395,19 @@ async def test_a_display_that_changed_resolution_asks_for_a_new_screenshot(monke
     res = await tools["click"].execute("c4", {"x": 640, "y": 360, "settle_ms": 0})
     assert not res.is_error
     assert screens.sent == [("click", -960, 540)]
+
+
+async def test_a_window_screenshot_says_clicks_still_use_the_display_screenshot(monkeypatch):
+    # A window capture does not set the coordinate space: clicks keep mapping
+    # through the last display screenshot. The result must not tell the model
+    # to click by the window picture's pixels.
+    screens = _Monitors()
+    tools, _ = _session(monkeypatch, screens)
+    await tools["screenshot"].execute("c1", {"display_id": 2})
+    res = await tools["screenshot"].execute("c2", {"window_id": 5})
+    assert not res.is_error
+    assert _text(res).startswith("Captured window 5 (1280x831, 0KB). This picture is for reading only:")
+    assert "your last display screenshot (display 2, 1280x720)" in _text(res)
+    assert "ONE coordinate space" not in _text(res)
+    await tools["click"].execute("c3", {"x": 640, "y": 360, "settle_ms": 0})
+    assert screens.sent == [("click", -1280, 720)]

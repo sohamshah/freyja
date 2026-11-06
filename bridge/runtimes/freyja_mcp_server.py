@@ -57,7 +57,10 @@ TOOL_CATALOG: list[dict[str, Any]] = [
             "properties": {
                 "window_id": {
                     "type": "integer",
-                    "description": "Optional CGWindowID from freyja_list_windows()",
+                    "description": (
+                        "Optional CGWindowID from freyja_list_windows(). The picture "
+                        "is for reading; clicks keep using the last full screenshot's pixels."
+                    ),
                 },
                 "display_id": {
                     "type": "integer",

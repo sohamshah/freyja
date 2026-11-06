@@ -1122,7 +1122,7 @@ decide where to act. Screenshots are cheap — take as many as you need.
                 "properties": {
                     "window_id": {
                         "type": "integer",
-                        "description": "Optional CGWindowID from list_windows()",
+                        "description": "Optional CGWindowID from list_windows(). The picture is for reading; clicks keep using the last display screenshot's pixels.",
                     },
                     "display_id": {
                         "type": "integer",
@@ -1192,6 +1192,32 @@ decide where to act. Screenshots are cheap — take as many as you need.
                     "it for this app."
                 ),
                 is_error=True,
+            )
+        if window_id is not None:
+            # A window capture leaves the coordinate space alone (see
+            # _emit_frame): clicks still map through the last display frame.
+            spec = self._spec
+            if spec.api_dims is not None and spec.frame_display_id is not None:
+                space = (
+                    f"your last display screenshot (display {spec.frame_display_id}, "
+                    f"{spec.api_dims[0]}x{spec.api_dims[1]})"
+                )
+            else:
+                space = "a display screenshot, and none has been taken yet"
+            summary = (
+                f"Captured window {window_id} ({frame.width}x{frame.height}, "
+                f"{frame.byte_len // 1024}KB). This picture is for reading only: "
+                f"x,y for click, move_mouse and scroll are not pixels in it. They "
+                f"refer to {space}. To act on what you see here, take a screenshot "
+                f"without window_id first and use its pixels."
+            )
+            return ToolResult(
+                call_id=call_id,
+                content=[
+                    TextBlock(text=summary),
+                    ImageBlock.from_base64(_b64(frame.data), media_type=frame.mime_type),
+                ],
+                is_error=False,
             )
         summary = (
             f"Captured screenshot {frame.width}x{frame.height} "
