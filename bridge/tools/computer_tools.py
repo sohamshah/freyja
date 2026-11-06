@@ -492,8 +492,8 @@ async def _post_action_frame(
 
     `display_id` shows that display instead; focus_window passes the one
     that holds the window it focused, or the pinned display in a pinned
-    session. The coordinate space moves with the screenshot, as for any
-    display frame.
+    session, wherever the window is. The coordinate space moves with the
+    screenshot, as for any display frame.
 
     When the capture fails, returns why instead (see `_capture_failed_text`),
     for `_result_with_frame` to put in the result."""
@@ -1624,13 +1624,13 @@ action depending on the policy.
         # model focused the window to see it, so show the display that holds
         # it, not the one last looked at; without one, keep the latter. A
         # session pinned to a display keeps to it: its sub-agent is told not
-        # to touch other monitors, so a window elsewhere is named, not shown.
+        # to touch other monitors, so a window elsewhere is named, not shown,
+        # and a window that cannot be found leaves the screenshot on the
+        # pinned display too, not on another one the model looked at.
         await asyncio.sleep(settle_ms / 1000.0)
         held = await _window_display(native, window_id=window_id, bundle_id=bundle_id)
         pinned = self._spec.default_display_id
-        shown = held[0] if held else None
-        if held is not None and pinned is not None:
-            shown = pinned
+        shown = pinned if pinned is not None else (held[0] if held else None)
         frame = await _post_action_frame(
             self._spec, native, "focus_window", display_id=shown
         )
