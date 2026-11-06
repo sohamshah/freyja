@@ -766,8 +766,8 @@ class SchedulerService:
             return False
         error = (run.error or _sink_errors(run) or "no error was recorded")[:600]
         notice = (
-            f"I stopped the scheduled job *{fresh.name}*: its last "
-            f"{sum(_failures_in_a_row(recent))} runs failed. Last error: {error}"
+            f"I stopped the scheduled job *{fresh.name}*: "
+            f"{_failed_runs_said(recent)}. Last error: {error}"
         )
         append_event({
             "type": "scheduler_job_stopped_failing",
@@ -1303,6 +1303,22 @@ def _should_stop(runs: list[RunRecord]) -> bool:
         real >= MAX_FAILED_RUNS_IN_A_ROW
         or real + passing >= MAX_PASSING_FAILURES_IN_A_ROW
     )
+
+
+def _failed_runs_said(runs: list[RunRecord]) -> str:
+    """How many runs at the head of ``runs`` (newest first) failed, for
+    the notice of a job they stopped, and how many of those were retries
+    under its retry_policy. The count the stop goes by leaves such retries
+    out: it said 3 runs failed when 6 had."""
+    failed = retries = 0
+    for r in runs:
+        if r.status not in _FAILED_RUN_STATUSES:
+            break
+        failed += 1
+        if r.attempt > 0:
+            retries += 1
+    said = f"its last {failed} runs failed"
+    return f"{said}, {retries} of them retries under its retry policy" if retries else said
 
 
 def _stopped_only_by_passing_failures(job: JobRecord) -> bool:

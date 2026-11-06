@@ -189,3 +189,23 @@ async def test_the_run_record_says_which_retry_it_is(monkeypatch):
     run = await runtime.fire_job(_Service(), job, attempt=2)
 
     assert load_run(job.id, run.run_id).attempt == 2
+
+
+# ─── the stop notice counts every run that failed ─────────────────────
+
+
+@pytest.mark.parametrize("retry_policy, runs, said", [
+    (RetryPolicy(max_retries=1, backoff_seconds=60), 6,
+     "its last 6 runs failed, 3 of them retries under its retry policy."),
+    (None, 3, "its last 3 runs failed."),
+])
+async def test_the_stop_notice_says_how_many_runs_failed(service, monkeypatch, retry_policy, runs, said):
+    notices: list[str] = []
+    monkeypatch.setattr(service, "emit_event", lambda **kw: notices.append(kw["message"]))
+    job = _report(retry_policy=retry_policy)
+
+    for _ in range(runs):
+        saved = await _run_when_due(service, job.id)
+
+    assert saved.status == "disabled_error"
+    assert f"I stopped the scheduled job *daily report*: {said} Last error: {REAL_ERROR}" in notices
