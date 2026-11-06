@@ -460,6 +460,11 @@ class JobRecord:
     prompt: str = ""
     execution: ExecutionSpec = field(default_factory=NewSession)
     permission_snapshot: str = "low"   # tier string ("yolo" | "low" | "medium" | "high")
+    # The gateway platform ("slack") whose tool filter the session that
+    # made the job ran under, or None. The job's runs keep that filter
+    # (runtime.job_tool_filter), and it runs only where they can
+    # (service._check_tool_filter).
+    tool_filter: str | None = None
     model_id: str | None = None
     # The mode an existing session the job fires into is loaded in. None
     # (not set) loads it in the mode it was saved in: a default of bus
@@ -521,6 +526,7 @@ class JobRecord:
             "prompt": self.prompt,
             "execution": self.execution.to_dict(),
             "permission_snapshot": self.permission_snapshot,
+            "tool_filter": self.tool_filter,
             "model_id": self.model_id,
             "coordination_strategy": self.coordination_strategy,
             "skills_to_load": list(self.skills_to_load),
@@ -558,6 +564,7 @@ class JobRecord:
             prompt=d.get("prompt", ""),
             execution=execution_from_dict(d.get("execution") or {}),
             permission_snapshot=d.get("permission_snapshot", "low"),
+            tool_filter=d.get("tool_filter"),
             model_id=d.get("model_id"),
             coordination_strategy=d.get("coordination_strategy"),
             skills_to_load=list(d.get("skills_to_load") or []),

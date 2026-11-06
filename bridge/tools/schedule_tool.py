@@ -58,11 +58,14 @@ class ScheduleTool:
         current_session_id: str,
         gateway_source_getter: Any | None = None,
         current_user_id: str | None = None,
+        tool_filter_getter: Any | None = None,
     ) -> None:
         self._service = service
         self._session_id = current_session_id
         self._gw_source_getter = gateway_source_getter
         self._user_id = current_user_id
+        # The creating session's tool filter, recorded on each job it makes.
+        self._tool_filter_getter = tool_filter_getter
 
     @property
     def definition(self) -> ToolDefinition:
@@ -170,6 +173,9 @@ class ScheduleTool:
             execution=execution,
             permission_snapshot=getattr(
                 self._service.state, "permission_tier", "low",
+            ),
+            tool_filter=(
+                self._tool_filter_getter() if self._tool_filter_getter is not None else None
             ),
             model_id=args.get("model_id"),
             coordination_strategy=args.get("coordination_strategy"),

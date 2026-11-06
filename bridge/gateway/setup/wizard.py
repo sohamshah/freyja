@@ -367,7 +367,7 @@ def _run_slack_setup() -> int:
             _info(_green(("  ✓ " if i == 0 else "    ") + line))
         _info(_red("  ✗ every other tool, such as bash, computer use, browser and MCP tools"))
         _info(_dim("  write_file, edit_file and edit_json write files; memory edits memory."))
-        _info(_dim("  A job made with schedule runs in a new session by default, without this filter."))
+        _info(_dim("  A job made with schedule keeps this filter."))
         print()
         _info(_dim("Flip slack.enable_tool_filter to false in ~/.freyja/gateway.yaml"))
         _info(_dim("to give the agent the full toolset over Slack."))

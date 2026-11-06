@@ -1222,6 +1222,7 @@ class SchedulerService:
         _check_execution(spec.execution)
         if not spec.id:
             spec.id = new_job_id()
+        _check_tool_filter(spec)
         spec.created_at = spec.updated_at = time.time()
         # Take the per-job lock to align with the rest of the CRUD
         # surface (so concurrent create-vs-update on a known id can't
@@ -1364,6 +1365,7 @@ class SchedulerService:
                 self._recompute_next_fire(job, force=True)
             if patch.execution is not None:
                 job.execution = patch.execution
+                _check_tool_filter(job)
             save_job(job)
         touch_wake()
         canonical = load_job(job_id) or job
@@ -1793,6 +1795,30 @@ def _check_execution(execution: Any) -> None:
             f"{execution.session_id} is a sub-agent: a scheduled job cannot run "
             "in a sub-agent's session. Run it in the sub-agent's parent "
             "session, or in a new session"
+        )
+
+
+def _check_tool_filter(job: JobRecord) -> None:
+    """Refuse a job made under a gateway tool filter that would run where
+    the filter does not reach. Its own sessions take the filter from the
+    job (runtime.job_tool_filter), and the session it was made in has it
+    already. Any other session, such as a desktop chat, has every tool."""
+    if not job.tool_filter:
+        return
+    from bridge.scheduler.runtime import scheduler_session_id
+
+    spec = job.execution
+    if isinstance(spec, PersistentJobSession):
+        reached = not spec.session_id or spec.session_id == scheduler_session_id(job.id)
+    elif isinstance(spec, ExistingSession):
+        reached = spec.session_id == job.creator.session_id
+    else:
+        reached = True
+    if not reached:
+        raise ValueError(
+            f"this job was made with the {job.tool_filter.title()} tool filter "
+            "on, so it runs only in a new session, its own job session or the "
+            "session it was made in"
         )
 
 

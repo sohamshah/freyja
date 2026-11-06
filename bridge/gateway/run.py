@@ -1987,9 +1987,9 @@ class GatewayDaemon:
             "use, browser, screenshots, image generation and MCP tools. "
             "`tool_search` and `call_tool` reach only the tools above. "
             "`write_file`, `edit_file` and `edit_json` write files, and "
-            "`memory` edits memory. A job made with `schedule` runs in a new "
-            "session by default, without this filter. To grant more, switch "
-            "to the Freyja desktop app or flip `slack.enable_tool_filter: false`."
+            "`memory` edits memory. A job made with `schedule` keeps this "
+            "filter. To grant more, switch to the Freyja desktop app or flip "
+            "`slack.enable_tool_filter: false`."
         )
         return "\n".join(lines)
 

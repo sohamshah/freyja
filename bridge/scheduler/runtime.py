@@ -53,6 +53,19 @@ def scheduler_session_id(job_id: str) -> str:
     return f"{_SCHED_SESSION_PREFIX}{job_id}"
 
 
+def job_tool_filter(session_id: str) -> str | None:
+    """The tool filter (``JobRecord.tool_filter``) of the job whose own
+    session ``session_id`` is (_resolve_execution_session names them), or
+    None. The session takes it when it is built, whichever process loads
+    it and for whatever turn."""
+    if not session_id.startswith(_SCHED_SESSION_PREFIX):
+        return None
+    from bridge.scheduler.persistence import load_job
+
+    job = load_job(session_id[len(_SCHED_SESSION_PREFIX):].removesuffix(".ephemeral"))
+    return job.tool_filter if job is not None else None
+
+
 async def fire_job(
     service: "SchedulerService",
     job: JobRecord,

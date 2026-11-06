@@ -4782,6 +4782,9 @@ class _BridgeSession:
         self.runner: Any | None = None
         self.provider: Any | None = None
         self.tool_registry: Any | None = None
+        # The gateway platform ("slack") whose tool filter limits this
+        # session's tools, or None. Set by initialize.
+        self.tool_filter: str | None = None
         self.subagent_registry: Any | None = None
         # Inbox for inter-agent + operator-to-agent talk. Drained at
         # iteration boundaries by the runner pre-hook below.
@@ -5491,6 +5494,7 @@ class _BridgeSession:
                     service=sched_service,
                     current_session_id=self.id,
                     gateway_source_getter=lambda: getattr(self, "gateway_source", None),
+                    tool_filter_getter=lambda: self.tool_filter,
                 ))
         except Exception as exc:  # noqa: BLE001
             log("warn", f"failed to register schedule tool: {exc}")
@@ -5502,7 +5506,15 @@ class _BridgeSession:
         # — bash, computer-use, browser, etc. The operator never sees
         # a confirmation prompt over Slack, so dangerous tools must be
         # filtered at the registry level rather than relying on the
-        # model honoring a prompt-level hint.
+        # model honoring a prompt-level hint. A scheduled job made under
+        # the filter keeps it in its own sessions, which have no source.
+        from bridge.gateway.capabilities import (
+            gateway_filter_enabled,
+            tools_allowed_for_gateway,
+        )
+        from bridge.scheduler.runtime import job_tool_filter
+
+        self.tool_filter = job_tool_filter(self.id)
         gw_source = getattr(self, "gateway_source", None)
         if gw_source is not None:
             # Register the gateway-only `send_attachment` tool. Closes
@@ -5540,34 +5552,9 @@ class _BridgeSession:
                     f"{traceback.format_exc()}",
                 )
 
-            from bridge.gateway.capabilities import (
-                gateway_filter_enabled,
-                tools_allowed_for_gateway,
-            )
             platform = getattr(gw_source, "platform", None)
             if gateway_filter_enabled(platform):
-                # Restricted surface: keep only the allowlisted tools,
-                # but ALWAYS include send_attachment — the agent needs
-                # it to ship files back regardless of the safety
-                # posture, and it's not destructive.
-                allowed = set(tools_allowed_for_gateway(platform))
-                allowed.update({"send_attachment", "slack_widget", "code_channel"})
-                # unregister() drops the catalog entry too: the tool list,
-                # tool_search and a read-only fork are built from it.
-                for name in registry.list_names():
-                    if name not in allowed:
-                        registry.unregister(name)
-                # No MCP tool is on the list, so a server that connects
-                # later must not register its tools here.
-                mcp_manager = getattr(self.state, "mcp_manager", None)
-                if mcp_manager is not None:
-                    mcp_manager.detach(registry)
-                log(
-                    "info",
-                    f"gateway session {self.id}: tool surface restricted to "
-                    f"{len(registry._tools)} tools "  # noqa: SLF001
-                    f"({sorted(registry._tools.keys())})",  # noqa: SLF001
-                )
+                self.tool_filter = getattr(platform, "value", None) or str(platform)
             else:
                 # Full surface — operator is presumed solo, no filter.
                 log(
@@ -5577,6 +5564,29 @@ class _BridgeSession:
                     f"enable slack.enable_tool_filter in ~/.freyja/"
                     f"gateway.yaml to restrict)",
                 )
+        if self.tool_filter is not None:
+            # Restricted surface: keep only the allowlisted tools,
+            # but ALWAYS include send_attachment — the agent needs
+            # it to ship files back regardless of the safety
+            # posture, and it's not destructive.
+            allowed = set(tools_allowed_for_gateway(self.tool_filter))
+            allowed.update({"send_attachment", "slack_widget", "code_channel"})
+            # unregister() drops the catalog entry too: the tool list,
+            # tool_search and a read-only fork are built from it.
+            for name in registry.list_names():
+                if name not in allowed:
+                    registry.unregister(name)
+            # No MCP tool is on the list, so a server that connects
+            # later must not register its tools here.
+            mcp_manager = getattr(self.state, "mcp_manager", None)
+            if mcp_manager is not None:
+                mcp_manager.detach(registry)
+            log(
+                "info",
+                f"session {self.id}: {self.tool_filter} tool filter restricts "
+                f"it to {len(registry._tools)} tools "  # noqa: SLF001
+                f"({sorted(registry._tools.keys())})",  # noqa: SLF001
+            )
 
         tool_names = sorted(registry._tools.keys())  # noqa: SLF001
         from bridge.tools.background_shell import ToolContext
