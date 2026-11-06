@@ -428,6 +428,45 @@ async def test_slash_mode_during_a_running_turn_says_the_mode_waits_for_the_turn
     assert "`kanban`" in text and "turn" in text
 
 
+async def _slash_mode(daemon, strategy: str) -> list[str]:
+    """``/mode <strategy>`` in the thread; returns what the gateway posted."""
+    from bridge.gateway.platforms.base import IncomingMessage, MessageSource, Platform
+
+    sent: list[str] = []
+
+    class _Adapter:
+        async def send(self, _chat_id, text, **_kw):
+            sent.append(text)
+
+    source = MessageSource(
+        platform=Platform.SLACK, workspace_id="T1", chat_type="channel", chat_id="C1",
+        user_id="U0OPERATOR", thread_id="1.0",
+    )
+    await daemon._handle_mode_command(
+        IncomingMessage(
+            source=source, text=f"/mode {strategy}", is_slash_command=True, slash_command_name="mode",
+            slash_command_args=strategy,
+        ),
+        _Adapter(),
+    )
+    return sent
+
+
+async def test_slash_mode_kanban_turns_autopilot_on_as_the_apps_mode_menu_does(gateway):
+    # The app's mode menu, and a change held for a running turn, turned
+    # autopilot on for kanban; /mode made between turns left it off.
+    daemon, state, events = gateway
+    _thread_saved("bus")
+    (text,) = await _slash_mode(daemon, "kanban")
+    thread = state.sessions[SLACK]
+    assert thread.coordination_strategy == "kanban"
+    assert thread.kanban_board is not None and thread.auto_dispatch_enabled
+    assert text == "Coordination strategy set to `kanban`."
+    # The app hears of it as of a change made in its mode menu.
+    (changed,) = _mode_changes(events)
+    assert changed["sessionId"] == SLACK and changed["details"]["coordinationStrategy"] == "kanban"
+
+
 # ── saved when made, and kept over a restart ─────────────────────────
 
 

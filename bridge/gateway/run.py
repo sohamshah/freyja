@@ -1645,8 +1645,8 @@ class GatewayDaemon:
     ) -> bool:
         """`/mode <strategy>` — change coordination strategy on the
         active session. Creates the session if it doesn't yet exist."""
+        from bridge.freyja_bridge import _handle_command
         from bridge.gateway.session_router import session_key_for
-        from bridge.tools.coordination import normalize_coordination_strategy  # noqa: F401
 
         target = (message.slash_command_args or "").strip().lower()
         if target not in {"bus", "goal", "kanban"}:
@@ -1662,10 +1662,14 @@ class GatewayDaemon:
         key = session_key_for(message.source)
         if self.state is None:
             return True
-        session = await self.state.ensure_session(
-            session_id=key,
-            coordination_strategy=target,
+        # As the app's mode menu changes it (_on_set_coordination_strategy):
+        # autopilot on when the thread enters kanban. A bare ensure_session
+        # left it off.
+        await _handle_command(
+            self.state,
+            {"type": "set_coordination_strategy", "sessionId": key, "coordinationStrategy": target},
         )
+        session = self.state.sessions[key]
         # If the session existed with a different strategy, ensure_session
         # already swapped it, unless a turn is running: then it parked the
         # change for after the turn, as /model's is.
