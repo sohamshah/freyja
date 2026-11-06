@@ -5792,6 +5792,11 @@ class _BridgeSession:
         except Exception as exc:
             log("warn", f"post-restore orphan backfill failed: {exc}")
 
+        # The runner is new and no call has measured the transcript: until
+        # the first one reports, measure it by the size restored (compacted
+        # or not), as after a manual compaction, not 0%.
+        self._mark_usage_compacted(self.session.estimate_tokens())
+
         entry_count = len(self.session.transcript)
         log("info", f"transcript restored for {self.id}: {entry_count} entries")
 
@@ -6688,8 +6693,9 @@ class _BridgeSession:
             return (0, 0, 0, 0, 0.0)
 
     def _mark_usage_compacted(self, context_tokens_after: int) -> None:
-        """Measure the context by its size after a compaction between turns,
-        until the next call reports (the next turn's first check included)."""
+        """Measure the context by its size after a compaction or a restore
+        between turns, until the next call reports (the next turn's first
+        check included)."""
         if self.runner is None or self.session is None:
             return
         try:

@@ -115,3 +115,39 @@ async def test_a_restore_under_70_percent_of_the_usable_window_is_not_compacted(
         assert await sess.try_restore_transcript()
 
     assert _compactions(rows) == []
+
+
+# ─── the first turn after a restore ──────────────────────────────────
+# A restored session has a fresh runner: no call has measured it, so every
+# pressure reader read 0% until its first call reported. That call went out
+# without the pressure note, and the bridge's tag read 0%.
+
+
+async def _first_turn_measure(runner, session) -> int:
+    seen: list[int] = []
+    played = runner.provider.stream_to_response
+
+    async def _measured_at_call(**kw):
+        seen.append(runner.usage.effective_context_tokens())
+        return await played(**kw)
+
+    runner.provider.stream_to_response = _measured_at_call
+    await runner.run(session, "the next task")
+    return seen[0]
+
+
+async def test_a_restored_sessions_first_call_reads_the_size_it_restored(monkeypatch, tmp_path, rows):
+    sess, runner, session, provider = _restoring(monkeypatch, tmp_path, tokens=600_000)
+    with patch("bridge.freyja_bridge.emit"):
+        assert await sess.try_restore_transcript()
+
+    assert await _first_turn_measure(runner, session) == 600_000
+    assert "Context window is at 60-69%" in provider.requests[0][-1].get_text()
+
+
+async def test_a_session_compacted_on_restore_starts_from_the_size_the_compaction_left(monkeypatch, tmp_path, rows):
+    sess, runner, session, _provider = _restoring(monkeypatch, tmp_path, tokens=680_000)
+    with patch("bridge.freyja_bridge.emit"):
+        assert await sess.try_restore_transcript()
+
+    assert await _first_turn_measure(runner, session) == 5_000

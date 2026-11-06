@@ -1302,8 +1302,8 @@ class AsyncAgentRunner:
             self.compaction.prompt_source = self.cached_prompt_prefix
         self.keep_cache_warm = keep_cache_warm
         self._cache_keeper: asyncio.Future | None = None
-        # The transcript a compaction between turns left, as (session,
-        # message count, signature): see mark_context_compacted.
+        # The transcript a compaction between turns or a restore left, as
+        # (session, message count, signature): see mark_context_compacted.
         self._compacted_prompt: tuple[Session, int, int] | None = None
 
     def _compute_truncation_budget(self, session: Session) -> int:
@@ -1569,8 +1569,9 @@ class AsyncAgentRunner:
         # out without the pressure note, a reply past 55% raised a crossing
         # "from band 0", and the pre-request check fell back to the tokenizer
         # estimate. A transcript rewritten since that call (an edit, a
-        # delete) starts from zero. After a compaction between turns the
-        # size it left stands, while the transcript starts with what it left.
+        # delete) starts from zero. After a compaction between turns or a
+        # restore the size it left stands, while the transcript starts with
+        # what it left.
         if self._continues_sent_prompt(session) or self._continues_compacted(session):
             self.usage.start_turn()
         else:
@@ -3337,9 +3338,9 @@ class AsyncAgentRunner:
         )
 
     def mark_context_compacted(self, session: Session, context_tokens_after: int) -> None:
-        """A compaction between turns (a manual one) rewrote the transcript:
-        measure the context by the size it left until the next call
-        reports, the next turn's first check included."""
+        """A compaction between turns (a manual one) or a restore rewrote
+        the transcript: measure the context by the size it left until the
+        next call reports, the next turn's first check included."""
         self._mark_context_compacted(context_tokens_after)
         messages = session.get_messages()
         self._compacted_prompt = (session, len(messages), message_signature(messages))
