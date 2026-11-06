@@ -2178,6 +2178,9 @@ export type CompactionTelemetryRow =
       type: 'compaction_event'
       ts: number
       session_id: string
+      /** The bridge's turn, or a sub-agent's step `<sub id>-t<n>`. Empty
+       *  on thrash_skip and computer-use rows. */
+      turn_id?: string | null
       agent_type?: string | null
       parent_session_id?: string | null
       subtype: string

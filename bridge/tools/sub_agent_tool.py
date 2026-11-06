@@ -1613,6 +1613,7 @@ Parameters:
                     record.id, model=child_model, subtype=subtype, details=details,
                     default_trigger="runtime", agent_type=agent_type.name,
                     parent_session_id=self._spec.parent_session_id,
+                    turn_id=f"{record.id}-t{turn_counter['n']}",
                 )
 
         def _on_sub_summarize_event(event: dict[str, Any]) -> None:
@@ -1644,6 +1645,7 @@ Parameters:
                 details=event.get("details") or {},
                 default_trigger="agent_summarize_context", summary_text=summary_text,
                 agent_type=agent_type.name, parent_session_id=self._spec.parent_session_id,
+                turn_id=f"{record.id}-t{turn_counter['n']}",
             )
 
         # Build thinking config for the child runner

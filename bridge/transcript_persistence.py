@@ -238,13 +238,15 @@ def append_subagent_compaction(
     summary_text: str | None = None,
     agent_type: str | None = None,
     parent_session_id: str | None = None,
+    turn_id: str | None = None,
 ) -> None:
     """Record one of a sub-agent's compaction events, as a root session's
     are (``_mirror_compaction_event``, ``_emit_summarize_event``): a row in
     its compaction log, and a ``compaction_event`` row in the cross-session
     telemetry the dashboard reads. ``summary_text`` is the full summary when
-    the event carries only an excerpt. Never raises; the agent loop must not
-    stop on it."""
+    the event carries only an excerpt; ``turn_id`` is the step it ran in, as
+    the sub-agent's model calls name it. Never raises; the agent loop must
+    not stop on it."""
     summary = (
         summary_text
         or details.get("summary_text")
@@ -280,7 +282,7 @@ def append_subagent_compaction(
         row = {
             "session_id": session_id,
             "model": model,
-            "turn_id": None,
+            "turn_id": turn_id,
             "ts": time.time(),
             "subtype": subtype,
             "trigger": trigger,
@@ -303,6 +305,7 @@ def append_subagent_compaction(
         append_telemetry({
             "type": "compaction_event",
             "session_id": session_id,
+            "turn_id": turn_id,
             "agent_type": agent_type,
             "parent_session_id": parent_session_id,
             "subtype": subtype,

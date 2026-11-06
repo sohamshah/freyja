@@ -975,13 +975,19 @@ class AgentRunner:
                 ctx.ineffective_compaction_count, session.id,
             )
             # Surface to the telemetry stream so the metrics dashboard
-            # can count thrash-skip events.
+            # can count thrash-skip events. A sub-agent's session names its
+            # profile and parent in its metadata; a root session's names
+            # neither, as the bridge's rows say.
             try:
                 from bridge.compaction_telemetry import append_telemetry  # type: ignore[import-not-found]
 
+                provider = self.fallback_chain.current if self.fallback_chain else self.provider
                 append_telemetry({
                     "type": "compaction_event",
                     "session_id": session.id,
+                    "agent_type": session.metadata.get("agent_type"),
+                    "parent_session_id": session.metadata.get("parent_session_id"),
+                    "model": provider.model_id,
                     "subtype": "thrash_skip",
                     "mechanism": "thrash_skip",
                     "trigger": "thrash_detector",
@@ -3197,13 +3203,19 @@ class AsyncAgentRunner:
                 ctx.ineffective_compaction_count, session.id,
             )
             # Surface to the telemetry stream so the metrics dashboard
-            # can count thrash-skip events.
+            # can count thrash-skip events. A sub-agent's session names its
+            # profile and parent in its metadata; a root session's names
+            # neither, as the bridge's rows say.
             try:
                 from bridge.compaction_telemetry import append_telemetry  # type: ignore[import-not-found]
 
+                provider = self.fallback_chain.current if self.fallback_chain else self.provider
                 append_telemetry({
                     "type": "compaction_event",
                     "session_id": session.id,
+                    "agent_type": session.metadata.get("agent_type"),
+                    "parent_session_id": session.metadata.get("parent_session_id"),
+                    "model": provider.model_id,
                     "subtype": "thrash_skip",
                     "mechanism": "thrash_skip",
                     "trigger": "thrash_detector",

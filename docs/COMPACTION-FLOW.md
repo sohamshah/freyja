@@ -200,6 +200,7 @@ type                       "compaction_event"
 session_id                 <sid>
 agent_type                 <profile name, or null for a root session>
 parent_session_id          <parent sid or null>
+turn_id                    <the bridge's turn id, a sub-agent's "<sub id>-t<n>", or null>
 subtype                    "compaction_start" | "compaction_complete" | "compaction_skipped"
                            | "compaction_failed" | "context_pruning" | "media_pruning"
                            | "thrash_skip"
@@ -232,6 +233,8 @@ summary_excerpt            <first 240 chars>
 summary_text               <full text, or null>
 ts                         <unix epoch float>
 ```
+
+A root session's rows carry its current turn id, as its `llm_call_metric` rows and its compaction log do. A sub-agent's carry the step they ran in, as its `llm_call_metric` rows name it; a computer-use child's have none. The thrash detector's rows name the model, and the agent type and parent from the session's metadata (a sub-agent's session has them; a root session's and a computer-use child's have neither), but no turn id, which the runner does not know. Before 2026-11-06 no row had a turn id, and thrash rows had no model, agent type or parent.
 
 Path C writes a shorter row from `_emit_summarize_event`, without `trigger_tokens`, `trigger_pressure_pct` and `omitted_images`. Before 2026-11-06 it had no window or pressure fields, and no `summary_tokens`, `resumed_from_previous` or `summarizer_duration_ms`: the agent's event carried neither the summary's size nor the summary call's duration.
 

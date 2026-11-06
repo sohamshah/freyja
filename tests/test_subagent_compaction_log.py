@@ -275,3 +275,32 @@ async def test_a_sub_agents_own_compaction_rows_carry_the_window_and_pressure(
         assert (row["effective_window"], row["pressure_pct_before"], row["pressure_pct_after"]) == pressure
     for row in (start, log_start):
         assert (row["effective_window"], row["pressure_pct_before"]) == pressure[:2]
+
+
+async def test_a_sub_agents_compaction_rows_carry_the_step_they_ran_in(
+    monkeypatch, tmp_path, telemetry_rows,
+):
+    """The child's model calls and summarize_context decisions carry the step
+    they ran in (``<sub id>-t<n>``); its compaction rows carried none."""
+    async def body(runner, session):
+        runner.on_llm_call({"model": "claude-sonnet-5-5", "input_tokens": 10, "output_tokens": 5})
+        await runner._emit_system_event(SystemEvent(
+            type="compaction_complete", message="",
+            details={"tokens_before": 150_000, "tokens_after": 20_000, "trigger": "pre_request"},
+        ))
+        call = ToolCall(id="c1", name="grep", arguments={})
+        session.add_assistant_message("", tool_calls=[call])
+        session.add_tool_result("c1", LONG_RESULT)
+        tool = runner.tool_registry.get("summarize_context")
+        result = await tool.execute("sc1", {"scope": "tool_results_only"})
+        assert not result.is_error, result.content
+
+    await _run_child(monkeypatch, tmp_path, "sub_c_5", body)
+
+    compactions = [r for r in telemetry_rows if r.get("type") == "compaction_event"]
+    assert [(r["subtype"], r.get("turn_id")) for r in compactions] == [
+        ("compaction_complete", "sub_c_5-t1"),
+        ("compaction_start", "sub_c_5-t1"),
+        ("context_pruning", "sub_c_5-t1"),
+    ]
+    assert {r["turn_id"] for r in _rows(tmp_path, "sub_c_5")} == {"sub_c_5-t1"}

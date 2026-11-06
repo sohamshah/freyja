@@ -11533,6 +11533,7 @@ class _BridgeSession:
             append_telemetry({
                 "type": "compaction_event",
                 "session_id": self.id,
+                "turn_id": self.current_turn_id,
                 "agent_type": self.agent_type,
                 "parent_session_id": self.parent_session_id,
                 "subtype": subtype,
@@ -12795,6 +12796,7 @@ class _BridgeSession:
                 append_telemetry({
                     "type": "compaction_event",
                     "session_id": self.id,
+                    "turn_id": self.current_turn_id,
                     "agent_type": self.agent_type,
                     "parent_session_id": self.parent_session_id,
                     "subtype": subtype,
