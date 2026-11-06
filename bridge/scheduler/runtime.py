@@ -1212,6 +1212,16 @@ class _RunCost:
             stop_run_now(self._run_id)
         elif kind == "turn_complete" and event.get("turnId") in self._turns:
             self.reply = _extract_last_assistant_text(self._sess)
+        elif kind == "turn_stopped" and self._next_turn_is_ours:
+            # The run's turn was stopped before it said turn_start, so it said
+            # nothing (turn_stopped comes from the task that ran it). The run
+            # took the reply before it for its output, or the next turn for
+            # its own. It is cancelled, as for a stop of its started turn,
+            # with no reply.
+            self._next_turn_is_ours = False
+            self.stopped = True
+            self.reply = ("", 0)
+            stop_run_now(self._run_id)
         elif kind == "system_event" and event.get("subtype") == "queued_turns_dropped":
             # The whole queue goes, so a prompt still in it went too.
             self.dropped = self.dropped or not self._prompt_left_queue

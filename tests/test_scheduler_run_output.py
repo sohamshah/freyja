@@ -110,3 +110,53 @@ async def test_a_runs_output_is_its_own_reply_not_that_of_a_turn_queued_behind_i
 
     assert _last_reply(sess) == "The build is green"  # It ran in the run's wait.
     assert run.output_text == "Here is the digest"
+
+
+# ─── a stop that lands before the run's turn has started ──────────────
+
+
+async def test_a_run_stopped_as_its_turn_starts_is_cancelled_with_no_output(operator_session):
+    # Stopped before it said turn_start, the turn said nothing at all: the
+    # run took the reply before its turn for its output and delivered it.
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.session.add_user_message("how is the build?")
+    sess.session.add_assistant_message("The build is green")
+    sess.replies = {"write the digest": "Here is the digest"}
+    sess.slow_start = asyncio.Event()
+    fire = asyncio.create_task(fire_job(_Service({"s1": sess}), _job()))
+    await asyncio.wait_for(sess.starting.wait(), 5)
+
+    fb._force_cancel_session(sess, scope="turn")
+    run = await asyncio.wait_for(fire, 10)
+
+    assert (run.status, run.output_text, run.delivery_reports) == ("cancelled", "", [])
+
+
+async def test_a_turn_queued_behind_a_run_stopped_as_its_turn_starts_is_not_the_runs(operator_session):
+    # The run took the next turn that started for its own: the operator's
+    # turn queued behind it, whose reply it delivered.
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.replies = {"how is the build": "The build is green", "write the digest": "Here is the digest",
+                    "and the tests": "The tests pass"}
+    sess.holds = {"how is the build": asyncio.Event()}
+    fb._schedule_or_queue_turn(sess, "how is the build?")
+    fire = asyncio.create_task(fire_job(_Service({"s1": sess}), _job()))
+    while not sess.queued_messages:
+        await asyncio.sleep(0.01)
+    fb._schedule_or_queue_turn(sess, "and the tests?")  # Queued behind the run's prompt.
+    sess.slow_start = asyncio.Event()  # The run's turn starts slowly.
+    sess.holds["how is the build"].set()
+    await asyncio.wait_for(sess.starting.wait(), 5)
+
+    fb._force_cancel_session(sess, scope="turn")
+    run = await asyncio.wait_for(fire, 10)
+    await asyncio.wait_for(asyncio.gather(sess.pending_task, return_exceptions=True), 5)
+
+    assert _last_reply(sess) == "The tests pass"  # The stop was for the run's turn only.
+    assert (run.status, run.output_text, run.delivery_reports) == ("cancelled", "", [])

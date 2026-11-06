@@ -15104,10 +15104,19 @@ async def _run_turn_queue(
         cancelled = True
         _uncancel_current_task()
         log("info", f"turn cancelled (session={sess.id})")
+        _tell_turn_stopped(sess)
     except Exception as exc:  # noqa: BLE001
         log("error", f"turn failed (session={sess.id}): {exc}")
         _emit_turn_failed(sess, exc)
     await _drain_after_turn(sess, cancelled=cancelled)
+
+
+def _tell_turn_stopped(sess: "_BridgeSession") -> None:
+    """Tell this process's listeners of ``sess`` that the turn its task ran
+    was stopped. A turn stopped before it said turn_start says nothing
+    else: a scheduled run whose prompt it ran (_RunCost) took the reply
+    before it for its output, or the next turn for its own."""
+    notify_session_listeners(sess.id, {"type": "turn_stopped", "sessionId": sess.id})
 
 
 def _uncancel_current_task() -> None:
@@ -15297,6 +15306,7 @@ async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
             _uncancel_current_task()
             cancelled = True
             log("info", f"queued turn cancelled (session={sess.id})")
+            _tell_turn_stopped(sess)
         except Exception as exc:  # noqa: BLE001
             log("error", f"queued turn failed (session={sess.id}): {exc}")
             _emit_turn_failed(sess, exc)
