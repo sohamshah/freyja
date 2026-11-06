@@ -67,23 +67,10 @@ def test_reporting_a_failure_cannot_raise(monkeypatch):
     _emit_turn_failed(SimpleNamespace(id="s", model_id="m"), ValueError("x"))
 
 
-@pytest.mark.asyncio
-async def test_a_failed_turn_closes_its_message_and_posts_the_failure(monkeypatch, tmp_path):
-    """No turn_complete follows a failure, so the consumer has to seal the open stream and post the notice itself. It dropped turn_failed with the events it ignores, so through emit() the notice never posted and the reply stayed open until the next turn."""
-    import bridge.freyja_bridge as fb
+async def _run_slack_turn(fb, sess):
+    """Run one turn of ``sess`` the way the gateway does, with a stream consumer on a fake Slack thread. Returns the consumer, the adapter, and the order the reply was sealed and notes posted."""
     from bridge.gateway.run import _attach_turn_consumer
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
-    monkeypatch.setattr(fb, "_SESSION_EVENT_DIR", tmp_path / "sessions")
-    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
-    sess = await state.ensure_session("session-slack")
-
-    async def run_turn(_content, _attachments=None, **_kw):
-        fb.emit({"type": "turn_start", "sessionId": sess.id})
-        fb.emit({"type": "text_delta", "sessionId": sess.id, "text": "Looking into it."})
-        raise RuntimeError("GEMINI_API_KEY is not set")
-
-    sess.run_turn = run_turn
     calls: list[str] = []
 
     class _Slack(StreamingFakeAdapter):
@@ -106,6 +93,27 @@ async def test_a_failed_turn_closes_its_message_and_posts_the_failure(monkeypatc
     )
     await sess.pending_task
     await consumer.wait_until_handled()
+    fb.unregister_session_listener(sess.id, consumer.on_event)
+    return consumer, adapter, calls
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_closes_its_message_and_posts_the_failure(monkeypatch, tmp_path):
+    """No turn_complete follows a failure, so the consumer has to seal the open stream and post the notice itself. It dropped turn_failed with the events it ignores, so through emit() the notice never posted and the reply stayed open until the next turn."""
+    import bridge.freyja_bridge as fb
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "_SESSION_EVENT_DIR", tmp_path / "sessions")
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("session-slack")
+
+    async def run_turn(_content, _attachments=None, **_kw):
+        fb.emit({"type": "turn_start", "sessionId": sess.id})
+        fb.emit({"type": "text_delta", "sessionId": sess.id, "text": "Looking into it."})
+        raise RuntimeError("GEMINI_API_KEY is not set")
+
+    sess.run_turn = run_turn
+    consumer, adapter, calls = await _run_slack_turn(fb, sess)
 
     assert consumer.finalized
     assert calls == ["reply sealed", "note"]
@@ -113,7 +121,47 @@ async def test_a_failed_turn_closes_its_message_and_posts_the_failure(monkeypatc
     notice = adapter.sent[0]
     assert "That turn failed" in notice and "GEMINI_API_KEY is not set" in notice
     assert "kimi-k3-fast" in notice and "~/.freyja/.env" in notice
-    fb.unregister_session_listener(sess.id, consumer.on_event)
+
+
+@pytest.mark.asyncio
+async def test_a_failure_the_turn_catches_itself_posts_why_under_the_reply(monkeypatch, tmp_path):
+    """run_turn's own handler reports a failure as a session-scoped error, then turn_complete, and no turn_failed follows. The consumer dropped the error, so the reply just ended with no reason."""
+    import bridge.freyja_bridge as fb
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "_SESSION_EVENT_DIR", tmp_path / "sessions")
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    sess = await state.ensure_session("session-slack")
+    await sess.initialize()
+
+    async def run(_session, _message, **_kw):
+        fb.emit({"type": "text_delta", "sessionId": sess.id, "text": "Looking into it."})
+        raise RuntimeError("the connection reset")
+
+    sess.runner.run = run
+    consumer, adapter, calls = await _run_slack_turn(fb, sess)
+
+    assert consumer.finalized
+    assert calls == ["reply sealed", "note"]
+    assert adapter.streamed == ["Looking into it."]
+    assert "the connection reset" in adapter.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_reported_both_ways_posts_one_note_with_its_hint(monkeypatch, tmp_path):
+    """A provider that cannot be built sends an error from initialize, then turn_failed from the turn queue. One note goes up, and it is turn_failed's, which says where the key goes."""
+    import bridge.freyja_bridge as fb
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(fb, "_SESSION_EVENT_DIR", tmp_path / "sessions")
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    sess = await state.ensure_session("session-slack")
+    consumer, adapter, calls = await _run_slack_turn(fb, sess)
+
+    assert consumer.finalized
+    assert calls == ["note"]
+    assert "ANTHROPIC_API_KEY is not set" in adapter.sent[0]
+    assert "~/.freyja/.env" in adapter.sent[0]
 
 
 # ── log rotation ─────────────────────────────────────────────────────

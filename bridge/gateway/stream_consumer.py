@@ -382,6 +382,9 @@ class _StreamState:
     # Lifecycle gates.
     finalized: bool = False
     typing_set: bool = False
+    # Why the turn failed, from a session-scoped error. Posted under the
+    # reply once turn_complete seals it.
+    error_note: str = ""
 
     # Multi-Plan phasing. Each "phase" is a contiguous batch of
     # thinking + tool calls between prose emissions. When the agent
@@ -549,6 +552,7 @@ class SlackStreamConsumer:
             "turn_start",
             "turn_complete",
             "turn_failed",
+            "error",
             "tool_use_start",
             "tool_input_end",
             "tool_result",
@@ -638,6 +642,13 @@ class SlackStreamConsumer:
             async with self._lock:
                 self._state.body_break_pending = True
             return
+        if etype == "error":
+            # The bridge caught the failure itself: run_turn sends this,
+            # then turn_complete, and no turn_failed. Held until the reply
+            # is sealed. A failed initialize sends this and then
+            # turn_failed, whose note (with its hint) goes up instead.
+            self._state.error_note = str(event.get("message") or "").strip() or "unknown error"
+            return
 
         # The session is working: ``processing`` on the first event of
         # the turn. finalize/abort set it back to ``active``.
@@ -695,6 +706,8 @@ class SlackStreamConsumer:
             await self._handle_tool_result(event)
         elif etype == "turn_complete":
             await self.finalize()
+            if self._state.error_note:
+                await self._post_failure_note(f":warning: {self._state.error_note}")
         elif etype == "turn_failed":
             await self._handle_turn_failed(event)
 
@@ -719,7 +732,9 @@ class SlackStreamConsumer:
         hint = str(event.get("hint") or "")
         model = event.get("model")
         where = f" on `{model}`" if model else ""
-        text = f":warning: That turn failed{where}: {detail}{hint}"
+        await self._post_failure_note(f":warning: That turn failed{where}: {detail}{hint}")
+
+    async def _post_failure_note(self, text: str) -> None:
         try:
             await self.adapter.send(
                 self.source.chat_id,
