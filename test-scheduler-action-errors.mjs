@@ -1,7 +1,8 @@
 // The schedules dashboard says why the bridge refused an action. Its card
 // and detail buttons awaited the bridge's answer and dropped it, so a
 // refused resume (a job that ran all its max fires) did nothing visible.
-// The Morning room's resume of the stopped briefer dropped it too.
+// The Morning room's resume of the stopped briefer dropped it too, and so
+// did the card's delete.
 // Run from the repo root:
 //   npx tsx test-scheduler-action-errors.mjs
 
@@ -51,6 +52,7 @@ const answers = {
   'scheduler.metrics': () => ({ subtype: 'metrics' }),
   'scheduler.daemon_status': () => ({ subtype: 'daemon_status' }),
   'scheduler.resume_job': () => ({ subtype: 'resume_job', error: REFUSED }),
+  'scheduler.remove_job': (cmd) => ({ subtype: 'remove_job', error: `job ${cmd.jobId} is locked by a peer; retry shortly` }),
 }
 bindSchedulerBridge({
   send(cmd) {
@@ -82,9 +84,9 @@ function mount(component = ScheduledJobsDashboard) {
   return { host, unmount: () => { root.unmount(); host.remove() } }
 }
 
-function clickResume(host, label = 'resume') {
+function clickButton(host, label = 'resume') {
   const button = [...host.querySelectorAll('button')].find((b) => b.textContent.trim() === label)
-  assert.ok(button, 'a resume button')
+  assert.ok(button, `a ${label} button`)
   button.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
 }
 
@@ -92,7 +94,7 @@ await check('a refused resume on a schedule card says why', async () => {
   useSchedulerStore.setState({ jobs: [job], selectedJobId: null })
   const { host, unmount } = mount()
   await sleep(20)
-  clickResume(host)
+  clickButton(host)
   await sleep(20)
   assert.ok(host.textContent.includes(REFUSED), 'the bridge’s reason is shown')
   unmount()
@@ -102,9 +104,20 @@ await check('a refused resume in a schedule’s detail view says why', async () 
   useSchedulerStore.setState({ jobs: [job], selectedJobId: job.id })
   const { host, unmount } = mount()
   await sleep(20)
-  clickResume(host)
+  clickButton(host)
   await sleep(20)
   assert.ok(host.textContent.includes(REFUSED), 'the bridge’s reason is shown')
+  unmount()
+})
+
+await check('a refused delete on a schedule card says why', async () => {
+  useSchedulerStore.setState({ jobs: [job], selectedJobId: null })
+  window.confirm = () => true
+  const { host, unmount } = mount()
+  await sleep(20)
+  clickButton(host, 'delete')
+  await sleep(20)
+  assert.ok(host.textContent.includes('is locked by a peer; retry shortly'), 'the bridge’s reason is shown')
   unmount()
 })
 
@@ -118,7 +131,7 @@ await check('a refused resume of the stopped briefer says why', async () => {
   window.HTMLCanvasElement.prototype.getContext = () => null
   const { host, unmount } = mount(MorningRoom)
   await sleep(20)
-  clickResume(host, '▸ resume')
+  clickButton(host, '▸ resume')
   await sleep(20)
   assert.ok(useHarness.getState().toast?.message.includes(REFUSED), 'the bridge’s reason is shown')
   unmount()

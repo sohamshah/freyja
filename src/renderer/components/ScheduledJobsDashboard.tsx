@@ -534,7 +534,7 @@ function ScheduleCard(props: {
           disabled={busy !== null} label="run now" />
         <CardButton onClick={() => act('remove', async () => {
           if (!window.confirm(`Delete schedule “${job.name}”? Past runs are kept.`)) return
-          await schedulerApi.removeJob(job.id)
+          return schedulerApi.removeJob(job.id)
         })}
           disabled={busy !== null} label="delete" danger />
         {lastStatus && (
