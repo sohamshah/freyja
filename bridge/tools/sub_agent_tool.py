@@ -1747,7 +1747,7 @@ Parameters:
             except Exception:
                 pass
 
-        # Subagent tool isolation (Gap J). Two tools the child registry
+        # Subagent tool isolation (Gap J). Three tools the child registry
         # inherited from the parent are stateful in ways that DON'T
         # transfer correctly:
         #
@@ -1757,11 +1757,14 @@ Parameters:
         #     its own.
         #   * SessionMemoryTool captured the parent's session_id in its
         #     constructor → writes go to the parent's memory.md file.
+        #   * RecallTool captured the parent's session_id too → searches
+        #     read the parent's raw message log, not the child's.
         #
-        # We rebuild both per-subagent here, scoped to the child
+        # We rebuild them per-subagent here, scoped to the child
         # session/runner. The runner doesn't exist yet at this point,
         # so SummarizeContextTool uses a small holder dict that gets
         # populated below.
+        from bridge.tools.recall_tool import RecallTool
         from bridge.tools.session_memory_tool import SessionMemoryTool
         from bridge.tools.summarize_context_tool import SummarizeContextTool
 
@@ -1843,6 +1846,13 @@ Parameters:
                 child_registry._tools["session_memory"] = SessionMemoryTool(
                     session_id=record.id,
                 )  # noqa: SLF001
+            # The child's recall names the parent's id, so the parent's log
+            # is still one argument away.
+            if "recall" in child_registry._tools:  # noqa: SLF001
+                child_registry._tools["recall"] = RecallTool(  # noqa: SLF001
+                    session_id=record.id,
+                    parent_session_id=self._spec.parent_session_id or None,
+                )
 
         # Pre-iteration hook: drain this sub-agent's inbox and prepend
         # incoming messages as attributed user turns before each LLM

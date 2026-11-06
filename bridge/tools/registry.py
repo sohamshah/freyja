@@ -298,13 +298,10 @@ def build_desktop_registry(
 
     # `recall` — search this session's verbatim pre-compaction archive
     # (raw_messages.jsonl), so detail dropped by compaction is recoverable.
+    # Found by the session's id, not ``project_output_dir``: a session whose
+    # project dir is another session's logs beside its sidecars.
     if _mem_session:
-        tools.append(
-            RecallTool(
-                session_id=_mem_session,
-                project_output_dir=project_output_dir,
-            )
-        )
+        tools.append(RecallTool(session_id=_mem_session))
 
     # `working_memory` — structured, agent-authored semantic memory. Reads fold
     # in the ledger's confirmed file effects so the agent needn't restate them.

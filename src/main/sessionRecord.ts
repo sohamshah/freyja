@@ -46,7 +46,7 @@ function sessionLogPathsFor(id: string, name: string): string[] {
   ]
 }
 
-function rawLogPathsFor(id: string): string[] {
+export function rawLogPathsFor(id: string): string[] {
   return sessionLogPathsFor(id, 'raw_messages.jsonl')
 }
 

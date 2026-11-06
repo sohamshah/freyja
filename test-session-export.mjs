@@ -629,6 +629,11 @@ await check('its download has each tool result whole, and its raw transcript', a
   assert.equal(d.toolCalls[0].result, LONG)
   assert.deepEqual(d.rawTranscript.map((row) => row.message.role), ['user', 'assistant', 'tool_result'])
 })
+await check('its recall drawer searches its own log', () => {
+  const r = persistence.readRecall(subId, 'THE END')
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(r.rows.map((row) => [row.role, row.ts]), [['tool_result', 3000]])
+})
 await check('a root session does not read a sub-agent\'s log', () => {
   assert.equal(record.readRawRecord(sid).results.get('s-read'), undefined)
 })

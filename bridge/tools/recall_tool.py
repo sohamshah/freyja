@@ -11,6 +11,10 @@ instead of permanently lost (the "evict + retrieve" half of Grounded Memory).
 Cross-session: pass ``session_id`` to search another session's archive — the
 substrate for "resume a prior workstream" / answering "what did I find last
 time".
+
+A sub-agent's archive is ``~/.freyja/sessions/<id>.raw_messages.jsonl``,
+beside its sidecars (as is the archive of a session whose project dir is
+another session's); a session's archive is read from both places.
 """
 
 from __future__ import annotations
@@ -69,21 +73,38 @@ def _snippet(text: str, query: str) -> str:
 class RecallTool:
     """Search the verbatim per-session archive (``raw_messages.jsonl``)."""
 
-    def __init__(self, *, session_id: str, project_output_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        project_output_dir: Path | str | None = None,
+        parent_session_id: str | None = None,
+    ) -> None:
         self._session_id = session_id
         # Allow an explicit override (tests); otherwise resolve per session id.
         self._override_dir = Path(project_output_dir) if project_output_dir else None
+        # Set for a sub-agent's own instance: its parent's archive is one
+        # session_id away, and the description says which.
+        self._parent_session_id = parent_session_id
 
-    def _archive_path(self, session_id: str | None) -> Path:
+    def _archive_paths(self, session_id: str | None) -> list[Path]:
+        """The logs that hold a session's messages: beside its sidecars (a
+        sub-agent's), then in its project dir (a root session's)."""
+        from bridge.transcript_persistence import raw_messages_path
+
         sid = (session_id or self._session_id) or ""
         if self._override_dir is not None and (not session_id or session_id == self._session_id):
-            base = self._override_dir
-        else:
-            base = project_output_dir(sid)
-        return Path(base) / "raw_messages.jsonl"
+            return [self._override_dir / "raw_messages.jsonl"]
+        return [raw_messages_path(sid), project_output_dir(sid) / "raw_messages.jsonl"]
 
     @property
     def definition(self) -> ToolDefinition:
+        parent_note = (
+            "\n\nYou are a sub-agent: this searches your own history. Pass "
+            f'session_id="{self._parent_session_id}" to search your parent\'s.'
+            if self._parent_session_id
+            else ""
+        )
         return ToolDefinition(
             name="recall",
             summary="Search this session's full pre-compaction history",
@@ -104,6 +125,7 @@ class RecallTool:
                 "`artifacts` tool (files you produced) and the runtime "
                 "write-ledger reminder (what you changed): `recall` is for the "
                 "conversational/observational detail behind them."
+                + parent_note
             ),
             parameters={
                 "type": "object",
@@ -127,18 +149,21 @@ class RecallTool:
         action = str(arguments.get("action") or "search").strip().lower()
         session_id = str(arguments.get("session_id") or "").strip() or None
         limit = int(arguments.get("limit") or _DEFAULT_LIMIT)
-        path = self._archive_path(session_id)
+        paths = [p for p in self._archive_paths(session_id) if p.exists()]
         try:
-            rows = self._load(path)
+            rows = [row for p in paths for row in self._load(p)]
         except Exception as exc:  # noqa: BLE001
             logger.debug("recall load failed", exc_info=True)
             return _err(call_id, f"recall failed to read archive: {exc}")
+        if len(paths) > 1:
+            rows.sort(key=lambda row: row.get("ts") or 0)
+        path = ", ".join(str(p) for p in paths) or str(self._archive_paths(session_id)[-1])
 
         if not rows:
             return _ok(call_id, {
                 "action": action,
-                "archive": str(path),
-                "exists": path.exists(),
+                "archive": path,
+                "exists": bool(paths),
                 "results": [],
                 "note": "No archived history found for this session yet.",
             })
@@ -166,7 +191,7 @@ class RecallTool:
         return _ok(call_id, {
             "action": "search",
             "query": query,
-            "archive": str(path),
+            "archive": path,
             "match_count": len(hits),
             "results": hits,
         })
@@ -183,7 +208,7 @@ class RecallTool:
             })
         return _ok(call_id, {
             "action": "timeline",
-            "archive": str(path),
+            "archive": path,
             "turn_count": len(rows),
             "results": out,
         })
