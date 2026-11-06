@@ -64,6 +64,12 @@ KEEP_RECENT_APPSHOT_TEXTS = 2
 # Shorter bodies are not worth the history rewrite (and a removed body is shorter).
 MIN_APPSHOT_PRUNE_CHARS = 1500
 
+# The marker a halved tool result carries, before and after it named the file
+# holding the whole result.
+_HALVED_MARKER_RE = re.compile(r"\[Content truncated - [\d,]+ total chars, middle removed\.")
+# About what that marker adds, with the file's path.
+_HALVED_MARKER_ROOM = 300
+
 
 @dataclass
 class ImagePruneResult:
@@ -432,18 +438,27 @@ class TranscriptManager:
     def prune_old_tool_results(
         self,
         keep_recent: int = KEEP_RECENT_TOOL_RESULTS,
+        *,
+        save_original: Callable[[str, str | None], str | None],
     ) -> int:
         """
         Halve old tool results to reduce context size.
 
-        Keeps the most recent tool results intact, halves older ones.
+        Keeps the most recent tool results intact, halves older ones. Each
+        result's whole text first goes to ``save_original(text, tool_name)``,
+        which returns the file it wrote, and the marker in the halved text
+        names that file. A result whose text could not be saved stays whole.
         """
-        truncation_marker = "Request specific sections if needed.]"
         min_content_length = MIN_CONTENT_LENGTH_FOR_TRUNCATION
 
+        tool_name_by_id: dict[str, str] = {}
         tool_result_indices = []
         for i, entry in enumerate(self._entries):
-            if entry.message is not None and entry.message.role == "tool_result":
+            if entry.message is None:
+                continue
+            for call in entry.message.tool_calls or []:
+                tool_name_by_id[call.id] = call.name
+            if entry.message.role == "tool_result":
                 tool_result_indices.append(i)
 
         if len(tool_result_indices) <= keep_recent:
@@ -465,7 +480,7 @@ class TranscriptManager:
             # tail, so testing for it at the end never matched, and every call
             # halved the old results again (6,000 → 2,931 → 1,476 → 786 chars),
             # rewriting history from the oldest one each time.
-            if truncation_marker in content:
+            if _HALVED_MARKER_RE.search(content):
                 continue
             if len(content) <= min_content_length:
                 continue
@@ -484,9 +499,20 @@ class TranscriptManager:
             if first_newline > 0 and first_newline < tail_chars * 0.3:
                 tail = tail[first_newline + 1 :]
 
+            # A result that would lose fewer characters than the marker adds
+            # stays whole: halving it would not shorten it.
+            if len(content) - len(head) - len(tail) <= _HALVED_MARKER_ROOM:
+                continue
+            saved = save_original(
+                content, tool_name_by_id.get(entry.message.tool_call_id or "")
+            )
+            if not saved:
+                continue
+
             truncated = (
                 head + f"\n\n[Content truncated - {len(content):,} total chars, middle removed. "
-                "Request specific sections if needed.]\n\n" + tail
+                f"Full output saved to: {saved} (read the removed part from that file, "
+                "e.g. with grep or sed)]\n\n" + tail
             )
 
             entry.message.content = truncated

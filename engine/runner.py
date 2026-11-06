@@ -1086,7 +1086,10 @@ class AgentRunner:
         usage_fraction = used_tokens / max(1, context_window - self.config.max_tokens_per_turn)
 
         if usage_fraction > self.config.compaction_threshold:
-            pruned = session.transcript.prune_old_tool_results(keep_recent=KEEP_RECENT_TOOL_RESULTS)
+            pruned = session.transcript.prune_old_tool_results(
+                keep_recent=KEEP_RECENT_TOOL_RESULTS,
+                save_original=self.truncator.write_full_content,
+            )
             if pruned > 0:
                 logger.info(
                     f"Context pressure ({usage_fraction:.1%}): halved {pruned} old tool results"
@@ -3487,7 +3490,8 @@ class AsyncAgentRunner:
             and self._cached_prompt(session) is None
         ):
             pruned = session.transcript.prune_old_tool_results(
-                keep_recent=KEEP_RECENT_TOOL_RESULTS
+                keep_recent=KEEP_RECENT_TOOL_RESULTS,
+                save_original=self.truncator.write_full_content,
             )
             pruned += session.transcript.prune_old_appshot_text()
             if pruned > 0:

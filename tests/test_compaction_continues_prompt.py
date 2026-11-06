@@ -31,7 +31,7 @@ from engine.compaction import (
 from engine.providers import APIUsage, ProviderResponse, ToolCallResponse
 from engine.runner import AsyncAgentRunner, RunnerContext
 from engine.session import Session
-from engine.tools import ToolDefinition, ToolRegistry, ToolResult
+from engine.tools import ToolDefinition, ToolRegistry, ToolResult, ToolResultTruncator
 from engine.types import AgentConfig, Message, ThinkingConfig, ToolCall
 
 WORKING_MEMORY = {
@@ -40,6 +40,12 @@ WORKING_MEMORY = {
     "entities": [],
 }
 LONG_RESULT = "line of output\n" * 400  # ~6k chars: big enough to halve
+
+
+@pytest.fixture(autouse=True)
+def _truncated_dir(monkeypatch, tmp_path):
+    # Halving saves each result whole where the truncator saves cut results.
+    monkeypatch.setattr(ToolResultTruncator, "_setup_output_dir", lambda _self: tmp_path / "truncated")
 
 
 def _tools(call_id: str, *, input_tokens: int = 1_000) -> ProviderResponse:
@@ -328,7 +334,7 @@ def test_the_message_fingerprint_sees_content_not_bookkeeping():
 
 
 def _halved(session) -> int:
-    marker = "Request specific sections if needed.]"
+    marker = "middle removed. Full output saved to: "
     return sum(
         1 for m in session.get_messages()
         if m.role == "tool_result" and isinstance(m.content, str) and marker in m.content
@@ -343,10 +349,14 @@ def test_an_old_tool_result_is_halved_once_not_on_every_call():
         call = ToolCall(id=f"c{i}", name="read", arguments={})
         transcript.append_message(Message(role="assistant", content="", tool_calls=[call]))
         transcript.append_message(Message(role="tool_result", content=LONG_RESULT, tool_call_id=call.id))
-    assert transcript.prune_old_tool_results(keep_recent=3) == 3
+
+    def saved(_text, _name):
+        return "/saved/read.txt"
+
+    assert transcript.prune_old_tool_results(keep_recent=3, save_original=saved) == 3
     sizes = [len(e.message.content) for e in transcript.entries if e.message.role == "tool_result"]
     # Before the fix every later call halved the same three again.
-    assert transcript.prune_old_tool_results(keep_recent=3) == 0
+    assert transcript.prune_old_tool_results(keep_recent=3, save_original=saved) == 0
     assert [len(e.message.content) for e in transcript.entries if e.message.role == "tool_result"] == sizes
 
 

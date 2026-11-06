@@ -558,7 +558,7 @@ class ToolResultTruncator:
         budget = min(budget, self.max_tokens)
         return budget
 
-    def _write_full_content(
+    def write_full_content(
         self,
         content: str,
         tool_name: str | None = None,
@@ -677,7 +677,7 @@ class ToolResultTruncator:
         if tokens <= limit:
             return content, False
 
-        file_path = self._write_full_content(content, tool_name)
+        file_path = self.write_full_content(content, tool_name)
 
         ratio = limit / tokens
         cut_point = int(len(content) * ratio * 0.9)
