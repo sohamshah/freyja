@@ -522,18 +522,17 @@ def _window(wid, bundle, x, y, w=800, h=600):
     ("args", "label"),
     [({"window_id": 5}, "window #5"), ({"bundle_id": "com.apple.notes"}, "com.apple.notes")],
 )
-@pytest.mark.parametrize("pinned", [None, 1])
-async def test_focus_window_shows_the_display_that_holds_the_window(monkeypatch, args, label, pinned):
+async def test_focus_window_shows_the_display_that_holds_the_window(monkeypatch, args, label):
     # The model looked at display 1, and the window it focuses is on display 2.
     # It wants to see that window, so the screenshot, and the coordinate space
     # with it, move to display 2.
     screens = _Monitors()
     screens.windows = [_window(4, "com.apple.finder", 100, 100), _window(5, "com.apple.Notes", -2000, 200)]
-    tools, spec = _session(monkeypatch, screens, default_display_id=pinned)
+    tools, spec = _session(monkeypatch, screens)
     await tools["screenshot"].execute("c1", {})
     res = await tools["focus_window"].execute("c2", {**args, "settle_ms": 0})
     assert not res.is_error
-    assert screens.shots == [pinned, 2]
+    assert screens.shots == [None, 2]
     assert (spec.frame_display_id, spec.api_dims, spec.native_origin) == (2, (1280, 720), (-2560, 0))
     assert _text(res) == (
         f"Focused {label}, which is on display 2. "
@@ -541,6 +540,47 @@ async def test_focus_window_shows_the_display_that_holds_the_window(monkeypatch,
     )
     await tools["click"].execute("c3", {"x": 640, "y": 360, "settle_ms": 0})
     assert screens.sent[-1] == ("click", -1280, 720)
+
+
+@pytest.mark.parametrize(
+    ("args", "label"),
+    [({"window_id": 5}, "window #5"), ({"bundle_id": "com.apple.notes"}, "com.apple.notes")],
+)
+@pytest.mark.parametrize("looked_at", [None, 2])
+async def test_focus_window_in_a_pinned_session_stays_on_the_pinned_display(monkeypatch, args, label, looked_at):
+    # The session is pinned to display 1, and its sub-agent is told not to
+    # touch other monitors. The window it focuses is on display 2. The
+    # screenshot and the coordinate space stay on display 1, also when the
+    # model had looked at display 2, and the result says where the window is.
+    screens = _Monitors()
+    screens.windows = [_window(4, "com.apple.finder", 100, 100), _window(5, "com.apple.Notes", -2000, 200)]
+    tools, spec = _session(monkeypatch, screens, default_display_id=1)
+    await tools["screenshot"].execute("c1", {} if looked_at is None else {"display_id": looked_at})
+    res = await tools["focus_window"].execute("c2", {**args, "settle_ms": 0})
+    assert not res.is_error
+    assert screens.shots == [looked_at or 1, 1]
+    assert (spec.frame_display_id, spec.api_dims, spec.native_origin) == (1, (1280, 831), (0, 0))
+    assert _text(res) == (
+        f"Focused {label}, which is on display 2, outside this session's display (display 1). "
+        "The screenshot is of display 1 (1280x831); your next x,y refer to it."
+    )
+    await tools["click"].execute("c3", {"x": 640, "y": 360, "settle_ms": 0})
+    assert screens.sent[-1] == ("click", 1512, 851)
+
+
+async def test_focus_window_in_a_pinned_session_shows_the_pinned_display_that_holds_the_window(monkeypatch):
+    # The model looked at display 2; the window is on display 1, the pinned one.
+    screens = _Monitors()
+    screens.windows = [_window(5, "com.apple.Notes", 100, 100)]
+    tools, spec = _session(monkeypatch, screens, default_display_id=1)
+    await tools["screenshot"].execute("c1", {"display_id": 2})
+    res = await tools["focus_window"].execute("c2", {"window_id": 5, "settle_ms": 0})
+    assert screens.shots == [2, 1]
+    assert spec.frame_display_id == 1
+    assert _text(res) == (
+        "Focused window #5, which is on display 1. "
+        "The screenshot is of display 1 (1280x831); your next x,y refer to it."
+    )
 
 
 async def test_focus_window_on_a_window_across_two_displays_shows_the_one_with_most_of_it(monkeypatch):
