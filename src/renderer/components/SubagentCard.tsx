@@ -1,81 +1,16 @@
 import { useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { useHarness, type SystemEventRecord } from '../state/store'
+import { useHarness } from '../state/store'
 import { formatDuration, formatTokens } from '../lib/format'
+import {
+  deriveKanbanCardSnapshot,
+  deriveSnapshotFromTask,
+  type KanbanCardSnapshot,
+} from '../lib/kanbanSnapshot'
 import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl } from '../lib/frameMedia'
 import { parseJevResult, workWord } from '../lib/jevLog'
 import { JevResultSummary, jevActivity, jevStatus, useJevLastLine } from './JevRun'
-
-/** Snapshot of a kanban card's current state, derived from the running
- *  fold over `kanban_*` system events. Used by the subagent card to
- *  decide whether to show "awaiting review" / "verified" / "rejected"
- *  states instead of the bare worker `done`. */
-interface KanbanCardSnapshot {
-  status: string
-  requiresVerification: boolean
-  /** When the latest event was a verifier-authored transition, the
-   *  actor string. Used to render the verifier byline. */
-  verifierActor: string | null
-  /** True when the latest verifier transition flipped the card from
-   *  `done_unverified` back to `running`. */
-  rejected: boolean
-  /** Verifier's most recent rejection feedback, if any. */
-  rejectionFeedback: string | null
-}
-
-function deriveKanbanCardSnapshot(
-  events: SystemEventRecord[],
-  taskId: string,
-): KanbanCardSnapshot | null {
-  let task: Record<string, unknown> | null = null
-  let verifierActor: string | null = null
-  let rejected = false
-  let rejectionFeedback: string | null = null
-  for (const event of events) {
-    if (!event.subtype.startsWith('kanban_')) continue
-    const details = event.details as Record<string, unknown> | undefined
-    const eventTask = details?.task as Record<string, unknown> | undefined
-    if (!eventTask) continue
-    if (String(eventTask.id ?? '') !== taskId) continue
-    task = eventTask
-    // The verifier writes `update` with a verifier-ish actor. We track
-    // the most recent one so the byline + rejection callout reflect
-    // the latest verifier touch, not an older one.
-    const eventsList = Array.isArray(eventTask.events) ? eventTask.events : []
-    for (const inner of eventsList.slice().reverse()) {
-      if (!inner || typeof inner !== 'object') continue
-      const actor = String((inner as Record<string, unknown>).actor ?? '').toLowerCase()
-      if (!actor.includes('verify')) continue
-      const innerDetails = (inner as Record<string, unknown>).details as
-        | Record<string, unknown>
-        | undefined
-      const innerStatus = String(innerDetails?.status ?? '').toLowerCase()
-      verifierActor = String((inner as Record<string, unknown>).actor)
-      rejected = innerStatus === 'running'
-      break
-    }
-    if (rejected) {
-      // Find the comment the verifier left when bouncing the card.
-      const comments = Array.isArray(eventTask.comments) ? eventTask.comments : []
-      for (const c of comments.slice().reverse()) {
-        if (!c || typeof c !== 'object') continue
-        const author = String((c as Record<string, unknown>).author ?? '').toLowerCase()
-        if (!author.includes('verify')) continue
-        rejectionFeedback = String((c as Record<string, unknown>).body ?? '') || null
-        break
-      }
-    }
-  }
-  if (!task) return null
-  return {
-    status: String(task.status ?? 'ready'),
-    requiresVerification: Boolean(task.requiresVerification),
-    verifierActor,
-    rejected,
-    rejectionFeedback,
-  }
-}
 
 function useKanbanCardSnapshot(taskId: string | undefined): KanbanCardSnapshot | null {
   const systemEvents = useHarness((s) => s.systemEvents)
@@ -95,42 +30,6 @@ function useKanbanCardSnapshot(taskId: string | undefined): KanbanCardSnapshot |
     // payload still carries.
     return deriveSnapshotFromTask(persistedCard as Record<string, unknown>)
   }, [systemEvents, persistedCard, taskId])
-}
-
-function deriveSnapshotFromTask(task: Record<string, unknown>): KanbanCardSnapshot {
-  let verifierActor: string | null = null
-  let rejected = false
-  let rejectionFeedback: string | null = null
-  const events = Array.isArray(task.events) ? task.events : []
-  for (const inner of events.slice().reverse()) {
-    if (!inner || typeof inner !== 'object') continue
-    const actor = String((inner as Record<string, unknown>).actor ?? '').toLowerCase()
-    if (!actor.includes('verify')) continue
-    const innerDetails = (inner as Record<string, unknown>).details as
-      | Record<string, unknown>
-      | undefined
-    const innerStatus = String(innerDetails?.status ?? '').toLowerCase()
-    verifierActor = String((inner as Record<string, unknown>).actor)
-    rejected = innerStatus === 'running'
-    break
-  }
-  if (rejected) {
-    const comments = Array.isArray(task.comments) ? task.comments : []
-    for (const c of comments.slice().reverse()) {
-      if (!c || typeof c !== 'object') continue
-      const author = String((c as Record<string, unknown>).author ?? '').toLowerCase()
-      if (!author.includes('verify')) continue
-      rejectionFeedback = String((c as Record<string, unknown>).body ?? '') || null
-      break
-    }
-  }
-  return {
-    status: String(task.status ?? 'ready'),
-    requiresVerification: Boolean(task.requiresVerification),
-    verifierActor,
-    rejected,
-    rejectionFeedback,
-  }
 }
 
 /** Running indicator for the card's left gutter: a 2×6 grid of 3px pixels
@@ -220,8 +119,7 @@ export function SubagentCard({ id }: { id: string }) {
   const cardSnapshot = useKanbanCardSnapshot(
     !isVerifierAgent ? sub.kanbanTaskId : undefined,
   )
-  const awaitingReview =
-    isDone && cardSnapshot?.status === 'done_unverified'
+  const awaitingReview = isDone && Boolean(cardSnapshot?.awaitingReview)
   const verified =
     isDone && cardSnapshot?.status === 'done' && cardSnapshot.verifierActor !== null
   const rejected = Boolean(cardSnapshot?.rejected)
