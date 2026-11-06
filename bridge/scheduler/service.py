@@ -311,6 +311,16 @@ class SchedulerService:
         finally:
             if session is not None:
                 self._sessions_in_runs[session] -= 1
+                if not self.holds_session(session):
+                    self._stop_writing_events_held_elsewhere()
+
+    @staticmethod
+    def _stop_writing_events_held_elsewhere() -> None:
+        """Close this process's events files of the job sessions it no
+        longer holds: emit() writes to one while it has it open."""
+        from bridge.freyja_bridge import _close_event_files_held_elsewhere
+
+        _close_event_files_held_elsewhere()
 
     async def start(self, *, always_on: bool = True) -> None:
         """Boot the run loop. Acquires the cross-process owner lock; if
@@ -400,6 +410,7 @@ class SchedulerService:
                 continue
             self._is_owner = False
             self._owner_lock.release()
+            self._stop_writing_events_held_elsewhere()
             logger.info(
                 "scheduler handed the tick to a LaunchAgent (pid %d is CRUD-only now)",
                 os.getpid(),
@@ -508,6 +519,7 @@ class SchedulerService:
             self._owner_lock.release()
             self._owner_lock = None
             self._is_owner = False
+            self._stop_writing_events_held_elsewhere()
         # Don't kill in-flight runs — they're agent turns and they
         # need to finish cleanly. Wait briefly, then let the process
         # drop them.

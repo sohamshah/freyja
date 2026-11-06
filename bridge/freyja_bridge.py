@@ -511,6 +511,20 @@ def _close_session_event_file(session_id: str) -> None:
         pass
 
 
+def _close_event_files_held_elsewhere() -> None:
+    """Close the open events files of the sessions another process holds
+    now (_events_file_held_elsewhere). emit() takes an open handle for
+    ownership, so after this process let a scheduled job's session go (it
+    handed the tick over, or a run of the job here ended after the tick
+    went elsewhere) it kept appending to the file the new owner writes.
+    The scheduler calls this as it lets go."""
+    with _EMIT_LOCK:
+        open_ids = list(_SESSION_EVENT_FILES)
+    for sid in open_ids:
+        if _events_file_held_elsewhere(sid):
+            _close_session_event_file(sid)
+
+
 def _session_event_path(session_id: str) -> Path:
     """Resolve the JSONL path for a session id. Mirrors the sanitizer
     used by ``src/main/persistence.ts`` so the desktop synthesizer

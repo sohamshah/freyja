@@ -597,6 +597,53 @@ async def test_the_tick_owner_writes_its_job_sessions_events_file(events_file):
     assert _events_in_file(SCHED) == ["system_event"]
 
 
+async def test_the_app_stops_writing_a_job_sessions_events_file_once_it_hands_the_tick_over(
+    events_file, monkeypatch
+):
+    # emit() took the handle it had open for ownership, so it went on
+    # appending to the file the LaunchAgent that took the tick writes.
+    import bridge.scheduler.service as service_mod
+    from bridge.scheduler.persistence import FileLock, owner_lock_path
+
+    service = events_file.scheduler
+    service._owner_lock = FileLock(owner_lock_path())
+    assert service._owner_lock.acquire()
+    service._is_owner = True
+    fb.emit({"type": "system_event", "sessionId": SCHED, "subtype": "x", "message": "m"})
+    monkeypatch.setattr(service_mod, "_OWNER_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(service_mod, "always_on_scheduler_installed", lambda: True)
+    monkeypatch.setattr(service_mod, "always_on_scheduler_running", lambda: True)
+
+    await service._hand_over_to_launch_agent()
+    fb.emit({"type": "compaction_skipped", "sessionId": SCHED})
+
+    assert not service._is_owner
+    assert _events_in_file(SCHED) == ["system_event"]
+
+
+async def test_a_run_that_outlives_the_tick_stops_writing_its_sessions_events_file_when_it_ends(
+    events_file, monkeypatch
+):
+    from bridge.scheduler.models import JobRecord, PersistentJobSession
+    from bridge.scheduler.persistence import FileLock, job_run_lock_path
+
+    service = events_file.scheduler
+    service._is_owner = True
+    job = JobRecord(id="sched_19f0", name="digest", execution=PersistentJobSession(session_id=SCHED))
+
+    async def _run(_job, _slot, _attempt=0):
+        service._is_owner = False  # handed to the LaunchAgent
+        fb.emit({"type": "turn_complete", "sessionId": SCHED})
+
+    monkeypatch.setattr(service, "_fire_under_lock", _run)
+    lock = FileLock(job_run_lock_path(job.id))
+    assert lock.acquire()
+    await service._fire_with_concurrency(job, lock, None)
+    fb.emit({"type": "compaction_skipped", "sessionId": SCHED})
+
+    assert _events_in_file(SCHED) == ["turn_complete"]
+
+
 @pytest.mark.parametrize("start_kwargs", [{}, {"listen": False}], ids=["gateway", "scheduler daemon"])
 async def test_the_gateway_and_the_scheduler_daemon_tell_emit_their_state(monkeypatch, start_kwargs):
     from tests.test_scheduler_slack_sink import _start_gateway
