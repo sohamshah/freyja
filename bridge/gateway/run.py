@@ -2240,12 +2240,17 @@ class GatewayDaemon:
             return
         sessions = getattr(self.state, "sessions", {})
         if session_key in sessions:
-            from bridge.freyja_bridge import _drop_queued_turns, _stop_background_work
+            from bridge.freyja_bridge import (
+                _close_board_journals,
+                _drop_queued_turns,
+                _stop_background_work,
+            )
 
             sessions[session_key]._background_closed = True
             # Saves nothing more: the turn this cancels saved its question
             # into the old conversation as it unwound.
             sessions[session_key]._discarded = True
+            _close_board_journals(sessions[session_key])
             _drop_queued_turns(sessions[session_key])
             self._cancel_session(session_key)
             _stop_background_work(sessions[session_key])

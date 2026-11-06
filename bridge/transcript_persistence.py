@@ -574,12 +574,27 @@ def set_transcript_aside(session_id: str) -> Path | None:
     saved one: its file moves to ``<file>.reset-<ms>``, a name no load or
     listing reads, and its model, reasoning level and mode stay in its
     place in a file with no entries (as _save_settings_alone writes one).
-    Returns where the conversation went, or None when none was saved."""
+    The files a load reads back into the conversation go aside with it,
+    under the same name: its goal, its inbox, and its kanban and task
+    journals. Left, the next conversation took up the old one's board,
+    goal and unread messages. Its event log and its raw message and
+    compaction logs stay: they are traces, and no load reads them into
+    the conversation. Returns where the conversation went, or None when
+    none was saved."""
+    stamp = int(time.time() * 1000)
+    for sidecar in (
+        _goal_path(session_id),
+        _journal_path(session_id, ".kanban.jsonl"),
+        _journal_path(session_id, ".tasks.jsonl"),
+    ):
+        _set_aside(sidecar, stamp)
+    with _inbox_lock():  # another process queues into it under the lock
+        _set_aside(_inbox_path(session_id), stamp)
     data = load_transcript(session_id)
     if data is None or not (data.get("transcript") or {}).get("entries"):
         return None
     path = _transcript_path(session_id)
-    aside = path.with_name(f"{path.name}.reset-{int(time.time() * 1000)}")
+    aside = path.with_name(f"{path.name}.reset-{stamp}")
     try:
         path.replace(aside)
     except OSError:
@@ -595,6 +610,15 @@ def set_transcript_aside(session_id: str) -> Path | None:
         "transcript": {"entries": []},
     })
     return aside
+
+
+def _set_aside(path: Path, stamp: int) -> None:
+    if not path.exists():
+        return
+    try:
+        path.replace(path.with_name(f"{path.name}.reset-{stamp}"))
+    except OSError:
+        logger.exception("Failed to set %s aside", path.name)
 
 
 def remap_ids(obj: Any, id_remap: dict[str, str]) -> Any:

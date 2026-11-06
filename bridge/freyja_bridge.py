@@ -14577,6 +14577,16 @@ def _force_cancel_session(sess: "_BridgeSession", *, scope: str = "all") -> int:
     return fired
 
 
+def _close_board_journals(sess: Any) -> None:
+    """A session whose conversation is set aside (set_transcript_aside)
+    writes its kanban and task journals no more. A worker stopped with it
+    marked its card as it ended, which began a new journal under the id,
+    and the next conversation's board replayed the card."""
+    for board in (getattr(sess, "kanban_board", None), getattr(sess, "task_board", None)):
+        if board is not None:
+            board._journal = None  # noqa: SLF001
+
+
 def _drop_queued_turns(sess: "_BridgeSession") -> int:
     """The emergency stop: the turns queued behind the running one do not
     run either. None of them can go back to the composer (a harness
