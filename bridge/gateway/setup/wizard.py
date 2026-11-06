@@ -89,6 +89,10 @@ def _err(msg: str) -> None:
     print(_red(f"  ✗ {msg}"))
 
 
+class _InputClosed(Exception):
+    """stdin closed before the wizard had its answer."""
+
+
 def _prompt(label: str, *, password: bool = False, default: str | None = None) -> str:
     suffix = ""
     if default is not None:
@@ -101,7 +105,10 @@ def _prompt(label: str, *, password: bool = False, default: str | None = None) -
         else:
             raw = input(line)
     except EOFError:
-        return default or ""
+        # A closed stdin is no answer. Taking the default made the token
+        # and allowlist questions ask forever ("Try again?" defaults to
+        # yes) and installed the service at the end.
+        raise _InputClosed from None
     raw = (raw or "").strip()
     if not raw and default is not None:
         return default
@@ -123,7 +130,7 @@ def _wait_for_enter(msg: str = "Press Enter to continue") -> None:
     try:
         input(_dim(f"  ⏎ {msg}"))
     except EOFError:
-        pass
+        raise _InputClosed from None
 
 
 # ── clipboard helpers ────────────────────────────────────────────
@@ -177,6 +184,18 @@ _SLACK_USER_ID = re.compile(r"^[UW][A-Z0-9]{2,}$")
 
 def run_slack_setup() -> int:
     """Top-level Slack setup wizard. Returns shell exit code."""
+    try:
+        return _run_slack_setup()
+    except _InputClosed:
+        print()
+        _err(
+            "Input ended before setup finished, so no token or allowlist "
+            "was saved. Run `freyja setup slack` again in a terminal."
+        )
+        return 1
+
+
+def _run_slack_setup() -> int:
     print()
     print(_bold(_cyan("Freyja → Slack setup")))
     print(_dim("This will help you provision a Slack app and configure Freyja"))
@@ -246,8 +265,7 @@ def run_slack_setup() -> int:
                 return 0
             continue
         app_token = candidate
-    save_env_value("SLACK_APP_TOKEN", app_token)
-    _ok("App Token saved")
+    _ok("App Token accepted")
 
     # ── Step 4: Bot Token (Install) ──
     _step(4, TOTAL, "Install the app to your workspace + collect Bot Token")
@@ -270,8 +288,7 @@ def run_slack_setup() -> int:
                 return 0
             continue
         bot_token = candidate
-    save_env_value("SLACK_BOT_TOKEN", bot_token)
-    _ok("Bot Token saved")
+    _ok("Bot Token accepted")
 
     # ── Step 5: Verify ──
     _step(5, TOTAL, "Verify the connection")
@@ -332,7 +349,12 @@ def run_slack_setup() -> int:
         _ok(
             f"Allowlist for {info['team_name']}: " + ", ".join(ids)
         )
+    # Nothing is saved until the allowlist is answered, so a run that
+    # stops part-way leaves the old setup as it was.
+    save_env_value("SLACK_APP_TOKEN", app_token)
+    save_env_value("SLACK_BOT_TOKEN", bot_token)
     write_config(cfg)
+    _ok("Tokens and allowlist saved")
 
     # ── Step 6b: Capability defaults (informational) ──
     print()
@@ -362,7 +384,16 @@ def run_slack_setup() -> int:
     else:
         _info("Installs ~/Library/LaunchAgents/co.freyja.gateway.plist.")
         _info("The gateway will start at login + survive Electron quit.")
-        if _yes_no("Install + start now?", default=True):
+        try:
+            install = _yes_no("Install + start now?", default=True)
+        except _InputClosed:
+            print()
+            _err(
+                "Input ended, so the gateway was not installed. The tokens "
+                "and allowlist are saved; run `freyja gateway install` to start it."
+            )
+            return 1
+        if install:
             try:
                 assert launchd_mod is not None
                 path = launchd_mod.install()
