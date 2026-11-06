@@ -1765,21 +1765,10 @@ Parameters:
                         else None
                     ),
                 })
-                # A scheduled run in the parent counts its sub-agents' calls
-                # (scheduler.runtime._RunCost). Reported only under the
-                # sub-agent's own id, they were in neither budget of the run.
-                from bridge.freyja_bridge import notify_session_listeners
-
-                notify_session_listeners(parent_session_id_local, {
-                    "type": "subagent_llm_call",
-                    "sessionId": parent_session_id_local,
-                    "subagentId": sub_id_local,
-                    "subagentStartedAt": record.start_time,
-                    "inputTokens": in_tok,
-                    "outputTokens": out_tok,
-                    "cacheReadTokens": cr_tok,
-                    "costUsd": float(cost) if cost is not None else None,
-                })
+                _tell_parent_of_call(
+                    parent_session_id_local, record, input_tokens=in_tok,
+                    output_tokens=out_tok, cache_read_tokens=cr_tok, cost=cost,
+                )
             except Exception:
                 pass
 
@@ -3080,6 +3069,87 @@ async def _emit_update(spec: SubAgentSpec, record: SubAgentRecord) -> None:
             "patch": _record_to_dict(record),
         },
     )
+
+
+def _tell_parent_of_call(
+    parent_session_id: str | None,
+    record: SubAgentRecord,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cost: float | None,
+) -> None:
+    """Report one model call of ``record`` to the in-process listeners of
+    its parent: a scheduled run in the parent counts its sub-agents' calls
+    (scheduler.runtime._RunCost). Reported only under the sub-agent's own
+    id, they were in neither budget of the run."""
+    from bridge.freyja_bridge import notify_session_listeners
+
+    notify_session_listeners(parent_session_id, {
+        "type": "subagent_llm_call",
+        "sessionId": parent_session_id,
+        "subagentId": record.id,
+        "subagentStartedAt": record.start_time,
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "cacheReadTokens": cache_read_tokens,
+        "costUsd": float(cost) if cost is not None else None,
+    })
+
+
+def count_computer_calls(
+    record: SubAgentRecord, parent_session_id: str | None, model: str,
+) -> Callable[[dict[str, Any]], None]:
+    """An on_llm_call hook for a computer-use child (computer_use,
+    jev_computer_use) that counts each model call as _run_child's hook
+    counts a sub-agent's: on ``record``, whose pane's cost is read from its
+    totals, and to its parent (_tell_parent_of_call). Uncounted, a child's
+    calls were in neither the app's session cost nor a run's budgets.
+    ``model`` prices a call that does not name its own."""
+    loop = asyncio.get_running_loop()
+
+    def count(payload: dict[str, Any]) -> None:
+        # Compaction reports its summary calls from worker threads; the
+        # totals are kept on the loop, as _run_child's are.
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not loop and loop.is_running():
+            try:
+                loop.call_soon_threadsafe(count, payload)
+                return
+            except RuntimeError:  # closed while we looked
+                pass
+        if payload.get("error"):
+            return
+        try:
+            from engine.providers import compute_cost
+
+            in_tok = int(payload.get("input_tokens", 0) or 0)
+            out_tok = int(payload.get("output_tokens", 0) or 0)
+            cr_tok = int(payload.get("cache_read_tokens", 0) or 0)
+            cw_tok = int(payload.get("cache_write_tokens", 0) or 0)
+            record.input_tokens += in_tok
+            record.output_tokens += out_tok
+            record.cache_read_tokens += cr_tok
+            record.cache_write_tokens += cw_tok
+            cost = compute_cost(
+                payload.get("model") or model,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                cache_read_tokens=cr_tok,
+                cache_write_tokens=cw_tok,
+            )
+            _tell_parent_of_call(
+                parent_session_id, record, input_tokens=in_tok,
+                output_tokens=out_tok, cache_read_tokens=cr_tok, cost=cost,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("counting a computer-use child's call failed", exc_info=True)
+
+    return count
 
 
 async def _fire(cb: SubAgentEventCb, event: dict[str, Any]) -> None:

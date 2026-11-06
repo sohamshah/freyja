@@ -10,7 +10,10 @@ The per-run cost cap was checked only when the run ended, so a run over
 it had already spent the money.
 
 A run's sub-agents report their calls under their own session ids, so
-neither the run's budget nor its job's daily one counted them.
+neither the run's budget nor its job's daily one counted them. A
+computer-use child (computer_use, jev_computer_use) reported its calls to
+no one: neither budget, nor its pane's cost, which the app adds to its
+parent's.
 
 A run's tokens were read when it ended, from the transcript after its
 last user entry: the turns before a sub-agent's report woke the session
@@ -357,3 +360,137 @@ async def test_a_runs_tokens_are_those_of_all_its_turns_and_sub_agents(
 
     # The fire's turn, the turn the memo woke, and the sub-agent's call.
     assert (run.input_tokens, run.output_tokens, run.cache_read_tokens) == (2500, 55, 700)
+
+
+# ─── computer-use sub-agents ──────────────────────────────────────────
+
+
+class _ComputerProvider:
+    name = "anthropic"
+    model_id = "claude-sonnet-5-5"
+    context_window = 200_000
+
+    def complete(self, _messages, *, system_prompt="", max_tokens=0):
+        # A door call of a Jev run, most of its prompt read from the cache.
+        return SimpleNamespace(content='{"done": true}', stop_reason="end_turn", usage=SimpleNamespace(
+            input_tokens=200, output_tokens=40, cache_read_tokens=800, cache_write_tokens=0,
+        ))
+
+
+def _computer_spec(parent_id: str, tmp_path, events: list):
+    import bridge.tools.sub_agent_tool as sat
+    from bridge.tools.base import ToolRegistry
+    from bridge.tools.sub_agent_registry import SubAgentRegistry
+
+    return sat.SubAgentSpec(
+        parent_workspace=str(tmp_path), parent_model="claude-sonnet-5-5",
+        build_provider=lambda *a, **k: _ComputerProvider(), parent_registry=ToolRegistry(),
+        registry=SubAgentRegistry(), emit_event=events.append, parent_session_id=parent_id,
+    )
+
+
+def _spawns_in_the_fire(sess, spawn):
+    """The fire's turn awaits ``spawn()`` before its own calls."""
+    runner = sess.runner
+
+    class _Spawns:
+        usage = runner.usage
+
+        async def run(self, session, message, stream=True):
+            if "[Scheduled run" in _text(message):
+                await spawn()
+            return await runner.run(session, message, stream=stream)
+
+    sess.runner = _Spawns()
+
+
+async def test_the_calls_of_a_computer_use_child_its_turn_starts_are_its_cost_and_its_panes(
+    operator_session, tmp_path, monkeypatch,
+):
+    # A computer_use child's runner had no on_llm_call hook: its calls went
+    # to neither the parent's listeners nor its pane's cost, which was read
+    # from the runner's uncached input and output alone.
+    import bridge.tools.computer_use_tool as cut
+    import engine.runner as runner_module
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.costs = {"write the digest": 20}
+    events: list[dict] = []
+    spec = _computer_spec("s1", tmp_path, events)
+
+    class _ChildRunner(runner_module.AsyncAgentRunner):
+        async def run(self, session, prompt, **_k):
+            for _ in range(2):
+                if self.on_llm_call is not None:
+                    self.on_llm_call({"model": "claude-sonnet-5-5", "input_tokens": 1000,
+                                      "output_tokens": 30, "cache_read_tokens": 9000})
+            return SimpleNamespace(iterations=2)
+
+    monkeypatch.setattr(runner_module, "AsyncAgentRunner", _ChildRunner)
+    monkeypatch.setattr(cut, "build_computer_tools", lambda _spec: [])
+
+    async def _spawn():
+        record = spec.registry.register(id="comp_c_1", label="computer: look", task="look",
+                                        mode="background")
+        await cut.ComputerUseTool(sub_spec=spec)._run_child(
+            None, record, goal="look", target_app=None, target_display=None, max_steps=3,
+        )
+
+    _spawns_in_the_fire(sess, _spawn)
+
+    run = await fire_job(_Service({"s1": sess}), _job())
+
+    assert run.cost_usd == pytest.approx(0.80)
+    [usage] = [e for e in events if e.get("type") == "usage" and e["sessionId"] == "comp_c_1"]
+    assert usage["cost"] == pytest.approx(0.60)
+    assert usage["cacheReadTokens"] == 18000
+
+
+async def test_the_llm_calls_of_a_jev_run_its_turn_starts_are_its_cost_and_its_panes(
+    operator_session, tmp_path, monkeypatch,
+):
+    # A Jev run's LLM calls were counted only in its footer, and its pane's
+    # cost was always 0.
+    import sys
+
+    import bridge.tools.jev_computer_use_tool as jcut
+    from bridge.scheduler.runtime import fire_job
+    from bridge.tools.jev_operator.loop import RunResult
+
+    sess = operator_session
+    sess.costs = {"write the digest": 20}
+    events: list[dict] = []
+    spec = _computer_spec("s1", tmp_path, events)
+    monkeypatch.setitem(sys.modules, "freyja_native", SimpleNamespace())
+    monkeypatch.setattr(jcut, "TypeSafeProvider", lambda: SimpleNamespace(available=True))
+
+    class _Op:
+        def __init__(self, cfg, *, llm=None, **_kw):
+            self.llm = llm
+
+        async def run(self):
+            for _ in range(2):
+                await self.llm._call("judge", "judge the end state", "the screen", max_tokens=100)
+            return RunResult(
+                status="done", summary="opened it", steps=1, jev_calls=1, jev_ms=[5], llm_calls=2,
+                llm_ms=0, llm_tokens=(self.llm.stats.input_tokens, self.llm.stats.output_tokens),
+                elapsed_s=1.0, history=[], run_id="r", log_path="/x", pending_action=None,
+            )
+
+    monkeypatch.setattr(jcut, "Operator", _Op)
+    tool = jcut.JevComputerUseTool(sub_spec=spec, llm_model="claude-sonnet-5-5")
+
+    async def _spawn():
+        result = await tool.execute("c", {"goal": "open the report", "wait": True})
+        assert not result.is_error, result.content
+
+    _spawns_in_the_fire(sess, _spawn)
+
+    run = await fire_job(_Service({"s1": sess}), _job())
+
+    assert run.cost_usd == pytest.approx(1.00)
+    [record] = spec.registry.list_all()
+    [usage] = [e for e in events if e.get("type") == "usage" and e["sessionId"] == record.id]
+    assert usage["cost"] == pytest.approx(0.80)
+    assert (usage["inputTokens"], usage["cacheReadTokens"]) == (400, 1600)

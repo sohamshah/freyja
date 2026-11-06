@@ -47,7 +47,12 @@ from bridge.tools.sub_agent_registry import (
     SubAgentState,
 )
 from bridge.project_paths import project_output_guidance
-from bridge.tools.sub_agent_tool import SubAgentSpec, _fire, _record_to_dict
+from bridge.tools.sub_agent_tool import (
+    SubAgentSpec,
+    _fire,
+    _record_to_dict,
+    count_computer_calls,
+)
 from engine.compaction import SummaryCompaction
 
 logger = logging.getLogger(__name__)
@@ -732,6 +737,12 @@ click/type/scroll tools until the memo arrives.
             has_pending_input=lambda: (
                 inbox_ref is not None and inbox_ref.has_unread()
             ),
+            # Its calls, for its pane's cost and a scheduled run in the parent.
+            on_llm_call=count_computer_calls(
+                record,
+                self._sub_spec.parent_session_id,
+                self._sub_spec.standard_tier_model or "",
+            ),
         )
         record.request_interrupt = runner.request_interrupt  # type: ignore[attr-defined]
 
@@ -845,10 +856,8 @@ click/type/scroll tools until the memo arrives.
                 is_error=True,
             )
 
-        # Success path.
+        # Success path. Its tokens are its calls' (count_computer_calls).
         usage = runner.usage
-        record.input_tokens = int(getattr(usage, "input", 0) or 0)
-        record.output_tokens = int(getattr(usage, "output", 0) or 0)
         try:
             record.context_tokens = int(usage.effective_context_tokens())
         except Exception:  # noqa: BLE001
@@ -882,7 +891,9 @@ click/type/scroll tools until the memo arrives.
     ) -> None:
         # Use the per-model pricing helper so the displayed spend tracks
         # the actual rate instead of the old hard-coded $3/$15-per-M
-        # formula (which assumed Sonnet pricing for every model).
+        # formula (which assumed Sonnet pricing for every model). The
+        # cache's tokens are most of a run's prompt: left out, its cost
+        # was its uncached input and its output alone.
         try:
             from engine.providers import compute_cost as _compute_cost
 
@@ -891,6 +902,8 @@ click/type/scroll tools until the memo arrives.
                 cu_model,
                 input_tokens=int(record.input_tokens or 0),
                 output_tokens=int(record.output_tokens or 0),
+                cache_read_tokens=int(record.cache_read_tokens or 0),
+                cache_write_tokens=int(record.cache_write_tokens or 0),
             )
             computed_cost = float(cost_estimate) if cost_estimate is not None else 0.0
         except Exception:  # noqa: BLE001
@@ -901,8 +914,8 @@ click/type/scroll tools until the memo arrives.
             "contextTokens": record.context_tokens,
             "inputTokens": record.input_tokens,
             "outputTokens": record.output_tokens,
-            "cacheReadTokens": 0,
-            "cacheWriteTokens": 0,
+            "cacheReadTokens": record.cache_read_tokens,
+            "cacheWriteTokens": record.cache_write_tokens,
             "cost": computed_cost,
         }
         await _fire(self._sub_spec.emit_event, usage_payload)

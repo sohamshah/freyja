@@ -96,9 +96,12 @@ class LLMStats:
     log: list[dict[str, Any]] = field(default_factory=list)
 
 
-def completer_from_provider(provider: Any) -> Completer:
+def completer_from_provider(
+    provider: Any, on_call: Callable[[dict[str, Any]], None] | None = None
+) -> Completer:
     """Adapt a Freyja ModelProvider (sync `complete`) to the async Completer
-    used here."""
+    used here. ``on_call`` hears each call's tokens, in the shape of the
+    runner's on_llm_call."""
 
     async def run(messages: list[Message], system_prompt: str, max_tokens: int) -> str:
         resp = await asyncio.to_thread(
@@ -117,6 +120,14 @@ def completer_from_provider(provider: Any) -> Completer:
         )
         run.last_cache = cached  # type: ignore[attr-defined]
         run.last_stop = getattr(resp, "stop_reason", None)  # type: ignore[attr-defined]
+        if on_call is not None:
+            on_call({
+                "model": getattr(provider, "model_id", None),
+                "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+                "output_tokens": run.last_usage[1],  # type: ignore[attr-defined]
+                "cache_read_tokens": cached[0],
+                "cache_write_tokens": cached[1],
+            })
         return text
 
     run.last_usage = (0, 0)  # type: ignore[attr-defined]

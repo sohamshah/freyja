@@ -40,7 +40,12 @@ from bridge.tools.jev_operator.items import (
 )
 from bridge.tools.jev_operator.loop import Operator, OperatorConfig, RunResult
 from bridge.tools.sub_agent_registry import SubAgentState
-from bridge.tools.sub_agent_tool import SubAgentSpec, _fire, _record_to_dict
+from bridge.tools.sub_agent_tool import (
+    SubAgentSpec,
+    _fire,
+    _record_to_dict,
+    count_computer_calls,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -549,13 +554,18 @@ the run stops with status=blocked instead of clicking into the other app.
             owner="jev_computer_use",
         )
 
+        llm_model = self._llm_model or default_llm_model()
+        # Its LLM calls, for its pane's cost and a scheduled run in the parent.
+        count_call = count_computer_calls(record, self._sub_spec.parent_session_id, llm_model)
+
         def new_llm() -> LLMHelper | None:
             if not use_llm:
                 return None
             try:
-                model = self._llm_model or default_llm_model()
                 return LLMHelper(
-                    completer_from_provider(self._sub_spec.build_provider(model, "off"))
+                    completer_from_provider(
+                        self._sub_spec.build_provider(llm_model, "off"), on_call=count_call
+                    )
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("jev_computer_use: LLM helper unavailable: %s", exc)
@@ -632,8 +642,8 @@ the run stops with status=blocked instead of clicking into the other app.
         outcome = {"done": "done", "cancelled": "cancelled", "error": "failed"}.get(
             result.status, "stuck"
         )
-        record.input_tokens = result.llm_tokens[0]
-        record.output_tokens = result.llm_tokens[1]
+        # Its tokens are its LLM calls' (count_computer_calls), with the
+        # cache's apart from its input.
         record.tools_called = result.steps
         record.iterations = result.jev_calls
         # The generic memo said "25 tool calls, 36 steps" for 25 actions and 36
@@ -684,6 +694,20 @@ the run stops with status=blocked instead of clicking into the other app.
     async def _emit_end(self, record: Any, *, outcome: str) -> None:
         emit = self._sub_spec.emit_event
         ok = outcome == "done"
+        # What its LLM calls cost: its pane's spend, which the app adds to
+        # the parent's. It was always 0.
+        try:
+            from engine.providers import compute_cost
+
+            cost = float(compute_cost(
+                self._llm_model or default_llm_model(),
+                input_tokens=record.input_tokens,
+                output_tokens=record.output_tokens,
+                cache_read_tokens=record.cache_read_tokens,
+                cache_write_tokens=record.cache_write_tokens,
+            ) or 0.0)
+        except Exception:  # noqa: BLE001
+            cost = 0.0
         await _fire(
             emit,
             {
@@ -692,9 +716,9 @@ the run stops with status=blocked instead of clicking into the other app.
                 "contextTokens": record.input_tokens,
                 "inputTokens": record.input_tokens,
                 "outputTokens": record.output_tokens,
-                "cacheReadTokens": 0,
-                "cacheWriteTokens": 0,
-                "cost": 0.0,
+                "cacheReadTokens": record.cache_read_tokens,
+                "cacheWriteTokens": record.cache_write_tokens,
+                "cost": cost,
             },
         )
         await _fire(
