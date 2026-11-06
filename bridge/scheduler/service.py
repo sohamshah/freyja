@@ -416,7 +416,8 @@ class SchedulerService:
         # A slot missed while no process ticked is left due when the
         # job's misfire policy catches up, so the tick fires it; under
         # "skip" the recompute moves past it. A slot that waited for the
-        # Mac was not missed and stays due, as does a one-shot's that was
+        # Mac, the gateway or the app was not missed and stays due, as does
+        # one whose fire did not run there, and a one-shot's that was
         # resumed or whose run was cut off.
         boot_count = 0
         now = time.time()
@@ -626,6 +627,10 @@ class SchedulerService:
                         "type": "scheduler_run_waits_for_gateway" if in_gateway else "scheduler_run_waits_for_app",
                         "job_id": job.id,
                     })
+                if job.waiting_slot != job.next_fire_at:
+                    # Not missed: under skip, a new owner's boot moved past it.
+                    job.waiting_slot = job.next_fire_at
+                    save_job(job)
                 self._waiting_for_owner.add(job.id)
                 self._waiting_job_ids.add(job.id)
                 return
@@ -1671,8 +1676,10 @@ def _catches_up(job: JobRecord, now: float) -> bool:
 
 def _waits_for_the_mac(job: JobRecord, now: float) -> bool:
     """True when ``job`` is due on a slot that came due while a scheduler
-    ran and waited for the Mac, or that a one-shot runs late, resumed or
-    after its run was cut off (``waiting_slot``), so it was not missed."""
+    ran and waited for the Mac, the gateway or the app, that is due again
+    because its fire did not run there, or that a one-shot runs late,
+    resumed or after its run was cut off (``waiting_slot``), so it was not
+    missed."""
     return (
         job.enabled
         and job.status == "active"
@@ -1983,13 +1990,15 @@ def _due_again(job: JobRecord, slot: float | None, attempt: int) -> bool:
     its claimed run did not start. The claim moved its next fire past the
     slot, and a one-shot's past its only one, which marked it done: left
     so, the run was missed. A job paused or stopped meanwhile stays so.
-    Returns True if it did."""
+    The slot is marked as not missed: under skip, a new owner's boot
+    before the next claim moved past it. Returns True if it did."""
     if _one_shot_used_up(job):
         job.enabled = True
         job.status = "active"
     elif not (job.enabled and job.status == "active"):
         return False
     job.next_fire_at = slot if slot is not None else time.time()
+    job.waiting_slot = job.next_fire_at
     job.retry_attempt = attempt
     return True
 
@@ -2034,8 +2043,6 @@ def _settle_interrupted_runs() -> None:
             ):
                 continue
             _due_again(fresh, slot, cut[0].attempt)
-            # Not missed: under skip, the boot would move past it.
-            fresh.waiting_slot = slot
             save_job(fresh)
             settled = True
             logger.info("job %s (%s): its run was cut off; due again", job.id, job.name)
