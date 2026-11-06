@@ -264,6 +264,12 @@ class SchedulerService:
 
     # ─── Lifecycle ────────────────────────────────────────────────────
 
+    @property
+    def owns_tick(self) -> bool:
+        """True while this process runs the tick loop. It fires the jobs
+        that run in a scheduler session, and so loads and saves those."""
+        return self._is_owner
+
     async def start(self, *, always_on: bool = True) -> None:
         """Boot the run loop. Acquires the cross-process owner lock; if
         another scheduler in another process already holds it, this

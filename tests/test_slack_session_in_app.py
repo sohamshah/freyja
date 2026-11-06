@@ -640,3 +640,45 @@ def test_the_gateway_holds_none_of_its_own_sub_agents(app_bridge, monkeypatch):
     _gateway_sub_agent_saved()
 
     assert not fb._gateway_holds(SLACK_SUB)
+
+
+# ── a scheduled job's session is the tick owner's ────────────────────
+
+SCHED = "scheduler:sched_19f0"
+
+
+def _app_scheduler(state, *, owns_tick: bool):
+    from bridge.scheduler.service import SchedulerService
+
+    state.scheduler = SchedulerService(state)
+    state.scheduler._is_owner = owns_tick
+
+
+async def test_a_scheduled_jobs_session_opened_in_the_app_loads_no_copy_while_another_process_owns_the_tick(
+    app_bridge,
+):
+    # The scheduler daemon (or the gateway) owns the tick and loads, runs
+    # and saves the job's session when it fires. The app loaded a copy on
+    # open, ran what was typed there on it, and saved it over the owner's.
+    state, events, built = app_bridge
+    _app_scheduler(state, owns_tick=False)
+
+    await fb._handle_command(state, {"type": "switch_session", "sessionId": SCHED})
+    await fb._handle_command(
+        state, {"type": "send_message", "sessionId": SCHED, "content": "also check X", "clientId": "m10"},
+    )
+
+    assert built == [] and state.sessions == {}
+    (err,) = [e for e in events if e["type"] == "error"]
+    assert "scheduled job" in err["message"]
+    (refused,) = [e for e in events if e["type"] == "send_refused"]
+    assert (refused["sessionId"], refused["clientId"]) == (SCHED, "m10")
+
+
+async def test_the_app_opens_a_scheduled_jobs_session_as_its_own_while_it_owns_the_tick(app_bridge):
+    state, _events, built = app_bridge
+    _app_scheduler(state, owns_tick=True)
+
+    with pytest.raises(AssertionError, match="built a copy"):
+        await fb._handle_command(state, {"type": "switch_session", "sessionId": SCHED})
+    assert built == [SCHED]

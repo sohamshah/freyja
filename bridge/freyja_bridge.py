@@ -1524,10 +1524,11 @@ async def _route_operator_message_to_gateway(
 
 def _refuse_send(sid: str, client_id: str | None, reason: str) -> None:
     """A message typed into a pane was not delivered: a Slack session's
-    did not go to the gateway, or a sub-agent had nothing saved to resume.
-    The renderer showed it as sent (a bubble, or a pending follow-up): tell
-    it to take that back out and return the text to the composer, as a
-    refused edit does (see _refuse_rewind)."""
+    did not go to the gateway, a sub-agent had nothing saved to resume, or
+    a scheduled job's session runs in another process. The renderer showed
+    it as sent (a bubble, or a pending follow-up): tell it to take that
+    back out and return the text to the composer, as a refused edit does
+    (see _refuse_rewind)."""
     emit_error(reason, recoverable=True)
     emit({"type": "send_refused", "sessionId": sid, "clientId": client_id})
 
@@ -13503,6 +13504,11 @@ _SEND_GATEWAY_TOO_LARGE = (
     "Not sent: this session lives in Slack, and the message is too large to "
     "hand to the Slack gateway. Attach large files in the Slack thread."
 )
+_SEND_SCHEDULER_ELSEWHERE = (
+    "Not sent: this session belongs to a scheduled job, and Freyja's "
+    "background scheduler runs it, not the app. To change what the job does, "
+    "edit its prompt in Scheduled Jobs (⌘⇧S)."
+)
 _STOP_GATEWAY_DOWN = (
     "Not stopped: this work runs in the Slack gateway, which is not running."
 )
@@ -13546,6 +13552,20 @@ def _gateway_holds(session_id: str) -> bool:
     if not (_is_gateway_session_id(session_id) or session_id.startswith("sub_")):
         return False
     return not _process_owns_gateway() and _is_gateway_session_id(_root_session_id(session_id))
+
+
+def _scheduler_runs_elsewhere(state: Any, session_id: str) -> bool:
+    """A scheduled job's session (``scheduler:<job>``) in a process whose
+    scheduler does not own the tick. The process that does (the scheduler
+    daemon, or the gateway) loads, runs and saves it when the job fires,
+    and a copy loaded here saved over it. No route reaches that process
+    with a message: the scheduler daemon reads no control channel, and
+    nothing says which of the two owns the tick."""
+    from bridge.scheduler.runtime import scheduler_session_id
+
+    if not session_id.startswith(scheduler_session_id("")):
+        return False
+    return not getattr(getattr(state, "scheduler", None), "owns_tick", False)
 
 
 # A sub-agent's parent, as its saved files or the app's pane name it. A
@@ -15560,6 +15580,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             # gateway (_route_operator_message_to_gateway).
             log("info", f"switch_session: {session_id} runs in the gateway — view only")
             return
+        if _scheduler_runs_elsewhere(state, session_id):
+            # So is a scheduled job's session, unless this process owns the
+            # scheduler's tick: the process that does runs and saves it.
+            log("info", f"switch_session: {session_id} runs in the scheduler's owner — view only")
+            return
         # Capture pre-switch identity so we can detect a true no-op
         # switch (same session id, same config) and skip emitting
         # session_switched. Real-world incident: the operator clicking
@@ -15680,6 +15705,14 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             force=bool(cmd.get("force") or False),
             after_turn=bool(cmd.get("afterTurn") or False),
         ):
+            return
+        # Typed into a scheduled job's session that another process runs.
+        if session_id and _scheduler_runs_elsewhere(state, session_id):
+            _refuse_send(
+                session_id,
+                str(cmd.get("clientId") or "").strip() or None,
+                _SEND_SCHEDULER_ELSEWHERE,
+            )
             return
         sess = await state.ensure_session(
             session_id or f"desktop-{int(time.time() * 1000):x}",
