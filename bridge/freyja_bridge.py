@@ -11364,6 +11364,22 @@ class _BridgeSession:
         diagnostics drawer and the expanded log modal pick it up. Emits an
         error line on failure so retries are visible.
         """
+        # Compaction reports its summary calls from worker threads, while the
+        # loop reports the main calls and keep-alive pings. Handled off the
+        # loop, two reports at once could each read cumulative_cost before
+        # the other wrote it back, and one call's cost was lost.
+        loop = self._bridge_loop
+        if loop is not None and loop.is_running():
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is not loop:
+                try:
+                    loop.call_soon_threadsafe(self._on_llm_call, payload)
+                    return
+                except RuntimeError:  # closed while we looked
+                    pass
         try:
             from engine.providers import compute_cost
 
