@@ -855,3 +855,79 @@ async def test_the_session_and_its_board_name_one_mission_root() -> None:
     card = (await board.create(title="card", parents=[board._mission_root_id, parent])).id
     board._tasks[parent].status = "done"
     assert card in await _dispatched(session, sub_tool)
+
+
+async def _force_dispatch(monkeypatch: Any, session: Any, card_id: str) -> list[dict[str, Any]]:
+    """Send the app's force-dispatch command; return what the bridge emits."""
+    import types
+
+    from bridge import freyja_bridge
+
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(freyja_bridge, "emit", sent.append)
+
+    async def _ensure_session(_session_id: str) -> Any:
+        return session
+
+    state = types.SimpleNamespace(active_session_id=session.id, ensure_session=_ensure_session)
+    await freyja_bridge._handle_command(
+        state,
+        {"type": "kanban_operator_force_dispatch", "sessionId": session.id, "cardId": card_id},
+    )
+    return sent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked", [False, True])
+async def test_force_dispatch_holds_a_card_while_a_parent_can_still_finish(
+    monkeypatch, linked: bool,
+) -> None:
+    """Force dispatch says parents still apply, but it checked none, so it
+    sent a triage card (or a ready card link() gave a new parent) to a
+    worker while that parent was pending. It now refuses and says why,
+    and sends the card once the parent is done."""
+    board = SessionKanbanBoard()
+    parent = (await board.create(title="parent")).id
+    if linked:
+        card = (await board.create(title="card", assignee="code")).id
+        await board.update(card, actor="worker", status="running", worker_session_id="sub_w")
+        await board.link(parent, card, actor="parent")
+        await board.update(card, actor="kanban-judge", status="review")
+        await board.update(card, actor="kanban-judge", status="ready")
+    else:
+        card = (await board.create(title="card", parents=[parent])).id
+        assert (await board.get(card)).status == "triage"
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+
+    sent = await _force_dispatch(monkeypatch, session, card)
+
+    assert sub_tool.calls == []
+    [refused] = [e for e in sent if e.get("subtype") == "kanban_operator_force_dispatch_failed"]
+    assert parent in refused["message"]
+
+    await board.update(parent, actor="worker", status="running")
+    await board.update(parent, actor="kanban-judge", status="done")
+    await _force_dispatch(monkeypatch, session, card)
+    assert [call["kanban_task_id"] for call in sub_tool.calls] == [card]
+
+
+@pytest.mark.asyncio
+async def test_force_dispatch_waits_for_a_free_worker_slot(monkeypatch) -> None:
+    """Force dispatch says capacity still applies, but it sent a worker
+    with KANBAN_MAX_PARALLEL already running."""
+    board = SessionKanbanBoard()
+    card = (await board.create(title="card", assignee="code")).id
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    session.subagent_registry.records = [
+        _StubRecord(is_running=True, kanban_task_id=f"phantom_{i}")
+        for i in range(_BridgeSession.KANBAN_MAX_PARALLEL)
+    ]
+
+    sent = await _force_dispatch(monkeypatch, session, card)
+
+    assert sub_tool.calls == []
+    assert [e["subtype"] for e in sent if e["type"] == "system_event"] == [
+        "kanban_operator_force_dispatch_failed"
+    ]

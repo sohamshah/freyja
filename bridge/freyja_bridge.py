@@ -9263,13 +9263,7 @@ class _BridgeSession:
         # Refresh the in-flight set from the actual sub-agent registry so
         # we don't keep cards locked out if a worker exited without
         # clearing its kanban_task_id mapping (rare, but cheap to refresh).
-        live: set[str] = set()
-        if self.subagent_registry is not None:
-            for record in self.subagent_registry.list_all():
-                if record.is_running:
-                    card_id = getattr(record, "kanban_task_id", "") or ""
-                    if card_id:
-                        live.add(card_id)
+        live = self._kanban_live_cards()
         self._kanban_dispatched = self._kanban_dispatched & live
 
         running_count = len(live)
@@ -9506,6 +9500,18 @@ class _BridgeSession:
                     f"Card {card.id} stalled — no activity in {int(age)}s",
                     details={"cardId": card.id, "ageSeconds": int(age)},
                 )
+
+    def _kanban_live_cards(self) -> set[str]:
+        """The cards whose worker is still running in the sub-agent
+        registry. KANBAN_MAX_PARALLEL caps how many there are."""
+        live: set[str] = set()
+        if self.subagent_registry is not None:
+            for record in self.subagent_registry.list_all():
+                if record.is_running:
+                    card_id = getattr(record, "kanban_task_id", "") or ""
+                    if card_id:
+                        live.add(card_id)
+        return live
 
     async def _dispatch_kanban_card(
         self,
@@ -15209,6 +15215,26 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             return
         if task.id in sess._kanban_dispatched:  # noqa: SLF001
             log("debug", f"kanban_operator_force_dispatch: {card_id} already dispatched")
+            return
+        # The tick's gates: a triage card waits until every parent is done
+        # (only `unblock` takes it past a failed or missing one), any other
+        # card while a parent can still finish, and every card while
+        # KANBAN_MAX_PARALLEL workers run.
+        pending = sess.kanban_board._pending_parents(task)  # noqa: SLF001
+        note = ""
+        if pending:
+            note = f"it waits on {', '.join(pending)}"
+        elif task.status == "triage" and not sess.kanban_board._parents_done(task):  # noqa: SLF001
+            note = "a parent failed, was cancelled or is missing; unblock it first"
+        elif len(sess._kanban_live_cards()) >= sess.KANBAN_MAX_PARALLEL:  # noqa: SLF001
+            note = f"{sess.KANBAN_MAX_PARALLEL} workers are already running"
+        if note:
+            log("info", f"kanban_operator_force_dispatch refused for {card_id}: {note}")
+            sess._emit_kanban_event(  # noqa: SLF001
+                "kanban_operator_force_dispatch_failed",
+                f"Could not dispatch {card_id}: {note}",
+                details={"cardId": card_id, "reason": note},
+            )
             return
         sub_tool = sess.tool_registry._tools.get("sub_agent")  # noqa: SLF001
         if sub_tool is None:
