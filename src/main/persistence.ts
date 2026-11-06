@@ -850,7 +850,8 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
       id: `gw-${systemEventSeq++}`,
       subtype,
       message,
-      at: Number(ev._t ? ev._t * 1000 : Date.now()),
+      // The gateway stamps each line in ms (_append_session_event_jsonl).
+      at: Number(ev._t ? ev._t : Date.now()),
       ...(details ? { details } : {}),
     })
     if (systemEvents.length >= SYSTEM_EVENT_CAP) break

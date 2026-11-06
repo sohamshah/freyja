@@ -183,6 +183,19 @@ await check('a Slack session shown from its transcript puts each message where i
   assert.deepEqual(messages.map((m) => resolve(entries, m.createdAt)), ['u1', 'a1', 'u2', 'a2'])
 })
 
+await check("a Slack session's events keep the stamps the gateway gave them", async () => {
+  // `_t` on an .events.jsonl line is ms; a fork keeps the events before
+  // its message by it.
+  const sessionsDir = path.join(home, '.freyja', 'sessions')
+  fs.writeFileSync(
+    path.join(sessionsDir, 'freyja_slack_T1_channel_C1_1.0.events.jsonl'),
+    JSON.stringify({ type: 'system_event', sessionId: 'freyja:slack:T1:channel:C1:1.0', subtype: 'compaction_complete', message: 'Context compacted', _t: 1788996060123 }) + '\n',
+  )
+  const { loadSession } = await import('./src/main/persistence.ts')
+  const { systemEvents } = loadSession('freyja:slack:T1:channel:C1:1.0').slice
+  assert.deepEqual(systemEvents.map((e) => e.at), [1788996060123])
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)
