@@ -67,6 +67,16 @@ TOOL_CATALOG: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "freyja_list_displays",
+        "description": (
+            "List every connected display: id, resolution, position in "
+            "the global layout, scale, and which one is primary. Pass an "
+            "id as display_id to freyja_screenshot to capture that "
+            "monitor; leave display_id out for the main display."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "freyja_click",
         "description": (
             "Click at an absolute screen coordinate (in api_dims space). "

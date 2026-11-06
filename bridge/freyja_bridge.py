@@ -10743,6 +10743,7 @@ class _BridgeSession:
         # Keep in sync with bridge/runtimes/freyja_mcp_server.py.
         NAME_MAP = {
             "freyja_screenshot": "screenshot",
+            "freyja_list_displays": "list_displays",
             "freyja_click": "click",
             "freyja_type_text": "type_text",
             "freyja_press_key": "press_key",
