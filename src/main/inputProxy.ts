@@ -1,6 +1,6 @@
 import http from 'node:http'
 import { AddressInfo } from 'node:net'
-import { execFileSync } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import { hasProxyToken, newProxyToken } from './proxyToken.js'
@@ -21,10 +21,13 @@ import { hasProxyToken, newProxyToken } from './proxyToken.js'
  *  (which DOES have TCC grants) performs the privileged operation on
  *  behalf of the Python subprocess.
  *
- *  Implementation: we shell out to a fixed Python script that imports
- *  freyja_native and calls the requested input function. The Python
- *  process inherits TCC from this (Electron main) process because it's
- *  a direct child. We use the same Python binary the bridge uses.
+ *  Implementation: one long-lived Python worker runs a fixed script that
+ *  imports freyja_native and calls the requested input function. The
+ *  Python process inherits TCC from this (Electron main) process because
+ *  it's a direct child. We use the same Python binary the bridge uses.
+ *  Actions go to it one at a time, in the order they arrived, and main
+ *  never waits on it: a process per action, run with execFileSync, froze
+ *  every window for the interpreter start plus the action.
  *
  *  Every field is checked here, and the call reaches the script as JSON
  *  on stdin, never as Python source. When fields were pasted into the
@@ -227,37 +230,130 @@ export function parseInputRequest(body: unknown): { call: InputCall } | { error:
   }
 }
 
-/** The one script every action runs. The call arrives as JSON on stdin,
- *  so nothing from a request is ever read as Python source. Keyword
- *  arguments match the freyja_native wrapper, whose button, double,
- *  modifiers, x and y are keyword-only. */
-const INPUT_SCRIPT = [
-  'import json, sys',
+/** The script the worker runs. Each call arrives as one line of JSON on
+ *  stdin, so nothing from a request is ever read as Python source, and
+ *  each gets one line of JSON back. Keyword arguments match the
+ *  freyja_native wrapper, whose button, double, modifiers, x and y are
+ *  keyword-only. Anything else written to stdout (freyja_native, Rust)
+ *  goes to stderr, so it cannot be read as an answer. */
+const INPUT_WORKER_SCRIPT = [
+  'import json, os, sys',
+  "answers = os.fdopen(os.dup(1), 'w')",
+  'os.dup2(2, 1)',
   'import freyja_native as n',
-  'call = json.load(sys.stdin)',
-  "getattr(n, call['action'])(*call['args'], **call['kwargs'])",
+  'for line in sys.stdin:',
+  '    call = json.loads(line)',
+  '    try:',
+  "        getattr(n, call['action'])(*call['args'], **call['kwargs'])",
+  "        answer = {'ok': True}",
+  '    except Exception as exc:',
+  "        answer = {'ok': False, 'error': f'{type(exc).__name__}: {exc}'}",
+  "    answers.write(json.dumps(answer) + '\\n')",
+  '    answers.flush()',
 ].join('\n')
 
+/** How long one action may take, the worker's start included on the
+ *  first, before the worker is killed. */
+const ACTION_TIMEOUT_MS = 5000
+
 /**
- * Execute an input action by calling freyja_native through Python.
- * Returns null on success, or an error string on failure.
+ * The Python process that runs input actions. Calls run one at a time,
+ * in the order run() was called, so a click never overtakes the move
+ * before it. The worker starts on the first call. When it crashes or an
+ * action times out it is killed, and the next call starts a new one.
  */
-function execInput(
-  pythonBin: string,
-  env: NodeJS.ProcessEnv,
-  call: InputCall,
-): string | null {
-  try {
-    execFileSync(pythonBin, ['-c', INPUT_SCRIPT], {
-      env,
-      input: JSON.stringify(call),
-      timeout: 5000,
-      stdio: 'pipe',
+export class InputWorker {
+  private proc: ChildProcess | null = null
+  private queue: Promise<unknown> = Promise.resolve()
+  private current: {
+    proc: ChildProcess
+    timer: NodeJS.Timeout
+    resolve: (error: string | null) => void
+  } | null = null
+
+  constructor(
+    private pythonBin: string,
+    private env: NodeJS.ProcessEnv,
+    private timeoutMs = ACTION_TIMEOUT_MS,
+  ) {}
+
+  /** Run a call after every call before it. Resolves to null on success,
+   *  or an error string on failure. */
+  run(call: InputCall): Promise<string | null> {
+    const result = this.queue.then(() => this.runNow(call))
+    this.queue = result
+    return result
+  }
+
+  close(): void {
+    if (this.proc) this.kill(this.proc)
+  }
+
+  private runNow(call: InputCall): Promise<string | null> {
+    return new Promise((resolve) => {
+      try {
+        const proc = this.proc ?? this.spawn()
+        const timer = setTimeout(() => {
+          this.finish(proc, `timed out after ${this.timeoutMs} ms`)
+          this.kill(proc)
+        }, this.timeoutMs)
+        this.current = { proc, timer, resolve }
+        proc.stdin!.write(JSON.stringify(call) + '\n')
+      } catch (err) {
+        resolve(String(err instanceof Error ? err.message : err).slice(0, 500))
+      }
     })
-    return null
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return msg.slice(0, 500)
+  }
+
+  private spawn(): ChildProcess {
+    const proc = spawn(this.pythonBin, ['-c', INPUT_WORKER_SCRIPT], { env: this.env, stdio: 'pipe' })
+    this.proc = proc
+    let out = ''
+    let stderr = ''
+    proc.stdout!.setEncoding('utf8')
+    proc.stdout!.on('data', (chunk: string) => {
+      out += chunk
+      for (let nl = out.indexOf('\n'); nl >= 0; nl = out.indexOf('\n')) {
+        const line = out.slice(0, nl)
+        out = out.slice(nl + 1)
+        let answer: { ok?: boolean; error?: unknown }
+        try {
+          answer = JSON.parse(line)
+        } catch {
+          answer = { error: `bad answer from the input worker: ${line.slice(0, 200)}` }
+        }
+        this.finish(proc, answer.ok ? null : String(answer.error || 'input action failed').slice(0, 500))
+      }
+    })
+    proc.stderr!.setEncoding('utf8')
+    proc.stderr!.on('data', (chunk: string) => {
+      stderr = (stderr + chunk).slice(-500)
+    })
+    // A write after it died fails here; 'close' says why.
+    proc.stdin!.on('error', () => {})
+    const gone = (why: string) => {
+      if (this.proc === proc) this.proc = null
+      this.finish(proc, stderr.trim() ? `${why}: ${stderr.trim()}` : why)
+    }
+    proc.on('error', (err) => gone(`input worker did not start (${err.message})`))
+    proc.on('close', (code, signal) => gone(`input worker exited (${signal ?? code})`))
+    return proc
+  }
+
+  /** Answer the call in flight on `proc`, if there is one. */
+  private finish(proc: ChildProcess, error: string | null): void {
+    const current = this.current
+    if (!current || current.proc !== proc) return
+    clearTimeout(current.timer)
+    this.current = null
+    current.resolve(error)
+  }
+
+  private kill(proc: ChildProcess): void {
+    if (this.proc === proc) this.proc = null
+    try {
+      proc.kill('SIGKILL')
+    } catch {}
   }
 }
 
@@ -269,7 +365,7 @@ export async function startInputProxy(
     console.warn('[inputProxy] no Python binary found — skipping')
     return null
   }
-  const env = buildPythonEnv(pythonBin, harnessRoot)
+  const worker = new InputWorker(pythonBin, buildPythonEnv(pythonBin, harnessRoot))
   const token = newProxyToken()
 
   const server = http.createServer(async (req, res) => {
@@ -303,7 +399,7 @@ export async function startInputProxy(
       return
     }
 
-    const error = execInput(pythonBin, env, parsed.call)
+    const error = await worker.run(parsed.call)
     if (error) {
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: false, error }))
@@ -328,6 +424,7 @@ export async function startInputProxy(
       try {
         server.close()
       } catch {}
+      worker.close()
     },
   }
 }

@@ -3,25 +3,68 @@
 // token. Run from the repo root:
 //   npx tsx test-input-proxy.mjs
 //
-// No input is ever sent. execFileSync is swapped for a recorder, and the
-// "Python" it would run is the node binary, which cannot run the script
-// anyway. The script itself runs once, with `python3 -S` against a stub
-// freyja_native that only records the call.
+// No input is ever sent. spawn is swapped for a fake worker that records
+// each line it is sent and answers it, and the "Python" it would run is
+// the node binary, which cannot run the script anyway. The script itself
+// runs at the end, with `python3 -S` against a stub freyja_native that
+// only records the calls.
 import cp from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { PassThrough, Writable } from 'node:stream'
 
-const realExecFileSync = cp.execFileSync
+const realSpawn = cp.spawn
 const spawned = []
-cp.execFileSync = (bin, args, opts) => {
-  spawned.push({ bin, args, input: opts?.input })
-  return Buffer.from('')
+// How the fake worker treats each line: 'ok', 'fail', 'hang', 'crash',
+// or a number of milliseconds to wait before it says ok.
+let workerMode = 'ok'
+let inFlight = 0
+let maxInFlight = 0
+let realPython = null
+cp.spawn = (bin, args, opts) => {
+  if (realPython) return realSpawn('python3', ['-S', ...args], { ...opts, cwd: realPython })
+  const proc = new EventEmitter()
+  const record = { bin, args, lines: [], killed: null }
+  spawned.push(record)
+  const say = (answer) => {
+    inFlight--
+    proc.stdout.write(JSON.stringify(answer) + '\n')
+  }
+  proc.stdout = new PassThrough()
+  proc.stderr = new PassThrough()
+  proc.stdin = new Writable({
+    write(chunk, _enc, done) {
+      record.lines.push(JSON.parse(chunk.toString()))
+      maxInFlight = Math.max(maxInFlight, ++inFlight)
+      if (workerMode === 'ok') say({ ok: true })
+      else if (workerMode === 'fail') say({ ok: false, error: 'RuntimeError: x is off screen' })
+      else if (workerMode === 'crash') {
+        inFlight--
+        proc.stderr.write('Traceback (most recent call last):\nImportError: no _native\n')
+        setImmediate(() => proc.emit('close', 1, null))
+      } else if (typeof workerMode === 'number') setTimeout(() => say({ ok: true }), workerMode)
+      done()
+    },
+  })
+  proc.kill = (signal) => {
+    record.killed = signal
+    inFlight = 0
+    setImmediate(() => proc.emit('close', null, signal))
+  }
+  return proc
 }
 process.env.FREYJA_PYTHON = process.execPath
 
-const { parseInputRequest, startInputProxy } = await import('./src/main/inputProxy.ts')
+const { InputWorker, parseInputRequest, startInputProxy } = await import('./src/main/inputProxy.ts')
 const { hasProxyToken } = await import('./src/main/proxyToken.ts')
+
+// A request the proxy never answers would hang the run; fail it instead.
+setTimeout(() => {
+  console.log('\n  FAIL a request was never answered\n')
+  process.exit(1)
+}, 20_000).unref()
 
 let failures = 0
 function check(name, actual, expected) {
@@ -115,10 +158,57 @@ async function post(body, token = proxy.token) {
   check('valid input is a 200', ok.status, 200)
   check('one process', spawned.length, 1)
   check('the script holds no request data', spawned[0].args[1].includes('os.system'), false)
-  check('the call goes on stdin', JSON.parse(spawned[0].input), { action: 'type_text', args: [text], kwargs: {} })
+  check('the call goes on stdin', spawned[0].lines[0], { action: 'type_text', args: [text], kwargs: {} })
+  await post(move)
+  check('the next action reuses the worker', spawned.length, 1)
+
+  workerMode = 'fail'
+  check('a failed action is a 500 with its reason', await post(move), {
+    status: 500, body: { ok: false, error: 'RuntimeError: x is off screen' },
+  })
+
+  // Sent together, answered slowly: one at a time, in the order sent.
+  workerMode = 20
+  maxInFlight = 0
+  spawned[0].lines.length = 0
+  const bodies = [0, 1, 2, 3, 4, 5].map((i) =>
+    i % 2 ? { action: 'click', x: i, y: i } : { action: 'move_mouse', x: i, y: i },
+  )
+  const statuses = await Promise.all(bodies.map(async (b) => (await post(JSON.stringify(b))).status))
+  check('all six are a 200', statuses, [200, 200, 200, 200, 200, 200])
+  check('one action at a time', maxInFlight, 1)
+  check('in the order sent', spawned[0].lines.map((l) => l.args[0]), [0, 1, 2, 3, 4, 5])
+
+  // Main is free while an action runs.
+  workerMode = 200
+  let ticks = 0
+  const timer = setInterval(() => ticks++, 10)
+  await post(move)
+  clearInterval(timer)
+  check('main keeps running during an action', ticks >= 10, true)
+  workerMode = 'ok'
 }
 proxy.close()
+check('closing the proxy kills the worker', spawned[0].killed, 'SIGKILL')
 fs.rmSync(harnessRoot, { recursive: true, force: true })
+
+console.log('\nthe worker after a crash or a hang')
+{
+  const call = parseInputRequest({ action: 'move_mouse', x: 1, y: 2 }).call
+  spawned.length = 0
+  const worker = new InputWorker(process.execPath, {}, 50)
+  workerMode = 'hang'
+  check('a hung action times out', await worker.run(call), 'timed out after 50 ms')
+  check('and its worker is killed', spawned[0].killed, 'SIGKILL')
+  workerMode = 'ok'
+  check('the next action starts a new worker', [await worker.run(call), spawned.length], [null, 2])
+  workerMode = 'crash'
+  const crashed = await worker.run(call)
+  check('a crash says why', crashed, 'input worker exited (1): Traceback (most recent call last):\nImportError: no _native')
+  workerMode = 'ok'
+  check('and the next action starts a new worker', [await worker.run(call), spawned.length], [null, 3])
+  worker.close()
+}
 
 console.log('\nthe token check (shared with the capture proxy)')
 {
@@ -132,8 +222,8 @@ console.log('\nthe token check (shared with the capture proxy)')
 
 console.log('\nthe script against a stub freyja_native')
 {
-  const script = spawned[0]?.args[1]
   const stubRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'freyja-input-stub-'))
+  const log = path.join(stubRoot, 'calls.jsonl')
   fs.mkdirSync(path.join(stubRoot, 'freyja_native'))
   fs.writeFileSync(
     path.join(stubRoot, 'freyja_native', '__init__.py'),
@@ -141,27 +231,32 @@ console.log('\nthe script against a stub freyja_native')
       'import json',
       'def __getattr__(name):',
       '    def record(*args, **kwargs):',
-      '        print(json.dumps([name, list(args), kwargs]))',
+      "        print('stray output')",
+      "        if args == ('refuse',):",
+      "            raise RuntimeError('stub refused')",
+      `        with open(${JSON.stringify(log)}, 'a') as f:`,
+      "            f.write(json.dumps([name, list(args), kwargs]) + '\\n')",
       '    return record',
     ].join('\n'),
   )
-  const run = (call) =>
-    JSON.parse(
-      realExecFileSync('python3', ['-S', '-c', script], {
-        // -S keeps site-packages, and so the real module, off the path.
-        cwd: stubRoot,
-        env: { PATH: process.env.PATH, PYTHONPATH: stubRoot },
-        input: JSON.stringify(call),
-      }).toString(),
-    )
-  check('click reaches the keyword arguments', run(parseInputRequest({ action: 'click', x: 3, y: 4, double: true }).call), [
-    'click', [3, 4], { button: 'left', double: true, modifiers: [] },
-  ])
-  check('scroll passes None for no point', run(parseInputRequest({ action: 'scroll', dx: 1, dy: -2 }).call), [
-    'scroll', [1, -2], { x: null, y: null },
-  ])
+  // -S keeps site-packages, and so the real module, off the path.
+  realPython = stubRoot
+  const worker = new InputWorker('python3', { PATH: process.env.PATH, PYTHONPATH: stubRoot })
+  const run = (body) => worker.run(parseInputRequest(body).call)
   const text = `");import os;os.system('x')#`
-  check('text arrives as one string', run(parseInputRequest({ action: 'type_text', text }).call), ['type_text', [text], {}])
+  const answers = [
+    await run({ action: 'click', x: 3, y: 4, double: true }),
+    await run({ action: 'scroll', dx: 1, dy: -2 }),
+    await run({ action: 'type_text', text }),
+    await run({ action: 'type_text', text: 'refuse' }),
+  ]
+  worker.close()
+  realPython = null
+  const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+  check('stray output does not break the answers', answers, [null, null, null, 'RuntimeError: stub refused'])
+  check('click reaches the keyword arguments', calls[0], ['click', [3, 4], { button: 'left', double: true, modifiers: [] }])
+  check('scroll passes None for no point', calls[1], ['scroll', [1, -2], { x: null, y: null }])
+  check('text arrives as one string', calls[2], ['type_text', [text], {}])
   fs.rmSync(stubRoot, { recursive: true, force: true })
 }
 
