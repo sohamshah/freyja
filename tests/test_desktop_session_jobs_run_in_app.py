@@ -191,3 +191,54 @@ async def test_a_manual_run_outside_the_app_builds_no_copy(daemon):
 
     assert built == []
     assert run.status == "failed" and "app" in run.error
+
+
+# ── A job aimed at a sub-agent ───────────────────────────────────────
+
+SUB = "sub_19f0desk_4"
+
+
+def _sub_agent_job(job_id: str = "sched_sub") -> JobRecord:
+    tp.save_transcript(SUB, {
+        "version": 1, "session_id": SUB, "metadata": {"parent_session_id": DESKTOP},
+        "transcript": {"entries": [{"id": "s1"}], "head_id": "s1"},
+    })
+    return JobRecord(
+        id=job_id,
+        name="check on the sub-agent",
+        schedule=IntervalSchedule(seconds=3600),
+        prompt="how far along are you?",
+        execution=ExistingSession(session_id=SUB),
+        sinks=[NoopSinkSpec()],
+    )
+
+
+async def test_a_job_aimed_at_a_sub_agent_is_refused_when_it_is_made(daemon):
+    from bridge.scheduler.models import JobPatch
+
+    service, _built = daemon
+    with pytest.raises(ValueError, match="sub-agent"):
+        await service.create_job(_sub_agent_job())
+    assert load_job("sched_sub") is None
+
+    job = await service.create_job(_desktop_session_job("sched_desk2"))
+    with pytest.raises(ValueError, match="sub-agent"):
+        await service.update_job(job.id, JobPatch(execution=ExistingSession(session_id=SUB)))
+    assert load_job(job.id).execution.session_id == DESKTOP
+
+
+async def test_a_saved_job_aimed_at_a_sub_agent_builds_no_root_copy_of_it_in_the_app(daemon, monkeypatch):
+    # The app runs it, as the sub-agent's root is a desktop session. A
+    # root session built on the sub-agent's id ran beside the sub-agent,
+    # outside its parent, and saved over its transcript.
+    import bridge.gateway.pid as gp
+
+    service, built = daemon
+    monkeypatch.setattr(gp, "_desktop_lock", object())  # this process is the app's bridge
+    job = _sub_agent_job()
+    save_job(job)  # made before jobs like it were refused
+
+    run = await service.run_job_now(job.id)
+
+    assert built == []
+    assert run.status == "failed" and "sub-agent" in run.error

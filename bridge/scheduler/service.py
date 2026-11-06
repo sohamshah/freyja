@@ -1008,6 +1008,7 @@ class SchedulerService:
         _check_misfire_policy(spec.misfire_policy)
         _check_overlap_policy(spec.overlap_policy)
         _check_retry_policy(spec.retry_policy)
+        _check_execution(spec.execution)
         if not spec.id:
             spec.id = new_job_id()
         spec.created_at = spec.updated_at = time.time()
@@ -1072,6 +1073,7 @@ class SchedulerService:
         _check_misfire_policy(patch.misfire_policy)
         _check_overlap_policy(patch.overlap_policy)
         _check_retry_policy(patch.retry_policy)
+        _check_execution(patch.execution)
         with FileLock(job_lock_path(job_id)) as got:
             if not got:
                 # A peer is writing this job's record, for milliseconds
@@ -1457,6 +1459,19 @@ def _check_retry_policy(policy: RetryPolicy | None) -> None:
         raise ValueError(
             f"retry_policy.max_retries is {policy.max_retries}: "
             f"use 0 to {MAX_RETRIES} retries per slot"
+        )
+
+
+def _check_execution(execution: Any) -> None:
+    """Refuse a job that fires into a sub-agent's session. A sub-agent runs
+    only under its parent, which gets its report. A run loads its session
+    with ensure_session, which built a root session on the sub-agent's id:
+    a second, parentless copy that saved over its transcript."""
+    if isinstance(execution, ExistingSession) and execution.session_id.startswith("sub_"):
+        raise ValueError(
+            f"{execution.session_id} is a sub-agent: a scheduled job cannot run "
+            "in a sub-agent's session. Run it in the sub-agent's parent "
+            "session, or in a new session"
         )
 
 

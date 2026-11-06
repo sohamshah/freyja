@@ -545,6 +545,10 @@ async def _resolve_execution_session(
     if isinstance(spec, ExistingSession):
         if not spec.session_id:
             raise ValueError("ExistingSession requires session_id")
+        from bridge.scheduler.service import _check_execution
+
+        # A job saved before such jobs were refused when made.
+        _check_execution(spec)
         from bridge.freyja_bridge import _gateway_holds
 
         if _gateway_holds(spec.session_id):
