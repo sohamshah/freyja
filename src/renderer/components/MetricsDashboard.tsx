@@ -311,7 +311,8 @@ export function MetricsDashboard() {
                 justified yet. */}
             {(() => {
               const cs = aggregate.cooperativeStats
-              const totalDriven = cs.agentDrivenCount + cs.runtimeFallbackCount
+              const totalDriven =
+                cs.agentDrivenCount + cs.runtimeFallbackCount + cs.manualCount
               const agentShare =
                 totalDriven > 0 ? (cs.agentDrivenCount / totalDriven) * 100 : null
               const sub =
@@ -326,7 +327,7 @@ export function MetricsDashboard() {
                         cs.meanPressurePctRuntime != null
                           ? `${cs.meanPressurePctRuntime.toFixed(0)}%`
                           : '—'
-                      }`
+                      }${cs.manualCount > 0 ? ` · ${cs.manualCount} manual` : ''}`
                     )
               return (
                 <StatTile
@@ -600,6 +601,8 @@ interface AggregateView {
   cooperativeStats: {
     agentDrivenCount: number
     runtimeFallbackCount: number
+    /** Summaries the operator asked for (/compact): neither side's. */
+    manualCount: number
     meanPressurePctAgent: number | null
     meanPressurePctRuntime: number | null
   }
@@ -673,7 +676,7 @@ function blankSessionRow(id: string, ts: number): PerSessionRow {
   }
 }
 
-function aggregateRows(
+export function aggregateRows(
   rows: CompactionTelemetryRow[],
   narrow: 'all' | 'has_compaction' | 'has_thrash' | 'has_subagents',
 ): AggregateView {
@@ -706,18 +709,17 @@ function aggregateRows(
   const agentDecisions: AgentDecisionRow[] = []
   const agentDecisionsScopeCounts: Record<string, number> = {}
   // Tally compaction events by trigger lineage so we can compute the
-  // cooperative-effectiveness tile (Phase 2 measurement).
+  // cooperative-effectiveness tile (Phase 2 measurement). Every summary
+  // the agent did not ask for is the runtime's (pre_request,
+  // overflow_cascade, restore, the old context_pressure), except a
+  // manual one, which the operator asked for.
   const agentDrivenTriggers = new Set([
     'agent_summarize_context',
   ])
-  const runtimeFallbackTriggers = new Set([
-    'pre_request',
-    'overflow_cascade',
-    'context_overflow',
-    'runtime',
-  ])
+  const manualTriggers = new Set(['manual'])
   let cooperativeAgentCount = 0
   let cooperativeRuntimeCount = 0
+  let cooperativeManualCount = 0
   const cooperativeAgentPressureSamples: number[] = []
   const cooperativeRuntimePressureSamples: number[] = []
   // Per-session last-seen pressure pct — when a compaction_event row
@@ -793,22 +795,29 @@ function aggregateRows(
         })
       }
     } else if (row.type === 'compaction_event') {
-      compactions += 1
       const sub = row.subtype || ''
+      // A compaction counts once, by its outcome: a summary's complete
+      // row, or a prune's row. Start, skipped and failed rows (and thrash
+      // skips) record attempts; a start row carries no tokens_after, so
+      // counting it also counted its whole size as saved.
+      const isPrune = sub === 'context_pruning' || sub === 'media_pruning'
+      const isCompaction = sub === 'compaction_complete' || isPrune
       if (sub === 'compaction_complete') summaryCount += 1
-      else if (sub === 'context_pruning' || sub === 'media_pruning') pruneCount += 1
+      else if (isPrune) pruneCount += 1
       else if (sub === 'thrash_skip') thrashCount += 1
       const before = row.tokens_before || 0
       const after = row.tokens_after || 0
-      if (before > after) tokensSaved += before - after
-      if (before > 0) {
-        savingsSeries.push({ ts, pct: ((before - after) / before) * 100 })
-      }
       const trig = row.trigger || row.mechanism || 'unknown'
-      triggerCounts[trig] = (triggerCounts[trig] || 0) + 1
-      // Cooperative-effectiveness accounting. Only count the
-      // "complete" events (not start/skip) since those are the actual
-      // compactions that happened.
+      if (isCompaction) {
+        compactions += 1
+        if (before > after) tokensSaved += before - after
+        if (before > 0) {
+          savingsSeries.push({ ts, pct: ((before - after) / before) * 100 })
+        }
+        triggerCounts[trig] = (triggerCounts[trig] || 0) + 1
+      }
+      // Cooperative-effectiveness accounting: every summary, by who
+      // asked for it.
       if (sub === 'compaction_complete') {
         const pressureAtCompaction = sid
           ? lastSeenPressureBySession.get(sid) ?? null
@@ -818,9 +827,9 @@ function aggregateRows(
           if (pressureAtCompaction != null) {
             cooperativeAgentPressureSamples.push(pressureAtCompaction)
           }
-        } else if (
-          runtimeFallbackTriggers.has(trig) || trig === 'unknown'
-        ) {
+        } else if (manualTriggers.has(trig)) {
+          cooperativeManualCount += 1
+        } else {
           cooperativeRuntimeCount += 1
           if (pressureAtCompaction != null) {
             cooperativeRuntimePressureSamples.push(pressureAtCompaction)
@@ -828,7 +837,7 @@ function aggregateRows(
         }
       }
       if (cur) {
-        cur.compactions += 1
+        if (isCompaction) cur.compactions += 1
         if (sub === 'thrash_skip') cur.thrashTrips += 1
         cur.compactionRows.push({
           ts,
@@ -942,6 +951,7 @@ function aggregateRows(
     cooperativeStats: {
       agentDrivenCount: cooperativeAgentCount,
       runtimeFallbackCount: cooperativeRuntimeCount,
+      manualCount: cooperativeManualCount,
       meanPressurePctAgent:
         cooperativeAgentPressureSamples.length > 0
           ? cooperativeAgentPressureSamples.reduce((a, b) => a + b, 0) /
@@ -1858,7 +1868,7 @@ function SessionDetailDrawer({
               </svg>
               <div className="flex items-center justify-between font-mono text-[9.5px] text-fg-3">
                 <span>{new Date(tMin * 1000).toLocaleTimeString()}</span>
-                <span>{calls.length} calls · {compactions.length} compactions</span>
+                <span>{calls.length} calls · {session.compactions} compactions</span>
                 <span>{new Date(tMax * 1000).toLocaleTimeString()}</span>
               </div>
             </div>
@@ -1959,6 +1969,12 @@ function SessionDetailDrawer({
           ) : (
             <div className="flex flex-col gap-1">
               {compactions.map((c, i) => {
+                // A start, skipped or failed row is an attempt: it saved
+                // nothing, and a start row has no size after.
+                const isOutcome =
+                  c.subtype === 'compaction_complete' ||
+                  c.subtype === 'context_pruning' ||
+                  c.subtype === 'media_pruning'
                 const savings =
                   c.tokens_before > 0
                     ? ((c.tokens_before - c.tokens_after) / c.tokens_before) * 100
@@ -2012,11 +2028,15 @@ function SessionDetailDrawer({
                         </>
                       )}
                       <span className="ml-auto text-fg-2">
-                        {formatTokens(c.tokens_before)} → {formatTokens(c.tokens_after)}
+                        {isOutcome
+                          ? `${formatTokens(c.tokens_before)} → ${formatTokens(c.tokens_after)}`
+                          : formatTokens(c.tokens_before)}
                       </span>
-                      <span className={savings < 10 ? 'text-danger' : 'text-ok'}>
-                        {savings.toFixed(0)}%
-                      </span>
+                      {isOutcome && (
+                        <span className={savings < 10 ? 'text-danger' : 'text-ok'}>
+                          {savings.toFixed(0)}%
+                        </span>
+                      )}
                       {hasDetails && (
                         <span className="ml-1 text-[9px] uppercase tracking-[0.14em] text-fg-3">
                           {isExpanded ? '−' : '+'}

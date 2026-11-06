@@ -269,12 +269,12 @@ ts                         <unix epoch float>
 | Element | Source rows | Aggregation |
 |---|---|---|
 | Total spend tile | `llm_call_metric` | Sum of `cost_usd`. |
-| Compactions tile | `compaction_event` | Every row counts, starts and skips included. The subline counts `compaction_complete` rows as "llm", `context_pruning` and `media_pruning` rows as "prune", and `thrash_skip` rows. |
-| Tokens saved tile | `compaction_event` | Sum of `tokens_before - tokens_after` over rows where it is positive. Halving rows count, since they carry both sizes. |
-| Cooperation | `compaction_event` complete rows | Agent-driven (`agent_summarize_context`) against runtime (`pre_request`, `overflow_cascade`, `context_overflow`, `runtime`, or a row with neither a trigger nor a mechanism). Manual and restore rows count in neither. |
-| Trigger source bars | `compaction_event` | Grouped by `trigger`. |
-| Savings trend | `compaction_event` rows with `tokens_before > 0` | `(tokens_before - tokens_after) / tokens_before` over time. |
-| Per-session compaction log | `compaction_event` rows for the session | Sorted by `ts`. A click shows `summary_text`. |
+| Compactions tile | `compaction_event` outcome rows | Each compaction counts once, by its outcome: a `compaction_complete` row ("llm" in the subline) or a `context_pruning` or `media_pruning` row ("prune"). Start, skipped and failed rows are attempts and do not count. The subline also counts `thrash_skip` rows. |
+| Tokens saved tile | `compaction_event` outcome rows | Sum of `tokens_before - tokens_after` over rows where it is positive. Halving rows count, since they carry both sizes. A start row has no `tokens_after`, so counting it counted its whole size as saved. |
+| Cooperation | `compaction_event` complete rows | The agent's share of every summary. Agent-driven is `agent_summarize_context`; manual is `manual`; every other trigger is the runtime's (`pre_request`, `overflow_cascade`, `restore`, the old `context_pressure`). |
+| Trigger source bars | `compaction_event` outcome rows | Grouped by `trigger`. |
+| Savings trend | `compaction_event` outcome rows with `tokens_before > 0` | `(tokens_before - tokens_after) / tokens_before` over time. |
+| Per-session compaction log | `compaction_event` rows for the session | Every row, sorted by `ts`. Only outcome rows show a size after and a saving. A click shows `summary_text`. |
 | Agent compaction decisions | `summarize_context_call` | Newest first, with the scope mix. |
 
 ### The three channels
