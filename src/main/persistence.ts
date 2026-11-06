@@ -1027,11 +1027,23 @@ function kanbanCardsFromJournal(id: string): Record<string, Record<string, unkno
       if (cards[row.parent]) cards[row.parent] = { ...cards[row.parent], children: ids(cards[row.parent].children, row.child) }
       const parents = ids(cards[row.child].parents, row.parent)
       cards[row.child] = { ...cards[row.child], parents }
-      // The row carries only the ids; link() also moved the child if no
-      // worker had picked it up (the mission root counts as done, a parent
-      // whose create row was lost does not).
+      // The row carries the ids, the actor and the time; link() also moved
+      // the child if no worker had picked it up (the mission root counts
+      // as done, a parent whose create row was lost does not), and stamped
+      // both cards and gave each a "linked" event then.
       const done = parents.every((pid) => pid === missionRoot || cards[pid]?.status === 'done')
       if (['triage', 'ready'].includes(cards[row.child].status)) cards[row.child].status = done ? 'ready' : 'triage'
+      const at = typeof row.ts === 'number' ? row.ts : undefined
+      const actor = typeof row.actor === 'string' ? row.actor : ''
+      for (const [cardId, message] of [[row.parent, `Linked to ${row.child}`], [row.child, `Depends on ${row.parent}`]]) {
+        const card = cards[cardId]
+        if (!card) continue
+        const events = Array.isArray(card.events) ? card.events : []
+        // The bridge keeps a card's last 30 events (DEFAULT_HISTORY_TAIL).
+        const event = { kind: 'linked', actor, message, timestamp: at ?? Date.now(), details: {} }
+        cards[cardId] = { ...card, events: [...events, event].slice(-30), eventCount: (Number(card.eventCount) || events.length) + 1 }
+        if (at !== undefined && card.updatedAt < at) cards[cardId].updatedAt = at
+      }
     } else if (row?.kind === 'unblock' && cards[row.id]) {
       cards[row.id] = { ...cards[row.id], status: 'ready' }
     }

@@ -1131,6 +1131,8 @@ class SessionKanbanBoard:
                     self._apply_link(
                         str(event.get("parent") or ""),
                         str(event.get("child") or ""),
+                        actor=str(event.get("actor") or ""),
+                        ts=event.get("ts"),
                     )
                 elif kind == "unblock":
                     cid = str(event.get("id") or "")
@@ -1207,7 +1209,7 @@ class SessionKanbanBoard:
         existing.judge_session_id = merged.judge_session_id
         existing.worker_terminal_state = merged.worker_terminal_state
 
-    def _apply_link(self, parent_id: str, child_id: str) -> None:
+    def _apply_link(self, parent_id: str, child_id: str, *, actor: str, ts: Any) -> None:
         parent = self._tasks.get(parent_id)
         child = self._tasks.get(child_id)
         if not parent_id or child is None:
@@ -1218,10 +1220,28 @@ class SessionKanbanBoard:
             parent.children.append(child_id)
         if parent_id not in child.parents:
             child.parents.append(parent_id)
-        # The journal row carries only the ids; link() also moved the child
-        # if no worker had picked it up.
+        # The journal row carries the ids, the actor and the time; link()
+        # also moved the child if no worker had picked it up, and stamped
+        # both cards and gave each a "linked" event then.
         if child.status in UNSTARTED_STATUSES:
             child.status = "ready" if self._parents_done(child) else "triage"
+        when = float(ts) / 1000.0 if isinstance(ts, (int, float)) else None
+        for card, message in (
+            (parent, f"Linked to {child_id}"),
+            (child, f"Depends on {parent_id}"),
+        ):
+            if card is None:
+                continue
+            if when is not None:
+                card.updated_at = max(card.updated_at, when)
+            card.append_event(
+                KanbanEvent(
+                    "linked",
+                    actor,
+                    message,
+                    timestamp=when if when is not None else time.time(),
+                )
+            )
 
     def _task_from_snapshot(self, snapshot: dict[str, Any]) -> KanbanTask:
         # `to_dict()` emits timestamps in milliseconds and a few field

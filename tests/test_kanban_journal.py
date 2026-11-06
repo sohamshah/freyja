@@ -656,3 +656,32 @@ async def test_replay_keeps_a_link_whose_parent_create_row_was_lost(tmp_path) ->
     card = await restored.get(child)
     assert card.parents == [lost]
     assert card.status == "triage"
+
+
+@pytest.mark.asyncio
+async def test_replaying_a_link_stamps_both_cards_and_adds_their_events(tmp_path) -> None:
+    """link() stamps both cards and gives each a "linked" event, and its
+    row holds the actor and the time. Replay restored neither, so after
+    a restart the link was missing from both histories and the stale
+    sweep timed a running card from an older stamp."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    parent = (await live.create(title="parent")).id
+    child = (await live.create(title="child")).id
+    await live.update(child, actor="worker", status="running")
+    await live.link(parent, child, actor="parent")
+    events = KanbanJournal(tmp_path / "kanban.jsonl").read_all()
+    # The link came a minute after the child's last row.
+    events[-1]["ts"] = (events[-2]["ts"] // 1000 + 60) * 1000
+
+    restored = SessionKanbanBoard()
+    restored.replay_events(events)
+
+    for card_id in (parent, child):
+        want = (await live.get(card_id)).to_dict()
+        got = (await restored.get(card_id)).to_dict()
+        assert got["updatedAt"] == events[-1]["ts"]
+        assert [(e["kind"], e["actor"], e["message"]) for e in got["events"]] == [
+            (e["kind"], e["actor"], e["message"]) for e in want["events"]
+        ]
+        assert got["events"][-1]["timestamp"] == events[-1]["ts"]
+        assert got["eventCount"] == want["eventCount"]
