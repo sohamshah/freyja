@@ -135,11 +135,25 @@ class GatewayConfig:
                 path, type(allowed_raw).__name__,
             )
             allowed_raw = {}
+        allowed: dict[str, list[str]] = {}
+        not_lists: set[str] = set()
+        for team, ids in allowed_raw.items():
+            if ids is not None and not isinstance(ids, list):
+                # One value is not read as a one-item list: "*" would then
+                # open the workspace from a shape the wizard never writes.
+                # A string was read character by character, and a number
+                # crashed the gateway here.
+                logger.error(
+                    "%s: slack.allowed_user_ids.%s must be a list of user ids, "
+                    "like `%s: [U001]`, or `%s: [\"*\"]` for every member; it "
+                    "is a %s, so no one there is let in",
+                    path, team, team, team, type(ids).__name__,
+                )
+                not_lists.add(str(team))
+                ids = []
+            allowed[str(team)] = [str(u) for u in (ids or [])]
         slack = SlackConfig(
-            allowed_user_ids={
-                str(team): [str(u) for u in (ids or [])]
-                for team, ids in allowed_raw.items()
-            },
+            allowed_user_ids=allowed,
             enforce_workspace_allowlist=bool(
                 slack_raw.get("enforce_workspace_allowlist", True)
             ),
@@ -158,7 +172,7 @@ class GatewayConfig:
                 "to open it", path,
             )
         for team, ids in slack.allowed_user_ids.items():
-            if not ids:
+            if not ids and team not in not_lists:
                 logger.warning(
                     "%s: slack.allowed_user_ids.%s is empty, so no one there "
                     "is let in; list \"*\" to let in every member", path, team,
