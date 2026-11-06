@@ -88,6 +88,7 @@ from bridge.scheduler.persistence import (
     load_recent_runs_global,
     load_runs_for_job,
     load_runs_started_since,
+    load_unfinished_runs,
     owner_lock_path,
     read_run_cancel_requested,
     read_wake_mtime,
@@ -187,9 +188,9 @@ _REFUSED_RETRY_MAX_SECONDS = 60.0
 
 # A run whose process exited before it ended (a crash, a quit app, a
 # restart) is still "claimed", "running" or "delivering" on disk. Every
-# scheduler start looks for such runs among each job's latest this many:
-# runs of a job never overlap, so one cut off is among the newest.
-_INTERRUPTED_RUNS_WINDOW = 10
+# scheduler start looks for such runs among all of each job's runs: one
+# cut off while a later run held the run lock at each start, or before
+# this look existed, is not among the newest.
 _UNFINISHED_RUN_STATUSES = frozenset({"claimed", "running", "delivering"})
 
 # Run errors that pass by themselves, beyond those the engine already
@@ -2131,10 +2132,7 @@ def _settle_interrupted_runs() -> None:
             if not got or not free:
                 # Being edited, or a run of it goes on; the next start looks.
                 continue
-            cut = [
-                r for r in load_runs_for_job(job.id, limit=_INTERRUPTED_RUNS_WINDOW)
-                if r.finished_at is None and r.status in _UNFINISHED_RUN_STATUSES
-            ]
+            cut = [r for r in load_unfinished_runs(job.id) if r.status in _UNFINISHED_RUN_STATUSES]
             for run in cut:
                 was = run.status
                 run.status = "interrupted"

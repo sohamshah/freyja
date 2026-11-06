@@ -165,3 +165,23 @@ async def test_a_process_that_does_not_own_the_tick_settles_them_too(fired, monk
 
     assert load_run(job.id, "run_cut").status == "interrupted"
     assert load_job(job.id).status == "active"
+
+
+@pytest.mark.parametrize("name", ["digest", "digest " * 1000])
+async def test_a_run_cut_off_before_many_newer_runs_is_interrupted_too(fired, monkeypatch, name):
+    # Cut off while a run of the job held its run lock at every start since,
+    # or before this sweep existed; more than ten runs came after it.
+    job = JobRecord(id="sched_digest", name=name, prompt="digest",
+                    schedule=IntervalSchedule(seconds=3600), sinks=[NoopSinkSpec()])
+    job.next_fire_at = time.time() + 1800
+    save_job(job)
+    _left_running(job)
+    for n in range(12):
+        time.sleep(0.002)  # runs are ordered by file mtime
+        save_run(RunRecord(run_id=f"run_{n}", job_id=job.id, job_name=name, started_at=DUE + 10 + n,
+                           finished_at=DUE + 15 + n, status="succeeded"))
+
+    await _start_and_stop(_service(monkeypatch))
+
+    assert load_run(job.id, "run_cut").status == "interrupted"
+    assert {load_run(job.id, f"run_{n}").status for n in range(12)} == {"succeeded"}

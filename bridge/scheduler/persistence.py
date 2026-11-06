@@ -488,6 +488,34 @@ def load_runs_started_since(job_id: str, since: float) -> list[RunRecord]:
     return out
 
 
+# A run's file starts with its ids, name and times (RunRecord's field
+# order); its output, often long, comes after.
+_RUN_HEAD_BYTES = 4096
+
+
+def load_unfinished_runs(job_id: str) -> list[RunRecord]:
+    """``job_id``'s runs whose record has no finish time, newest first:
+    runs going on, and runs whose process exited before they ended. Only
+    the head of each file is read, where its finish time is, and only the
+    files that have none are parsed: a job's history keeps every run."""
+    d = runs_dir(job_id)
+    if not d.exists():
+        return []
+    out: list[RunRecord] = []
+    for path in d.glob("*.json"):
+        try:
+            with open(path, "rb") as f:
+                head = f.read(_RUN_HEAD_BYTES)
+        except OSError:
+            continue
+        if b'"finished_at": null' not in head and b'"finished_at":' in head:
+            continue
+        run = load_run(job_id, path.stem)
+        if run is not None and run.finished_at is None:
+            out.append(run)
+    return sorted(out, key=lambda r: r.started_at, reverse=True)
+
+
 def load_recent_runs_global(limit: int = 100) -> list[RunRecord]:
     """All runs across all jobs, newest first. Used by the global Run
     History view."""
