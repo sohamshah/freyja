@@ -419,6 +419,29 @@ def notify_session_listeners(session_id: str, event: dict[str, Any]) -> None:
 # it, since a log line comes back through emit().
 _EMIT_LOCK = threading.Lock()
 
+# This process's state, set as it starts (_set_event_log_state): emit() asks
+# it whether another process holds a session. Unset, only a Slack session's
+# file is left to the gateway.
+_EVENT_LOG_STATE: Any = None
+
+
+def _set_event_log_state(state: Any) -> None:
+    global _EVENT_LOG_STATE  # noqa: PLW0603
+    _EVENT_LOG_STATE = state
+
+
+def _events_file_held_elsewhere(sid: str) -> bool:
+    """Another process writes ``sid``'s events file: the gateway a Slack
+    thread's, the scheduler's tick owner a scheduled job's session's, and
+    each its sub-agents' (_held_elsewhere)."""
+    state = _EVENT_LOG_STATE
+    if state is None:
+        return _gateway_holds(sid)
+    try:
+        return _held_elsewhere(state, sid) is not None
+    except Exception:  # noqa: BLE001
+        return _gateway_holds(sid)  # emit() also runs on worker threads
+
 
 def emit(event: dict[str, Any]) -> None:
     """Emit a single JSON line to stdout and flush immediately.
@@ -444,10 +467,11 @@ def emit(event: dict[str, Any]) -> None:
     # Per-session JSONL persistence — keep the file handle open across
     # events on the same session to avoid open/close overhead on every
     # text_delta during a streaming response. A Slack session's file is
-    # the gateway's: a copy of it here (the app, the scheduler daemon)
-    # writes nothing to it. An open handle means this process owned it.
+    # the gateway's, and a scheduled job's session's the tick owner's: a
+    # copy of one here writes nothing to it. An open handle means this
+    # process owned it.
     sid = event.get("sessionId")
-    if sid and (sid in _SESSION_EVENT_FILES or not _gateway_holds(sid)):
+    if sid and (sid in _SESSION_EVENT_FILES or not _events_file_held_elsewhere(sid)):
         _append_session_event_jsonl(sid, event)
     # Per-session listener fan-out.
     if sid and sid in _SESSION_EVENT_LISTENERS:
@@ -2508,6 +2532,7 @@ async def _main() -> None:
     )
 
     state = _BridgeState(workspace=workspace, default_model=default_model)
+    _set_event_log_state(state)
     # This process owns desktop sessions. The scheduler daemon and the
     # gateway hand it their talks for them while it runs
     # (TalkRouter._send_to_desktop) instead of loading a copy. Taken

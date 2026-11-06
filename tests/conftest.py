@@ -57,4 +57,9 @@ def _isolated_freyja_home(tmp_path_factory, monkeypatch):
     # launchd has one job registry per macOS user, so a test that installs
     # a LaunchAgent replaces the real Freyja job (bridge/launchd_guard.py).
     monkeypatch.setenv("FREYJA_NO_LAUNCHD", "1")
+    # emit() asks the state a process sets as it starts. A test that starts
+    # a gateway sets it, and later tests would ask that one.
+    bridge = sys.modules.get("bridge.freyja_bridge")
+    if bridge is not None:
+        monkeypatch.setattr(bridge, "_EVENT_LOG_STATE", None)
     yield

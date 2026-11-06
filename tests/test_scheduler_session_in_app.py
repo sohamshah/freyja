@@ -10,6 +10,7 @@ copy in the app, and the copy ran turns and saved over the owner's files.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -461,3 +462,61 @@ async def test_run_now_in_the_app_of_a_job_that_starts_a_new_session_each_run_ru
 
     assert "error" not in resp and held == [None]
     assert fb._held_elsewhere(state, "scheduler:sched_19f1.ephemeral")
+
+
+# ── the events file ──────────────────────────────────────────────────
+
+
+@pytest.fixture
+def events_file(monkeypatch, tmp_path):
+    """The app's bridge as app_bridge, emitting for real: to stdout and to
+    each session's events file, which the owner also writes."""
+    import bridge.gateway.pid as gp
+
+    monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: False)
+    monkeypatch.setattr(gp, "_desktop_lock", object())
+    monkeypatch.setattr(fb, "_DEBUG_LOG_ENABLED", False)
+    monkeypatch.setattr(fb, "_SESSION_EVENT_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(fb, "_SESSION_EVENT_FILES", fb._OrderedDict())
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    fb._set_event_log_state(state)  # as _main does
+    yield state
+    for sid in list(fb._SESSION_EVENT_FILES):
+        fb._close_session_event_file(sid)
+
+
+def _events_in_file(sid: str) -> list[str]:
+    path = fb._session_event_path(sid)
+    return [json.loads(line)["type"] for line in path.read_text().splitlines()] if path.exists() else []
+
+
+async def test_the_app_writes_nothing_to_a_scheduled_jobs_sessions_events_file(events_file, capsys):
+    state = events_file
+    _owner_saved(SCHED_SUB, parent=SCHED)
+
+    await fb._handle_command(state, {"type": "compact", "sessionId": SCHED})
+    fb.emit({"type": "system_event", "sessionId": SCHED_SUB, "subtype": "x", "message": "m"})
+
+    assert _events_in_file(SCHED) == [] and _events_in_file(SCHED_SUB) == []
+    # The app's own view still gets them.
+    out = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [e["sessionId"] for e in out if e.get("type") == "system_event"] == [SCHED, SCHED_SUB]
+
+
+async def test_the_tick_owner_writes_its_job_sessions_events_file(events_file):
+    state = events_file
+    state.scheduler._is_owner = True
+
+    fb.emit({"type": "system_event", "sessionId": SCHED, "subtype": "x", "message": "m"})
+
+    assert _events_in_file(SCHED) == ["system_event"]
+
+
+@pytest.mark.parametrize("start_kwargs", [{}, {"listen": False}], ids=["gateway", "scheduler daemon"])
+async def test_the_gateway_and_the_scheduler_daemon_tell_emit_their_state(monkeypatch, start_kwargs):
+    from tests.test_scheduler_slack_sink import _start_gateway
+
+    daemon = await _start_gateway(monkeypatch, **start_kwargs)
+
+    assert fb._EVENT_LOG_STATE is daemon.state

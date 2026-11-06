@@ -2882,6 +2882,11 @@ class GatewayDaemon:
             "bridge state ready (workspace=%s, model=%s, reasoning=%s)",
             workspace, default_model, cfg.default_reasoning_level,
         )
+        # emit() leaves the events file of a session another process holds
+        # to that process: a scheduled job's session to the tick owner.
+        from bridge.freyja_bridge import _set_event_log_state
+
+        _set_event_log_state(self.state)
         # Talk-wake output routing: lets wake_for_inbox stream a
         # talk-triggered turn's output into the owning Slack thread —
         # including for sessions cold-loaded by a cross-process
