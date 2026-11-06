@@ -118,6 +118,9 @@ async def test_a_message_for_a_slack_session_is_refused_when_no_gateway_runs(app
     assert built == [] and _forwarded() == []
     (err,) = [e for e in events if e["type"] == "error"]
     assert "Slack" in err["message"]
+    # The app takes the message's bubble back out and returns its text.
+    (refused,) = [e for e in events if e["type"] == "send_refused"]
+    assert (refused["sessionId"], refused["clientId"]) == (SLACK, "m1")
 
 
 async def test_a_message_too_large_for_the_control_channel_is_refused(app_bridge, monkeypatch):
@@ -127,11 +130,14 @@ async def test_a_message_too_large_for_the_control_channel_is_refused(app_bridge
     _gateway_running(monkeypatch, os.getpid() + 1)
     image = {"type": "image", "mimeType": "image/png", "dataBase64": "A" * (2 * 1024 * 1024)}
     await fb._handle_command(
-        state, {"type": "send_message", "sessionId": SLACK, "content": "look", "attachments": [image]},
+        state,
+        {"type": "send_message", "sessionId": SLACK, "content": "look", "attachments": [image], "clientId": "m2"},
     )
     assert _forwarded() == []
     (err,) = [e for e in events if e["type"] == "error"]
     assert "Slack" in err["message"]
+    (refused,) = [e for e in events if e["type"] == "send_refused"]
+    assert (refused["sessionId"], refused["clientId"]) == (SLACK, "m2")
 
 
 # ── a copy built by any other command writes nothing ─────────────────

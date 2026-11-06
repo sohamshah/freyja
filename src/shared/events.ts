@@ -1531,6 +1531,14 @@ export type BridgeEvent = Received & (
       requestId?: string | null
     } & SessionId)
   | ({
+      /** A message typed for a Slack session did not go to the gateway (none
+       *  runs, or it is too large to hand over). The renderer showed it as
+       *  sent, and takes it back out: its text goes back into the composer. */
+      type: 'send_refused'
+      /** The `clientId` of the refused `send_message`. */
+      clientId?: string | null
+    } & SessionId)
+  | ({
       type: 'session_spawned'
       parentSessionId: string
       title: string

@@ -268,6 +268,30 @@ await check("follow-ups promoted to their own turn take the bridge's stamps", as
   assert.equal(useHarness.getState().messages.find((m) => m.id === c).createdAt, at - 0.4)
 })
 
+// A message typed for a Slack session goes to the gateway; the bridge
+// refuses it when no gateway runs or it is too large to hand over.
+await check('a message the bridge refused to send leaves the chat and its text goes back to the composer', async () => {
+  const before = useHarness.getState().messages.length
+  await useHarness.getState().sendMessage('post this in the thread')
+  const c = sent.at(-1).clientId
+  useHarness.getState().setInputDraft('half-typed')
+  ev({ type: 'send_refused', clientId: c })
+  assert.equal(useHarness.getState().messages.length, before)
+  assert.ok(!useHarness.getState().messages.some((m) => m.id === c))
+  assert.equal(useHarness.getState().inputDraft, 'post this in the thread\n\nhalf-typed')
+})
+
+await check('a follow-up the bridge refused to send leaves its pending bubble and goes back to the composer', async () => {
+  ev({ type: 'turn_start', turnId: 'turn-11' })
+  await useHarness.getState().sendMessage('and this too')
+  const c = sent.at(-1).clientId
+  useHarness.getState().setInputDraft('')
+  ev({ type: 'send_refused', clientId: c })
+  assert.ok(!useHarness.getState().pendingFollowups[sid].some((p) => p.clientId === c))
+  assert.equal(useHarness.getState().inputDraft, 'and this too')
+  ev({ type: 'turn_complete', turnId: 'turn-11', success: true })
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

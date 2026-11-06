@@ -3455,6 +3455,40 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           sessionArchive: { ...prev.sessionArchive, [sid]: { ...archived, messages: restore(archived.messages) } },
         }
       }
+      // A message typed for a Slack session did not reach the gateway (none
+      // runs, or it is too large to hand over): take back out the bubble, or
+      // the pending follow-up, it was shown as, and return its text to the
+      // composer, as a refused edit does.
+      if (ev.type === 'send_refused') {
+        const sid = ev.sessionId
+        if (!sid || !ev.clientId) return prev
+        const active = sid === prev.activeSessionId
+        const list = prev.pendingFollowups[sid] ?? []
+        const pending = list.find((p) => p.clientId === ev.clientId)
+        const messages = active ? prev.messages : (prev.sessionArchive[sid]?.messages ?? [])
+        const bubble = messages.find((m) => m.id === ev.clientId && m.role === 'user')
+        if (!pending && !bubble) return prev
+        const text =
+          pending?.content ??
+          bubble!.parts.filter((p) => p.type === 'text').map((p) => p.text ?? '').join('\n\n')
+        const next: HarnessState & HarnessActions = { ...prev }
+        if (pending) {
+          next.pendingFollowups = { ...prev.pendingFollowups, [sid]: list.filter((p) => p !== pending) }
+        }
+        if (bubble) {
+          const kept = messages.filter((m) => m !== bubble)
+          if (active) next.messages = kept
+          else next.sessionArchive = { ...prev.sessionArchive, [sid]: { ...prev.sessionArchive[sid], messages: kept } }
+          queueMicrotask(() => schedulePersistSession(sid))
+        }
+        if (active) {
+          next.inputDraft = restoreIntoDraft(prev.inputDraft, text)
+          if (pending?.composerAttachments?.length) {
+            next.pendingAttachments = [...pending.composerAttachments, ...prev.pendingAttachments]
+          }
+        }
+        return next
+      }
       // Bridge-driven pin toggle (in case future tool surfaces toggle
       // pins without a renderer round-trip). Idempotent with the
       // optimistic update in toggleEntryPin().

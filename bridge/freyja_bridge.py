@@ -1457,7 +1457,7 @@ async def _route_operator_message_to_gateway(
     from bridge.inbox import KIND_FOLLOWUP, KIND_QUEUED, InboxMessage, new_message_id
 
     if get_running_pid() is None:
-        emit_error(_SEND_GATEWAY_DOWN, recoverable=True)
+        _refuse_send(sid, client_id, _SEND_GATEWAY_DOWN)
         return True
     msg = InboxMessage(
         id=new_message_id(),
@@ -1472,15 +1472,24 @@ async def _route_operator_message_to_gateway(
     )
     cmd = {"type": "talk_deliver", "to": sid, "message": msg.to_dict(), "origin_pid": os.getpid()}
     if len(json.dumps(cmd, ensure_ascii=False).encode("utf-8")) >= MAX_LINE_BYTES:
-        emit_error(_SEND_GATEWAY_TOO_LARGE, recoverable=True)
+        _refuse_send(sid, client_id, _SEND_GATEWAY_TOO_LARGE)
         return True
     try:
         append_command(cmd)
     except Exception as exc:  # noqa: BLE001
-        emit_error(f"Not sent to the Slack gateway: {exc}", recoverable=True)
+        _refuse_send(sid, client_id, f"Not sent to the Slack gateway: {exc}")
         return True
     log("info", f"operator message → gateway for {sid}")
     return True
+
+
+def _refuse_send(sid: str, client_id: str | None, reason: str) -> None:
+    """A message typed for a Slack session did not go to the gateway. The
+    renderer showed it as sent (a bubble, or a pending follow-up): tell it
+    to take that back out and return the text to the composer, as a
+    refused edit does (see _refuse_rewind)."""
+    emit_error(reason, recoverable=True)
+    emit({"type": "send_refused", "sessionId": sid, "clientId": client_id})
 
 
 def _process_owns_gateway() -> bool:
