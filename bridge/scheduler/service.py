@@ -148,6 +148,11 @@ _STOP_RUN_GRACE_SECONDS = 5.0
 # 180 times in six hours before anyone noticed.
 MAX_FAILED_RUNS_IN_A_ROW = 3
 _FAILED_RUN_STATUSES = frozenset({"failed", "timed_out", "budget_exceeded"})
+# The runs that did not complete, as the dashboard counts them
+# (FAILED_RUN_STATUSES in ScheduledJobsDashboard.tsx): a run cut off by a
+# crash or a restart too. That is no failure of the job's own, so the stop
+# and the retries leave it out.
+_DID_NOT_COMPLETE_STATUSES = _FAILED_RUN_STATUSES | {"interrupted"}
 
 # A run that failed for a passing reason (no network, a timeout, an
 # overloaded provider) says nothing about the job and does not count
@@ -1774,7 +1779,7 @@ class SchedulerService:
         cutoff = time.time() - 86400
         recent_24h = [r for r in recent if r.started_at >= cutoff]
         ok = sum(1 for r in recent_24h if r.status in ("succeeded", "partial_failure"))
-        fail = sum(1 for r in recent_24h if r.status in _FAILED_RUN_STATUSES)
+        fail = sum(1 for r in recent_24h if r.status in _DID_NOT_COMPLETE_STATUSES)
         avg_dur = (
             sum(r.duration_seconds for r in recent_24h) / len(recent_24h)
             if recent_24h else 0.0

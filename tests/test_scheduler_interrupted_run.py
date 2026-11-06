@@ -224,3 +224,17 @@ async def test_a_run_of_a_removed_job_still_going_in_another_process_is_left_alo
         await _start_and_stop(_service(monkeypatch))
 
     assert load_run(job.id, "run_cut").status == "running"
+
+
+async def test_the_runs_of_the_last_day_that_failed_count_an_interrupted_one():
+    # The dashboard counts a run cut off by a crash or a restart among the
+    # runs that did not complete (FAILED_RUN_STATUSES); failed_24h, which
+    # the Slack /freyja metrics and the schedule tool show, left it out.
+    now = time.time()
+    for n, status in enumerate(["succeeded", "failed", "interrupted", "cancelled"]):
+        save_run(RunRecord(run_id=f"run_{n}", job_id="sched_digest", job_name="digest",
+                           started_at=now - 60 * (n + 1), status=status))
+
+    metrics = await SchedulerService(SimpleNamespace()).metrics()
+
+    assert (metrics.runs_24h, metrics.succeeded_24h, metrics.failed_24h) == (4, 1, 2)
