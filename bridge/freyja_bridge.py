@@ -889,6 +889,24 @@ def _wake_prompt_for(inbox: Any) -> str:
     return TALK_WAKE_PROMPT
 
 
+def _promoted_stamps(sess: Any, count: int, now_ms: float) -> list[float]:
+    """Where the renderer shows ``count`` follow-ups promoted to the turn
+    about to start (ms wall-clock, in order). Branch, edit, rerun and
+    delete anchor a message on the first entry stamped at/after it, which
+    must be that turn's user entry: so they fall before ``now_ms``, which
+    the entry comes after, and past the session's last entry, which the
+    turn that just ended may have appended a ms ago."""
+    last_ms = 0.0
+    try:
+        entries = sess.session.transcript.entries
+        if entries:
+            last_ms = entries[-1].timestamp * 1000
+    except AttributeError:
+        pass  # no engine session yet
+    lo = max(now_ms - count, min(last_ms, now_ms))
+    return [lo + (now_ms - lo) * (j + 1) / (count + 1) for j in range(count)]
+
+
 def _promote_followups(sess: Any) -> tuple[str, list[dict[str, Any]] | None] | None:
     """Turn waiting operator input into the content (+ attachments) of the
     next turn, or None when there is none.
@@ -917,7 +935,8 @@ def _promote_followups(sess: Any) -> tuple[str, list[dict[str, Any]] | None] | N
     ty = getattr(sess, "tool_yield", None)
     if ty is not None:
         ty.clear()
-    at_ms = int(time.time() * 1000)
+    now_ms = time.time() * 1000
+    stamps = _promoted_stamps(sess, len(picked), now_ms)
     content = "\n\n".join(m.content.strip() for m in picked if m.content.strip())
     attachments: list[dict[str, Any]] = []
     for m in picked:
@@ -927,15 +946,16 @@ def _promote_followups(sess: Any) -> tuple[str, list[dict[str, Any]] | None] | N
             {
                 "type": "followups_promoted",
                 "sessionId": sess.id,
-                "at": at_ms,
+                "at": int(now_ms),
                 "items": [
                     {
                         "messageId": m.id,
                         "clientId": m.client_id,
                         "content": m.content,
                         "attachmentCount": len(m.attachments or []),
+                        "createdAt": stamp,
                     }
-                    for m in picked
+                    for m, stamp in zip(picked, stamps)
                 ],
             }
         )
@@ -14996,17 +15016,19 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             # The renderer held this back as a pending follow-up, but the
             # turn it was aimed at is already over: it becomes an ordinary
             # turn, and the renderer shows it as an ordinary message.
+            now_ms = time.time() * 1000
             emit(
                 {
                     "type": "followups_promoted",
                     "sessionId": sess.id,
-                    "at": int(time.time() * 1000),
+                    "at": int(now_ms),
                     "items": [
                         {
                             "messageId": None,
                             "clientId": client_id,
                             "content": content,
                             "attachmentCount": len(attachments or []),
+                            "createdAt": _promoted_stamps(sess, 1, now_ms)[0],
                         }
                     ],
                 }

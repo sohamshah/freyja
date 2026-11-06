@@ -253,6 +253,21 @@ await check("a follow-up that lands at a turn's first step takes the bridge's st
   assert.deepEqual(timeline().slice(-2), ['user:one more thing', 'assistant:Doing both.'])
 })
 
+await check("follow-ups promoted to their own turn take the bridge's stamps", async () => {
+  ev({ type: 'turn_start', turnId: 'turn-10' })
+  await useHarness.getState().sendMessage('also bump the version')
+  const c = sent.at(-1).clientId
+  ev({ type: 'turn_complete', turnId: 'turn-10', success: true })
+  // Branch, edit and rerun resolve a message by its createdAt: the bridge
+  // stamps it between the last turn's end and the new turn's user entry.
+  const at = Date.now() + 30
+  ev({
+    type: 'followups_promoted', at,
+    items: [{ messageId: 'mp', clientId: c, content: 'also bump the version', createdAt: at - 0.4 }],
+  })
+  assert.equal(useHarness.getState().messages.find((m) => m.id === c).createdAt, at - 0.4)
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

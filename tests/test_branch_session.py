@@ -1196,3 +1196,54 @@ async def test_anchors_on_injected_followups_resolve_to_them(monkeypatch, iterat
     # The rest of the turn shows at at + 2: it resolves to the reply.
     idx = fb._find_message_entry_index(entries, 0, (at + 2) / 1000)
     assert _text(entries[idx]) == "on it"
+
+
+# ── follow-ups promoted to a turn of their own ─────────────────────────
+#
+# Follow-ups that arrive after a turn's last step run as the next turn's
+# user message. The renderer shows them just ahead of that turn, and an
+# anchor on one must resolve to that turn's user entry.
+
+
+@pytest.mark.parametrize("count", [1, 2])
+async def test_anchors_on_promoted_followups_resolve_to_their_turn(monkeypatch, count):
+    import time as _time
+
+    import bridge.freyja_bridge as fb
+    from bridge.inbox import SessionInbox
+    from engine.session import Session
+
+    events: list[dict] = []
+    monkeypatch.setattr(fb, "emit", events.append)
+    session = Session.create(system_prompt="t")
+    session.add_user_message("run the checks")
+    session.add_assistant_message("all green")
+    # The reply landed 1.5 ms before the drain. A turn's tail can be
+    # that short: in real sessions turn_complete comes 1.24 ms after a
+    # turn's last entry at the fastest, and saving a short transcript
+    # takes a fraction of a ms.
+    base = float(int(_time.time()) - 60)
+    for entry, stamp in zip(session.transcript.entries, (base - 10, base + 0.0003)):
+        entry.timestamp = stamp
+    monkeypatch.setattr(fb, "time", _Clock(base + 0.0018))
+    sess = fb._BridgeSession.__new__(fb._BridgeSession)
+    sess.id = "s"
+    sess.session = session
+    sess.inbox = SessionInbox(session_id="s")
+    texts = ["use postgres", "and add tests"][:count]
+    for text in texts:
+        sess.inbox.push(_followup(text))
+
+    content, _ = fb._promote_followups(sess)
+    # The turn starts and appends its user message.
+    session.add_user_message(content)
+    session.transcript.entries[-1].timestamp = fb.time.now + 0.0003
+
+    (promoted,) = [e for e in events if e["type"] == "followups_promoted"]
+    entries = session.transcript.entries
+    n = len(promoted["items"])
+    for j, item in enumerate(promoted["items"]):
+        # Where the renderer shows it (store.ts, followups_promoted).
+        shown = item.get("createdAt", promoted["at"] - n + j)
+        idx = fb._find_message_entry_index(entries, 0, shown / 1000)
+        assert entries[idx].message.content == content

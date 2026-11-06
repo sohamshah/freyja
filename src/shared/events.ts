@@ -1264,6 +1264,10 @@ export type BridgeEvent =
         clientId?: string | null
         content: string
         attachmentCount?: number
+        /** Where to show it: past the previous turn's last entry and
+         *  before the new turn's user entry, which an anchor on it then
+         *  resolves to. Older bridges sent none (`at` - n + j). */
+        createdAt?: number
       }>
       /** Renderer-only: the matching pending bubbles, attached by the
        *  store before the slice reducer runs (for their attachments). */

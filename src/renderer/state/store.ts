@@ -2150,9 +2150,10 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
             role: 'user',
             parts: text ? [{ type: 'text', text }] : [],
             attachments: pending?.attachments,
-            createdAt: t++,
+            createdAt: item.createdAt ?? t,
           },
         ]
+        t++
       }
       next.messages = messages
       return next
