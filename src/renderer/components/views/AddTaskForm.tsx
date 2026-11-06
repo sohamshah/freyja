@@ -227,7 +227,7 @@ export function AddTaskForm({
                 onChange={(e) => setAssignee(e.target.value)}
                 className="rounded-md border border-white/[0.06] bg-bg-0 px-2.5 py-1.5 font-mono text-[11px] text-fg-1 focus:border-accent/[0.30] focus:outline-none"
               >
-                <option value="">auto · specifier picks</option>
+                <option value="">unassigned · general worker</option>
                 <option value="explore">explore</option>
                 <option value="code">code</option>
                 <option value="plan">plan</option>
