@@ -17978,6 +17978,19 @@ async def _main_headless() -> None:
     # misconfigured daemon and sent one investigation down the wrong path.
     # start() logs the real values a moment later as "bridge state ready".
     log("info", f"freyja headless daemon starting (pid={os.getpid()})")
+    # Keep daemon.log, this process's stdout and stderr, bounded, every line
+    # kept: no line a log handler or emit() writes falls between its copy
+    # and its emptying. The handlers' locks first: one that writes through
+    # emit() takes emit()'s lock while it holds its own.
+    from bridge.scheduler import daemon as scheduler_daemon
+
+    log_rotation = asyncio.create_task(  # noqa: F841 - held while the daemon runs
+        scheduler_daemon.rotate_daemon_log_periodically(
+            *(h.lock for h in logging.getLogger().handlers if h.lock is not None),
+            _EMIT_LOCK,
+        ),
+        name="daemon-log-rotate",
+    )
     # The gateway daemon owns _BridgeState construction so we use it
     # here too — that way Slack-delivered scheduled jobs work
     # identically to interactive Slack turns. start() also brings up
