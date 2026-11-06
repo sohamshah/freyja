@@ -12419,6 +12419,9 @@ class _BridgeSession:
                     "trigger": details.get("trigger") or "agent_summarize_context",
                     "scope": details.get("scope"),
                     "reason": details.get("reason") or None,
+                    "summarizer_input_tokens": int(details.get("summarizer_input_tokens") or 0),
+                    "summarizer_output_tokens": int(details.get("summarizer_output_tokens") or 0),
+                    "summarizer_cost_usd": details.get("summarizer_cost_usd"),
                     "summary_excerpt": (details.get("summary_excerpt") or "")[:240] or None,
                     # Full summary so the dashboard's clickable
                     # compaction-log rows can render the actual
@@ -12457,6 +12460,9 @@ class _BridgeSession:
                     "scope": details.get("scope"),
                     "reason": details.get("reason"),
                     "resumed_from_previous": bool(details.get("resumed_from_previous") or False),
+                    "summarizer_input_tokens": int(details.get("summarizer_input_tokens") or 0),
+                    "summarizer_output_tokens": int(details.get("summarizer_output_tokens") or 0),
+                    "summarizer_cost_usd": details.get("summarizer_cost_usd"),
                 })
         except Exception:  # noqa: BLE001
             pass
