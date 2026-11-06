@@ -288,7 +288,9 @@ async def test_a_copy_in_the_app_saves_nothing_over_the_gateways_files(app_bridg
     assert tp.load_goal_state(SLACK) is None
 
 
-async def test_the_gateway_still_saves_its_own_sessions(app_bridge, tmp_path):
+async def test_the_gateway_still_saves_its_own_sessions(app_bridge, monkeypatch, tmp_path):
+    # The gateway is the process holding the gateway lock.
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
     _gateway_saved()
     sess = _copy(tmp_path, gateway_runner=object())
     sess._save_transcript()

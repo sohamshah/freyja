@@ -544,6 +544,16 @@ async def _resolve_execution_session(
     if isinstance(spec, ExistingSession):
         if not spec.session_id:
             raise ValueError("ExistingSession requires session_id")
+        from bridge.freyja_bridge import _gateway_holds
+
+        if _gateway_holds(spec.session_id):
+            # Run here, it went on a copy of the thread saved over the
+            # gateway's. Its scheduled fires go to the gateway
+            # (service._fires_in_the_gateway).
+            raise ValueError(
+                "its Slack thread runs in the Slack gateway; its scheduled "
+                "runs go there"
+            )
         sessions = getattr(state, "sessions", {}) or {}
         sess = sessions.get(spec.session_id)
         if sess is None:

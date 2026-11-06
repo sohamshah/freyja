@@ -245,6 +245,8 @@ class SchedulerService:
         # Jobs that came due but could not fire yet. The loop does not
         # wake early for them: it looks again at its usual once a second.
         self._waiting_job_ids: set[str] = set()
+        # Of those, the ones whose Slack thread waits for the gateway.
+        self._waiting_for_gateway: set[str] = set()
         # Why due runs wait right now (DarkWake, offline), or None.
         self._runs_wait_for: str | None = None
         # When each due job began to wait for the Mac, by time.monotonic().
@@ -561,6 +563,17 @@ class SchedulerService:
             if not run_lock.acquire():
                 self._came_due_while_running(job)
                 return
+            in_gateway = _fires_in_the_gateway(job)
+            if in_gateway and not _gateway_runs():
+                # Its Slack thread runs only in the gateway: it stays due
+                # until one runs.
+                if job.id not in self._waiting_for_gateway:
+                    logger.info("job %s (%s) waits for the Slack gateway", job.id, job.name)
+                    append_event({"type": "scheduler_run_waits_for_gateway", "job_id": job.id})
+                self._waiting_for_gateway.add(job.id)
+                self._waiting_job_ids.add(job.id)
+                return
+            self._waiting_for_gateway.discard(job.id)
             if _misfire_policy(job) == "fire_all":
                 _bound_catch_up(job, now)
                 if job.next_fire_at is None or job.next_fire_at > now:
@@ -577,6 +590,12 @@ class SchedulerService:
             self._recompute_next_fire(job, force=True, after_fire=True)
             save_job(job)
             touch_wake()
+            if in_gateway:
+                # The gateway takes the run lock for the run.
+                run_lock.release()
+                run_lock = None
+                _hand_to_gateway(job, slot, attempt)
+                return
             # Hand off to the fire path while STILL holding the run
             # lock — the fire path releases it after the run completes.
             # The record lock goes now, so the job can be edited while
@@ -641,6 +660,30 @@ class SchedulerService:
             "job_id": job.id,
             "run_id": last.run_id,
         })
+
+    async def fire_handed_over(self, job_id: str, slot: float | None, attempt: int = 0) -> bool:
+        """Fire a run of ``job_id`` that the scheduler owning the tick, in
+        another process, claimed and handed to this one: the gateway, which
+        runs the job's Slack thread (see ``_fires_in_the_gateway``). The run
+        is the one that scheduler would have made, under the job's run lock.
+        Returns False when it cannot start."""
+        job = load_job(job_id)
+        if job is None:
+            return False
+        if _fires_in_the_gateway(job):
+            logger.warning("job %s: handed a fire, but this process is not the gateway", job_id)
+            return False
+        run_lock = FileLock(job_run_lock_path(job_id))
+        if not run_lock.acquire():
+            logger.warning("job %s: handed a fire while a run of it goes on; slot %s dropped", job_id, slot)
+            append_event({"type": "scheduler_slot_skipped_running", "job_id": job_id, "slot": slot})
+            return False
+        task = asyncio.create_task(
+            self._fire_with_concurrency(job, run_lock, slot, attempt),
+            name=f"scheduler-fire-{job.id}",
+        )
+        self._in_flight_runs[task.get_name()] = task
+        return True
 
     async def _fire_with_concurrency(
         self, job: JobRecord, run_lock: FileLock, slot: float | None, attempt: int = 0,
@@ -1380,6 +1423,49 @@ def _note_waiting_slots(jobs: list[JobRecord]) -> None:
                 continue
             fresh.waiting_slot = fresh.next_fire_at
             save_job(fresh)
+
+
+def _fires_in_the_gateway(job: JobRecord) -> bool:
+    """True when ``job`` fires into a Slack thread and this process is not
+    the gateway. The gateway runs that thread's session and saves its
+    files; a run here would build a copy of it and save the copy over
+    them. The scheduler daemon often owns the tick, and did that."""
+    spec = job.execution
+    if not isinstance(spec, ExistingSession) or not spec.session_id:
+        return False
+    from bridge.freyja_bridge import _gateway_holds
+
+    return _gateway_holds(spec.session_id)
+
+
+def _gateway_runs() -> bool:
+    try:
+        from bridge.gateway.pid import get_running_pid
+
+        return get_running_pid() is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _hand_to_gateway(job: JobRecord, slot: float | None, attempt: int) -> None:
+    """Send a claimed fire of ``job`` to the gateway on its control channel.
+    The gateway reads from where it left off, so a fire sent while it
+    restarts runs when it is back (``GatewayDaemon._on_scheduler_fire``)."""
+    from bridge.gateway.control_channel import append_command
+
+    try:
+        append_command({
+            "type": "scheduler_fire",
+            "job_id": job.id,
+            "scheduled_for": slot,
+            "attempt": attempt,
+            "origin_pid": os.getpid(),
+        })
+    except Exception:  # noqa: BLE001
+        logger.exception("job %s: the fire for slot %s did not reach the gateway", job.id, slot)
+        return
+    logger.info("job %s (%s): fire handed to the Slack gateway", job.id, job.name)
+    append_event({"type": "scheduler_run_handed_to_gateway", "job_id": job.id, "slot": slot})
 
 
 def _failed_for_a_passing_reason(run: RunRecord) -> bool:

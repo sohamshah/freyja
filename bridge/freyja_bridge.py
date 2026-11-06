@@ -6626,15 +6626,15 @@ class _BridgeSession:
 
     @property
     def _gateway_copy(self) -> bool:
-        """A Slack (gateway) session in a process with no gateway: the
-        app's bridge, holding a copy of a thread the gateway runs. The
-        gateway saves the same transcript, inbox and goal files, so the
-        copy saves nothing, runs no turn and is not compacted. Each would
-        write the copy over the gateway's newer history, and the gateway's
-        next save would drop it. The gateway and the scheduler daemon both
-        set ``gateway_runner``; only the app's bridge has none."""
-        state = getattr(self, "state", None)
-        return _is_gateway_session_id(self.id) and getattr(state, "gateway_runner", None) is None
+        """A Slack (gateway) session in a process that is not the gateway:
+        the app's bridge or the scheduler daemon, holding a copy of a
+        thread the gateway runs. The gateway saves the same transcript,
+        inbox and goal files, so the copy saves nothing, runs no turn and
+        is not compacted. Each would write the copy over the gateway's
+        newer history, and the gateway's next save would drop it. The
+        scheduler daemon's send-only gateway runner does not make it the
+        gateway: only the process holding the gateway lock is."""
+        return _gateway_holds(self.id)
 
     def _save_inbox(self) -> None:
         try:

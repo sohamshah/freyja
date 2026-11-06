@@ -2959,6 +2959,7 @@ class GatewayDaemon:
         reader.register("talk_deliver", self._on_talk_deliver)
         reader.register("artifact_note", self._on_artifact_note)
         reader.register("cancel_turn", self._on_cancel_turn)
+        reader.register("scheduler_fire", self._on_scheduler_fire)
         await reader.start()
         self.control_channel = reader
 
@@ -3012,6 +3013,21 @@ class GatewayDaemon:
         from bridge.freyja_bridge import _handle_artifact_note_command
 
         await _handle_artifact_note_command(self.state, cmd)
+
+    async def _on_scheduler_fire(self, cmd: dict[str, Any]) -> None:
+        """A scheduled job that fires into a Slack thread, claimed by the
+        scheduler that owns the tick in another process (the scheduler
+        daemon, or the app's bridge). The thread's session lives here, so
+        its run does too: run there, it went on a copy whose saves wrote
+        over this process's transcript."""
+        scheduler = getattr(self.state, "scheduler", None)
+        job_id = str(cmd.get("job_id") or "")
+        if scheduler is None or not job_id:
+            logger.warning("scheduler_fire: dropped (job %r)", job_id)
+            return
+        await scheduler.fire_handed_over(
+            job_id, cmd.get("scheduled_for"), int(cmd.get("attempt") or 0),
+        )
 
     def _talk_wake_hook_factory(self, session: Any) -> Any:
         """Build the on_turn_start hook wake_for_inbox uses for this
