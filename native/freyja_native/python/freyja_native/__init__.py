@@ -299,7 +299,7 @@ def _input_proxy_url() -> str | None:
 
 def _proxy_input(action: str, **params: Any) -> None:
     """Route an input action through the Electron main process proxy."""
-    import json, urllib.request
+    import json, urllib.error, urllib.request
     url = _input_proxy_url()
     if not url:
         raise RuntimeError("no input proxy available")
@@ -310,8 +310,18 @@ def _proxy_input(action: str, **params: Any) -> None:
         headers={"Content-Type": "application/json", **_proxy_token_headers("FREYJA_INPUT_TOKEN")},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        result = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        # The proxy says why in the body, {"ok": false, "error": ...}: the
+        # field it refused, or why the action failed.
+        text = exc.read().decode("utf-8", "replace").strip()
+        try:
+            detail = json.loads(text)["error"]
+        except (ValueError, KeyError, TypeError):
+            detail = text
+        raise RuntimeError(f"input proxy {exc.code}: {detail}") from exc
     if not result.get("ok"):
         raise RuntimeError(result.get("error", "input proxy error"))
 
