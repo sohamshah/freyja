@@ -3118,7 +3118,12 @@ class GatewayDaemon:
                     "sessionId": session_id,
                     "subtype": "model_change_refused",
                     "message": refused,
-                    "details": {"model": target, "chatVisible": True},
+                    "details": {
+                        "model": target,
+                        "chatVisible": True,
+                        # The app takes back this change, not a later one.
+                        "requestId": cmd.get("requestId"),
+                    },
                 }
             )
             return
@@ -3175,7 +3180,7 @@ class GatewayDaemon:
                     "sessionId": session_id,
                     "subtype": "coordination_strategy_refused",
                     "message": "A sub-agent runs in its thread's mode.",
-                    "details": {"chatVisible": True},
+                    "details": {"chatVisible": True, "requestId": cmd.get("requestId")},
                 }
             )
             return

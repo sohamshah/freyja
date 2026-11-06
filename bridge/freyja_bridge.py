@@ -1569,8 +1569,9 @@ def _route_command_to_gateway(
     control channel, which runs it there. Returns False when ``sid`` is not
     a Slack session the gateway holds; ``down`` is the error when no
     gateway runs. With ``refused``, a refusal is the session's system
-    event of that subtype, as the gateway's own refusal is, so the app
-    can take back what it showed for the command."""
+    event of that subtype, as the gateway's own refusal is, with the
+    command's request id, so the app can take back what it showed for
+    that command."""
     if not _gateway_holds(sid):
         return False
     from bridge.gateway.control_channel import append_command
@@ -1586,7 +1587,7 @@ def _route_command_to_gateway(
                 "sessionId": sid,
                 "subtype": refused,
                 "message": message,
-                "details": {"chatVisible": True},
+                "details": {"chatVisible": True, "requestId": cmd.get("requestId")},
             }
         )
 
@@ -14860,7 +14861,12 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         # here, the app showed the new model while the thread kept the old.
         if session_id and _route_command_to_gateway(
             session_id,
-            {"type": "set_model", "model": new_model, "reasoningLevel": reasoning_level},
+            {
+                "type": "set_model",
+                "model": new_model,
+                "reasoningLevel": reasoning_level,
+                "requestId": cmd.get("requestId"),
+            },
             _MODEL_GATEWAY_DOWN,
             refused="model_change_refused",
         ):
@@ -14905,7 +14911,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         # before. The app's model for the thread is not sent with it.
         if _route_command_to_gateway(
             session_id,
-            {"type": "set_coordination_strategy", "coordinationStrategy": strategy},
+            {
+                "type": "set_coordination_strategy",
+                "coordinationStrategy": strategy,
+                "requestId": cmd.get("requestId"),
+            },
             _MODE_GATEWAY_DOWN,
             refused="coordination_strategy_refused",
         ):

@@ -193,26 +193,31 @@ async def test_a_model_picked_in_the_app_for_a_slack_session_goes_to_the_gateway
     await fb._handle_command(
         state,
         {"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5", "reasoningLevel": "high",
-         "coordinationStrategy": "bus"},
+         "coordinationStrategy": "bus", "requestId": "change_1"},
     )
     # No copy changed, and the app does not say the model changed: the
     # gateway does, once it has.
     assert state.sessions == {}
     assert not [e for e in events if e.get("subtype") == "model_changed"]
     (cmd,) = _forwarded()
-    assert cmd == {"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5", "reasoningLevel": "high"}
+    assert cmd == {
+        "type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5", "reasoningLevel": "high",
+        "requestId": "change_1",
+    }
 
 
 async def test_a_model_change_is_refused_when_no_gateway_runs(app, monkeypatch):
     state, events = app
     _gateway_running(monkeypatch, None)
-    await fb._handle_command(state, {"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5"})
+    await fb._handle_command(
+        state, {"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5", "requestId": "change_1"},
+    )
     assert state.sessions == {} and _forwarded() == []
     # Refused as the gateway refuses a model, for the session, so the app
-    # takes back the model it showed.
+    # takes back the model it showed: this change, not a later one.
     (refused,) = [e for e in events if e.get("subtype") == "model_change_refused"]
     assert refused["sessionId"] == SLACK and "Slack gateway" in refused["message"]
-    assert refused["details"]["chatVisible"]
+    assert refused["details"]["chatVisible"] and refused["details"]["requestId"] == "change_1"
 
 
 def _gateway_state(monkeypatch, *, turn_running: bool = False):
@@ -266,11 +271,14 @@ async def test_the_gateway_says_a_model_change_waits_for_the_running_turn(app, m
 async def test_the_gateway_refuses_a_model_it_does_not_know(app, monkeypatch):
     _state, events = app
     daemon, thread, calls = _gateway_state(monkeypatch)
-    await daemon._on_set_model({"type": "set_model", "sessionId": SLACK, "model": "claude-opus-9-9"})
+    await daemon._on_set_model(
+        {"type": "set_model", "sessionId": SLACK, "model": "claude-opus-9-9", "requestId": "change_1"},
+    )
     assert calls == [] and thread.model_id == "claude-sonnet-5-5"
     assert not [e for e in events if e.get("subtype") == "model_changed"]
     (note,) = [e for e in events if e.get("subtype") == "model_change_refused"]
     assert note["sessionId"] == SLACK and "claude-opus-9-9" in note["message"]
+    assert note["details"]["requestId"] == "change_1"
 
 
 # ── mode ─────────────────────────────────────────────────────────────
@@ -286,13 +294,16 @@ async def test_a_mode_picked_in_the_app_for_a_slack_session_goes_to_the_gateway(
     await fb._handle_command(
         state,
         {"type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "kanban",
-         "model": "claude-opus-5-5", "reasoningLevel": "high"},
+         "model": "claude-opus-5-5", "reasoningLevel": "high", "requestId": "change_1"},
     )
     assert state.sessions == {}
     assert not [e for e in events if e.get("subtype") in ("coordination_strategy_changed", "kanban_autopilot_enabled")]
     # Only the mode: the app's model for the thread is not the gateway's.
     (cmd,) = _forwarded()
-    assert cmd == {"type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "kanban"}
+    assert cmd == {
+        "type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "kanban",
+        "requestId": "change_1",
+    }
 
 
 async def test_a_mode_change_is_refused_when_no_gateway_runs(app, monkeypatch):
@@ -347,11 +358,12 @@ async def test_the_gateway_puts_the_thread_in_the_mode_picked_in_the_app(gateway
 async def test_the_gateway_builds_no_session_on_a_sub_agents_id_for_a_mode_change(gateway):
     daemon, state, events = gateway
     await daemon._on_set_coordination_strategy(
-        {"type": "set_coordination_strategy", "sessionId": SUB, "coordinationStrategy": "kanban"},
+        {"type": "set_coordination_strategy", "sessionId": SUB, "coordinationStrategy": "kanban",
+         "requestId": "change_1"},
     )
     assert state.sessions == {}
     (refused,) = [e for e in events if e.get("subtype") == "coordination_strategy_refused"]
-    assert refused["sessionId"] == SUB
+    assert refused["sessionId"] == SUB and refused["details"]["requestId"] == "change_1"
 
 
 def _mode_changes(events: list[dict]) -> list[dict]:

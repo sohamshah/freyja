@@ -97,6 +97,53 @@ await check('a model change that went through stays on screen', async () => {
   assert.equal(H().model, 'claude-opus-5-5')
 })
 
+// A refusal names the change it refuses by the request id the command sent.
+const refusalOf = (cmd, subtype) =>
+  H().handleEvent({
+    type: 'system_event', sessionId: cmd.sessionId, subtype, message: 'refused',
+    details: { chatVisible: true, requestId: cmd.requestId },
+  })
+const lastSent = (type) => sent.filter((c) => c.type === type).at(-1)
+
+await check('a refusal of the first of two quick model changes leaves the second on screen', async () => {
+  openSlack()
+  await H().setModel('claude-opus-5-5', 'high')
+  const first = lastSent('set_model')
+  await H().setModel('claude-fable-5-1', 'low')
+  const second = lastSent('set_model')
+  refusalOf(first, 'model_change_refused')
+  assert.equal(H().model, 'claude-fable-5-1')
+  assert.equal(rowOf(SLACK).model, 'claude-fable-5-1')
+  // The second refused too: the session had the model from before both.
+  refusalOf(second, 'model_change_refused')
+  assert.equal(H().model, 'claude-sonnet-5-5')
+  assert.equal(H().reasoningLevel, 'medium')
+})
+
+await check('a refusal of the second of two quick model changes shows the first', async () => {
+  openSlack()
+  await H().setModel('claude-opus-5-5', 'high')
+  const first = lastSent('set_model')
+  await H().setModel('claude-fable-5-1', 'low')
+  refusalOf(lastSent('set_model'), 'model_change_refused')
+  assert.equal(H().model, 'claude-opus-5-5')
+  assert.equal(H().reasoningLevel, 'high')
+  refusalOf(first, 'model_change_refused')
+  assert.equal(H().model, 'claude-sonnet-5-5')
+})
+
+await check('a refusal of the first of two quick mode changes leaves the second on screen', async () => {
+  openSlack()
+  await H().setCoordinationStrategy('kanban')
+  const first = lastSent('set_coordination_strategy')
+  await H().setCoordinationStrategy('goal')
+  const second = lastSent('set_coordination_strategy')
+  refusalOf(first, 'coordination_strategy_refused')
+  assert.equal(H().coordinationStrategy, 'goal')
+  refusalOf(second, 'coordination_strategy_refused')
+  assert.equal(H().coordinationStrategy, 'bus')
+})
+
 await check('/goal on a Slack session does not say the goal loop is armed', async () => {
   openSlack()
   sent.length = 0

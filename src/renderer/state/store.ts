@@ -884,24 +884,57 @@ const pendingRewinds = new Map<
   { requestId: string; at: number; removed: Message[]; edited?: { id: string; text: string } }
 >()
 
-/** A session's model and mode as they were before the app showed a new
- *  one, by session (the latest change). The app shows a change at once;
- *  for a Slack session the gateway, or the app's bridge when no gateway
- *  runs, can refuse it (`model_change_refused`,
- *  `coordination_strategy_refused`), and the refusal puts these back. */
-const modelBeforeChange = new Map<string, { model: string; reasoningLevel: string }>()
-const modeBeforeChange = new Map<string, CoordinationStrategy>()
+/** The model and mode changes the app showed for a session at once, by
+ *  session, oldest first, each with its request id and what the session
+ *  had before it. For a Slack session the gateway, or the app's bridge
+ *  when no gateway runs, can refuse a change (`model_change_refused`,
+ *  `coordination_strategy_refused`, with the command's request id), and
+ *  the refusal puts back what the session had before it. */
+type ShownChange<T> = { requestId: string; before: T }
+const modelChanges = new Map<string, ShownChange<{ model: string; reasoningLevel: string }>[]>()
+const modeChanges = new Map<string, ShownChange<CoordinationStrategy>[]>()
+
+function showChange<T>(changes: Map<string, ShownChange<T>[]>, sessionId: string, before: T): string {
+  const requestId = nextId('change')
+  changes.set(sessionId, [...(changes.get(sessionId) ?? []), { requestId, before }])
+  return requestId
+}
+
+/** Forget the refused change, and return what to show instead: what the
+ *  session had before it, unless a later change is on screen. That one
+ *  now replaces what the refused one replaced. A refusal without a
+ *  request id (a gateway not restarted since) is for the latest change. */
+function takeBackChange<T>(
+  changes: Map<string, ShownChange<T>[]>,
+  sessionId: string,
+  requestId: unknown,
+): T | undefined {
+  const list = changes.get(sessionId) ?? []
+  const i =
+    typeof requestId === 'string' ? list.findIndex((c) => c.requestId === requestId) : list.length - 1
+  if (i < 0) return undefined
+  const [refused] = list.splice(i, 1)
+  if (!list.length) changes.delete(sessionId)
+  if (i < list.length) {
+    list[i].before = refused.before
+    return undefined
+  }
+  return refused.before
+}
 
 /** Show the model or mode `sessionId` had before the change the bridge
  *  refused, on its row and on its slice, active or archived. */
-function undoRefusedChange<S extends HarnessState>(state: S, sessionId: string, subtype: string): S {
+function undoRefusedChange<S extends HarnessState>(
+  state: S,
+  sessionId: string,
+  subtype: string,
+  requestId: unknown,
+): S {
   let patch: Partial<SessionSlice> | undefined
   if (subtype === 'model_change_refused') {
-    patch = modelBeforeChange.get(sessionId)
-    modelBeforeChange.delete(sessionId)
+    patch = takeBackChange(modelChanges, sessionId, requestId)
   } else if (subtype === 'coordination_strategy_refused') {
-    const mode = modeBeforeChange.get(sessionId)
-    modeBeforeChange.delete(sessionId)
+    const mode = takeBackChange(modeChanges, sessionId, requestId)
     if (mode) patch = { coordinationStrategy: mode }
   }
   if (!patch) return state
@@ -4503,7 +4536,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       // bridge or the gateway refused: show what the session had before.
       // The refusal goes on to the session's chat below.
       if (ev.type === 'system_event' && ev.sessionId) {
-        prev = undoRefusedChange(prev, ev.sessionId, ev.subtype)
+        prev = undoRefusedChange(prev, ev.sessionId, ev.subtype, ev.details?.requestId)
       }
 
       // Session-scoped events: route to the right slice.
@@ -4959,7 +4992,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       reasoningLevel ?? (model === current.model ? current.reasoningLevel : undefined),
       current.availableModels,
     )
-    modelBeforeChange.set(current.activeSessionId, {
+    const requestId = showChange(modelChanges, current.activeSessionId, {
       model: current.model,
       reasoningLevel: current.reasoningLevel,
     })
@@ -4981,6 +5014,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         model,
         reasoningLevel: nextReasoning,
         coordinationStrategy: useHarness.getState().coordinationStrategy,
+        requestId,
       })
   },
 
@@ -4992,7 +5026,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
   async setCoordinationStrategy(strategy) {
     const normalized = normalizeCoordinationStrategy(strategy)
     const current = useHarness.getState()
-    modeBeforeChange.set(current.activeSessionId, current.coordinationStrategy)
+    const requestId = showChange(modeChanges, current.activeSessionId, current.coordinationStrategy)
     set((prev) => ({
       coordinationStrategy: normalized,
       sessions: prev.sessions.map((s) =>
@@ -5009,6 +5043,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         coordinationStrategy: normalized,
         model: current.model,
         reasoningLevel: current.reasoningLevel,
+        requestId,
       })
     }
   },

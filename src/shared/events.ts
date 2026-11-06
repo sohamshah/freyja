@@ -699,13 +699,23 @@ export type BridgeCommand =
       reasoningLevel?: string
       coordinationStrategy?: CoordinationStrategy
     }
-  | { type: 'set_model'; sessionId?: string; model: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
+  | {
+      type: 'set_model'
+      sessionId?: string
+      model: string
+      reasoningLevel?: string
+      coordinationStrategy?: CoordinationStrategy
+      /** Named by a refusal of this change (`model_change_refused`). */
+      requestId?: string
+    }
   | {
       type: 'set_coordination_strategy'
       sessionId: string
       coordinationStrategy: CoordinationStrategy
       model?: string
       reasoningLevel?: string
+      /** Named by a refusal of this change (`coordination_strategy_refused`). */
+      requestId?: string
     }
   | { type: 'list_skills'; sessionId?: string }
   | { type: 'list_subagents'; sessionId?: string }
