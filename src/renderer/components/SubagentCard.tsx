@@ -14,21 +14,20 @@ import { JevResultSummary, jevActivity, jevStatus, useJevLastLine } from './JevR
 
 function useKanbanCardSnapshot(taskId: string | undefined): KanbanCardSnapshot | null {
   const systemEvents = useHarness((s) => s.systemEvents)
-  // Read from the durable per-card snapshot map too — the events ring
+  // Read from the durable per-card snapshot map first — the events ring
   // is capped at 100 entries, so a card whose lifecycle finished long
-  // ago has fallen out and the events-only fold can't see it. The
-  // store keeps a non-evicting kanbanCards map for exactly this case.
+  // ago has fallen out and the events-only fold can't see it, or sees
+  // only a later list that sent the card without its history. The
+  // store folds every kanban event into a non-evicting kanbanCards map
+  // for exactly this case; the ring is the fallback for sessions that
+  // have no such map (older saves, a gateway session read from disk).
   const persistedCard = useHarness((s) => (taskId ? s.kanbanCards[taskId] : undefined))
   return useMemo(() => {
     if (!taskId) return null
-    const fromEvents = deriveKanbanCardSnapshot(systemEvents, taskId)
-    if (fromEvents) return fromEvents
-    if (!persistedCard) return null
-    // Build a minimal snapshot directly from the persisted task dict.
-    // The verifier-actor / rejection detection in deriveKanbanCardSnapshot
-    // walks the task's per-card event history, which the persisted
-    // payload still carries.
-    return deriveSnapshotFromTask(persistedCard as Record<string, unknown>)
+    // The verifier-actor / rejection detection walks the task's
+    // per-card event history, which the persisted payload carries.
+    if (persistedCard) return deriveSnapshotFromTask(persistedCard as Record<string, unknown>)
+    return deriveKanbanCardSnapshot(systemEvents, taskId)
   }, [systemEvents, persistedCard, taskId])
 }
 

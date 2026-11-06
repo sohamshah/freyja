@@ -161,6 +161,30 @@ check('the snapshot follows the latest kanban event that carries this card', () 
   assert.equal(deriveKanbanCardSnapshot(events, 'card_009'), null)
 })
 
+check('a replay that carries the card wins over an older event that carried it alone', () => {
+  const events = [
+    { id: 'c', subtype: 'kanban_complete', message: '', at: 0, details: { task: card('review', firstReview) } },
+    {
+      id: 'r', subtype: 'kanban_replay', message: '', at: 1,
+      details: { tasks: [card('done', [...firstReview, ev(JUDGE, { status: 'done' })])] },
+    },
+  ]
+  const snapshot = deriveKanbanCardSnapshot(events, 'card_002')
+  assert.equal(snapshot.status, 'done')
+  assert.equal(snapshot.verifierActor, JUDGE)
+})
+
+check("a newer list that sends the card without history keeps the older event's history", () => {
+  const { events: _history, comments: _comments, ...listed } = card('done', [])
+  const events = [
+    { id: 'u', subtype: 'kanban_update', message: '', at: 0, details: { task: card('done', [...firstReview, ev(JUDGE, { status: 'done' })]) } },
+    { id: 'l', subtype: 'kanban_list', message: '', at: 1, details: { tasks: [listed] } },
+  ]
+  const snapshot = deriveKanbanCardSnapshot(events, 'card_002')
+  assert.equal(snapshot.status, 'done')
+  assert.equal(snapshot.verifierActor, JUDGE)
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

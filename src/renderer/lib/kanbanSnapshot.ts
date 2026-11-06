@@ -50,10 +50,15 @@ export function deriveKanbanCardSnapshot(
   for (const event of events) {
     if (!event.subtype.startsWith('kanban_')) continue
     const details = event.details as Record<string, unknown> | undefined
-    const eventTask = details?.task as Record<string, unknown> | undefined
-    if (!eventTask) continue
-    if (String(eventTask.id ?? '') !== taskId) continue
-    task = eventTask
+    // One card (`task`) or many (`tasks`: a list, the replay after a
+    // restart). The newest event that carries the card wins.
+    const tasks = Array.isArray(details?.tasks) ? details.tasks : []
+    for (const entry of [details?.task, ...tasks]) {
+      if (!entry || typeof entry !== 'object') continue
+      const eventTask = entry as Record<string, unknown>
+      if (String(eventTask.id ?? '') !== taskId) continue
+      task = mergeKanbanTask(task, eventTask)
+    }
   }
   return task ? deriveSnapshotFromTask(task) : null
 }
