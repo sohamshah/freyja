@@ -4990,7 +4990,8 @@ class _BridgeSession:
         self._kanban_dispatched: set[str] = set()
         # Card id → (spawn failures in a row, time of the next try), for
         # the cards the tick backs off (KANBAN_DISPATCH_BACKOFF_SECONDS).
-        # A spawn that starts drops its card.
+        # A spawn that starts drops its card, and so do an operator
+        # reassign and unblock.
         self._kanban_dispatch_backoff: dict[str, tuple[int, float]] = {}
         # Cards with an in-flight judge orchestrator task. Distinct
         # from `_kanban_dispatched` (workers) so a card that finishes
@@ -15639,8 +15640,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sess._emit_kanban_card(updated, source="operator")  # noqa: SLF001
         # Reset breaker bookkeeping: an unblocked card gets a fresh
         # chance, otherwise autopilot would skip it the moment it
-        # came up for re-dispatch.
+        # came up for re-dispatch, or wait out its spawn backoff.
         sess._kanban_dispatched.discard(card_id)  # noqa: SLF001
+        sess._kanban_dispatch_backoff.pop(card_id, None)  # noqa: SLF001
         sess._emit_kanban_event(  # noqa: SLF001
             "kanban_operator_unblocked",
             f"Operator unblocked {card_id}",
@@ -15798,6 +15800,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             )
             return
         sess._emit_kanban_card(task, source="operator")  # noqa: SLF001
+        # The new agent type may start where the old one could not, so
+        # the card goes out on the next tick, not after its backoff.
+        sess._kanban_dispatch_backoff.pop(card_id, None)  # noqa: SLF001
         sess._emit_kanban_event(  # noqa: SLF001
             "kanban_operator_reassigned",
             f"Operator reassigned {card_id} → {new_assignee or 'unassigned'}",

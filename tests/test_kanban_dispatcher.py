@@ -1526,3 +1526,28 @@ async def test_a_judge_that_started_and_then_failed_says_it_crashed(monkeypatch)
     assert failed["details"]["started"] is True
     assert failed["message"] == f"Judge crashed for {card.id}: synthesis failed"
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["kanban_operator_reassign", "kanban_operator_unblock"])
+async def test_reassign_and_unblock_end_a_cards_spawn_backoff(monkeypatch, command: str) -> None:
+    """Only a spawn that started ended a card's spawn backoff, so a card
+    the operator fixed with Reassign (another agent type) or Unblock (back
+    to ready) still waited up to KANBAN_DISPATCH_BACKOFF_MAX_SECONDS for
+    its next try. Both now end the backoff."""
+    import time
+
+    board = SessionKanbanBoard()
+    card = (await board.create(title="card", assignee="code")).id
+    await board.update(card, actor="worker", status="running", worker_session_id="sub_w")
+    await board.update(card, actor="worker", status="crashed")
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    session._kanban_dispatch_backoff[card] = (6, time.time() + 600)
+
+    sent = await _operator_command(monkeypatch, session, type=command, cardId=card, assignee="general")
+
+    assert not sent[-1]["subtype"].endswith("_failed")
+    assert card not in session._kanban_dispatch_backoff
+    await session._kanban_tick(source="test", force=True)
+    assert [call["kanban_task_id"] for call in sub_tool.calls] == [card]
