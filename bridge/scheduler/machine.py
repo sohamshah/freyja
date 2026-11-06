@@ -16,7 +16,8 @@ Both checks are local and take microseconds:
     the routing state and sends no packet.
 
 When a check cannot run (another OS, a missing symbol), it does not hold
-runs back.
+runs back. A reading that is wrong holds a run back at most 30 minutes of
+the Mac's awake time (service._RUNS_WAIT_AT_MOST_SECONDS).
 """
 
 from __future__ import annotations

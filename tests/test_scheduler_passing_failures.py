@@ -279,6 +279,92 @@ async def test_a_due_job_waits_while_the_mac_cannot_run_it(monkeypatch):
     assert fired == [job.id]
 
 
+@pytest.fixture
+def cannot_run(monkeypatch):
+    """A Mac read as in DarkWake for good, with a clock of the time it is
+    awake that the test moves on; and the jobs fired."""
+    mac = SimpleNamespace(awake=1000.0, fired=[])
+
+    async def fire(_service, job, **_kw):
+        mac.fired.append(job.id)
+        return RunRecord(run_id=f"run_{len(mac.fired)}", job_id=job.id, job_name=job.name,
+                         started_at=time.time(), status="succeeded")
+
+    monkeypatch.setattr(runtime, "fire_job", fire)
+    monkeypatch.setattr(service_mod, "why_runs_wait", lambda: "the Mac is in DarkWake")
+    monkeypatch.setattr(service_mod, "time", SimpleNamespace(time=time.time, monotonic=lambda: mac.awake))
+    return mac
+
+
+def _due(job: JobRecord) -> JobRecord:
+    job.next_fire_at = time.time() - 1
+    save_job(job)
+    return job
+
+
+async def _tick(service: SchedulerService) -> None:
+    await service._tick()
+    await asyncio.sleep(0.1)  # the claims and fires it started
+
+
+async def test_a_due_job_runs_anyway_once_it_has_waited_half_an_hour(cannot_run):
+    from bridge.scheduler.persistence import read_recent_events
+
+    service = SchedulerService(SimpleNamespace())
+    job = _due(_briefer())
+    await _tick(service)
+    cannot_run.awake += 29 * 60
+    await _tick(service)
+    assert cannot_run.fired == []
+
+    cannot_run.awake += 60
+    await _tick(service)
+
+    assert cannot_run.fired == [job.id]
+    waited = [e for e in read_recent_events() if e["type"] == "scheduler_run_waited_too_long"]
+    assert [(e["job_id"], e["reason"], e["waited_seconds"]) for e in waited] == [
+        (job.id, "the Mac is in DarkWake", 30 * 60),
+    ]
+
+
+async def test_a_job_due_later_waits_its_own_half_hour(cannot_run):
+    service = SchedulerService(SimpleNamespace())
+    first = _due(_briefer())
+    await _tick(service)
+    cannot_run.awake += 20 * 60
+    second = _due(JobRecord(id="sched_radar", name="Routing radar", schedule=CronSchedule(expression="0 5 * * *"),
+                            prompt="radar", sinks=[NoopSinkSpec()]))
+    await _tick(service)
+
+    cannot_run.awake += 10 * 60
+    await _tick(service)
+    assert cannot_run.fired == [first.id]
+
+    cannot_run.awake += 20 * 60
+    await _tick(service)
+    assert cannot_run.fired == [first.id, second.id]
+
+
+async def test_a_new_wait_starts_from_nothing(cannot_run, monkeypatch):
+    service = SchedulerService(SimpleNamespace())
+    reason = ["the Mac is in DarkWake"]
+    monkeypatch.setattr(service_mod, "why_runs_wait", lambda: reason[0])
+    job = _due(_briefer())
+    await _tick(service)
+    cannot_run.awake += 29 * 60
+    reason[0] = None
+    await _tick(service)
+    assert cannot_run.fired == [job.id]
+
+    # Its next run comes due in DarkWake again.
+    reason[0] = "the Mac is in DarkWake"
+    _due(load_job(job.id))
+    await _tick(service)
+    cannot_run.awake += 10 * 60
+    await _tick(service)
+    assert cannot_run.fired == [job.id]
+
+
 def test_dark_wake_is_a_wake_without_graphics():
     from bridge.scheduler import machine
 

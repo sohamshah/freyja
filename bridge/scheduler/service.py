@@ -150,6 +150,17 @@ MAX_PASSING_FAILURES_IN_A_ROW = 24
 _PASSING_RETRY_FIRST_SECONDS = 120
 _PASSING_RETRY_MAX_SECONDS = 3600
 
+# A due run waits out DarkWake and a lost network (machine.py), at most
+# this long counted while the Mac is awake: time.monotonic() stops while it
+# sleeps. The DarkWake reading comes from an undocumented IOKit function;
+# read wrong for good (a headless Mac mini that never sleeps), it held every
+# run forever. A sleeping Mac is in DarkWake a few seconds at a time: 1 to
+# 12 minutes in all from 06:00 to 09:00, at most 35 in a whole night (pmset,
+# Oct 30 to Nov 5), so a run held from 06:00 until the Mac is opened still
+# waits for it. One that runs anyway and fails for want of a network is
+# retried without counting.
+_RUNS_WAIT_AT_MOST_SECONDS = 30 * 60
+
 # Run errors that pass by themselves, beyond those the engine already
 # classifies: a provider's 5xx, and a host the network could not reach
 # (a sink posting to Slack while offline).
@@ -223,6 +234,8 @@ class SchedulerService:
         self._waiting_job_ids: set[str] = set()
         # Why due runs wait right now (DarkWake, offline), or None.
         self._runs_wait_for: str | None = None
+        # When each due job began to wait for the Mac, by time.monotonic().
+        self._waiting_since: dict[str, float] = {}
         # Wake-mtime watermark: peers bump ``.wake`` on every CRUD;
         # we use it to know whether to bother re-scanning even if our
         # sleep timed out early. Currently informational — the tick
@@ -461,10 +474,12 @@ class SchedulerService:
                 continue
             candidates.append(job_id)
         if not candidates:
+            self._waiting_since.clear()
             return
         # Started in DarkWake or offline, a run fails with "Connection
         # error". Due jobs stay due and start once the Mac is awake and
-        # online; a run that starts late says so.
+        # online, or once they have waited too long; a run that starts late
+        # says so.
         reason = why_runs_wait()
         if reason is not None:
             if reason != self._runs_wait_for:
@@ -475,23 +490,39 @@ class SchedulerService:
                     "job_ids": candidates,
                 })
             self._runs_wait_for = reason
-            self._waiting_job_ids.update(candidates)
-            return
-        if self._runs_wait_for is not None:
+            candidates = self._waited_too_long(candidates)
+            if not candidates:
+                return
+        elif self._runs_wait_for is not None:
             logger.info("due jobs start: the wait is over (%s)", self._runs_wait_for)
             self._runs_wait_for = None
+            self._waiting_since.clear()
         for job_id in candidates:
             asyncio.create_task(
-                self._try_claim_and_fire(job_id),
+                self._try_claim_and_fire(job_id, waited_for=reason),
                 name=f"scheduler-claim-{job_id}",
             )
 
-    async def _try_claim_and_fire(self, job_id: str) -> None:
+    def _waited_too_long(self, job_ids: list[str]) -> list[str]:
+        """Those of the due ``job_ids`` that have waited for the Mac for
+        ``_RUNS_WAIT_AT_MOST_SECONDS``, and run anyway. The rest wait on."""
+        now = time.monotonic()
+        self._waiting_since = {j: self._waiting_since.get(j, now) for j in job_ids}
+        overdue = [
+            j for j in job_ids
+            if now - self._waiting_since[j] >= _RUNS_WAIT_AT_MOST_SECONDS
+        ]
+        self._waiting_job_ids.update(j for j in job_ids if j not in overdue)
+        return overdue
+
+    async def _try_claim_and_fire(self, job_id: str, *, waited_for: str | None = None) -> None:
         """Acquire the job's record lock, re-read the job under it,
         verify still due, take its run lock, pre-advance + persist, then
         fire. If the record lock is already held (a peer process or our
         own concurrent claim, or an edit), skip — the next tick looks
         again. If the run lock is held, the job's last run is still going.
+        ``waited_for`` is why the Mac cannot run jobs, when this one runs
+        anyway because it waited too long.
         """
         lock = FileLock(job_lock_path(job_id))
         if not lock.acquire():
@@ -538,6 +569,19 @@ class SchedulerService:
             self._in_flight_runs[task.get_name()] = task
             # Don't release run_lock here — _fire_with_concurrency owns it.
             run_lock = None
+            if waited_for is not None:
+                # A DarkWake or offline reading that is wrong shows here.
+                waited = time.monotonic() - self._waiting_since.get(job.id, time.monotonic())
+                logger.warning(
+                    "job %s (%s) waited %d min (%s) and runs anyway",
+                    job.id, job.name, waited // 60, waited_for,
+                )
+                append_event({
+                    "type": "scheduler_run_waited_too_long",
+                    "job_id": job.id,
+                    "reason": waited_for,
+                    "waited_seconds": round(waited),
+                })
         finally:
             lock.release()
             if run_lock is not None:
