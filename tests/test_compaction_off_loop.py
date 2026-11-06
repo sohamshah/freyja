@@ -355,3 +355,100 @@ async def test_an_interrupt_during_summarize_context_waits_for_its_worker():
     results = [i for i, (role, _) in enumerate(roles) if role == "tool_result"]
     follow_up = [i for i, (_, text) in enumerate(roles) if "also check the tests" in text]
     assert len(results) == 1 and len(follow_up) == 1 and results[0] < follow_up[0]
+
+
+# ─── restore and manual compaction (the bridge) ──────────────────────
+
+
+class _Worker:
+    """Stands in for SummaryCompaction.compact: blocks its thread like the
+    summary call, then rewrites the transcript, and notes whether the bridge
+    still counted a compaction as running when it finished."""
+
+    def __init__(self, sess):
+        self.sess = sess
+        self.started = threading.Event()
+        self.finished = threading.Event()
+        self.in_flight_at_finish: list[bool] = []
+
+    def compact(self, _compactor, transcript, provider, **_kw):
+        from engine.compaction import CompactionResult
+
+        self.started.set()
+        time.sleep(SUMMARY_DELAY_S)
+        transcript.append_compaction(summary="We read the files.", first_kept_id=transcript.entries[-1].id,
+                                     tokens_before=10_000)
+        self.in_flight_at_finish.append(self.sess._compaction_in_flight)
+        self.finished.set()
+        return CompactionResult(success=True, summary="We read the files.", tokens_before=10_000,
+                                tokens_after=100)
+
+
+def _bridge_session(monkeypatch, tmp_path):
+    import bridge.freyja_bridge as fb
+    from bridge.freyja_bridge import _BridgeSession, _BridgeState
+
+    monkeypatch.setattr(fb, "emit", lambda _e: None)
+    state = _BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    sess = _BridgeSession("test-off-loop", workspace=str(tmp_path), model_id="claude-sonnet-5-5",
+                          reasoning_level="auto", coordination_strategy="bus", state=state)
+    session = Session.create(system_prompt="t")
+    for i in range(6):
+        session.add_user_message(f"u{i} " + "x" * 2_000)
+        session.add_assistant_message(f"a{i}")
+
+    async def _initialize():
+        sess.session = session
+        sess.provider = _SlowSummaryProvider([])
+
+    sess.initialize = _initialize
+    # Nothing here may write the real ~/.freyja.
+    sess._mirror_compaction_event = lambda *_a, **_k: None
+    sess._write_compaction_snapshot = lambda **_k: {}
+    sess._save_transcript = lambda: None
+    sess._ledger_ground_truth = lambda: None
+    sess._restore_goal_state = lambda: False
+    sess._restore_inbox = lambda: None
+    worker = _Worker(sess)
+    monkeypatch.setattr(SummaryCompaction, "compact", lambda self, *a, **k: worker.compact(self, *a, **k))
+    return sess, session, worker
+
+
+async def _stop_while_compacting(aw, worker: _Worker) -> None:
+    task = asyncio.create_task(aw)
+    while not worker.started.is_set():
+        assert not task.done(), "returned without compacting"
+        await asyncio.sleep(0.01)
+    task.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The stop lands once the worker has written the transcript, and the
+        # flag held off the mid-session extraction until then.
+        assert worker.finished.is_set(), "the stop did not wait for the worker"
+    finally:
+        worker.finished.wait(5)
+    assert worker.in_flight_at_finish == [True]
+
+
+async def test_a_stop_during_restore_compaction_waits_for_the_worker(monkeypatch, tmp_path):
+    import bridge.transcript_persistence as tp
+    import engine.constants as constants
+
+    sess, session, worker = _bridge_session(monkeypatch, tmp_path)
+    session.restore_transcript = lambda _data: None
+    monkeypatch.setattr(tp, "load_transcript", lambda _id: {"metadata": {}, "transcript": {"entries": [{}]}})
+    monkeypatch.setattr(constants, "CONTEXT_COMPACTION_THRESHOLD", 0.0)
+
+    await _stop_while_compacting(sess.try_restore_transcript(), worker)
+
+    assert any(e.is_compaction for e in session.transcript.entries)
+
+
+async def test_a_stop_during_manual_compaction_waits_for_the_worker(monkeypatch, tmp_path):
+    sess, session, worker = _bridge_session(monkeypatch, tmp_path)
+    await sess.initialize()
+
+    await _stop_while_compacting(sess.force_compact(), worker)
+
+    assert any(e.is_compaction for e in session.transcript.entries)

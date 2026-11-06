@@ -5664,12 +5664,16 @@ class _BridgeSession:
                 _t0 = time.monotonic()
                 log("info", f"restore compaction started ({reason})")
                 try:
+                    from engine.runner import run_off_loop
+
                     # Worker thread, NOT the event loop. compact() is
                     # synchronous and makes blocking LLM calls; run inline
                     # it froze the whole gateway for 5.7 min on 2026-10-05,
                     # Slack's Socket Mode missed its pings, the socket was
-                    # dropped, and Slack redelivered the message.
-                    compaction_result = await asyncio.to_thread(
+                    # dropped, and Slack redelivered the message. A stop
+                    # waits for the worker (see run_off_loop): it rewrites
+                    # the transcript when the summary returns.
+                    compaction_result = await run_off_loop(
                         compactor.compact,
                         self.session.transcript, self.provider,
                         ground_truth=self._ledger_ground_truth(),
@@ -7025,7 +7029,11 @@ class _BridgeSession:
         # one compaction is running internally.
         self._compaction_in_flight = True
         try:
-            result = await asyncio.to_thread(
+            from engine.runner import run_off_loop
+
+            # A stop waits for the worker (see run_off_loop): it rewrites
+            # the transcript when the summary returns.
+            result = await run_off_loop(
                 compactor.compact,
                 self.session.transcript,
                 self.provider,
