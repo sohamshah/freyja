@@ -14356,15 +14356,18 @@ def _run_pre_turn_hook(hook: Any, sess: "_BridgeSession") -> None:
 
 
 def _emit_turn_failed(sess: "_BridgeSession", exc: BaseException) -> None:
-    """Emit a SESSION-SCOPED failure event so chat surfaces can show it.
+    """Emit a SESSION-SCOPED failure event for a turn that raised past
+    run_turn's own handler, so chat surfaces can show it. No
+    turn_complete follows, so the Slack consumer and the app also end
+    the turn on it.
 
-    ``emit_error`` publishes ``{"type": "error", ...}`` with no
-    ``sessionId``, and emit()'s listener fan-out is keyed on exactly
-    that field — so those errors reach no gateway listener and die in
-    the log. The operator's experience is the bot going quiet: the
-    incident that surfaced this was a session pinned to a Gemini model
-    on a daemon whose env had no GEMINI_API_KEY, which failed every
-    turn in that thread while saying nothing in Slack.
+    emit()'s listener fan-out is keyed on ``sessionId``: an event
+    without one (``emit_error`` called without ``session_id``) reaches
+    no gateway listener and dies in the log. The operator's experience
+    was the bot going quiet: the incident that surfaced this was a
+    session pinned to a Gemini model on a daemon whose env had no
+    GEMINI_API_KEY, which failed every turn in that thread while saying
+    nothing in Slack.
 
     Kept deliberately narrow: this reports that the turn died, it does
     not try to recover it.
