@@ -603,7 +603,9 @@ class SchedulerService:
                 run_lock = None
                 if not _hand_over(job, slot, attempt, to_app=in_app) and _due_again(job, slot, attempt):
                     save_job(job)
-                    self._waiting_job_ids.add(job.id)
+                # Due again if not sent or refused: looked at again on the
+                # loop's usual once a second, not every 0.05 s.
+                self._waiting_job_ids.add(job.id)
                 return
             # Hand off to the fire path while STILL holding the run
             # lock — the fire path releases it after the run completes.
@@ -679,30 +681,36 @@ class SchedulerService:
         runs the job's Slack thread (see ``_fires_in_the_gateway``), or the
         app's bridge, which runs its desktop session (``_fires_in_the_app``).
         The run is the one that scheduler would have made, under the job's
-        run lock. Returns False when it cannot start."""
+        run lock. Returns False when it cannot start; the slot is then due
+        again."""
         job = load_job(job_id)
         if job is None:
             return False
-        if _fires_in_the_gateway(job) or _fires_in_the_app(job):
-            logger.warning("job %s: handed a fire, but this process does not run its session", job_id)
-            return False
         run_lock = FileLock(job_run_lock_path(job_id))
-        if not run_lock.acquire():
-            if isinstance(job.schedule, OnceSchedule):
-                # The claim used up its only slot. It is due again, and is
-                # claimed once that run ends.
-                await update_job_record(job_id, lambda fresh: _due_again(fresh, slot, attempt))
-                logger.warning("job %s: handed a fire while a run of it goes on; due again", job_id)
-                return False
-            logger.warning("job %s: handed a fire while a run of it goes on; slot %s dropped", job_id, slot)
-            append_event({"type": "scheduler_slot_skipped_running", "job_id": job_id, "slot": slot})
-            return False
-        task = asyncio.create_task(
-            self._fire_with_concurrency(job, run_lock, slot, attempt),
-            name=f"scheduler-fire-{job.id}",
-        )
-        self._in_flight_runs[task.get_name()] = task
-        return True
+        if _fires_in_the_gateway(job) or _fires_in_the_app(job):
+            refused = "this process does not run its session"
+        elif not run_lock.acquire():
+            refused = "a run of it goes on"
+        else:
+            task = asyncio.create_task(
+                self._fire_with_concurrency(job, run_lock, slot, attempt),
+                name=f"scheduler-fire-{job.id}",
+            )
+            self._in_flight_runs[task.get_name()] = task
+            return True
+        # Dropped, the run was missed with only a log line. Due again, it is
+        # claimed on a later tick by the scheduler that owns it, which sees
+        # again where it runs, and whose overlap policy decides while a run
+        # of it goes on.
+        await update_job_record(job_id, lambda fresh: _due_again(fresh, slot, attempt))
+        logger.warning("job %s: handed a fire for slot %s, but %s; due again", job_id, slot, refused)
+        append_event({
+            "type": "scheduler_handed_fire_refused",
+            "job_id": job_id,
+            "slot": slot,
+            "reason": refused,
+        })
+        return False
 
     async def _fire_with_concurrency(
         self, job: JobRecord, run_lock: FileLock, slot: float | None, attempt: int = 0,
@@ -1765,12 +1773,15 @@ def _one_shot_used_up(job: JobRecord) -> bool:
 
 def _due_again(job: JobRecord, slot: float | None, attempt: int) -> bool:
     """Make ``job`` due at ``slot`` again, as retry ``attempt`` of it, when
-    it is a one-shot the claim used up and its run did not start: left so,
-    the reminder never ran and was gone. Returns True if it did."""
-    if not _one_shot_used_up(job):
+    its claimed run did not start. The claim moved its next fire past the
+    slot, and a one-shot's past its only one, which marked it done: left
+    so, the run was missed. A job paused or stopped meanwhile stays so.
+    Returns True if it did."""
+    if _one_shot_used_up(job):
+        job.enabled = True
+        job.status = "active"
+    elif not (job.enabled and job.status == "active"):
         return False
-    job.enabled = True
-    job.status = "active"
     job.next_fire_at = slot if slot is not None else time.time()
     job.retry_attempt = attempt
     return True
