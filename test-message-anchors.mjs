@@ -210,6 +210,35 @@ await check("a Slack session's activity keeps its newest events", async () => {
   assert.deepEqual([systemEvents[0].message, systemEvents.at(-1).message], ['event 50', 'event 249'])
 })
 
+await check("a Slack session shown from its transcript has the cards its kanban journal holds", async () => {
+  // The gateway's journal, named the way bridge/kanban_journal.py names
+  // it (invalid characters stripped). Each row holds the whole card.
+  const sessionsDir = path.join(home, '.freyja', 'sessions')
+  const plan = { id: 'card_001', title: 'Plan', status: 'running', parents: [], children: [], events: [{ kind: 'created' }] }
+  const ship = { id: 'card_002', title: 'Ship', status: 'triage', parents: [], children: [], events: [] }
+  const rows = [
+    { ts: 1, kind: 'create', task: plan },
+    { ts: 2, kind: 'create', task: ship },
+    { ts: 3, kind: 'link', parent: 'card_001', child: 'card_002', actor: 'parent' },
+    // An update snapshot is taken after the link, so it has the child.
+    { ts: 4, kind: 'update', id: 'card_001', actor: 'kanban-judge', task: { ...plan, status: 'done', children: ['card_002'] } },
+    { ts: 5, kind: 'restarted' },
+    { ts: 6, kind: 'unblock', id: 'card_002', actor: 'operator' },
+  ]
+  fs.writeFileSync(
+    path.join(sessionsDir, 'freyjaslackT1channelC11.0.kanban.jsonl'),
+    rows.map((row) => JSON.stringify(row)).join('\n') + '\nnot json\n',
+  )
+  const { loadSession } = await import('./src/main/persistence.ts')
+  const { kanbanCards } = loadSession('freyja:slack:T1:channel:C1:1.0').slice
+  assert.deepEqual(Object.keys(kanbanCards), ['card_001', 'card_002'])
+  assert.equal(kanbanCards.card_001.status, 'done')
+  assert.deepEqual(kanbanCards.card_001.events, [{ kind: 'created' }], 'a card keeps its history')
+  assert.deepEqual(kanbanCards.card_001.children, ['card_002'])
+  assert.deepEqual(kanbanCards.card_002.parents, ['card_001'])
+  assert.equal(kanbanCards.card_002.status, 'ready')
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

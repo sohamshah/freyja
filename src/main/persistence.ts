@@ -615,9 +615,9 @@ export function loadSession(id: string): PersistedSession | null {
  *  only exists as ``<id>.transcript.json`` (no slice). Populates the
  *  fields the conversation view needs — user + assistant text turns,
  *  basic token totals, model/reasoning/strategy from transcript
- *  metadata. Tool calls, sub-agents, kanban etc. are left empty
- *  (transcripts don't break them out and they're not meaningful for
- *  an external chat). */
+ *  metadata. Kanban cards come from the session's kanban journal.
+ *  Tool calls, sub-agents etc. are left empty (transcripts don't break
+ *  them out and they're not meaningful for an external chat). */
 /** Openings of the bridge's synthetic wake prompts (freyja_bridge.py
  *  TALK_WAKE_PROMPT / MEMO_WAKE_PROMPT / INBOX_WAKE_PROMPT). */
 const SYNTHETIC_WAKE_PREFIXES = [
@@ -888,7 +888,7 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
       contextWindow: 200_000,
     },
     systemEvents,
-    kanbanCards: {},
+    kanbanCards: kanbanCardsFromJournal(id),
     busMessages: [],
     inboxEvents: [],
     artifacts: [],
@@ -914,6 +914,46 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
     agentType: 'gateway-slack',
     slice,
   }
+}
+
+/** The cards a session's kanban journal rebuilds, keyed by id, as the
+ *  bridge's `SessionKanbanBoard.replay_events` rebuilds them. That
+ *  replay fills a desktop session's cards on restore (`kanban_replay`);
+ *  a gateway session's board lives in the gateway, so the app reads
+ *  its journal here. Each create or update row holds the whole card. */
+function kanbanCardsFromJournal(id: string): Record<string, Record<string, unknown>> {
+  const cards: Record<string, Record<string, any>> = {}
+  let raw: string
+  try {
+    // bridge/kanban_journal.py strips invalid characters from the id;
+    // resolveSessionPath falls back to that name.
+    raw = fs.readFileSync(resolveSessionPath(id, '.kanban.jsonl'), 'utf8')
+  } catch {
+    return cards
+  }
+  const ids = (list: unknown, add: string) => [
+    ...new Set([...(Array.isArray(list) ? list : []), add]),
+  ]
+  for (const line of raw.split('\n')) {
+    let row: any
+    try {
+      row = JSON.parse(line)
+    } catch {
+      continue
+    }
+    const taskId = typeof row?.task?.id === 'string' ? row.task.id : ''
+    if (row?.kind === 'create' && taskId && !cards[taskId]) {
+      cards[taskId] = row.task
+    } else if (row?.kind === 'update' && cards[taskId]) {
+      cards[taskId] = row.task
+    } else if (row?.kind === 'link' && cards[row.parent] && cards[row.child]) {
+      cards[row.parent] = { ...cards[row.parent], children: ids(cards[row.parent].children, row.child) }
+      cards[row.child] = { ...cards[row.child], parents: ids(cards[row.child].parents, row.parent) }
+    } else if (row?.kind === 'unblock' && cards[row.id]) {
+      cards[row.id] = { ...cards[row.id], status: 'ready' }
+    }
+  }
+  return cards
 }
 
 /** One-shot migration: rename session files written with the legacy
