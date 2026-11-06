@@ -37,14 +37,15 @@ at the end of the run (``runtime._apply_loop_decision``).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import datetime
 import logging
 import os
 import re
 import time
-from collections import deque
-from typing import TYPE_CHECKING, Any
+from collections import Counter, deque
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from bridge.scheduler.models import (
     CLEARABLE_FIELDS,
@@ -266,6 +267,9 @@ class SchedulerService:
         # Of those, the ones whose session waits for the process that runs
         # it: the gateway for a Slack thread, the app for a desktop session.
         self._waiting_for_owner: set[str] = set()
+        # The scheduler sessions that runs going on in this process load,
+        # each counted once per run (holds_session).
+        self._sessions_in_runs: Counter[str] = Counter()
         # Why due runs wait right now (DarkWake, offline), or None.
         self._runs_wait_for: str | None = None
         # When each due job began to wait for the Mac, by time.monotonic().
@@ -285,11 +289,26 @@ class SchedulerService:
 
     # ─── Lifecycle ────────────────────────────────────────────────────
 
-    @property
-    def owns_tick(self) -> bool:
-        """True while this process runs the tick loop. It fires the jobs
-        that run in a scheduler session, and so loads and saves those."""
-        return self._is_owner
+    def holds_session(self, session_id: str) -> bool:
+        """True when this process loads, runs and saves the scheduler
+        session ``session_id``: while it runs the tick loop, which fires
+        the jobs that run in one, and while a run here that loads it goes
+        on after the tick went to another process (the app hands it to a
+        LaunchAgent, stop() to a peer). That run's saves are the job's."""
+        return self._is_owner or self._sessions_in_runs[session_id] > 0
+
+    @contextlib.asynccontextmanager
+    async def _runs_here(self, job: JobRecord) -> AsyncIterator[None]:
+        """Count the scheduler session a run of ``job`` loads as this
+        process's while the run goes on (holds_session)."""
+        session = _scheduler_session_of(job)
+        if session is not None:
+            self._sessions_in_runs[session] += 1
+        try:
+            yield
+        finally:
+            if session is not None:
+                self._sessions_in_runs[session] -= 1
 
     async def start(self, *, always_on: bool = True) -> None:
         """Boot the run loop. Acquires the cross-process owner lock; if
@@ -776,7 +795,7 @@ class SchedulerService:
         """Holds the job's run lock for the duration of the fire."""
         task_name = asyncio.current_task().get_name()
         try:
-            async with self._concurrency:
+            async with self._runs_here(job), self._concurrency:
                 await self._fire_under_lock(job, slot, attempt)
         except Exception as exc:  # noqa: BLE001
             logger.exception("fire crashed (job=%s): %s", job.id, exc)
@@ -1387,7 +1406,7 @@ class SchedulerService:
     async def _run_now(self, job: JobRecord, lock: FileLock, **kw: Any) -> RunRecord:
         """Run ``job`` now under its run ``lock``, and release it."""
         try:
-            async with self._concurrency:
+            async with self._runs_here(job), self._concurrency:
                 from bridge.scheduler.runtime import fire_job
                 # Re-read inside the lock for freshness.
                 fresh = load_job(job.id) or job
@@ -1720,6 +1739,22 @@ def _fires_in_the_app(job: JobRecord) -> bool:
     if _is_gateway_session_id(root) or root.startswith(scheduler_session_id("")):
         return False
     return _session_exists_on_disk(spec.session_id)
+
+
+def _scheduler_session_of(job: JobRecord) -> str | None:
+    """The scheduler session (``scheduler:…``) a run of ``job`` loads, as
+    runtime._resolve_execution_session names it, or None when it runs in
+    a desktop session or a Slack thread."""
+    from bridge.scheduler.runtime import scheduler_session_id
+
+    spec = job.execution
+    if isinstance(spec, PersistentJobSession):
+        return spec.session_id or scheduler_session_id(job.id)
+    if isinstance(spec, NewSession):
+        return scheduler_session_id(f"{job.id}.ephemeral")
+    if (spec.session_id or "").startswith(scheduler_session_id("")):
+        return spec.session_id
+    return None
 
 
 def _gateway_runs() -> bool:

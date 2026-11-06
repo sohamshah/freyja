@@ -310,7 +310,7 @@ def _repair_target(session, tmp_path, monkeypatch):
     monkeypatch.setattr(
         fb, "emit", lambda ev: events.append(ev) if ev.get("type") == "system_event" else None,
     )
-    target = SimpleNamespace(id="session-test", session=session, pending_task=None, saves=0, _gateway_copy=False)
+    target = SimpleNamespace(id="session-test", session=session, pending_task=None, saves=0, _held_elsewhere=None)
     target._write_repair_backup = lambda data: fb._BridgeSession._write_repair_backup(target, data)
 
     def _save():

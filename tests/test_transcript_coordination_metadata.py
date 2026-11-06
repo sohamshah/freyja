@@ -34,7 +34,7 @@ def test_save_transcript_stamps_coordination_strategy_and_keeps_existing_metadat
         auto_dispatch_enabled=True,
         id="freyja-slack-T0-channel-C0-1781025596.714409",
         _save_goal_state=lambda: None,
-        _gateway_copy=False,
+        _held_elsewhere=None,
     )
 
     # Call the unbound method against the stub: exactly the stamping logic,

@@ -396,9 +396,19 @@ class TalkRouter:
                 return None  # we are the authority — deliver locally
             # To the gateway, or the thread's inbox file while none runs.
             # Not a copy loaded here: it saves and runs nothing
-            # (_BridgeSession._gateway_copy), so a message pushed into it
+            # (_BridgeSession._held_elsewhere), so a message pushed into it
             # was lost.
             return send_to_gateway(target_id, msg)
+
+        # A scheduled job's session, or a sub-agent under one, that the
+        # scheduler's tick owner in another process runs: its inbox file,
+        # as for a gateway that is not running. No route reaches that
+        # process, and a copy here (loaded, or cold-loaded to deliver)
+        # saves and runs nothing.
+        from bridge.freyja_bridge import _scheduler_runs_elsewhere
+
+        if _scheduler_runs_elsewhere(self._bridge_state, target_id):
+            return queue_to_inbox_sidecar(target_id, msg)
 
         # Neither the gateway nor the app's bridge (the scheduler daemon),
         # and not running here: a saved desktop session or sub-agent is

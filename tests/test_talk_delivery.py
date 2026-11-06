@@ -206,7 +206,7 @@ async def test_gateway_id_forwards_to_daemon_not_local_mirror(
 async def test_gateway_id_goes_to_its_inbox_file_when_no_daemon(monkeypatch, tmp_path):
     """No gateway runs: the thread's inbox file is its mailbox, even with a
     copy of the thread loaded here. The copy saves and runs nothing (see
-    _BridgeSession._gateway_copy), so a message pushed into it was lost
+    _BridgeSession._held_elsewhere), so a message pushed into it was lost
     while the sender was told it was delivered. The gateway reads the file
     when it next loads the thread."""
     from bridge import freyja_bridge as fb
