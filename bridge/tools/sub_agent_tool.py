@@ -2513,13 +2513,7 @@ Parameters:
         cap the card routes straight to `blocked` instead of looping
         another review.
         """
-        from bridge.tools.kanban_board import TERMINAL_STATUSES
-
-        # Cap on review<->rework cycles before we give up and surface
-        # the card to the operator. Matches the constant the bridge
-        # uses in its verdict-routing logic; duplicated here to avoid
-        # a circular import with freyja_bridge.
-        MAX_REVIEW_ITERATIONS = 3
+        from bridge.tools.kanban_board import MAX_REVIEW_ITERATIONS, TERMINAL_STATUSES
 
         task_id = getattr(record, "kanban_task_id", "")
         if (
@@ -2569,6 +2563,22 @@ Parameters:
                     worker_session_id=sticky_worker_id,
                 )
                 await self._emit_kanban_state_event("update", task)
+                # The same event the bridge's own cap path sends, so the
+                # chat and the dashboard feed say why the card stopped.
+                await _fire(
+                    self._spec.emit_event,
+                    {
+                        "type": "system_event",
+                        "sessionId": self._spec.parent_session_id,
+                        "subtype": "kanban_blocked",
+                        "message": f"{task_id} blocked at iteration cap",
+                        "details": {
+                            "cardId": task_id,
+                            "reviewIteration": current.review_iteration,
+                            "chatVisible": True,
+                        },
+                    },
+                )
                 return
 
             task = await self._spec.kanban_board.update(

@@ -274,6 +274,11 @@ DEFAULT_HISTORY_TAIL = 30
 # in autonomy a flapping card is much cheaper to surface to the parent
 # than to silently re-spawn forever.
 FAILURE_THRESHOLD = 3
+# Cap on review<->rework cycles. At the cap a fail verdict (the bridge's
+# `_handle_kanban_verdict`) or a worker ending without a verdict
+# (`_mark_kanban_terminal`) routes the card to `blocked` for the
+# operator. The renderer mirrors it as KANBAN_MAX_REVIEW_ITERATIONS.
+MAX_REVIEW_ITERATIONS = 3
 
 
 @dataclass

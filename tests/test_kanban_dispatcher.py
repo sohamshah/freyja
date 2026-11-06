@@ -704,3 +704,57 @@ def test_every_direct_board_write_in_the_bridge_is_driven_above() -> None:
     assert len(writes) == sum(_BOARD_WRITERS.values()), (
         f"direct board writes at freyja_bridge.py lines {writes}"
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_ending_at_the_review_cap_reports_the_block() -> None:
+    """A worker that dies at the review cap skips review and parks its
+    card in blocked. That path must say so the way the judge's own cap
+    path does, or the chat and the dashboard feed never learn why the
+    card stopped."""
+    import types
+
+    from bridge.tools.base import ToolRegistry
+    from bridge.tools.sub_agent_registry import SubAgentRegistry
+    from bridge.tools.sub_agent_tool import SubAgentSpec, SubAgentTool
+
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    create = await tool.execute("c1", {"action": "create", "title": "flaky"})
+    card_id = json.loads(create.content)["task"]["id"]
+    await board.update(
+        card_id,
+        actor="worker",
+        status="running",
+        worker_session_id="sub_w",
+        review_iteration=_BridgeSession.KANBAN_MAX_REVIEW_ITERATIONS,
+    )
+    sent: list[dict[str, Any]] = []
+
+    async def _emit(event: dict[str, Any]) -> None:
+        sent.append(event)
+
+    sub_tool = SubAgentTool(
+        SubAgentSpec(
+            parent_workspace="/tmp",
+            parent_model="fake-model",
+            build_provider=lambda *a, **k: None,
+            parent_registry=ToolRegistry(),
+            registry=SubAgentRegistry(),
+            emit_event=_emit,
+            parent_session_id="parent-1",
+            coordination_strategy="kanban",
+            kanban_board=board,
+        )
+    )
+    record = types.SimpleNamespace(
+        id="sub_w", label="worker", kanban_task_id=card_id, created_files=[]
+    )
+
+    await sub_tool._mark_kanban_terminal(record, "crashed", "ran out of road")
+
+    assert (await board.get(card_id)).status == "blocked"
+    [blocked] = [event for event in sent if event["subtype"] == "kanban_blocked"]
+    assert blocked["sessionId"] == "parent-1"
+    assert blocked["details"]["cardId"] == card_id
+    assert blocked["details"]["chatVisible"] is True

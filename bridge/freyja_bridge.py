@@ -60,6 +60,9 @@ from bridge.artifact_store import (
     SessionArtifactStore,
 )
 from bridge.project_paths import project_output_dir, project_output_guidance
+from bridge.tools.kanban_board import (  # noqa: E402
+    MAX_REVIEW_ITERATIONS as KANBAN_BOARD_MAX_REVIEW_ITERATIONS,
+)
 from bridge.session_ledger import (  # noqa: E402
     SessionLedger,
     classify_bash_command,
@@ -8678,10 +8681,10 @@ class _BridgeSession:
     KANBAN_MAX_PARALLEL = 3
     # Hard cap on review<->rework cycles before a card moves to blocked
     # and surfaces to the operator. The 3rd failed verdict skips the
-    # worker rewake and routes straight to blocked. Mirrored in
-    # sub_agent_tool.py's `_mark_kanban_terminal` to short-circuit
+    # worker rewake and routes straight to blocked. sub_agent_tool.py's
+    # `_mark_kanban_terminal` reads the same constant to short-circuit
     # review-entry past the cap as a defense in depth.
-    KANBAN_MAX_REVIEW_ITERATIONS = 3
+    KANBAN_MAX_REVIEW_ITERATIONS = KANBAN_BOARD_MAX_REVIEW_ITERATIONS
     # A running card with no `updated_at` activity for this long is
     # flagged via `kanban_stale`. The flag is informational — it
     # surfaces to the dashboard so the user can investigate.
