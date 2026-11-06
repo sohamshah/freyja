@@ -105,6 +105,24 @@ def always_on_scheduler_installed() -> bool:
     return plist_path().exists() or gateway_plist_path().exists()
 
 
+def always_on_scheduler_running() -> bool:
+    """True when launchd runs one of those LaunchAgents right now. Its
+    process then takes the owner lock within 15 s once it is free. Calls
+    ``launchctl``, so not for a hot path."""
+    if not is_supported_platform():
+        return False
+    from bridge.gateway.setup.launchd import LAUNCH_LABEL as GATEWAY_LABEL
+    from bridge.gateway.setup.launchd import plist_path as gateway_plist_path
+
+    for label, plist in (
+        (LAUNCH_AGENT_LABEL, plist_path()),
+        (GATEWAY_LABEL, gateway_plist_path()),
+    ):
+        if plist.exists() and (_launchctl_print(label) or {}).get("state") == "running":
+            return True
+    return False
+
+
 # NOTE: the prior single-writer takeover mechanism (bridge_lock_path +
 # on_app_start_takeover + on_app_quit_handoff) was removed in favor of
 # a stateless SchedulerService that reads from disk on every operation

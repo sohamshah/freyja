@@ -137,7 +137,7 @@ async def test_an_owner_that_stops_frees_the_lock_while_its_runs_finish(home, sl
 
 
 async def test_stop_waits_only_briefly_for_a_run_that_does_not_end(home, slow_fire, monkeypatch):
-    monkeypatch.setattr(service_mod, "_STOP_RUN_GRACE_SECONDS", 0.2, raising=False)
+    monkeypatch.setattr(service_mod, "_STOP_RUN_GRACE_SECONDS", 0.2)
     _due_job()
     owner = SchedulerService(SimpleNamespace())
     await owner.start()
@@ -164,3 +164,48 @@ async def test_the_gateway_frees_the_owner_lock_when_it_shuts_down(home):
     await gateway.shutdown()
 
     assert _lock_is_free()
+
+
+# ─── the first LaunchAgent install hands the tick over ────────────────
+
+
+async def test_the_desktop_bridge_hands_the_tick_to_a_launch_agent_installed_after_it_started(
+    home, monkeypatch,
+):
+    # No LaunchAgent at boot: the desktop bridge owns the scheduler. The
+    # first scheduled job installs the scheduler LaunchAgent, whose
+    # process starts CRUD-only and tries the lock every 15 s.
+    running = [False]
+    monkeypatch.setattr(service_mod, "always_on_scheduler_running", lambda: running[0])
+    desktop = SchedulerService(SimpleNamespace())
+    await desktop.start(always_on=False)
+    assert desktop._is_owner
+
+    _install_launch_agent(home, "com.freyja.scheduler")
+    await asyncio.sleep(0.3)
+    assert desktop._is_owner  # installed, not yet running
+
+    running[0] = True
+    always_on = SchedulerService(SimpleNamespace())
+    await always_on.start()
+    for _ in range(40):
+        if always_on._is_owner:
+            break
+        await asyncio.sleep(0.05)
+
+    assert not desktop._is_owner
+    assert always_on._is_owner
+    await always_on.stop()
+    await desktop.stop()
+
+
+async def test_an_always_on_owner_keeps_the_tick_when_launch_agents_are_installed(home, monkeypatch):
+    monkeypatch.setattr(service_mod, "always_on_scheduler_running", lambda: True)
+    _install_launch_agent(home, "co.freyja.gateway")
+    gateway = SchedulerService(SimpleNamespace())
+
+    await gateway.start()
+    await asyncio.sleep(0.3)
+
+    assert gateway._is_owner
+    await gateway.stop()

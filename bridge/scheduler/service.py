@@ -62,7 +62,10 @@ from bridge.scheduler.models import (
     SlackSinkSpec,
     new_job_id,
 )
-from bridge.scheduler.daemon import always_on_scheduler_installed
+from bridge.scheduler.daemon import (
+    always_on_scheduler_installed,
+    always_on_scheduler_running,
+)
 from bridge.scheduler.machine import why_runs_wait
 from bridge.scheduler.persistence import (
     FileLock,
@@ -206,6 +209,9 @@ class SchedulerService:
         self._is_owner: bool = False
         # While CRUD-only: retries the owner lock until a peer frees it.
         self._claim_task: asyncio.Task | None = None
+        # The desktop bridge owns only until a LaunchAgent can.
+        self._always_on = True
+        self._hand_over_task: asyncio.Task | None = None
         # Jobs that came due but could not fire yet. The loop does not
         # wake early for them: it looks again at its usual once a second.
         self._waiting_job_ids: set[str] = set()
@@ -233,7 +239,9 @@ class SchedulerService:
         while the app is open, and a run it owns dies when the app
         quits. It takes the lock only when no LaunchAgent runs a
         scheduler, and never retries. Retrying, it took the lock while
-        the gateway restarted, and the gateway came back CRUD-only.
+        the gateway restarted, and the gateway came back CRUD-only. When
+        it owns and a LaunchAgent gets installed (the first scheduled
+        job installs one), it lets go once launchd runs it.
 
         A second call while started does nothing. It used to open
         owner.lock again: a flock belongs to the open file description,
@@ -244,6 +252,7 @@ class SchedulerService:
             return
         # A restart after stop(): the loop exits as soon as it sees this.
         self._stopped = False
+        self._always_on = always_on
         ensure_dirs()
         # Try to claim ownership of the tick loop. If a peer (daemon
         # or another desktop bridge) already holds it, we still
@@ -287,6 +296,30 @@ class SchedulerService:
                 logger.exception("scheduler takeover failed; lock released")
                 self._is_owner = False
                 self._owner_lock.release()
+
+    async def _hand_over_to_launch_agent(self) -> None:
+        """Desktop bridge as owner: release the owner lock once a
+        LaunchAgent that runs a scheduler is installed and running. Its
+        process, CRUD-only until then, takes the tick within 15 s. Held
+        on, the lock stayed here until the app quit, and runs this
+        process starts die with the app. Runs in flight here keep their
+        job locks, so the new owner does not fire them again."""
+        while not self._stopped and self._is_owner:
+            await asyncio.sleep(_OWNER_RETRY_SECONDS)
+            if self._stopped or not self._is_owner or self._owner_lock is None:
+                return
+            if not always_on_scheduler_installed():
+                continue
+            if not await asyncio.to_thread(always_on_scheduler_running):
+                continue
+            self._is_owner = False
+            self._owner_lock.release()
+            logger.info(
+                "scheduler handed the tick to a LaunchAgent (pid %d is CRUD-only now)",
+                os.getpid(),
+            )
+            append_event({"type": "scheduler_handed_over"})
+            return
 
     def _boot_as_owner(self, *, mode: str) -> None:
         self._is_owner = True
@@ -340,12 +373,17 @@ class SchedulerService:
         self._loop_task = asyncio.create_task(
             self._run_loop(), name="scheduler-loop",
         )
+        if not self._always_on:
+            self._hand_over_task = asyncio.create_task(
+                self._hand_over_to_launch_agent(), name="scheduler-hand-over",
+            )
 
     async def stop(self) -> None:
         self._stopped = True
-        if self._claim_task is not None:
-            self._claim_task.cancel()
-            self._claim_task = None
+        for task in (self._claim_task, self._hand_over_task):
+            if task is not None:
+                task.cancel()
+        self._claim_task = self._hand_over_task = None
         if self._loop_task is not None:
             # The loop checks _stopped on each iteration; up to 1s
             # before it notices. Wait up to 5s for clean exit.
