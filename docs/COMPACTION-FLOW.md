@@ -116,7 +116,7 @@ summary_continued_prompt: bool      # Call A continued the cached prompt
 
 ### The details dict (`AsyncAgentRunner._compaction_event_details`)
 
-Paths A and B build their events with it. Path C builds its own in the tool. Path D builds an equivalent dict in `force_compact`, with extra fields: `request_tokens_before/after` (the tokenizer's count of the request), `last_provider_context_tokens` (the measured size), `transcript_tokens_before/after` and the snapshot paths. Path E builds a short one: `trigger`, `reason`, `tokens_before`, `tokens_after` (the tokenizer's count of the request), `entries_removed`, the summary text and the summarizer fields.
+Paths A and B build their events with it. Path C builds its own in the tool. Path D builds an equivalent dict in `force_compact`, with extra fields: `request_tokens_before/after` (the tokenizer's count of the request), `last_provider_context_tokens` (the measured size), `transcript_tokens_before/after` and the snapshot paths. Its `tokens_before` and `tokens_after` are both the tokenizer's count of the request: no call has measured the compacted transcript, and the measured size set against the count after it would show the gap between the two measures as saved. Path E builds a short one: `trigger`, `reason`, `tokens_before`, `tokens_after` (the tokenizer's count of the request), `entries_removed`, the summary text and the summarizer fields.
 
 ```jsonc
 {

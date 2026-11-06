@@ -6923,7 +6923,12 @@ class _BridgeSession:
         except Exception:  # noqa: BLE001
             transcript_tokens_before = 0
         provider_context_before = self._last_provider_context_tokens()
-        context_tokens_before = max(provider_context_before, request_tokens_before)
+        # The size after can only be the tokenizer's count (no call has
+        # measured the compacted transcript), so the size before is too.
+        # Before against after read the measured size against the count,
+        # which on Claude is about two thirds of it, and the gap showed as
+        # saved. The measured size stays in last_provider_context_tokens.
+        context_tokens_before = request_tokens_before
         entries_before = len(getattr(self.session.transcript, "entries", []))
         before_snapshot = self._write_compaction_snapshot(
             phase="before",
