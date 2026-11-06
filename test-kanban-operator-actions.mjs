@@ -54,20 +54,22 @@ const SESSION = 'session-kanban'
 const tile = (id, status, parents = [], metadata = {}) => ({ id, title: `title ${id}`, status, parents, metadata, events: [], comments: [] })
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
 
-/** Mount the board, open `cardId`'s focus view, and return its buttons. */
-async function openCard(cards, cardId) {
+/** Mount the board, open `cardId`'s focus view, and return its buttons
+ *  and its status pip. */
+async function openCard(cards, cardId, props = {}) {
   const host = document.createElement('div')
   document.body.replaceChildren(host)
   const root = createRoot(host)
   flushSync(() => root.render(createElement(KanbanBridgeView, {
     sessionId: SESSION, objective: 'o', cards, agents: [], telemetryEvents: [], contextPct: 0, cost: 0,
-    autoDispatchEnabled: false, onAttach() {}, onOpenDispatcherBrief() {},
+    autoDispatchEnabled: false, onAttach() {}, onOpenDispatcherBrief() {}, ...props,
   })))
   const article = [...host.querySelectorAll('article')].find((a) => a.textContent.includes(`title ${cardId}`))
   assert.ok(article, `no tile for ${cardId}`)
   flushSync(() => article.click())
   const button = (label) => [...host.querySelectorAll('footer button')].find((b) => b.textContent === label)
-  return { root, button }
+  const pip = host.querySelector('section span[title]')
+  return { root, button, pip }
 }
 
 /** What the bridge sends back for the session. */
@@ -203,6 +205,32 @@ await check('a Judge now whose judge does not start toasts why', async () => {
   answer('kanban_judge_failed', message, { cardId: 'card_002' })
   await settle()
   assert.equal(H().toast, null)
+  root.unmount()
+})
+
+// With autopilot on, the tick judges every card in review and a press
+// while its judge runs is refused. With autopilot off, Judge now stays: it
+// is the only way to start a judge again if the one the app saw start
+// never sends its verdict (a bridge restart), and the bridge refuses a
+// press while one really runs.
+await check('Judge now is hidden while a judge is on the card with autopilot on', async () => {
+  const started = [{ subtype: 'kanban_review_started', message: '', at: 1, details: { cardId: 'card_002' }, sessionId: SESSION, sessionTitle: 's' }]
+  const shown = async (props) => {
+    const { root, button } = await openCard([tile('card_002', 'review')], 'card_002', props)
+    const judgeNow = !!button('Judge now')
+    root.unmount()
+    return judgeNow
+  }
+  assert.equal(await shown({ autoDispatchEnabled: true, telemetryEvents: started }), false)
+  assert.equal(await shown({ autoDispatchEnabled: true }), true)
+  assert.equal(await shown({ autoDispatchEnabled: false, telemetryEvents: started }), true)
+})
+
+// The tiles said so; the card's own view showed the plain status.
+await check("a card held on a parent that can still finish says so in the card's own view", async () => {
+  const { root, pip } = await openCard([tile('card_001', 'running'), tile('card_002', 'ready', ['card_001'])], 'card_002')
+  assert.equal(pip.textContent, 'waiting')
+  assert.equal(pip.getAttribute('title'), 'Waits on card_001')
   root.unmount()
 })
 

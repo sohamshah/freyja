@@ -289,6 +289,21 @@ check('a crashed or timed-out tile says autopilot retries it, or that it waits f
   )
 })
 
+// A failed or cancelled card never moves again: the bridge has no move out
+// of either, and the card view offers no Unblock or dispatch for it. Its
+// pip said it waits "until you intervene".
+check('a failed or cancelled tile says it stays and that a new card tries the work again', () => {
+  const html = boardHtml([tile('card_002', 'failed'), tile('card_003', 'cancelled')], true)
+  assert.deepEqual(pipIn(html, 'card_002'), {
+    title: 'Worker ended as: failed. Nothing moves this card on. To try the work again, add a new card.',
+    label: 'failed',
+  })
+  assert.equal(
+    pipIn(html, 'card_003').title,
+    'Worker ended as: cancelled. Nothing moves this card on. To try the work again, add a new card.',
+  )
+})
+
 // Only the tick's review lane judges a card, and no tick runs with
 // autopilot off, so a card in review waits for the operator's Judge now.
 check('a tile in review says it waits for a judge with autopilot off', () => {

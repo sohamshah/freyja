@@ -170,6 +170,23 @@ export function KanbanBridgeView({
     return m
   }, [telemetryEvents])
 
+  // Cards the dispatcher holds on a parent that can still finish. They
+  // sit in ready or review with the cards that go out next, or in
+  // blocked as a crashed or timed-out card it sends back to a worker.
+  // The board's tiles and the open card's view both say so.
+  const waitingByCard = useMemo(() => {
+    const byId = new Map(cards.map((c) => [c.id, c]))
+    const m = new Map<string, string[]>()
+    for (const c of cards) {
+      const column = columnForCard(c)
+      const retried = ['crashed', 'timed_out'].includes((c.status ?? '').toLowerCase())
+      if (column !== 'ready' && column !== 'review' && !retried) continue
+      const pending = pendingParents(c, byId)
+      if (pending.length > 0) m.set(c.id, pending)
+    }
+    return m
+  }, [cards])
+
   // Cards a judge is on: their last judge event is kanban_review_started,
   // and a verdict or kanban_judge_failed ends it. With autopilot off only
   // the operator's Judge now starts one.
@@ -217,6 +234,7 @@ export function KanbanBridgeView({
           card={openCard}
           allCards={cards}
           judgeHistory={cardJudgeHistory}
+          waitingOn={waitingByCard.get(openCard.id)}
           judging={judgedCards.has(openCard.id)}
           stations={stations}
           sessionId={sessionId}
@@ -235,6 +253,7 @@ export function KanbanBridgeView({
               stations={stations}
               verdictsByCard={verdictsByCard}
               staleByCard={staleByCard}
+              waitingByCard={waitingByCard}
               judgedCards={judgedCards}
               addOpen={addOpen}
               addColumn={addColumn}
@@ -283,6 +302,7 @@ function CardOperatorActions({
   card,
   allCards,
   sessionId,
+  judging,
   autoDispatchEnabled,
   onCancel,
   onUnblock,
@@ -292,6 +312,7 @@ function CardOperatorActions({
   card: KanbanCardView
   allCards: KanbanCardView[]
   sessionId: string
+  judging: boolean
   autoDispatchEnabled: boolean
   onCancel: () => void | Promise<void>
   onUnblock: () => void | Promise<void>
@@ -310,8 +331,12 @@ function CardOperatorActions({
   const isRetried = status === 'crashed' || status === 'timed_out'
   // Only the tick's review lane judges a card, so with autopilot off a
   // card in review waits for this; the bridge starts the judge the lane
-  // would.
+  // would. With autopilot on the tick judges it, and a press while its
+  // judge runs is refused, so Judge now is hidden then. With autopilot
+  // off it stays: if the judge the app saw start never sends its verdict
+  // (a bridge restart), it is the only way to start one again.
   const isReview = status === 'review'
+  const canJudge = isReview && !(judging && autoDispatchEnabled)
 
   const showCancel = isRunning
   // Only retry-eligible statuses can move back to READY — absorbing
@@ -323,7 +348,7 @@ function CardOperatorActions({
   // Force-dispatch is most useful when autopilot is off, but we keep
   // it visible whenever the card is dispatchable so the operator can
   // skip the queue cadence even with autopilot on.
-  const showForceDispatch = (isReadyish || isRetried || isReview) && card.metadata?.role !== 'mission_root'
+  const showForceDispatch = (isReadyish || isRetried || canJudge) && card.metadata?.role !== 'mission_root'
   const showReassign = !isDone
 
   // Nothing to do — render nothing rather than an empty divider.
@@ -649,6 +674,7 @@ function TaskBoard({
   stations,
   verdictsByCard,
   staleByCard,
+  waitingByCard,
   judgedCards,
   addOpen,
   addColumn,
@@ -665,6 +691,7 @@ function TaskBoard({
   stations: Station[]
   verdictsByCard: Map<string, JudgeHistoryEntry[]>
   staleByCard: Map<string, { firstStaleAt: number; ageSeconds: number }>
+  waitingByCard: Map<string, string[]>
   judgedCards: Set<string>
   addOpen: boolean
   addColumn: ColumnKey
@@ -685,21 +712,6 @@ function TaskBoard({
     }
     return m
   }, [stations])
-  // Cards the dispatcher holds on a parent that can still finish. They
-  // sit in ready or review with the cards that go out next, or in
-  // blocked as a crashed or timed-out card it sends back to a worker.
-  const waitingByCard = useMemo(() => {
-    const byId = new Map(cards.map((c) => [c.id, c]))
-    const m = new Map<string, string[]>()
-    for (const c of cards) {
-      const column = columnForCard(c)
-      const retried = ['crashed', 'timed_out'].includes((c.status ?? '').toLowerCase())
-      if (column !== 'ready' && column !== 'review' && !retried) continue
-      const pending = pendingParents(c, byId)
-      if (pending.length > 0) m.set(c.id, pending)
-    }
-    return m
-  }, [cards])
 
   return (
     <section className="min-w-0 overflow-hidden">
@@ -1293,7 +1305,7 @@ function StatusPip({
   if (isTerminalFailure && terminalLabel) {
     label = terminalLabel
     const next = !UNBLOCKABLE_STATUSES.has((status ?? '').toLowerCase())
-      ? 'Card is in blocked until you intervene.'
+      ? 'Nothing moves this card on. To try the work again, add a new card.'
       : autoDispatchEnabled
         ? 'Autopilot retries it on a new worker.'
         : 'Autopilot is off, so it waits for you to dispatch it.'
@@ -2122,6 +2134,7 @@ function CardFocusView({
   card,
   allCards,
   judgeHistory,
+  waitingOn,
   judging,
   stations,
   sessionId,
@@ -2133,6 +2146,7 @@ function CardFocusView({
   card: KanbanCardView
   allCards: KanbanCardView[]
   judgeHistory: JudgeHistoryEntry[]
+  waitingOn: string[] | undefined
   judging: boolean
   stations: Station[]
   sessionId: string
@@ -2185,6 +2199,7 @@ function CardFocusView({
               column={column}
               status={card.status}
               workerTerminalState={card.workerTerminalState}
+              waitingOn={waitingOn}
               judging={judging}
               autoDispatchEnabled={autoDispatchEnabled}
             />
@@ -2459,6 +2474,7 @@ function CardFocusView({
           card={card}
           allCards={allCards}
           sessionId={sessionId}
+          judging={judging}
           autoDispatchEnabled={autoDispatchEnabled}
           // The store toasts the bridge's answer to each: it can refuse.
           onCancel={async () => {
