@@ -133,3 +133,20 @@ async def test_the_channel_takes_the_envelopes_workspace_when_two_are_installed(
     await _deliver(a, "agent_session_stopped", event=_stop(OPERATOR), body=SHARED)
     assert [s[0] for s in seen] == ["stopped"]
     assert a._channel_team == {"C1": "T1"}
+
+
+async def test_a_stop_before_any_message_takes_the_envelopes_workspace(tmp_path):
+    # After a restart the gateway has seen no message in the channel yet.
+    # With two workspaces signed in, a Stop and a reaction, which name no
+    # team, resolved to no workspace and the operator was refused.
+    a, seen = _adapter(tmp_path, teams=("T1", "T2"))
+    await _deliver(a, "agent_session_stopped", event=_stop(OPERATOR), body=SHARED)
+    await _deliver(a, "reaction_added", event=_reaction(OPERATOR), body=SHARED)
+    assert [s[0] for s in seen] == ["stopped", "feedback"]
+    assert seen[0][1]["team_id"] == seen[1][1]["team_id"] == "T1"
+
+
+async def test_an_envelope_from_a_workspace_not_signed_in_names_none(tmp_path):
+    a, seen = _adapter(tmp_path, teams=("T1", "T2"))
+    await _deliver(a, "agent_session_stopped", event=_stop(OPERATOR), body={**SHARED, "team_id": "T9"})
+    assert seen == []

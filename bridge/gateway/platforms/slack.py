@@ -2272,8 +2272,17 @@ class SlackAdapter:
 
     # ── agent session event handlers ──────────────────────────────
 
-    def _team_for(self, event: dict[str, Any], channel_id: str) -> str:
+    def _team_for(
+        self, event: dict[str, Any], channel_id: str, body: dict[str, Any] | None = None
+    ) -> str:
         team_id = str(event.get("team_id") or event.get("team") or "")
+        if not team_id:
+            # The envelope names the workspace the event came from, as for
+            # a message (_handle_message). Stop and a reaction name none,
+            # and the cache is empty until a message there after a restart.
+            home_team = str((body or {}).get("team_id") or "")
+            if home_team in self._team_clients:
+                team_id = home_team
         if not team_id:
             team_id = self._channel_team.get(channel_id, "")
         if not team_id and len(self._team_clients) == 1:
@@ -2341,7 +2350,7 @@ class SlackAdapter:
             "chat_id": channel_id,
             "thread_ts": str(event.get("thread_ts") or "") or None,
             "user_id": str(event.get("user") or ""),
-            "team_id": self._team_for(event, channel_id),
+            "team_id": self._team_for(event, channel_id, body),
             "streaming_message_ts": list(event.get("streaming_message_ts") or []),
         }
         logger.info(
@@ -2383,7 +2392,7 @@ class SlackAdapter:
             "title": title,
             "previous_title": str(event.get("previous_title") or ""),
             "user_id": str(event.get("user") or ""),
-            "team_id": self._team_for(event, channel_id),
+            "team_id": self._team_for(event, channel_id, body),
         }
         # Freyja's own rename, if Slack reports it back, is stored already.
         own_bot_ids = set(self._team_bot_user_ids.values())
@@ -2478,7 +2487,7 @@ class SlackAdapter:
         item_user = str(event.get("item_user") or "")
         if not (self.bindings.has_message_ts(ts) or item_user in bot_ids):
             return
-        team_id = self._team_for(event, channel_id)
+        team_id = self._team_for(event, channel_id, body)
         # Only the operator's reactions are feedback. Anyone else gets no
         # note: a reaction is not addressed to Freyja (see _tell_denied).
         if not self.slack_config.user_allowed(
@@ -2671,7 +2680,7 @@ class SlackAdapter:
         entities = (event.get("context") or {}).get("entities") or []
         # Keyed like the readers look it up: by workspace, never by the
         # bot's user id when the event names no team.
-        team_id = self._team_for(event, "") or "_"
+        team_id = self._team_for(event, "", body) or "_"
         user_id = str(event.get("user") or "")
         if not self.slack_config.user_allowed(
             team_id, user_id, self._user_team(event, body)
