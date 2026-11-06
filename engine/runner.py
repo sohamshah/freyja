@@ -443,6 +443,7 @@ class AgentRunner:
         compaction_strategy: CompactionStrategy | None = None,
         tool_registry: ToolRegistry | None = None,
         on_tool_call: Callable[[ToolCall], str | None] | None = None,
+        on_llm_call: Callable[[dict[str, Any]], None] | None = None,
     ):
         self.provider = provider
         self.config = config or AgentConfig()
@@ -451,6 +452,8 @@ class AgentRunner:
         self.compaction = compaction_strategy or NoOpCompaction()
         self.tool_registry = tool_registry or ToolRegistry()
         self.on_tool_call = on_tool_call
+        # Compaction reports its summary calls here (see _attempt_compaction).
+        self.on_llm_call = on_llm_call
 
         # Tool result truncator
         self.truncator = ToolResultTruncator(self.config)

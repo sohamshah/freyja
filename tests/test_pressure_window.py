@@ -159,3 +159,28 @@ def test_the_sync_runner_reads_pressure_against_the_usable_window():
     runner.run(Session.create(system_prompt="t"), "a task")
 
     assert compacted == [True]
+
+
+def test_the_sync_runner_reports_its_summary_calls():
+    # The sync runner's compaction forwards the summarizer's calls to
+    # self.on_llm_call, which it never set: the AttributeError was logged
+    # inside the compactor's hook and the call never reported.
+    from engine.providers import APIUsage, ProviderResponse
+    from engine.runner import AgentRunner
+
+    class _SyncProvider(_Provider):
+        def complete(self, **_kw):
+            return ProviderResponse(content="done", stop_reason="end_turn", usage=APIUsage(input_tokens=40_000))
+
+    class _ReportingCompactor(_Compactor):
+        def compact(self, transcript, provider, *, on_summarizer_call=None, **kw):
+            on_summarizer_call({"call_kind": "summarizer", "model": "claude-sonnet-5-5", "output_tokens": 900})
+            return super().compact(transcript, provider, **kw)
+
+    calls: list[dict] = []
+    runner = AgentRunner(_SyncProvider(), config=AgentConfig(max_tokens_per_turn=50_000),
+                         compaction_strategy=_ReportingCompactor(), on_llm_call=calls.append)
+
+    runner.run(Session.create(system_prompt="t"), "a task")
+
+    assert [(c["call_kind"], c["output_tokens"]) for c in calls] == [("summarizer", 900)]
