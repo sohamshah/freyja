@@ -1,7 +1,9 @@
 // The operator's buttons on a kanban card (KanbanBridgeView.tsx's card
 // focus view). Force dispatch said "Force-dispatched card_002" as soon as
 // it was pressed, even when the bridge refused the card; the reason only
-// reached the activity feed. Run from the repo root:
+// reached the activity feed. A triage card a cancelled or failed parent
+// left behind had no Unblock button, though the bridge unblocks it, so
+// only the agent could release it. Run from the repo root:
 //   npx tsx test-kanban-operator-actions.mjs
 
 import assert from 'node:assert/strict'
@@ -107,6 +109,41 @@ await check('a force dispatch the bridge carried out toasts that the card went o
   await settle()
   assert.equal(H().toast, null)
   root.unmount()
+})
+
+// The bridge's `unblock` releases a triage card when a parent never
+// finishes (cancelled, failed, or missing from the board) and no other
+// parent can still finish; the mission root counts as done.
+await check('a triage card the bridge would unblock has an Unblock button that sends the unblock', async () => {
+  const cards = [
+    tile('card_001', 'running', [], { role: 'mission_root' }),
+    tile('card_002', 'cancelled'),
+    tile('card_003', 'running'),
+    tile('card_004', 'failed'),
+    tile('card_005', 'done'),
+    tile('card_006', 'triage', ['card_001', 'card_002', 'card_005']),
+    tile('card_007', 'triage', ['card_004']),
+    tile('card_008', 'triage', ['card_009']),
+    tile('card_010', 'triage', ['card_002', 'card_003']),
+    tile('card_011', 'triage', ['card_003']),
+  ]
+  const unblockable = async (id) => {
+    const { root, button } = await openCard(cards, id)
+    const unblock = button('Unblock')
+    if (unblock) {
+      unblock.click()
+      await settle()
+      assert.deepEqual(sent.at(-1), { type: 'kanban_operator_unblock', sessionId: SESSION, cardId: id })
+    }
+    root.unmount()
+    return !!unblock
+  }
+  assert.equal(await unblockable('card_006'), true)
+  assert.equal(await unblockable('card_007'), true)
+  assert.equal(await unblockable('card_008'), true)
+  // Another parent can still finish, or none failed: the bridge refuses.
+  assert.equal(await unblockable('card_010'), false)
+  assert.equal(await unblockable('card_011'), false)
 })
 
 if (failures) {

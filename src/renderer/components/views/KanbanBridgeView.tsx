@@ -258,12 +258,14 @@ export function KanbanBridgeView({
 // on card state so the operator only sees the verbs that mean
 // something for the card they're looking at — `cancel` only on
 // running, `unblock` only when the card is blocked or in one of the
-// terminal failure statuses (bucketed there by K-1), `force dispatch`
+// terminal failure statuses (bucketed there by K-1), or a triage card
+// the bridge's `unblock` releases past a failed parent, `force dispatch`
 // only when there's something to dispatch, `reassign` available
 // whenever the card isn't already done. Confirmation prompts gate the
 // destructive actions because the IPC effects are immediate.
 function CardOperatorActions({
   card,
+  allCards,
   sessionId,
   autoDispatchEnabled,
   onCancel,
@@ -272,6 +274,7 @@ function CardOperatorActions({
   onReassign,
 }: {
   card: KanbanCardView
+  allCards: KanbanCardView[]
   sessionId: string
   autoDispatchEnabled: boolean
   onCancel: () => void | Promise<void>
@@ -291,7 +294,9 @@ function CardOperatorActions({
   // Only retry-eligible statuses can move back to READY — absorbing
   // terminal states (failed / cancelled) are excluded so we don't offer
   // a button the bridge would reject as an illegal transition.
-  const showUnblock = UNBLOCKABLE_STATUSES.has(status)
+  const showUnblock =
+    UNBLOCKABLE_STATUSES.has(status) ||
+    unblockableFromTriage(card, new Map(allCards.map((c) => [c.id, c])))
   // Force-dispatch is most useful when autopilot is off, but we keep
   // it visible whenever the card is dispatchable so the operator can
   // skip the queue cadence even with autopilot on.
@@ -2393,6 +2398,7 @@ function CardFocusView({
       <footer className="relative z-10 flex flex-wrap items-center gap-2 border-t border-white/[0.06] bg-black/20 px-8 py-3.5">
         <CardOperatorActions
           card={card}
+          allCards={allCards}
           sessionId={sessionId}
           autoDispatchEnabled={autoDispatchEnabled}
           onCancel={async () => {
@@ -2784,6 +2790,18 @@ function pendingParents(card: KanbanCardView, byId: Map<string, KanbanCardView>)
     if (!parent || parent.metadata?.role === 'mission_root') return false
     return !['done', 'cancelled', 'failed'].includes((parent.status ?? '').toLowerCase())
   })
+}
+
+// A triage card the bridge's `unblock` releases to ready: a parent never
+// finishes (cancelled, failed or missing) and no parent can still
+// finish, as `pendingParents` counts them.
+function unblockableFromTriage(card: KanbanCardView, byId: Map<string, KanbanCardView>): boolean {
+  if ((card.status ?? '').toLowerCase() !== 'triage') return false
+  const neverFinishes = (pid: string) => {
+    const parent = byId.get(pid)
+    return !parent || ['cancelled', 'failed'].includes((parent.status ?? '').toLowerCase())
+  }
+  return (card.parents ?? []).some(neverFinishes) && pendingParents(card, byId).length === 0
 }
 
 function bucketCards(cards: KanbanCardView[]): Buckets {
