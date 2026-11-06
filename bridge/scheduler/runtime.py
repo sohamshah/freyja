@@ -555,6 +555,15 @@ async def _resolve_execution_session(
                 "its Slack thread runs in the Slack gateway; its scheduled "
                 "runs go there"
             )
+        from bridge.scheduler.service import _fires_in_the_app
+
+        if _fires_in_the_app(job):
+            # Likewise a desktop session, beside the app's copy. Its
+            # scheduled fires go to the app.
+            raise ValueError(
+                "its session runs in the app; its scheduled runs go there, "
+                "and wait while the app is closed"
+            )
         sessions = getattr(state, "sessions", {}) or {}
         sess = sessions.get(spec.session_id)
         if sess is None:

@@ -1780,11 +1780,30 @@ async def _start_desktop_control_reader(state: "_BridgeState") -> Any | None:
             "artifact_note",
             lambda cmd: _handle_artifact_note_command(state, cmd),
         )
+        reader.register(
+            "scheduler_fire",
+            lambda cmd: _handle_scheduler_fire_command(state, cmd),
+        )
         await reader.start()
         return reader
     except Exception as exc:  # noqa: BLE001
         log("warn", f"desktop control reader failed to start: {exc}")
         return None
+
+
+async def _handle_scheduler_fire_command(state: Any, cmd: dict[str, Any]) -> None:
+    """A scheduled job that fires into a desktop session, claimed by the
+    scheduler that owns the tick in another process (the scheduler daemon,
+    or the gateway). The session lives here, so its run does too: run
+    there, it went on a copy whose saves wrote over this process's."""
+    scheduler = getattr(state, "scheduler", None)
+    job_id = str(cmd.get("job_id") or "")
+    if scheduler is None or not job_id:
+        log("warn", f"scheduler_fire: dropped (job {job_id!r})")
+        return
+    await scheduler.fire_handed_over(
+        job_id, cmd.get("scheduled_for"), int(cmd.get("attempt") or 0),
+    )
 
 
 async def _wake_archived_subagent(

@@ -246,8 +246,9 @@ class SchedulerService:
         # Jobs that came due but could not fire yet. The loop does not
         # wake early for them: it looks again at its usual once a second.
         self._waiting_job_ids: set[str] = set()
-        # Of those, the ones whose Slack thread waits for the gateway.
-        self._waiting_for_gateway: set[str] = set()
+        # Of those, the ones whose session waits for the process that runs
+        # it: the gateway for a Slack thread, the app for a desktop session.
+        self._waiting_for_owner: set[str] = set()
         # Why due runs wait right now (DarkWake, offline), or None.
         self._runs_wait_for: str | None = None
         # When each due job began to wait for the Mac, by time.monotonic().
@@ -565,16 +566,21 @@ class SchedulerService:
                 self._came_due_while_running(job)
                 return
             in_gateway = _fires_in_the_gateway(job)
-            if in_gateway and not _gateway_runs():
-                # Its Slack thread runs only in the gateway: it stays due
-                # until one runs.
-                if job.id not in self._waiting_for_gateway:
-                    logger.info("job %s (%s) waits for the Slack gateway", job.id, job.name)
-                    append_event({"type": "scheduler_run_waits_for_gateway", "job_id": job.id})
-                self._waiting_for_gateway.add(job.id)
+            in_app = not in_gateway and _fires_in_the_app(job)
+            if (in_gateway and not _gateway_runs()) or (in_app and not _app_runs()):
+                # Its Slack thread runs only in the gateway, and its desktop
+                # session only in the app: it stays due until that runs.
+                if job.id not in self._waiting_for_owner:
+                    owner = "the Slack gateway" if in_gateway else "the app"
+                    logger.info("job %s (%s) waits for %s", job.id, job.name, owner)
+                    append_event({
+                        "type": "scheduler_run_waits_for_gateway" if in_gateway else "scheduler_run_waits_for_app",
+                        "job_id": job.id,
+                    })
+                self._waiting_for_owner.add(job.id)
                 self._waiting_job_ids.add(job.id)
                 return
-            self._waiting_for_gateway.discard(job.id)
+            self._waiting_for_owner.discard(job.id)
             if _misfire_policy(job) == "fire_all":
                 _bound_catch_up(job, now)
                 if job.next_fire_at is None or job.next_fire_at > now:
@@ -591,11 +597,11 @@ class SchedulerService:
             self._recompute_next_fire(job, force=True, after_fire=True)
             save_job(job)
             touch_wake()
-            if in_gateway:
-                # The gateway takes the run lock for the run.
+            if in_gateway or in_app:
+                # The gateway or the app takes the run lock for the run.
                 run_lock.release()
                 run_lock = None
-                _hand_to_gateway(job, slot, attempt)
+                _hand_over(job, slot, attempt, to_app=in_app)
                 return
             # Hand off to the fire path while STILL holding the run
             # lock — the fire path releases it after the run completes.
@@ -665,14 +671,15 @@ class SchedulerService:
     async def fire_handed_over(self, job_id: str, slot: float | None, attempt: int = 0) -> bool:
         """Fire a run of ``job_id`` that the scheduler owning the tick, in
         another process, claimed and handed to this one: the gateway, which
-        runs the job's Slack thread (see ``_fires_in_the_gateway``). The run
-        is the one that scheduler would have made, under the job's run lock.
-        Returns False when it cannot start."""
+        runs the job's Slack thread (see ``_fires_in_the_gateway``), or the
+        app's bridge, which runs its desktop session (``_fires_in_the_app``).
+        The run is the one that scheduler would have made, under the job's
+        run lock. Returns False when it cannot start."""
         job = load_job(job_id)
         if job is None:
             return False
-        if _fires_in_the_gateway(job):
-            logger.warning("job %s: handed a fire, but this process is not the gateway", job_id)
+        if _fires_in_the_gateway(job) or _fires_in_the_app(job):
+            logger.warning("job %s: handed a fire, but this process does not run its session", job_id)
             return False
         run_lock = FileLock(job_run_lock_path(job_id))
         if not run_lock.acquire():
@@ -1502,6 +1509,34 @@ def _fires_in_the_gateway(job: JobRecord) -> bool:
     return _gateway_holds(spec.session_id)
 
 
+def _fires_in_the_app(job: JobRecord) -> bool:
+    """True when ``job`` fires into a saved desktop session and this
+    process is not the app's bridge, which loads, runs and saves desktop
+    sessions. A run here would build a copy of the session beside the
+    app's, and each would save over the other. The scheduler daemon often
+    owns the tick, and did that. A Slack thread is the gateway's, and a
+    scheduler session is run by whichever scheduler fires its own job.
+
+    While the app is closed the job waits for it, as a Slack thread's job
+    waits for the gateway. Run here then, the run would need a lock that
+    the app's bridge asks before it loads that session, and the app loads
+    sessions as it boots."""
+    spec = job.execution
+    if not isinstance(spec, ExistingSession) or not spec.session_id:
+        return False
+    from bridge.freyja_bridge import _is_gateway_session_id, _root_session_id
+    from bridge.gateway.pid import holds_desktop_lock
+    from bridge.scheduler.runtime import scheduler_session_id
+    from bridge.tools.talk_tool import _session_exists_on_disk
+
+    if holds_desktop_lock():
+        return False
+    root = _root_session_id(spec.session_id)
+    if _is_gateway_session_id(root) or root.startswith(scheduler_session_id("")):
+        return False
+    return _session_exists_on_disk(spec.session_id)
+
+
 def _gateway_runs() -> bool:
     try:
         from bridge.gateway.pid import get_running_pid
@@ -1511,12 +1546,24 @@ def _gateway_runs() -> bool:
         return False
 
 
-def _hand_to_gateway(job: JobRecord, slot: float | None, attempt: int) -> None:
-    """Send a claimed fire of ``job`` to the gateway on its control channel.
-    The gateway reads from where it left off, so a fire sent while it
-    restarts runs when it is back (``GatewayDaemon._on_scheduler_fire``)."""
-    from bridge.gateway.control_channel import append_command
+def _app_runs() -> bool:
+    try:
+        from bridge.gateway.pid import desktop_bridge_runs
 
+        return desktop_bridge_runs()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _hand_over(job: JobRecord, slot: float | None, attempt: int, *, to_app: bool) -> None:
+    """Send a claimed fire of ``job`` on its control channel to the process
+    that runs its session: the gateway (``GatewayDaemon._on_scheduler_fire``)
+    or the app's bridge (``_handle_scheduler_fire_command``). Each reads
+    from where it left off, so a fire sent while it restarts runs when it
+    is back."""
+    from bridge.gateway.control_channel import append_command, desktop_commands_path
+
+    owner = "the app" if to_app else "the Slack gateway"
     try:
         append_command({
             "type": "scheduler_fire",
@@ -1524,12 +1571,16 @@ def _hand_to_gateway(job: JobRecord, slot: float | None, attempt: int) -> None:
             "scheduled_for": slot,
             "attempt": attempt,
             "origin_pid": os.getpid(),
-        })
+        }, path=desktop_commands_path() if to_app else None)
     except Exception:  # noqa: BLE001
-        logger.exception("job %s: the fire for slot %s did not reach the gateway", job.id, slot)
+        logger.exception("job %s: the fire for slot %s did not reach %s", job.id, slot, owner)
         return
-    logger.info("job %s (%s): fire handed to the Slack gateway", job.id, job.name)
-    append_event({"type": "scheduler_run_handed_to_gateway", "job_id": job.id, "slot": slot})
+    logger.info("job %s (%s): fire handed to %s", job.id, job.name, owner)
+    append_event({
+        "type": "scheduler_run_handed_to_app" if to_app else "scheduler_run_handed_to_gateway",
+        "job_id": job.id,
+        "slot": slot,
+    })
 
 
 def _failed_for_a_passing_reason(run: RunRecord) -> bool:
