@@ -15343,6 +15343,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         task = await sess.kanban_board.get(card_id)
         if task is None:
             log("warn", f"kanban_operator_cancel: card {card_id} not found")
+            sess._emit_kanban_event(  # noqa: SLF001
+                "kanban_operator_cancel_failed",
+                f"Could not cancel {card_id}: it is not on the board",
+                details={"cardId": card_id, "reason": "it is not on the board"},
+            )
             return
         worker_sid = (getattr(task, "worker_session_id", "") or "").strip()
         if worker_sid and sess.subagent_registry is not None:
@@ -15361,6 +15366,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             sess._emit_kanban_card(task, source="operator")  # noqa: SLF001
         except Exception as exc:  # noqa: BLE001
             log("warn", f"kanban_operator_cancel failed for {card_id}: {exc}")
+            sess._emit_kanban_event(  # noqa: SLF001
+                "kanban_operator_cancel_failed",
+                f"Could not cancel {card_id}: {exc}",
+                details={"cardId": card_id, "reason": str(exc)},
+            )
             return
         sess._kanban_dispatched.discard(card_id)  # noqa: SLF001
         sess._emit_kanban_event(  # noqa: SLF001
@@ -15394,6 +15404,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         task = await sess.kanban_board.get(card_id)
         if task is None:
             log("warn", f"kanban_operator_unblock: card {card_id} not found")
+            sess._emit_kanban_event(  # noqa: SLF001
+                "kanban_operator_unblock_failed",
+                f"Could not unblock {card_id}: it is not on the board",
+                details={"cardId": card_id, "reason": "it is not on the board"},
+            )
             return
         status = (task.status or "").lower()
         updated = None
@@ -15416,7 +15431,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 note = f"card is {status!r}; nothing to unblock"
         except Exception as exc:  # noqa: BLE001
             log("warn", f"kanban_operator_unblock failed for {card_id}: {exc}")
-            return
+            moved, note = False, str(exc)
         if not moved:
             # Surface the no-op honestly instead of faking success.
             log("info", f"kanban_operator_unblock no-op for {card_id}: {note}")
@@ -15553,10 +15568,18 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     else "Cleared assignee by operator"
                 ),
             )
-            sess._emit_kanban_card(task, source="operator")  # noqa: SLF001
+            note = "" if task is not None else "it is not on the board"
         except Exception as exc:  # noqa: BLE001
-            log("warn", f"kanban_operator_reassign failed for {card_id}: {exc}")
+            task, note = None, str(exc)
+        if note:
+            log("warn", f"kanban_operator_reassign failed for {card_id}: {note}")
+            sess._emit_kanban_event(  # noqa: SLF001
+                "kanban_operator_reassign_failed",
+                f"Could not reassign {card_id}: {note}",
+                details={"cardId": card_id, "reason": note},
+            )
             return
+        sess._emit_kanban_card(task, source="operator")  # noqa: SLF001
         sess._emit_kanban_event(  # noqa: SLF001
             "kanban_operator_reassigned",
             f"Operator reassigned {card_id} → {new_assignee or 'unassigned'}",

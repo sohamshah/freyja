@@ -995,22 +995,65 @@ function answerAutopilot(sessionId: string, subtype: string, message: string, de
   )
 }
 
-/** Cards the operator force dispatched, by session and card, until the
- *  bridge answers. It can refuse the card (a parent it waits on, no free
- *  worker slot), so the toast says what it did, not what was asked. */
-const forceDispatchAsked = new Set<string>()
+/** The operator's presses on a kanban card, by session, card and command,
+ *  until the bridge answers. It can refuse each one (a card that moved on,
+ *  a parent it waits on, no free worker slot), so the toast says what it
+ *  did, not what was asked. */
+const kanbanCardAsked = new Set<string>()
 
-/** Toast the bridge's answer to a force dispatch: the reason it refused,
- *  or that the card went out. */
-function answerForceDispatch(sessionId: string, subtype: string, message: string, details?: Record<string, unknown>): void {
+/** The bridge's answers to the card commands: for each event, the command
+ *  it answers (when it comes from that source: the tick sends the same
+ *  event), and the toast when it says the command was done. A refusal
+ *  toasts its own message. */
+const KANBAN_CARD_ANSWERS: Record<
+  string,
+  { command: string; source?: string; toast?: (cardId: string, details?: Record<string, unknown>) => string }
+> = {
+  kanban_operator_cancelled: { command: 'kanban_operator_cancel', toast: (cardId) => `Cancelled ${cardId}` },
+  kanban_operator_cancel_failed: { command: 'kanban_operator_cancel' },
+  kanban_operator_unblocked: { command: 'kanban_operator_unblock', toast: (cardId) => `Unblocked ${cardId}` },
+  kanban_operator_unblock_failed: { command: 'kanban_operator_unblock' },
+  kanban_dispatched: {
+    command: 'kanban_operator_force_dispatch',
+    source: 'operator_force',
+    toast: (cardId) => `Force-dispatched ${cardId}`,
+  },
+  kanban_operator_force_dispatch_failed: { command: 'kanban_operator_force_dispatch' },
+  kanban_operator_reassigned: {
+    command: 'kanban_operator_reassign',
+    toast: (cardId, details) =>
+      typeof details?.assignee === 'string' && details.assignee
+        ? `Reassigned ${cardId} → ${details.assignee}`
+        : `Cleared assignee on ${cardId}`,
+  },
+  kanban_operator_reassign_failed: { command: 'kanban_operator_reassign' },
+}
+
+/** Send a card command and wait for the bridge's answer to toast. */
+async function askKanbanCard(command: string, sessionId: string, cardId: string, extra?: Record<string, unknown>): Promise<void> {
+  if (!sessionId || !cardId) return
+  const api = (window as any).harness
+  if (!api?.sendCommand) return
+  kanbanCardAsked.add(`${sessionId} ${cardId} ${command}`)
+  await api.sendCommand({ type: command, sessionId, cardId, ...extra })
+}
+
+/** Toast the bridge's answer to a card command: the reason it refused,
+ *  or what it did. A Slack session's commands run in the gateway, which
+ *  refuses them all when it is not running or has no such thread. */
+function answerKanbanCard(sessionId: string, subtype: string, message: string, details?: Record<string, unknown>): void {
+  const showToast = (text: string, tone: 'info' | 'warn') => queueMicrotask(() => useHarness.getState().showToast(text, tone))
+  if (subtype === 'control_command_skipped' && typeof details?.command === 'string') {
+    const asked = [...kanbanCardAsked].filter((key) => key.startsWith(`${sessionId} `) && key.endsWith(` ${details.command}`))
+    for (const key of asked) kanbanCardAsked.delete(key)
+    if (asked.length) showToast(message, 'warn')
+    return
+  }
+  const answer = KANBAN_CARD_ANSWERS[subtype]
+  if (!answer || (answer.source && details?.source !== answer.source)) return
   const cardId = typeof details?.cardId === 'string' ? details.cardId : ''
-  const refused = subtype === 'kanban_operator_force_dispatch_failed'
-  const dispatched = subtype === 'kanban_dispatched' && details?.source === 'operator_force'
-  if (!refused && !dispatched) return
-  if (!forceDispatchAsked.delete(`${sessionId} ${cardId}`)) return
-  queueMicrotask(() =>
-    useHarness.getState().showToast(refused ? message : `Force-dispatched ${cardId}`, refused ? 'warn' : 'info'),
-  )
+  if (!kanbanCardAsked.delete(`${sessionId} ${cardId} ${answer.command}`)) return
+  showToast(answer.toast ? answer.toast(cardId, details) : message, answer.toast ? 'info' : 'warn')
 }
 
 /** What was attached to a message the bridge may refuse (`send_refused`,
@@ -4608,7 +4651,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       if (ev.type === 'system_event' && ev.sessionId) {
         prev = undoRefusedChange(prev, ev.sessionId, ev.subtype, ev.details)
         answerAutopilot(ev.sessionId, ev.subtype, ev.message, ev.details)
-        answerForceDispatch(ev.sessionId, ev.subtype, ev.message, ev.details)
+        answerKanbanCard(ev.sessionId, ev.subtype, ev.message, ev.details)
       }
 
       // Session-scoped events: route to the right slice.
@@ -4984,47 +5027,19 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
   },
 
   async cancelKanbanCard(sessionId, cardId) {
-    if (!sessionId || !cardId) return
-    const api = (window as any).harness
-    if (!api?.sendCommand) return
-    await api.sendCommand({
-      type: 'kanban_operator_cancel',
-      sessionId,
-      cardId,
-    })
+    await askKanbanCard('kanban_operator_cancel', sessionId, cardId)
   },
 
   async unblockKanbanCard(sessionId, cardId) {
-    if (!sessionId || !cardId) return
-    const api = (window as any).harness
-    if (!api?.sendCommand) return
-    await api.sendCommand({
-      type: 'kanban_operator_unblock',
-      sessionId,
-      cardId,
-    })
+    await askKanbanCard('kanban_operator_unblock', sessionId, cardId)
   },
 
   async forceDispatchKanbanCard(sessionId, cardId) {
-    if (!sessionId || !cardId) return
-    const api = (window as any).harness
-    if (!api?.sendCommand) return
-    forceDispatchAsked.add(`${sessionId} ${cardId}`)
-    await api.sendCommand({
-      type: 'kanban_operator_force_dispatch',
-      sessionId,
-      cardId,
-    })
+    await askKanbanCard('kanban_operator_force_dispatch', sessionId, cardId)
   },
 
   async reassignKanbanCard(sessionId, cardId, assignee) {
-    if (!sessionId || !cardId) return
-    const api = (window as any).harness
-    if (!api?.sendCommand) return
-    await api.sendCommand({
-      type: 'kanban_operator_reassign',
-      sessionId,
-      cardId,
+    await askKanbanCard('kanban_operator_reassign', sessionId, cardId, {
       assignee: (assignee ?? '').trim() || undefined,
     })
   },

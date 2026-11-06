@@ -1090,3 +1090,64 @@ async def test_force_dispatch_says_why_it_sent_nothing(monkeypatch, case: str) -
         "running": "it is running",
         "no_sub_agent": "this session has no sub_agent tool",
     }[case]
+
+
+async def _operator_command(monkeypatch: Any, session: Any, **cmd: Any) -> list[dict[str, Any]]:
+    """Send one of the app's card commands; return the system events the
+    bridge sends."""
+    import types
+
+    from bridge import freyja_bridge
+
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(freyja_bridge, "emit", sent.append)
+
+    async def _ensure_session(_session_id: str) -> Any:
+        return session
+
+    state = types.SimpleNamespace(active_session_id=session.id, ensure_session=_ensure_session)
+    await freyja_bridge._handle_command(state, {"sessionId": session.id, **cmd})
+    return [event for event in sent if event["type"] == "system_event"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command,case,reason",
+    [
+        ("kanban_operator_cancel", "missing", "it is not on the board"),
+        ("kanban_operator_cancel", "done", "invalid transition 'done' -> 'cancelled'"),
+        ("kanban_operator_unblock", "missing", "it is not on the board"),
+        ("kanban_operator_unblock", "raises", "journal closed"),
+        ("kanban_operator_reassign", "missing", "it is not on the board"),
+    ],
+)
+async def test_a_card_command_the_bridge_cannot_carry_out_says_why(
+    monkeypatch, command: str, case: str, reason: str,
+) -> None:
+    """The app waits for the bridge's answer to Cancel, Unblock and
+    Reassign. Cancel sent nothing for a card not on the board or one it
+    could not move, Unblock nothing for a card not on the board or a
+    write that raised, and Reassign said it reassigned a card not on the
+    board."""
+    board = SessionKanbanBoard()
+    card = (await board.create(title="card")).id
+    session = _make_session(board=board, sub_tool=_StubSubAgentTool())
+    if case == "done":
+        await board.update(card, actor="worker", status="running")
+        await board.update(card, actor="kanban-judge", status="done")
+    if case == "raises":
+        await board.update(card, actor="worker", status="blocked")
+
+        async def _raises(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("journal closed")
+
+        board.update = _raises
+    card_id = "card_404" if case == "missing" else card
+
+    sent = await _operator_command(monkeypatch, session, type=command, cardId=card_id, assignee="code")
+
+    [refused] = sent
+    assert refused["subtype"] == f"{command}_failed"
+    assert refused["details"]["cardId"] == card_id
+    assert reason in refused["details"]["reason"]
+    assert reason in refused["message"]

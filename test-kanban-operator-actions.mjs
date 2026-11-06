@@ -1,9 +1,9 @@
 // The operator's buttons on a kanban card (KanbanBridgeView.tsx's card
-// focus view). Force dispatch said "Force-dispatched card_002" as soon as
-// it was pressed, even when the bridge refused the card; the reason only
-// reached the activity feed. A triage card a cancelled or failed parent
-// left behind had no Unblock button, though the bridge unblocks it, so
-// only the agent could release it. Run from the repo root:
+// focus view). Force dispatch, Cancel, Unblock and Reassign said they were
+// done as soon as they were pressed, even when the bridge refused; the
+// reason only reached the activity feed. A triage card a cancelled or
+// failed parent left behind had no Unblock button, though the bridge
+// unblocks it, so only the agent could release it. Run from the repo root:
 //   npx tsx test-kanban-operator-actions.mjs
 
 import assert from 'node:assert/strict'
@@ -144,6 +144,82 @@ await check('a triage card the bridge would unblock has an Unblock button that s
   // Another parent can still finish, or none failed: the bridge refuses.
   assert.equal(await unblockable('card_010'), false)
   assert.equal(await unblockable('card_011'), false)
+})
+
+// Cancel, Unblock and Reassign said they were done as soon as they were
+// pressed, and the bridge's refusals reached only the activity feed.
+const pressed = [
+  {
+    label: 'Unblock', status: 'blocked', command: { type: 'kanban_operator_unblock' },
+    done: ['kanban_operator_unblocked', 'Operator unblocked card_002', {}], toast: 'Unblocked card_002',
+    refused: ['kanban_operator_unblock_failed', "Could not unblock card_002: card is 'review'; nothing to unblock"],
+  },
+  {
+    label: 'Cancel', status: 'running', command: { type: 'kanban_operator_cancel' },
+    done: ['kanban_operator_cancelled', 'Operator cancelled card_002', {}], toast: 'Cancelled card_002',
+    refused: ['kanban_operator_cancel_failed', 'Could not cancel card_002: it is not on the board'],
+  },
+  {
+    label: 'Reassign…', status: 'ready', command: { type: 'kanban_operator_reassign', assignee: 'code' },
+    done: ['kanban_operator_reassigned', 'Operator reassigned card_002 → code', { assignee: 'code' }],
+    toast: 'Reassigned card_002 → code',
+    refused: ['kanban_operator_reassign_failed', 'Could not reassign card_002: it is not on the board'],
+  },
+]
+window.confirm = () => true
+window.prompt = () => 'code'
+for (const action of pressed) {
+  await check(`${action.label} toasts the bridge's refusal, not that it was done`, async () => {
+    useHarness.setState({ activeSessionId: SESSION, toast: null })
+    const { root, button } = await openCard([tile('card_002', action.status)], 'card_002')
+    button(action.label).click()
+    await settle()
+    assert.deepEqual(sent.at(-1), { ...action.command, sessionId: SESSION, cardId: 'card_002' })
+    assert.equal(H().toast, null)
+    const [subtype, message] = action.refused
+    answer(subtype, message, { cardId: 'card_002', reason: 'r' })
+    await settle()
+    assert.equal(H().toast?.message, message)
+    assert.equal(H().toast?.tone, 'warn')
+    root.unmount()
+  })
+
+  await check(`${action.label} toasts that it was done when the bridge did it`, async () => {
+    useHarness.setState({ activeSessionId: SESSION, toast: null })
+    const { root, button } = await openCard([tile('card_002', action.status)], 'card_002')
+    button(action.label).click()
+    await settle()
+    assert.equal(H().toast, null)
+    const [subtype, message, details] = action.done
+    answer(subtype, message, { cardId: 'card_002', ...details })
+    await settle()
+    assert.equal(H().toast?.message, action.toast)
+    assert.equal(H().toast?.tone, 'info')
+    // Answered once: a second answer toasts nothing.
+    useHarness.setState({ toast: null })
+    answer(subtype, message, { cardId: 'card_002', ...details })
+    await settle()
+    assert.equal(H().toast, null)
+    root.unmount()
+  })
+}
+
+await check('a press the Slack gateway could not take toasts why', async () => {
+  useHarness.setState({ activeSessionId: SESSION, toast: null })
+  const { root, button } = await openCard([tile('card_002', 'blocked')], 'card_002')
+  button('Unblock').click()
+  await settle()
+  const message = "Not done: this session's kanban board is in the Slack gateway, which is not running."
+  answer('control_command_skipped', message, { command: 'kanban_operator_unblock', requestId: undefined })
+  await settle()
+  assert.equal(H().toast?.message, message)
+  assert.equal(H().toast?.tone, 'warn')
+  // The press is answered.
+  useHarness.setState({ toast: null })
+  answer('kanban_operator_unblocked', 'Operator unblocked card_002', { cardId: 'card_002' })
+  await settle()
+  assert.equal(H().toast, null)
+  root.unmount()
 })
 
 if (failures) {

@@ -2087,7 +2087,6 @@ function CardFocusView({
   const unblockKanbanCard = useHarness((s) => s.unblockKanbanCard)
   const forceDispatchKanbanCard = useHarness((s) => s.forceDispatchKanbanCard)
   const reassignKanbanCard = useHarness((s) => s.reassignKanbanCard)
-  const showToast = useHarness((s) => s.showToast)
 
   const column = columnForCard(card)
   const isOperatorCard = card.createdBy === 'operator'
@@ -2401,16 +2400,14 @@ function CardFocusView({
           allCards={allCards}
           sessionId={sessionId}
           autoDispatchEnabled={autoDispatchEnabled}
+          // The store toasts the bridge's answer to each: it can refuse.
           onCancel={async () => {
             await cancelKanbanCard(sessionId, card.id)
-            showToast(`Cancelled ${card.id}`, 'info')
           }}
           onUnblock={async () => {
             await unblockKanbanCard(sessionId, card.id)
-            showToast(`Unblocked ${card.id}`, 'info')
           }}
           onForceDispatch={async () => {
-            // The store toasts the bridge's answer: it can refuse the card.
             await forceDispatchKanbanCard(sessionId, card.id)
           }}
           onReassign={async () => {
@@ -2421,12 +2418,6 @@ function CardFocusView({
             )
             if (next == null) return
             await reassignKanbanCard(sessionId, card.id, next)
-            showToast(
-              next.trim()
-                ? `Reassigned ${card.id} → ${next.trim()}`
-                : `Cleared assignee on ${card.id}`,
-              'info',
-            )
           }}
         />
       </footer>
