@@ -1730,6 +1730,18 @@ Parameters:
                         else None
                     ),
                 })
+                # A scheduled run in the parent counts its sub-agents' calls
+                # (scheduler.runtime._RunCost). Reported only under the
+                # sub-agent's own id, they were in neither budget of the run.
+                from bridge.freyja_bridge import notify_session_listeners
+
+                notify_session_listeners(parent_session_id_local, {
+                    "type": "subagent_llm_call",
+                    "sessionId": parent_session_id_local,
+                    "subagentId": sub_id_local,
+                    "subagentStartedAt": record.start_time,
+                    "costUsd": float(cost) if cost is not None else None,
+                })
             except Exception:
                 pass
 

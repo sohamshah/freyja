@@ -938,7 +938,9 @@ class _RunCost:
     its sub-agents' reports start, a goal loop's continuations). A run's
     cost was how much the session's total grew while it ran, so a fire
     into the operator's session was billed the turns of the messages the
-    operator sent while it waited.
+    operator sent while it waited. The calls of the sub-agents of its
+    session that started while it ran are its cost too: they report
+    under their own session ids, so neither of its budgets saw them.
 
     The call that takes the run over ``cap`` stops it. Checked only when
     the run ended, a run over its budget had spent the money by then."""
@@ -947,6 +949,7 @@ class _RunCost:
         self.cost = 0.0
         self._run_id = run_id
         self._cap = cap
+        self._started = time.time()
         # emit() also runs on worker threads (compaction's calls).
         self._loop = asyncio.get_running_loop()
         self._turns: set[str] = set()
@@ -963,7 +966,11 @@ class _RunCost:
             if self._next_turn_is_ours or (self._turns and event.get("automatic")):
                 self._turns.add(event.get("turnId"))
             self._next_turn_is_ours = False
-        elif kind == "llm_call_metric" and event.get("turnId") in self._turns:
+        elif (
+            (kind == "llm_call_metric" and event.get("turnId") in self._turns)
+            or (kind == "subagent_llm_call"
+                and float(event.get("subagentStartedAt") or 0.0) >= self._started)
+        ):
             self.cost += float(event.get("costUsd") or 0.0)
             if self._cap is not None and self.cost > self._cap:
                 self._loop.call_soon_threadsafe(stop_run_now, self._run_id, "budget_exceeded")

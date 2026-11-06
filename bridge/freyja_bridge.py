@@ -390,6 +390,26 @@ def unregister_session_listener(session_id: str, callback: Any) -> None:
         _SESSION_EVENT_LISTENERS.pop(session_id, None)
 
 
+def notify_session_listeners(session_id: str, event: dict[str, Any]) -> None:
+    """Fire the in-process listeners of ``session_id`` with ``event``, as
+    emit() does, without printing or saving it: for events only this
+    process reads (a sub-agent's model calls, for its parent's scheduled
+    run)."""
+    # Best-effort; never let a listener take down the bridge.
+    for cb in list(_SESSION_EVENT_LISTENERS.get(session_id, [])):
+        try:
+            cb(event)
+        except Exception:  # noqa: BLE001
+            # Swallow + log; listener failures must not affect
+            # other listeners or the bridge itself.
+            try:
+                sys.stderr.write(
+                    f"session listener for {session_id} failed (continuing)\n"
+                )
+            except Exception:
+                pass
+
+
 # emit() runs on worker threads too: compaction runs in one (see
 # engine.runner.run_off_loop), and its log lines and summarizer metrics come
 # through here while the event loop keeps emitting. Unlocked, two events
@@ -429,21 +449,9 @@ def emit(event: dict[str, Any]) -> None:
     sid = event.get("sessionId")
     if sid and (sid in _SESSION_EVENT_FILES or not _gateway_holds(sid)):
         _append_session_event_jsonl(sid, event)
-    # Per-session listener fan-out (best-effort; never let a listener
-    # take down the bridge).
+    # Per-session listener fan-out.
     if sid and sid in _SESSION_EVENT_LISTENERS:
-        for cb in list(_SESSION_EVENT_LISTENERS.get(sid, [])):
-            try:
-                cb(event)
-            except Exception:  # noqa: BLE001
-                # Swallow + log; listener failures must not affect
-                # other listeners or the bridge itself.
-                try:
-                    sys.stderr.write(
-                        f"session listener for {sid} failed (continuing)\n"
-                    )
-                except Exception:
-                    pass
+        notify_session_listeners(sid, event)
 
 
 # Cached per-session JSONL file handles. Keyed by sanitized session

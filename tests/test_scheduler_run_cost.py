@@ -8,6 +8,9 @@ billed to the run, toward the run's budget and the job's daily one.
 
 The per-run cost cap was checked only when the run ended, so a run over
 it had already spent the money.
+
+A run's sub-agents report their calls under their own session ids, so
+neither the run's budget nor its job's daily one counted them.
 """
 
 from __future__ import annotations
@@ -94,6 +97,47 @@ def operator_session(monkeypatch, tmp_path):
     return sess
 
 
+async def _sub_agent_of(parent_id: str, tmp_path, monkeypatch):
+    """A sub-agent of ``parent_id`` and the hook its runner reports each
+    model call to."""
+    import bridge.tools.sub_agent_tool as sat
+    import engine.runner as runner_module
+    from bridge.tools.base import ToolRegistry
+    from bridge.tools.sub_agent_registry import SubAgentRegistry
+
+    hooks: list = []
+
+    class _ChildRunner(runner_module.AsyncAgentRunner):
+        def __init__(self, *a, **kw):
+            hooks.append(kw["on_llm_call"])
+            super().__init__(*a, **kw)
+
+        async def run(self, *_a, **_k):
+            raise RuntimeError("stop here")
+
+    class _Provider:
+        name = "anthropic"
+        model_id = "claude-sonnet-5-5"
+        context_window = 200_000
+
+    async def _emit(_event):
+        return None
+
+    registry = SubAgentRegistry()
+    spec = sat.SubAgentSpec(
+        parent_workspace=str(tmp_path), parent_model="claude-sonnet-5-5",
+        build_provider=lambda *a, **k: _Provider(), parent_registry=ToolRegistry(),
+        registry=registry, emit_event=_emit, parent_session_id=parent_id,
+    )
+    record = registry.register(id="sub_r_1", label="researcher", task="find sources",
+                               mode="background")
+    with monkeypatch.context() as m:
+        m.setattr(runner_module, "AsyncAgentRunner", _ChildRunner)
+        with pytest.raises(RuntimeError, match="stop here"):
+            await sat.SubAgentTool(spec)._run_child(record)
+    return record, hooks[0]
+
+
 def _job(**fields) -> JobRecord:
     job = JobRecord(id="sched_digest", name="digest", schedule=IntervalSchedule(seconds=3600),
                     prompt="write the digest", execution=ExistingSession(session_id="s1"),
@@ -162,3 +206,71 @@ async def test_a_run_stops_at_the_call_that_takes_it_over_its_budget(operator_se
     assert run.status == "budget_exceeded"
     assert run.cost_usd == pytest.approx(0.30)
     assert "budget exceeded" in run.error
+
+
+async def test_the_calls_of_a_sub_agent_its_turn_spawns_are_its_cost(
+    operator_session, tmp_path, monkeypatch,
+):
+    import time
+
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.costs = {"write the digest": 20}
+    record, on_llm_call = await _sub_agent_of("s1", tmp_path, monkeypatch)
+
+    def _spawn_and_work():
+        record.start_time = time.time()
+        for _ in range(2):
+            on_llm_call({"model": "claude-sonnet-5-5", "input_tokens": 1000, "output_tokens": 30})
+
+    sess.during_fire = _spawn_and_work
+
+    run = await fire_job(_Service({"s1": sess}), _job())
+
+    # Sub-agents report their calls under their own session ids.
+    assert run.cost_usd == pytest.approx(0.80)
+
+
+async def test_a_sub_agent_started_before_the_run_is_not_its_cost(
+    operator_session, tmp_path, monkeypatch,
+):
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.costs = {"write the digest": 20}
+    record, on_llm_call = await _sub_agent_of("s1", tmp_path, monkeypatch)
+    record.start_time -= 60
+    sess.during_fire = lambda: on_llm_call(
+        {"model": "claude-sonnet-5-5", "input_tokens": 1000, "output_tokens": 30},
+    )
+
+    run = await fire_job(_Service({"s1": sess}), _job())
+
+    assert run.cost_usd == pytest.approx(0.20)
+
+
+async def test_a_sub_agents_call_that_takes_the_run_over_its_budget_stops_it(
+    operator_session, tmp_path, monkeypatch,
+):
+    import time
+
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.costs = {"write the digest": 10}
+    sess.calls = 5
+    record, on_llm_call = await _sub_agent_of("s1", tmp_path, monkeypatch)
+
+    def _spawn_and_work():
+        record.start_time = time.time()
+        on_llm_call({"model": "claude-sonnet-5-5", "input_tokens": 1000, "output_tokens": 30})
+
+    sess.during_fire = _spawn_and_work
+
+    run = await fire_job(_Service({"s1": sess}), _job(budget=BudgetSpec(max_cost_usd_per_run=0.25)))
+
+    # $0.30 from the sub-agent, then $0.10 from the turn's first call.
+    assert sess.made == 1
+    assert run.status == "budget_exceeded"
+    assert run.cost_usd == pytest.approx(0.40)
