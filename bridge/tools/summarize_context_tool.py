@@ -278,7 +278,10 @@ class SummarizeContextTool:
             except Exception:
                 logger.exception("pin_entries application failed")
 
-        tokens_before = transcript.estimate_tokens()
+        # The request's size, as the runtime's compactions count it: the system
+        # prompt and the tools go with every request and no compaction removes
+        # them, so the transcript alone read the share saved too high.
+        tokens_before = _request_tokens(session, transcript)
         pressure_pct = (
             self._get_current_pressure_pct() if self._get_current_pressure_pct else None
         )
@@ -380,6 +383,8 @@ class SummarizeContextTool:
                         except Exception:
                             logger.exception("preserve_facts ledger persist failed")
 
+        tokens_after = _request_tokens(session, transcript)
+
         # Always emit telemetry, even on failure — the bad outcomes are
         # part of the training corpus.
         # Two rows per call:
@@ -408,8 +413,8 @@ class SummarizeContextTool:
                     "pinned_ordinals": pinned_now,
                     "reason": reason[:1000],
                     "pressure_pct_at_call": pressure_pct,
-                    "tokens_before": result.tokens_before,
-                    "tokens_after": result.tokens_after,
+                    "tokens_before": tokens_before,
+                    "tokens_after": tokens_after,
                     "resumed_from_previous": getattr(result, "resumed_from_previous", False),
                     "entries_removed": result.entries_removed,
                     "success": result.success,
@@ -432,8 +437,8 @@ class SummarizeContextTool:
                     "trigger": "agent_summarize_context",
                     "scope": scope,
                     "reason": result.error,
-                    "tokens_before": result.tokens_before,
-                    "tokens_after": result.tokens_after,
+                    "tokens_before": tokens_before,
+                    "tokens_after": tokens_after,
                 },
             })
             return _err(
@@ -454,7 +459,7 @@ class SummarizeContextTool:
             "subtype": completion_subtype,
             "message": (
                 f"Agent-driven compaction complete "
-                f"({result.tokens_before:,} → {result.tokens_after:,} tokens; "
+                f"({tokens_before:,} → {tokens_after:,} tokens; "
                 f"scope={scope})"
             ),
             "details": {
@@ -466,8 +471,8 @@ class SummarizeContextTool:
                     if getattr(result, "resumed_from_previous", False)
                     else "summary"
                 ),
-                "tokens_before": result.tokens_before,
-                "tokens_after": result.tokens_after,
+                "tokens_before": tokens_before,
+                "tokens_after": tokens_after,
                 "entries_removed": result.entries_removed,
                 "resumed_from_previous": getattr(result, "resumed_from_previous", False),
                 # Whether the summary continued the session's cached prompt
@@ -489,9 +494,9 @@ class SummarizeContextTool:
         # fail the call — the summary is still useful; the agent gets
         # to decide whether to re-call with a tighter scope.
         body: dict[str, Any] = {
-            "tokens_freed": max(0, result.tokens_before - result.tokens_after),
-            "tokens_before": result.tokens_before,
-            "tokens_after": result.tokens_after,
+            "tokens_freed": max(0, tokens_before - tokens_after),
+            "tokens_before": tokens_before,
+            "tokens_after": tokens_after,
             "entries_removed": result.entries_removed,
             "resumed_from_previous": getattr(result, "resumed_from_previous", False),
             "level_used": _classify_level(level, result),
@@ -758,6 +763,15 @@ class SummarizeContextTool:
             entries_removed=0,
             error=None if rewritten > 0 else "no exploration results were condensable",
         )
+
+
+def _request_tokens(session: Any, transcript: Any) -> int:
+    """The tokenizer's count of the request: the system prompt, the transcript
+    and the tool definitions (``Session.estimate_tokens``)."""
+    try:
+        return int(session.estimate_tokens())
+    except Exception:
+        return int(transcript.estimate_tokens())
 
 
 def _tool_name_by_id(transcript: Any) -> dict[str, str]:
