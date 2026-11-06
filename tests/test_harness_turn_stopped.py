@@ -234,3 +234,28 @@ async def test_a_harness_error_result_with_no_message_ends_its_turn_failed(monke
     assert [e["success"] for e in events if e["type"] == "turn_complete"] == [False]
     assert sess.last_turn_error
 
+
+async def test_a_harness_that_fails_to_build_otherwise_ends_its_turn_as_a_build_failure(monkeypatch, tmp_path):
+    # _ensure_harness_adapter caught ValueError alone: any other error went
+    # out of the turn, which said turn_failed and never turn_complete.
+    import bridge.freyja_bridge as fb
+    import bridge.runtimes as runtimes
+
+    _state, sess = await _harness_session(monkeypatch, tmp_path)
+    sess.harness_adapter = None
+
+    def build_adapter(**_kw):
+        raise FileNotFoundError("claude: command not found")
+
+    monkeypatch.setattr(runtimes, "build_adapter", build_adapter)
+    events: list[dict] = []
+    fb.register_session_listener("h1", events.append)
+    fb._schedule_or_queue_turn(sess, "refactor the parser")
+    await asyncio.wait_for(sess.pending_task, 5)
+
+    [started] = [e for e in events if e["type"] == "turn_start"]
+    assert [e["type"] for e in events if e["type"] == "turn_failed"] == []
+    assert [
+        (e["turnId"], e["success"]) for e in events if e["type"] == "turn_complete"
+    ] == [(started["turnId"], False)]
+    assert "claude: command not found" in sess.last_turn_error

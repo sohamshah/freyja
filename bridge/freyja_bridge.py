@@ -11735,7 +11735,10 @@ class _BridgeSession:
                 resume_harness_session_id=self.harness_session_id,
                 mcp_config=self._build_freyja_mcp_config(),
             )
-        except ValueError as exc:
+        except Exception as exc:  # noqa: BLE001
+            # Not only an unknown runtime (ValueError): any other error went
+            # out of the turn, which ended with turn_failed and no
+            # turn_complete.
             log("error", f"failed to build harness adapter: {exc}")
             # Why the turn that asked for it fails: a scheduled run whose
             # turn it was ends with it (_RunCost).
