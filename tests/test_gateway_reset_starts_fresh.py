@@ -438,3 +438,33 @@ async def test_a_new_session_in_the_app_marks_no_reset(monkeypatch, tmp_path):
 
     assert list(tp.SESSIONS_DIR.glob("*.reset-*")) == []
     assert tp.reset_at("desktop-19f0") == 0
+
+
+async def test_a_message_while_a_reset_stopped_by_shutdown_reads_the_settings_waits_for_them(monkeypatch, tmp_path):
+    # The gateway stopping cancelled /reset while the thread's settings
+    # were read off the loop: the read went on, and a message waiting for
+    # it went on at once, found no file, and started on the defaults.
+    import threading
+
+    state, _sess = await _thread(monkeypatch, tmp_path)
+    reading, read = threading.Event(), threading.Event()
+    keep_settings = tp.keep_settings
+
+    def _slow_keep_settings(key, aside):
+        reading.set()
+        read.wait(5)
+        return keep_settings(key, aside)
+
+    monkeypatch.setattr(tp, "keep_settings", _slow_keep_settings)
+    reset = asyncio.create_task(_gateway(state)._reset_session(KEY))  # /reset
+    await asyncio.to_thread(reading.wait, 5)
+    reset.cancel()  # the gateway stops
+    await asyncio.gather(reset, return_exceptions=True)
+    message = asyncio.create_task(state.ensure_session(KEY))  # a message taken in meanwhile
+    await asyncio.sleep(0.05)
+    waited = not message.done()
+    read.set()
+    fresh = await message
+
+    assert waited
+    assert (fresh.model_id, fresh.coordination_strategy) == ("claude-sonnet-5-5", "goal")

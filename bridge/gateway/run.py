@@ -2269,11 +2269,16 @@ class GatewayDaemon:
             kept = due[session_key] = asyncio.ensure_future(
                 asyncio.to_thread(keep_settings, session_key, aside)
             )
-            try:
-                aside = await kept
-            finally:
-                if due.get(session_key) is kept:
+
+            # It waits for the thread itself, though this /reset is
+            # cancelled first (the gateway stopping): the thread goes on
+            # writing the settings, and the message went on without them.
+            def _kept(done: asyncio.Future) -> None:
+                if due.get(session_key) is done:
                     del due[session_key]
+
+            kept.add_done_callback(_kept)
+            aside = await asyncio.shield(kept)
         if aside is not None:
             logger.info("[gateway] /reset: %s's conversation set aside at %s", session_key, aside.name)
 
