@@ -49,8 +49,7 @@ logger = logging.getLogger(__name__)
 #     part of the demo surface; reintroduce after operator opts in
 #   · memory mutators (record_user_preference) — agent shouldn't
 #     mutate the operator's memory store unattended. ``memory``
-#     below is listed all the same, and it can record, update and
-#     delete memories
+#     below only lists and shows (read_only_memory)
 #   · session_memory — same reason
 #
 # Future: this becomes per-platform / per-workspace / per-workflow.
@@ -80,7 +79,7 @@ SLACK_TOOL_ALLOWLIST: frozenset[str] = frozenset({
     "call_tool",
     # SCHEDULING — durable jobs created from Slack are core UX.
     "schedule",
-    # KNOWLEDGE (skills read-only; memory can also write)
+    # KNOWLEDGE (read-only)
     "list_skills",
     "search_skills",
     "load_skill",
@@ -167,6 +166,47 @@ def confine_writes(registry: Any, resolver: Any, platform: str) -> None:
         if tool is not None:
             registry.unregister(name)
             registry.register(_ProjectDirWriteTool(tool, resolver, platform))
+
+
+class _ReadOnlyMemoryTool:
+    """The ``memory`` tool with only its list and show actions. Every later
+    session reads the memory store, desktop sessions with every tool
+    included, so a filtered session may not record, change or delete in it."""
+
+    _READS = frozenset({"list", "show"})
+
+    def __init__(self, tool: Any, platform: str) -> None:
+        self._tool = tool
+        self._platform = platform
+
+    @property
+    def definition(self) -> Any:
+        return self._tool.definition
+
+    async def execute(self, call_id: str, arguments: dict[str, Any]) -> Any:
+        from bridge.tools.base import ToolResult
+
+        action = str(arguments.get("action") or "").strip().lower()
+        if action not in self._READS:
+            return ToolResult(
+                call_id=call_id,
+                content=(
+                    f"Error: with the {self._platform.title()} tool filter on, "
+                    f"memory only lists and shows memories, so {action or 'this'!r} "
+                    f"is refused. Ask the operator to save it from the desktop app."
+                ),
+                is_error=True,
+            )
+        return await self._tool.execute(call_id, arguments)
+
+
+def read_only_memory(registry: Any, platform: str) -> None:
+    """Make ``memory`` in a filtered session's ``registry`` list and show
+    only. A sub-agent copies the tool object, so it is read-only too."""
+    tool = registry.get("memory")
+    if tool is not None:
+        registry.unregister("memory")
+        registry.register(_ReadOnlyMemoryTool(tool, platform))
 
 
 def tools_denied_for_gateway(platform: Any, all_tools: set[str]) -> set[str]:

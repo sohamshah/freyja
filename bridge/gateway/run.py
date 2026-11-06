@@ -1971,8 +1971,8 @@ class GatewayDaemon:
                 "(`launchctl stop co.freyja.gateway && launchctl start "
                 "co.freyja.gateway`). Slack sessions then get only the tools "
                 "in `SLACK_TOOL_ALLOWLIST`: file reads, writes in the session's "
-                "own project folder, web search, sub-agents, skills, memory and "
-                "schedules, but no shell, computer use or browser."
+                "own project folder, web search, sub-agents, skills, memory "
+                "reads and schedules, but no shell, computer use or browser."
             )
         allowed = sorted(tools_allowed_for_gateway(platform))
         lines = [
@@ -1987,11 +1987,10 @@ class GatewayDaemon:
             "use, browser, screenshots, image generation and MCP tools. "
             "`tool_search` and `call_tool` reach only the tools above. "
             "`write_file`, `edit_file` and `edit_json` write only in the "
-            "session's project output directory, and `memory` edits memory. "
-            "A job made with `schedule` keeps this filter, and `schedule` "
-            "changes and runs only such jobs. To grant more, switch to the "
-            "Freyja desktop app or flip "
-            "`slack.enable_tool_filter: false`."
+            "session's project output directory, and `memory` only lists and "
+            "shows memories. A job made with `schedule` keeps this filter, and "
+            "`schedule` changes and runs only such jobs. To grant more, switch "
+            "to the Freyja desktop app or flip `slack.enable_tool_filter: false`."
         )
         return "\n".join(lines)
 

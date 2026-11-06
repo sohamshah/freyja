@@ -367,7 +367,7 @@ def _run_slack_setup() -> int:
             _info(_green(("  ✓ " if i == 0 else "    ") + line))
         _info(_red("  ✗ every other tool, such as bash, computer use, browser and MCP tools"))
         _info(_dim("  write_file, edit_file and edit_json write only in the session's project"))
-        _info(_dim("  output dir; memory edits memory."))
+        _info(_dim("  output dir; memory only lists and shows memories."))
         _info(_dim("  A job made with schedule keeps this filter; schedule changes and runs"))
         _info(_dim("  only such jobs."))
         print()

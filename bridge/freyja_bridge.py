@@ -5542,6 +5542,7 @@ class _BridgeSession:
         from bridge.gateway.capabilities import (
             confine_writes,
             gateway_filter_enabled,
+            read_only_memory,
             tools_allowed_for_gateway,
         )
         from bridge.scheduler.runtime import job_tool_filter
@@ -5611,6 +5612,8 @@ class _BridgeSession:
             # Writes stay in the session's project output dir. An absolute
             # path reached gateway.yaml, job files and shell rc files.
             confine_writes(registry, self.path_resolver, self.tool_filter)
+            # Memory only lists and shows: every later session reads it.
+            read_only_memory(registry, self.tool_filter)
             # No MCP tool is on the list, so a server that connects
             # later must not register its tools here.
             mcp_manager = getattr(self.state, "mcp_manager", None)
