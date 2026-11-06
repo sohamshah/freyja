@@ -89,3 +89,23 @@ async def test_a_long_line_still_being_written_is_waited_for_then_skipped(tmp_pa
     append_command(_permission("r1"), path=cmd_file)
     assert await _run(cmd_file, off_file, lambda s: len(s) >= 1) == ["r1"]
     assert int(off_file.read_text()) == cmd_file.stat().st_size
+
+
+async def test_a_skipped_line_that_names_no_session_still_reaches_the_app(tmp_path, monkeypatch):
+    # The app shows a gateway error that names no session as a notice, so
+    # the skip is not only in the gateway's log. Here the session comes
+    # after the long text, past where the reader looks for it.
+    events: list[dict] = []
+    monkeypatch.setattr(fb, "emit", events.append)
+    cmd_file, off_file = tmp_path / "commands.jsonl", tmp_path / "commands.offset"
+    off_file.write_text("0")
+    append_command(
+        {"type": "talk_deliver", "message": {"content": "x" * (2 * MAX_LINE_BYTES)}, "to": SLACK},
+        path=cmd_file,
+    )
+    append_command(_permission("r1"), path=cmd_file)
+
+    assert await _run(cmd_file, off_file, lambda s: len(s) >= 1) == ["r1"]
+
+    (err,) = [e for e in events if e.get("type") == "error"]
+    assert "sessionId" not in err and "talk_deliver" in err["message"] and err["recoverable"]

@@ -288,8 +288,9 @@ class ControlChannelReader:
 
     def _report_skipped(self, head: bytes, length: int) -> None:
         """Log a skipped line, and tell the session it names: its command
-        never ran. The desktop only shows gateway events that name a
-        session, so one that names none is only logged."""
+        never ran. One that names no session (or names it past the head
+        read here) is an error without a session, which the desktop
+        shows as a notice."""
         fields: dict[str, str] = {}
         for key, value in _HEAD_FIELD.findall(head[:4096]):
             fields.setdefault(key.decode(), value.decode("utf-8", errors="replace"))
@@ -299,21 +300,25 @@ class ControlChannelReader:
             "control channel: skipped a %s command of %d bytes for %s (lines over %d bytes are not read)",
             ctype, length, sid or "no session", MAX_LINE_BYTES,
         )
-        if not sid:
-            return
+        size = (
+            f"it was {length / MAX_LINE_BYTES:.1f} MiB, and the control channel "
+            "reads lines up to 1 MiB."
+        )
         try:
-            from bridge.freyja_bridge import emit
+            from bridge.freyja_bridge import emit, emit_error
 
+            if not sid:
+                emit_error(
+                    f"A {ctype} command on the control channel was not run: {size}",
+                    recoverable=True,
+                )
+                return
             emit(
                 {
                     "type": "system_event",
                     "sessionId": sid,
                     "subtype": "control_command_skipped",
-                    "message": (
-                        f"A {ctype} command for this session was not run: it was "
-                        f"{length / MAX_LINE_BYTES:.1f} MiB, and the control channel "
-                        "reads lines up to 1 MiB."
-                    ),
+                    "message": f"A {ctype} command for this session was not run: {size}",
                     "details": {"command": ctype, "bytes": length, "chatVisible": True},
                 }
             )
