@@ -19,6 +19,7 @@ import pytest
 
 from engine.compaction import CompactionResult, SummaryCompaction
 from engine.session import Session
+from engine.types import AgentConfig
 
 
 @pytest.fixture
@@ -37,7 +38,7 @@ def rows(monkeypatch, tmp_path):
 
 def _restoring_session(monkeypatch, tmp_path, result: CompactionResult):
     import bridge.transcript_persistence as tp
-    import engine.constants as constants
+    import engine.runner as runner_module
     from bridge.freyja_bridge import _BridgeSession, _BridgeState
 
     state = _BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
@@ -51,6 +52,7 @@ def _restoring_session(monkeypatch, tmp_path, result: CompactionResult):
     async def _initialize():
         sess.session = session
         sess.provider = provider
+        sess.runner = runner_module.AsyncAgentRunner(provider, config=AgentConfig())
         sess._bridge_loop = asyncio.get_running_loop()
 
     sess.initialize = _initialize
@@ -67,7 +69,7 @@ def _restoring_session(monkeypatch, tmp_path, result: CompactionResult):
 
     monkeypatch.setattr(SummaryCompaction, "compact", _compact)
     monkeypatch.setattr(tp, "load_transcript", lambda _id: {"metadata": {}, "transcript": {"entries": [{}]}})
-    monkeypatch.setattr(constants, "CONTEXT_COMPACTION_THRESHOLD", 0.0)
+    monkeypatch.setattr(runner_module, "CONTEXT_COMPACTION_THRESHOLD", 0.0)
     return sess, logged
 
 

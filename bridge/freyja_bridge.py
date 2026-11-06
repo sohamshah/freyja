@@ -5607,21 +5607,14 @@ class _BridgeSession:
 
         # Step 4: Check context fit, compact if needed.
         try:
-            from engine.constants import (
-                CONTEXT_COMPACTION_THRESHOLD,
-                DEFAULT_CONTEXT_WINDOW,
-                MODEL_CONTEXT_WINDOWS,
-            )
-
-            ctx_window = MODEL_CONTEXT_WINDOWS.get(
-                self.model_id, DEFAULT_CONTEXT_WINDOW
-            )
-            estimated = self.session.estimate_tokens()
-
-            # Trigger 1 — token pressure (model-agnostic).
-            pressure_trigger = (
-                estimated > ctx_window * CONTEXT_COMPACTION_THRESHOLD
-            )
+            # Trigger 1 — token pressure, read as the runner's pre-request
+            # check reads it: the runner's measure of the prompt against
+            # 70% of the usable window (the window less the output
+            # reserve). The tokenizer's count against the raw window left
+            # a transcript between the two for its first turn to compact.
+            outlook = self.runner.context_outlook(self.session)
+            estimated = outlook.used_tokens
+            pressure_trigger = outlook.will_compact
 
             # Trigger 2 — Slack idle-revisit. Slack sessions don't have
             # explicit lifecycle boundaries (no /clear, no new-tab to
@@ -5674,7 +5667,7 @@ class _BridgeSession:
                     "info",
                     f"restored transcript ({estimated} tokens) → "
                     f"compacting (reason={reason}, "
-                    f"window={ctx_window}, model={self.model_id})",
+                    f"usable window={outlook.effective_window}, model={self.model_id})",
                 )
                 from engine.compaction import SummaryCompaction
 

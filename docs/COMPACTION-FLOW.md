@@ -15,7 +15,7 @@ Sections 1–9 cover compaction. Section 10 covers `session_memory`, the agent's
 
 ## 1 — How the runtime measures the context
 
-- The usable window is the model's context window minus `max_tokens_per_turn`, the output reserved for the reply. A provider rejects a request whose input plus `max_tokens` is larger than the window. Every threshold in this doc is a fraction of the usable window, except the restore check (section 3).
+- The usable window is the model's context window minus `max_tokens_per_turn`, the output reserved for the reply. A provider rejects a request whose input plus `max_tokens` is larger than the window. Every threshold in this doc is a fraction of the usable window.
 - The measured size is the last call's input, cache-read, cache-write and output tokens (`UsageAccumulator.effective_context_tokens` in `engine/usage.py`).
 - The pre-request check reads `_current_context_tokens`: the larger of the measured size and the tokenizer's count. The tokenizer's count (`Session.estimate_tokens`) adds up the system prompt, the transcript and the tool definitions (estimated, times 2.5). On Claude it reads about two thirds of the measured size.
 - The pressure readers read the measured size only: the Channel 1 tag, the Channel 2 note, the Channel 3 crossing check and the bridge's `pressure_signal` telemetry.
@@ -62,7 +62,7 @@ The sync `AgentRunner` (`_handle_context_pressure`) halves after each call past 
 | **B** Overflow | `overflow_cascade` | `engine/runner.py:_handle_overflow_cascade` | The provider rejected a request as too long. It first removes the oldest images when they hold the bytes (trigger `overflow_cascade_image_elision`), then summarizes, then moves down the fallback chain. |
 | **C** Agent | `agent_summarize_context` | `bridge/tools/summarize_context_tool.py` | The agent calls `summarize_context` with scope `since_last_compaction`, `all` or `early`. |
 | **D** Manual | `manual` | `bridge/freyja_bridge.py:force_compact` | The user runs `/compact`. It is skipped while a turn runs. |
-| **E** Restore | `restore` | `bridge/freyja_bridge.py:try_restore_transcript` | A transcript is loaded from disk and its tokenizer's count is past 70% of the model's raw window (reason `pressure`). Or a Slack session was idle 6 hours or more and has more than 50 messages (reason `slack_idle_revisit`). |
+| **E** Restore | `restore` | `bridge/freyja_bridge.py:try_restore_transcript` | A transcript is loaded from disk and the runner's measure (`context_outlook`) is past 70% of the usable window (reason `pressure`). Or a Slack session was idle 6 hours or more and has more than 50 messages (reason `slack_idle_revisit`). |
 
 The agent's cheap scopes, `tool_results_only` and `exploration_only`, make no model call. They replace each matching tool result with a one-line preview and end with `context_pruning`. They save nothing; the raw log still has the results.
 

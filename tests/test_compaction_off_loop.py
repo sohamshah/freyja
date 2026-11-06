@@ -433,12 +433,19 @@ async def _stop_while_compacting(aw, worker: _Worker) -> None:
 
 async def test_a_stop_during_restore_compaction_waits_for_the_worker(monkeypatch, tmp_path):
     import bridge.transcript_persistence as tp
-    import engine.constants as constants
+    import engine.runner as runner_module
 
     sess, session, worker = _bridge_session(monkeypatch, tmp_path)
     session.restore_transcript = lambda _data: None
+    initialize = sess.initialize
+
+    async def _initialize_with_runner():
+        await initialize()
+        sess.runner = AsyncAgentRunner(sess.provider, config=AgentConfig())
+
+    sess.initialize = _initialize_with_runner
     monkeypatch.setattr(tp, "load_transcript", lambda _id: {"metadata": {}, "transcript": {"entries": [{}]}})
-    monkeypatch.setattr(constants, "CONTEXT_COMPACTION_THRESHOLD", 0.0)
+    monkeypatch.setattr(runner_module, "CONTEXT_COMPACTION_THRESHOLD", 0.0)
 
     await _stop_while_compacting(sess.try_restore_transcript(), worker)
 

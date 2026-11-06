@@ -940,13 +940,14 @@ async def test_fork_at_a_message_a_restore_compaction_folded_in_is_cut_from_its_
     from types import SimpleNamespace
 
     import bridge.freyja_bridge as fb
-    import engine.constants as constants
+    import engine.runner as runner_module
     from engine.compaction import CompactionResult, SummaryCompaction
     from engine.session import Session
+    from engine.types import AgentConfig
 
     monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path / "sessions")
     monkeypatch.setattr(fb, "emit", lambda _ev: None)
-    monkeypatch.setattr(constants, "CONTEXT_COMPACTION_THRESHOLD", 0.0)
+    monkeypatch.setattr(runner_module, "CONTEXT_COMPACTION_THRESHOLD", 0.0)
     old = Session.create(system_prompt="t")
     for i in range(4):
         (old.add_user_message if i % 2 == 0 else old.add_assistant_message)(f"m{i}")
@@ -962,6 +963,7 @@ async def test_fork_at_a_message_a_restore_compaction_folded_in_is_cut_from_its_
     async def _initialize():
         sess.session = Session.create(system_prompt="t")
         sess.provider = SimpleNamespace(name="anthropic", model_id="claude-sonnet-5-5", context_window=200_000)
+        sess.runner = runner_module.AsyncAgentRunner(sess.provider, config=AgentConfig())
         sess._bridge_loop = asyncio.get_running_loop()
 
     sess.initialize = _initialize

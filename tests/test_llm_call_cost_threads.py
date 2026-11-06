@@ -90,10 +90,11 @@ async def test_a_restore_compactions_summary_call_counts(monkeypatch, tmp_path):
     # total nor the llm_call_metric rows.
     import bridge.freyja_bridge as fb
     import bridge.transcript_persistence as tp
-    import engine.constants as constants
+    import engine.runner as runner_module
     from bridge.freyja_bridge import _BridgeSession, _BridgeState
     from engine.compaction import CompactionResult, SummaryCompaction
     from engine.session import Session
+    from engine.types import AgentConfig
 
     state = _BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
     sess = _BridgeSession("test-restore-cost", workspace=str(tmp_path), model_id="claude-sonnet-5-5",
@@ -104,7 +105,8 @@ async def test_a_restore_compactions_summary_call_counts(monkeypatch, tmp_path):
 
     async def _initialize():
         sess.session = session
-        sess.provider = SimpleNamespace(name="anthropic", model_id="claude-sonnet-5-5")
+        sess.provider = SimpleNamespace(name="anthropic", model_id="claude-sonnet-5-5", context_window=200_000)
+        sess.runner = runner_module.AsyncAgentRunner(sess.provider, config=AgentConfig())
         sess._bridge_loop = asyncio.get_running_loop()
 
     sess.initialize = _initialize
@@ -121,7 +123,7 @@ async def test_a_restore_compactions_summary_call_counts(monkeypatch, tmp_path):
 
     monkeypatch.setattr(SummaryCompaction, "compact", _compact)
     monkeypatch.setattr(tp, "load_transcript", lambda _id: {"metadata": {}, "transcript": {"entries": [{}]}})
-    monkeypatch.setattr(constants, "CONTEXT_COMPACTION_THRESHOLD", 0.0)
+    monkeypatch.setattr(runner_module, "CONTEXT_COMPACTION_THRESHOLD", 0.0)
 
     with patch.object(fb, "emit"):
         assert await sess.try_restore_transcript()
