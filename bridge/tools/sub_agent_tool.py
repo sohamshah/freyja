@@ -1606,17 +1606,26 @@ Parameters:
                 },
             )
             # The child's compaction log, as a root session keeps one in its
-            # project dir. Its export reads the summaries from it.
+            # project dir (its export reads the summaries from it), and the
+            # dashboard's telemetry row.
             if subtype in COMPACTION_LOG_SUBTYPES:
                 append_subagent_compaction(
                     record.id, model=child_model, subtype=subtype, details=details,
-                    default_trigger="runtime",
+                    default_trigger="runtime", agent_type=agent_type.name,
+                    parent_session_id=self._spec.parent_session_id,
                 )
 
         def _on_sub_summarize_event(event: dict[str, Any]) -> None:
-            # The compactions the child asks for, logged as the runner's are.
-            # The event carries an excerpt; the full summary is the newest
-            # compaction entry in the child's transcript.
+            # The compactions the child asks for: shown in its pane and
+            # recorded as the runner's are. The event carries an excerpt;
+            # the full summary is the newest compaction entry in the child's
+            # transcript.
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    _fire(self._spec.emit_event, event), child_loop
+                )
+            except RuntimeError:  # the loop closed
+                pass
             subtype = event.get("subtype")
             if subtype not in COMPACTION_LOG_SUBTYPES:
                 return
@@ -1634,6 +1643,7 @@ Parameters:
                 record.id, model=child_model, subtype=subtype,
                 details=event.get("details") or {},
                 default_trigger="agent_summarize_context", summary_text=summary_text,
+                agent_type=agent_type.name, parent_session_id=self._spec.parent_session_id,
             )
 
         # Build thinking config for the child runner
@@ -1828,6 +1838,11 @@ Parameters:
             on_summarize_call=_on_sub_summarize_call,
             get_current_pressure_pct=_sub_summarize_pressure_pct,
             on_system_event=_on_sub_summarize_event,
+            # The summary call is one of the child's model calls, costed as
+            # the runner's compactions' are.
+            on_summarizer_llm_call=lambda payload: _on_sub_llm_call(
+                {**payload, "call_kind": payload.get("call_kind") or "summarizer"}
+            ),
         )
 
         # Register the subagent-scoped instances IN PLACE so existing

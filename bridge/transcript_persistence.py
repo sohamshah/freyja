@@ -236,12 +236,46 @@ def append_subagent_compaction(
     details: dict[str, Any],
     default_trigger: str,
     summary_text: str | None = None,
+    agent_type: str | None = None,
+    parent_session_id: str | None = None,
 ) -> None:
-    """Append one compaction event to a sub-agent's compaction log, with the
-    fields a root session's row has (``_mirror_compaction_event``,
-    ``_emit_summarize_event``). ``summary_text`` is the full summary when the
-    event carries only an excerpt. Never raises; the agent loop must not stop
-    on it."""
+    """Record one of a sub-agent's compaction events, as a root session's
+    are (``_mirror_compaction_event``, ``_emit_summarize_event``): a row in
+    its compaction log, and a ``compaction_event`` row in the cross-session
+    telemetry the dashboard reads. ``summary_text`` is the full summary when
+    the event carries only an excerpt. Never raises; the agent loop must not
+    stop on it."""
+    summary = (
+        summary_text
+        or details.get("summary_text")
+        or details.get("summary_preview")
+        or details.get("summary_excerpt")
+        or ""
+    )
+    sizes = {
+        "tokens_before": int(
+            details.get("tokens_before") or details.get("context_tokens_before") or 0
+        ),
+        "tokens_after": int(
+            details.get("tokens_after") or details.get("context_tokens_after") or 0
+        ),
+        "effective_window": details.get("effective_window"),
+        "pressure_pct_before": details.get("pressure_pct_before"),
+        "pressure_pct_after": details.get("pressure_pct_after"),
+        # What set a pre-request or overflow compaction off.
+        "trigger_tokens": details.get("trigger_tokens"),
+        "trigger_pressure_pct": details.get("trigger_pressure_pct"),
+    }
+    accounting = {
+        "summary_tokens": int(details.get("summary_tokens") or 0),
+        "scope": details.get("scope"),
+        "reason": details.get("reason"),
+        "resumed_from_previous": bool(details.get("resumed_from_previous") or False),
+        "summarizer_input_tokens": int(details.get("summarizer_input_tokens") or 0),
+        "summarizer_output_tokens": int(details.get("summarizer_output_tokens") or 0),
+        "summarizer_cost_usd": details.get("summarizer_cost_usd"),
+    }
+    trigger = details.get("trigger") or default_trigger
     try:
         row = {
             "session_id": session_id,
@@ -249,32 +283,12 @@ def append_subagent_compaction(
             "turn_id": None,
             "ts": time.time(),
             "subtype": subtype,
-            "trigger": details.get("trigger") or default_trigger,
+            "trigger": trigger,
             "mechanism": details.get("strategy") or details.get("mechanism") or subtype,
-            "tokens_before": int(
-                details.get("tokens_before") or details.get("context_tokens_before") or 0
-            ),
-            "tokens_after": int(
-                details.get("tokens_after") or details.get("context_tokens_after") or 0
-            ),
-            "effective_window": details.get("effective_window"),
-            "pressure_pct_before": details.get("pressure_pct_before"),
-            "pressure_pct_after": details.get("pressure_pct_after"),
+            **sizes,
             "entries_removed": int(details.get("entries_removed") or 0),
-            "summary_text": (
-                summary_text
-                or details.get("summary_text")
-                or details.get("summary_preview")
-                or details.get("summary_excerpt")
-                or ""
-            ),
-            "summary_tokens": int(details.get("summary_tokens") or 0),
-            "scope": details.get("scope"),
-            "reason": details.get("reason"),
-            "resumed_from_previous": bool(details.get("resumed_from_previous") or False),
-            "summarizer_input_tokens": int(details.get("summarizer_input_tokens") or 0),
-            "summarizer_output_tokens": int(details.get("summarizer_output_tokens") or 0),
-            "summarizer_cost_usd": details.get("summarizer_cost_usd"),
+            "summary_text": summary,
+            **accounting,
         }
         path = compactions_path(session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -283,6 +297,35 @@ def append_subagent_compaction(
             fh.write("\n")
     except Exception:  # noqa: BLE001
         logger.debug("compactions log append failed for %s", session_id, exc_info=True)
+    try:
+        from bridge.compaction_telemetry import append_telemetry
+
+        append_telemetry({
+            "type": "compaction_event",
+            "session_id": session_id,
+            "agent_type": agent_type,
+            "parent_session_id": parent_session_id,
+            "subtype": subtype,
+            "model": model,
+            **sizes,
+            "mechanism": (
+                details.get("strategy")
+                or details.get("mechanism")
+                or {
+                    "compaction_complete": "summary",
+                    "context_pruning": "tool_halve",
+                    "media_pruning": "image_prune",
+                }.get(subtype, subtype)
+            ),
+            "trigger": trigger,
+            **accounting,
+            "reason": details.get("reason") or None,
+            "summarizer_duration_ms": int(details.get("summarizer_duration_ms") or 0),
+            "summary_excerpt": summary[:240] or None,
+            "summary_text": summary or None,
+        })
+    except Exception:  # noqa: BLE001
+        logger.debug("compaction telemetry failed for %s", session_id, exc_info=True)
 
 
 def _subagent_path(session_id: str) -> Path:

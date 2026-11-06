@@ -702,11 +702,13 @@ click/type/scroll tools until the memo arrives.
                     "details": details,
                 },
             )
-            # The child's compaction log, as sub_agent_tool keeps one.
+            # The child's compaction log and telemetry, as sub_agent_tool
+            # records them.
             if subtype in COMPACTION_LOG_SUBTYPES:
                 append_subagent_compaction(
                     record.id, model=self._sub_spec.standard_tier_model or "",
                     subtype=subtype, details=details, default_trigger="runtime",
+                    agent_type="computer", parent_session_id=self._sub_spec.parent_session_id,
                 )
 
         inbox_ref = record.inbox
