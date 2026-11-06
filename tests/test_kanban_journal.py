@@ -638,3 +638,21 @@ async def test_replay_stamps_a_parent_when_a_child_is_made_under_it(tmp_path) ->
 
     stamp = (await restored.get(parent)).to_dict()["updatedAt"]
     assert stamp == events[-1]["task"]["createdAt"]
+
+
+@pytest.mark.asyncio
+async def test_replay_keeps_a_link_whose_parent_create_row_was_lost(tmp_path) -> None:
+    """Replay dropped a link row whose parent's create row was lost, so
+    the child lost that gate until its next update row. The child keeps
+    the parent, which is not done, as a card created under it does."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    lost = (await live.create(title="lost")).id
+    child = (await live.create(title="child")).id
+    await live.link(lost, child, actor="parent")
+    assert (await live.get(child)).status == "triage"
+
+    restored = await _restore_without(tmp_path, lost)
+
+    card = await restored.get(child)
+    assert card.parents == [lost]
+    assert card.status == "triage"

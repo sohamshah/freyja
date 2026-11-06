@@ -1210,9 +1210,11 @@ class SessionKanbanBoard:
     def _apply_link(self, parent_id: str, child_id: str) -> None:
         parent = self._tasks.get(parent_id)
         child = self._tasks.get(child_id)
-        if parent is None or child is None:
+        if not parent_id or child is None:
             return
-        if child_id not in parent.children:
+        # A parent whose create row was lost is still the child's: it is
+        # not done, as for a card created under it.
+        if parent is not None and child_id not in parent.children:
             parent.children.append(child_id)
         if parent_id not in child.parents:
             child.parents.append(parent_id)

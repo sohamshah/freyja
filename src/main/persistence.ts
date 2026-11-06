@@ -1021,8 +1021,10 @@ function kanbanCardsFromJournal(id: string): Record<string, Record<string, unkno
       }
     } else if (row?.kind === 'update' && cards[taskId]) {
       cards[taskId] = row.task
-    } else if (row?.kind === 'link' && cards[row.parent] && cards[row.child]) {
-      cards[row.parent] = { ...cards[row.parent], children: ids(cards[row.parent].children, row.child) }
+    } else if (row?.kind === 'link' && typeof row.parent === 'string' && row.parent && cards[row.child]) {
+      // A parent whose create row was lost is still the child's: it is
+      // not done, as for a card created under it.
+      if (cards[row.parent]) cards[row.parent] = { ...cards[row.parent], children: ids(cards[row.parent].children, row.child) }
       const parents = ids(cards[row.child].parents, row.parent)
       cards[row.child] = { ...cards[row.child], parents }
       // The row carries only the ids; link() also moved the child if no
