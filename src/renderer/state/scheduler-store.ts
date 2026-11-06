@@ -197,9 +197,11 @@ export const useSchedulerStore = create<SchedulerStore>((set, get) => ({
     // hasn't surfaced the full payload yet.
     const t = (event as { type?: string }).type
     if (t === 'system_event') {
-      // A run's events from the bridge (scheduler_run_claimed, then how it
-      // ended) name its job: read its runs back. Run now answers as the
-      // run starts, so its outcome reaches the dashboard only this way.
+      // A run's events (scheduler_run_claimed, then how it ended) name its
+      // job: read its runs back. They come from the app's bridge, and from
+      // the gateway's and the scheduler daemon's logs, which main follows.
+      // Run now answers as the run starts, so its outcome reaches the
+      // dashboard only this way.
       const jobId = (event as Extract<BridgeEvent, { type: 'system_event' }>).details?.jobId
       if (typeof jobId === 'string') {
         schedulerApi.getRuns(jobId, 100).catch(() => {})
@@ -223,39 +225,6 @@ export const useSchedulerStore = create<SchedulerStore>((set, get) => ({
     if (t === 'scheduler_job_removed') {
       const id = (event as any).job_id
       if (typeof id === 'string') get().removeJob(id)
-      return
-    }
-    if (typeof t === 'string'
-        && t.startsWith('scheduler_run_')
-        && t !== 'scheduler_run_retrying') {
-      // Any run lifecycle event — claimed, succeeded, failed, cancelled,
-      // timed_out — refresh the parent job (for fire_count + next_fire_at)
-      // and stash the run.
-      const run = (event as any).run
-      const jobId = run?.job_id || (event as any).job_id
-      if (run && jobId) {
-        set((s) => {
-          const list = s.runsByJob[jobId] || []
-          const idx = list.findIndex((r) => r.run_id === run.run_id)
-          const next = idx >= 0 ? [...list] : [run as SchedulerRun, ...list]
-          if (idx >= 0) next[idx] = run as SchedulerRun
-          const recent = (() => {
-            const ri = s.recentRuns.findIndex((r) => r.run_id === run.run_id)
-            if (ri >= 0) {
-              const rn = [...s.recentRuns]
-              rn[ri] = run as SchedulerRun
-              return rn
-            }
-            return [run as SchedulerRun, ...s.recentRuns].slice(0, 200)
-          })()
-          return {
-            runsByJob: { ...s.runsByJob, [jobId]: next.slice(0, 100) },
-            recentRuns: recent,
-          }
-        })
-      }
-      // also pull a fresh job to update next_fire_at / last_fire_at
-      if (jobId) schedulerApi.getJob(jobId).catch(() => {})
       return
     }
     if (event.type !== 'scheduler_response') return

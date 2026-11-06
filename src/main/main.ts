@@ -57,6 +57,7 @@ import {
 import { IslandWindow, hotkeyGlyphs } from './island.js'
 import type { IslandAction, IslandControl, IslandDigest, IslandPaletteIndex } from '../shared/island.js'
 import { GatewayLogTailer } from './gatewayLogTail.js'
+import { SchedulerDaemonLogTailer } from './schedulerDaemonLogTail.js'
 import { sendControlCommand } from './controlChannel.js'
 import { readCompactionTelemetry } from './telemetryReader.js'
 import {
@@ -302,6 +303,7 @@ let captureProxy: CaptureProxy | null = null
 let artifactServer: ArtifactServer | null = null
 let inputProxy: InputProxy | null = null
 let gatewayLogTailer: GatewayLogTailer | null = null
+let schedulerDaemonLogTailer: SchedulerDaemonLogTailer | null = null
 let island: IslandWindow | null = null
 // Buffer bridge events that fire before the renderer is ready.
 // The `ready` event (with the full model list) typically arrives in
@@ -634,6 +636,12 @@ function initBridge() {
   if (!gatewayLogTailer) {
     gatewayLogTailer = new GatewayLogTailer(forwardBridgeEvent)
     gatewayLogTailer.start()
+  }
+  // The scheduler daemon's runs reach the renderer the same way, from its
+  // log: the schedules dashboard and the sidebar follow them too.
+  if (!schedulerDaemonLogTailer) {
+    schedulerDaemonLogTailer = new SchedulerDaemonLogTailer(forwardBridgeEvent)
+    schedulerDaemonLogTailer.start()
   }
   bridge
     .start()
@@ -1775,6 +1783,7 @@ app.on('before-quit', () => {
   island?.close()
   island = null
   gatewayLogTailer?.stop()
+  schedulerDaemonLogTailer?.stop()
   bridge?.stop().catch(() => {})
   captureProxy?.close()
   artifactServer?.close()
