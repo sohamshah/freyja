@@ -2990,31 +2990,46 @@ class GatewayDaemon:
         await _handle_talk_deliver_command(self.state, cmd)
 
     async def _on_cancel_turn(self, cmd: dict[str, Any]) -> None:
-        """Stop pressed in the app on a Slack session's turn (the app's
-        bridge forwards it). It stops the turn as /stop and Slack's Stop
-        button do; Slack has not sealed the thread's message this time,
-        so the consumer seals it. The app hears of it as it does for its
-        own sessions: turn_cancelled now, the stopped turn's turn_complete
-        as it unwinds."""
-        from bridge.freyja_bridge import _stop_is_stale, emit
+        """Stop pressed in the app on work this process runs (the app's
+        bridge forwards it). For a Slack session's turn it stops the turn
+        as /stop and Slack's Stop button do; Slack has not sealed the
+        thread's message this time, so the consumer seals it. "Stop agents"
+        (scope ``subagents``) stops the thread's sub-agents and leaves its
+        turn running, and a stop for a sub-agent's id stops that sub-agent,
+        as the app's bridge does for its own. The app hears of it as it
+        does for its own sessions: turn_cancelled now, a stopped turn's
+        turn_complete as it unwinds."""
+        from bridge.freyja_bridge import (
+            _force_cancel_session,
+            _stop_is_stale,
+            _stop_subagent_from_pane,
+            emit,
+        )
 
         session_id = str(cmd.get("sessionId") or "")
+        kind = str(cmd.get("kind") or "cancel_turn")
+        # Commands from before scopes were sent are for the turn.
+        scope = str(cmd.get("scope") or "turn")
         sess = (getattr(self.state, "sessions", None) or {}).get(session_id)
         if sess is None:
-            logger.info("control: cancel_turn — session %s not loaded", session_id)
+            if not _stop_subagent_from_pane(self.state, session_id, cmd, kind):
+                logger.info("control: cancel_turn — session %s not loaded", session_id)
             return
-        kind = str(cmd.get("kind") or "cancel_turn")
-        if _stop_is_stale(sess, cmd, kind):
-            return
-        cancelled = self._cancel_session(session_id)
-        logger.info("[gateway] app stop: session=%s cancelled=%s", session_id, cancelled)
+        fired = 0
+        if scope in ("subagents", "all"):
+            fired += _force_cancel_session(sess, scope="subagents")
+        if scope in ("turn", "all"):
+            if scope == "turn" and _stop_is_stale(sess, cmd, kind):
+                return
+            fired += int(self._cancel_session(session_id))
+        logger.info("[gateway] app stop: session=%s scope=%s fired=%s", session_id, scope, fired)
         emit(
             {
                 "type": "system_event",
                 "sessionId": session_id,
                 "subtype": "turn_cancelled",
-                "message": f"Cancelled {int(cancelled)} in-flight operation(s)",
-                "details": {"fired": int(cancelled), "kind": kind, "scope": "turn"},
+                "message": f"Cancelled {fired} in-flight operation(s)",
+                "details": {"fired": fired, "kind": kind, "scope": scope},
             }
         )
 

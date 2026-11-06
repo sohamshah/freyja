@@ -1496,10 +1496,13 @@ def _refuse_send(sid: str, client_id: str | None, reason: str) -> None:
 
 
 def _route_stop_to_gateway(sid: str, cmd: dict[str, Any]) -> bool:
-    """Stop pressed on a Slack session's turn in the app: hand it to the
-    gateway, which runs the turn. Returns False when ``sid`` is not a Slack
-    session the gateway holds, or the stop is not for the turn."""
-    if not _gateway_holds(sid) or str(cmd.get("scope") or "all") != "turn":
+    """Stop pressed in the app on work the gateway runs: a Slack session's
+    turn, its sub-agents ("Stop agents"), or a sub-agent under a Slack
+    thread, from its pane. Hand it to the gateway, which runs that work.
+    A sub-agent's id does not say where it runs, so the app's main process
+    marks a stop for one it saw on the gateway's log ``gatewayOwned``.
+    Returns False when the gateway holds none of it."""
+    if not (_gateway_holds(sid) or cmd.get("gatewayOwned")):
         return False
     from bridge.gateway.control_channel import append_command
     from bridge.gateway.pid import get_running_pid
@@ -1514,6 +1517,7 @@ def _route_stop_to_gateway(sid: str, cmd: dict[str, Any]) -> bool:
                 "sessionId": sid,
                 "turnId": str(cmd.get("turnId") or "").strip() or None,
                 "kind": cmd.get("type"),
+                "scope": str(cmd.get("scope") or "all"),
             }
         )
     except Exception as exc:  # noqa: BLE001
@@ -1543,6 +1547,26 @@ def _route_command_to_gateway(sid: str, cmd: dict[str, Any], down: str) -> bool:
         emit_error(f"Not sent to the Slack gateway: {exc}", recoverable=True)
         return True
     log("info", f"{cmd.get('type')} → gateway for {sid}")
+    return True
+
+
+def _stop_subagent_from_pane(state: Any, sid: str, cmd: dict[str, Any], kind: str) -> bool:
+    """Stop pressed in a sub-agent's pane: stop that sub-agent, when this
+    process runs it. Its parent hears about it on its next turn, as with
+    any stop. Returns False when no sub-agent here has that id."""
+    rec = _subagent_record_in_process(state, sid)
+    if rec is None:
+        return False
+    if not _record_is_terminal(rec) and str(cmd.get("scope") or "all") != "subagents":
+        rec.cancel_origin = "operator"
+        rec.cancel_event.set()
+        ac, loop = getattr(rec, "asyncio_cancel", None), getattr(rec, "loop", None)
+        if ac is not None and loop is not None:
+            try:
+                loop.call_soon_threadsafe(ac.set)
+            except Exception:  # noqa: BLE001
+                pass
+        log("info", f"{kind}: stopped sub-agent {sid} from its pane")
     return True
 
 
@@ -13295,8 +13319,7 @@ _SEND_GATEWAY_TOO_LARGE = (
     "hand to the Slack gateway. Attach large files in the Slack thread."
 )
 _STOP_GATEWAY_DOWN = (
-    "Not stopped: this session's turn runs in the Slack gateway, which is "
-    "not running."
+    "Not stopped: this work runs in the Slack gateway, which is not running."
 )
 _MODEL_GATEWAY_DOWN = (
     "Model not changed: this session runs in the Slack gateway, which is not "
@@ -14341,23 +14364,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             return
         sess = state.get(session_id)
         if sess is None and session_id:
-            # Stop pressed in a sub-agent's pane: stop that sub-agent. Its
-            # parent hears about it on its next turn, as with any stop.
-            rec = _subagent_record_in_process(state, session_id)
-            if (
-                rec is not None
-                and not _record_is_terminal(rec)
-                and str(cmd.get("scope") or "all") != "subagents"
-            ):
-                rec.cancel_origin = "operator"
-                rec.cancel_event.set()
-                ac, loop = getattr(rec, "asyncio_cancel", None), getattr(rec, "loop", None)
-                if ac is not None and loop is not None:
-                    try:
-                        loop.call_soon_threadsafe(ac.set)
-                    except Exception:  # noqa: BLE001
-                        pass
-                log("info", f"{ctype}: stopped sub-agent {session_id} from its pane")
+            _stop_subagent_from_pane(state, session_id, cmd, ctype)
             return
         if sess:
             scope = str(cmd.get("scope") or "all")

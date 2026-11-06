@@ -754,6 +754,12 @@ function setupIpc() {
           guidance: typeof c.guidance === 'string' ? c.guidance : undefined,
         })
       }
+      if (cmd.type === 'cancel' || cmd.type === 'force_cancel') {
+        // A stop for work the daemon runs goes through the bridge, which
+        // hands it to the daemon or says that none runs. A sub-agent's id
+        // does not tell the bridge where it runs, so mark it here.
+        cmd = { ...cmd, gatewayOwned: true }
+      }
       // Fall through for other command types — they may not be supported
       // on the daemon today, but the local bridge will give a clear error
       // if they're misrouted, which is better than silently dropping.

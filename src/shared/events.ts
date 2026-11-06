@@ -663,7 +663,7 @@ export type BridgeCommand =
       action: 'inject' | 'withdraw'
       restore?: boolean
     }
-  | { type: 'cancel'; sessionId?: string; scope?: CancelScope; turnId?: string }
+  | { type: 'cancel'; sessionId?: string; scope?: CancelScope; turnId?: string; gatewayOwned?: boolean }
   | {
       type: 'force_cancel'
       sessionId?: string
@@ -672,6 +672,9 @@ export type BridgeCommand =
        *  stop when a different turn is running by then (e.g. a memo wake
        *  turn started a moment before), instead of killing that one. */
       turnId?: string
+      /** Set by the main process for a session it saw on the gateway's
+       *  log: the bridge hands the stop to the gateway, which runs it. */
+      gatewayOwned?: boolean
     }
   | { type: 'diagnose' }
   | { type: 'compact'; sessionId?: string; model?: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }

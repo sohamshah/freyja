@@ -299,3 +299,87 @@ async def test_a_goal_command_for_a_slack_session_is_refused_in_the_app(app, mon
     assert "Slack" in err["message"] and "goal" in err["message"]
     # A notice, not an error that ends the thread's live turn in the app.
     assert "sessionId" not in err
+
+
+# ── stop agents, and a sub-agent's Stop ──────────────────────────────
+
+
+SUB = "sub_19d8b53e6f0_1"
+
+
+async def test_stop_agents_on_a_slack_session_goes_to_the_gateway(app, monkeypatch):
+    state, _events = app
+    _gateway_running(monkeypatch, os.getpid() + 1)
+    await fb._handle_command(state, {"type": "force_cancel", "sessionId": SLACK, "scope": "subagents"})
+    (cmd,) = _forwarded()
+    assert (cmd["type"], cmd["sessionId"], cmd["scope"]) == ("cancel_turn", SLACK, "subagents")
+
+
+async def test_stop_in_the_pane_of_a_sub_agent_the_gateway_runs_goes_to_the_gateway(app, monkeypatch):
+    # The app's main process marks it: it saw the sub-agent on the
+    # gateway's log, and the bridge cannot tell from its id.
+    state, _events = app
+    _gateway_running(monkeypatch, os.getpid() + 1)
+    await fb._handle_command(
+        state, {"type": "force_cancel", "sessionId": SUB, "scope": "turn", "turnId": "t1", "gatewayOwned": True},
+    )
+    (cmd,) = _forwarded()
+    assert (cmd["type"], cmd["sessionId"], cmd["scope"]) == ("cancel_turn", SUB, "turn")
+
+
+async def test_a_stop_for_gateway_work_says_so_when_no_gateway_runs(app, monkeypatch):
+    state, events = app
+    _gateway_running(monkeypatch, None)
+    await fb._handle_command(state, {"type": "force_cancel", "sessionId": SLACK, "scope": "subagents"})
+    assert _forwarded() == []
+    (err,) = [e for e in events if e["type"] == "error"]
+    assert "Slack gateway" in err["message"]
+
+
+def _gateway_thread_with_subagent(monkeypatch):
+    """The gateway's end: the thread, its turn running, and a sub-agent it
+    started running beside it."""
+    import asyncio
+    import threading
+
+    from bridge.gateway.run import GatewayDaemon
+    from bridge.tools.sub_agent_registry import SubAgentState
+
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
+    rec = SimpleNamespace(
+        id=SUB, state=SubAgentState.RUNNING, cancel_event=threading.Event(), cancel_origin=None,
+        asyncio_cancel=None, loop=None,
+    )
+    registry = SimpleNamespace(get=lambda sid: rec if sid == SUB else None)
+    task = asyncio.get_running_loop().create_task(asyncio.sleep(60))
+    thread = SimpleNamespace(
+        id=SLACK, pending_task=task, current_turn_id="turn-3", _active_stream_consumer=None,
+        subagent_registry=registry,
+    )
+    daemon = GatewayDaemon()
+    daemon.state = SimpleNamespace(sessions={SLACK: thread})
+    return daemon, thread, task, rec
+
+
+async def test_the_gateway_stops_the_threads_sub_agents_and_leaves_its_turn(app, monkeypatch):
+    _state, events = app
+    daemon, thread, task, _rec = _gateway_thread_with_subagent(monkeypatch)
+    stopped: list[tuple] = []
+    monkeypatch.setattr(fb, "_force_cancel_session", lambda sess, *, scope: stopped.append((sess, scope)) or 2)
+    await daemon._on_cancel_turn({"type": "cancel_turn", "sessionId": SLACK, "scope": "subagents", "kind": "force_cancel"})
+    # The path the app's bridge takes for its own sessions' Stop agents.
+    assert stopped == [(thread, "subagents")]
+    assert not task.done()
+    (note,) = [e for e in events if e.get("subtype") == "turn_cancelled"]
+    assert (note["sessionId"], note["details"]["scope"], note["details"]["fired"]) == (SLACK, "subagents", 2)
+    task.cancel()
+
+
+async def test_the_gateway_stops_a_sub_agent_from_its_pane(app, monkeypatch):
+    _state, _events = app
+    daemon, _thread, task, rec = _gateway_thread_with_subagent(monkeypatch)
+    await daemon._on_cancel_turn({"type": "cancel_turn", "sessionId": SUB, "scope": "turn", "kind": "force_cancel"})
+    assert rec.cancel_event.is_set() and rec.cancel_origin == "operator"
+    # The thread's own turn goes on.
+    assert not task.done()
+    task.cancel()
