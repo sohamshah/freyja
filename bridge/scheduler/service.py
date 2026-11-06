@@ -441,9 +441,9 @@ class SchedulerService:
         # A slot missed while no process ticked is left due when the
         # job's misfire policy catches up, so the tick fires it; under
         # "skip" the recompute moves past it. A slot that waited for the
-        # Mac, the gateway or the app was not missed and stays due, as does
-        # one whose fire did not run there, and a one-shot's that was
-        # resumed or whose run was cut off.
+        # Mac, the gateway, the app or a run of the job was not missed and
+        # stays due, as does one whose fire did not run there, and a
+        # one-shot's that was resumed or whose run was cut off.
         boot_count = 0
         now = time.time()
         aimed_at_sub_agents: list[tuple[JobRecord, str]] = []
@@ -773,7 +773,8 @@ class SchedulerService:
         cancel_running asks that run to stop, then fires. A self-paced
         job's next fire is set when its run ends; the time it came due by
         is a placeholder, so it waits. A one-shot waits too: its only slot,
-        skipped, was used up without running."""
+        skipped, was used up without running. A slot that waits is marked
+        as not missed."""
         policy = _overlap_policy(job)
         if isinstance(job.schedule, SelfPacedSchedule):
             policy = "queue"
@@ -787,6 +788,10 @@ class SchedulerService:
             logger.info("job %s: skipped the slot at %s; its last run is still going", job.id, slot)
             append_event({"type": "scheduler_slot_skipped_running", "job_id": job.id, "slot": slot})
             return
+        if job.waiting_slot != job.next_fire_at:
+            # Not missed: under skip, a new owner's boot moved past it.
+            job.waiting_slot = job.next_fire_at
+            save_job(job)
         self._waiting_job_ids.add(job.id)
         if policy != "cancel_running":
             return
@@ -1927,10 +1932,10 @@ def _catches_up(job: JobRecord, now: float) -> bool:
 
 def _waits_for_the_mac(job: JobRecord, now: float) -> bool:
     """True when ``job`` is due on a slot that came due while a scheduler
-    ran and waited for the Mac, the gateway or the app, that is due again
-    because its fire did not run there, or that a one-shot runs late,
-    resumed or after its run was cut off (``waiting_slot``), so it was not
-    missed."""
+    ran and waited for the Mac, the gateway, the app or a run of the job
+    that went on, that is due again because its fire did not run there, or
+    that a one-shot runs late, resumed or after its run was cut off
+    (``waiting_slot``), so it was not missed."""
     return (
         job.enabled
         and job.status == "active"
