@@ -452,3 +452,36 @@ async def test_a_stop_during_manual_compaction_waits_for_the_worker(monkeypatch,
     await _stop_while_compacting(sess.force_compact(), worker)
 
     assert any(e.is_compaction for e in session.transcript.entries)
+
+
+async def test_manual_compaction_stops_the_keepalive_before_its_worker_starts(monkeypatch, tmp_path):
+    # Between turns a keep-alive re-reads the cached prompt just before it
+    # expires. A manual compaction runs between turns: the ping read the
+    # transcript while the worker rewrote it, and paid to keep a prompt the
+    # compaction was about to replace.
+    import engine.runner as runner_module
+
+    monkeypatch.setattr(runner_module, "CACHE_KEEPALIVE_LEAD_S", 0.3)
+    monkeypatch.setattr(runner_module, "PROMPT_CACHE_TTL_MARGIN_S", 0.1)
+
+    class _KeepAliveProvider(_SlowSummaryProvider):
+        prompt_cache_ttl_s = 0.6
+
+        def __init__(self, steps):
+            super().__init__(steps)
+            self.pings: list = []
+
+        async def keep_prompt_cached(self, messages, **_kw):
+            self.pings.append(list(messages))
+            return ProviderResponse(content="", usage=APIUsage(cache_read_tokens=5_000, output_tokens=1))
+
+    sess, session, worker = _bridge_session(monkeypatch, tmp_path)
+    provider = _KeepAliveProvider([_end("done")])
+    sess.runner = AsyncAgentRunner(provider, config=AgentConfig(), keep_cache_warm=True)
+    await sess.runner.run(session, "a task")
+    assert sess.runner._cache_keeper is not None
+
+    await sess.force_compact()
+
+    assert worker.finished.is_set()
+    assert provider.pings == []

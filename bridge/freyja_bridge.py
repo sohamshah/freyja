@@ -6853,6 +6853,12 @@ class _BridgeSession:
             )
             return
 
+        # A keep-alive ping would read the transcript while the worker below
+        # rewrites it, to keep a prompt the compaction replaces.
+        stop_keeping_cache = getattr(self.runner, "stop_keeping_cache", None)
+        if stop_keeping_cache is not None:
+            stop_keeping_cache()
+
         # The runner's compactor, so the summary can continue the prompt the
         # last turn sent while the provider still caches it.
         compactor = getattr(self.runner, "compaction", None)
