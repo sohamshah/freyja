@@ -528,6 +528,7 @@ class SchedulerService:
         """Persist a new job. Computes ``next_fire_at`` from schedule.
         Reads back from disk before returning so the caller gets the
         canonical (post-pre-advance, post-validation) record."""
+        _check_misfire_policy(spec.misfire_policy)
         if not spec.id:
             spec.id = new_job_id()
         spec.created_at = spec.updated_at = time.time()
@@ -589,6 +590,7 @@ class SchedulerService:
     async def update_job(self, job_id: str, patch: JobPatch) -> JobRecord:
         """Take the per-job flock, re-read under it, apply the patch,
         save. Eliminates lost-update against concurrent peer writes."""
+        _check_misfire_policy(patch.misfire_policy)
         with FileLock(job_lock_path(job_id)) as got:
             if not got:
                 # A peer is firing this job. Updates wait for the next
@@ -867,6 +869,15 @@ class SchedulerService:
             "message": message,
             "details": details or {},
         })
+
+
+def _check_misfire_policy(policy: str | None) -> None:
+    """Refuse a misfire policy the scheduler does not know. Empty means
+    unset. The dashboard offered "run_now", saved as is and read as skip."""
+    if policy and policy not in ("skip", "fire_once", "fire_all"):
+        raise ValueError(
+            f"unknown misfire_policy {policy!r}: use skip, fire_once or fire_all"
+        )
 
 
 def _misfire_policy(job: JobRecord) -> str:

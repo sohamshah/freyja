@@ -982,8 +982,9 @@ function ScheduleDetail(props: {
                 className="w-full rounded border border-white/[0.10] bg-black/[0.30] px-2 py-1.5 font-mono text-[11.5px] text-fg-0 focus:border-accent/[0.40] focus:outline-none"
               >
                 <option value="">(default)</option>
-                <option value="run_now">run_now — fire immediately</option>
-                <option value="skip">skip — drop missed fire</option>
+                <option value="skip">skip — drop missed runs</option>
+                <option value="fire_once">fire_once — run once, late</option>
+                <option value="fire_all">fire_all — run each missed time</option>
               </select>
             </FormField>
             <FormField label="overlap">
