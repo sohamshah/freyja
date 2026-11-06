@@ -931,3 +931,26 @@ async def test_force_dispatch_waits_for_a_free_worker_slot(monkeypatch) -> None:
     assert [e["subtype"] for e in sent if e["type"] == "system_event"] == [
         "kanban_operator_force_dispatch_failed"
     ]
+
+
+@pytest.mark.asyncio
+async def test_force_dispatch_gives_a_triage_card_the_specifier_the_tick_would(monkeypatch) -> None:
+    """The tick sends a triage card whose parents are done to a specifier,
+    which writes its spec and moves it to ready. Force dispatch sent it
+    to a worker, which cannot move a card out of triage."""
+    board = SessionKanbanBoard()
+    parent = (await board.create(title="parent")).id
+    card = (await board.create(title="card", assignee="code", parents=[parent])).id
+    # Its promotion row was lost: done parent, card still in triage.
+    board._tasks[parent].status = "done"
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    session.auto_dispatch_enabled = False
+
+    await _force_dispatch(monkeypatch, session, card)
+    forced = [(call["agent_type"], call["label"]) for call in sub_tool.calls]
+    sub_tool.calls.clear()
+    await session._kanban_tick(source="test", force=True)
+    ticked = [(call["agent_type"], call["label"]) for call in sub_tool.calls]
+
+    assert forced == ticked == [("specifier", f"specifier {card}")]

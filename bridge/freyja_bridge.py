@@ -15319,6 +15319,15 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "label": f"verify {task.id}",
                 "lane": "verifier",
             }
+        elif task.status == "triage":
+            # As in the tick: a worker cannot move a card out of triage,
+            # and the specifier writes its spec and moves it to ready.
+            plan = {
+                "card": task,
+                "agent_type": "specifier",
+                "label": f"specifier {task.id}",
+                "lane": "specifier",
+            }
         else:
             agent_type = task.assignee or "general"
             plan = {
