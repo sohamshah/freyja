@@ -492,17 +492,25 @@ def gateway_source_block(source: MessageSource) -> str:
     # chat, the prior-conversation injection replays that refusal and
     # the agent self-anchors. The override has to be loud enough to
     # break that pattern.
-    from bridge.gateway.capabilities import gateway_filter_enabled
+    from bridge.gateway.capabilities import (
+        gateway_filter_enabled,
+        tools_allowed_for_gateway,
+    )
     if gateway_filter_enabled(source.platform):
+        allowed = ", ".join(
+            f"`{t}`" for t in sorted(tools_allowed_for_gateway(source.platform))
+        )
         lines.append(
-            "You are operating without the operator at the keyboard. DO NOT call "
-            "the `bash`, `computer`, `computer_use`, `click`, `move_mouse`, "
-            "`type_text`, `press_key`, `screenshot`, `browser_execute_js`, or "
-            "`browser_screenshot` tools — they have side effects the operator "
-            "cannot see or veto from Slack. If the request needs those, explain "
-            "what you would do and ask the operator to run it from the desktop "
-            "app instead. Read-only tools (read_file, list_directory, glob, grep, "
-            "web_search, web_fetch, sub_agent) are fine."
+            "You are operating without the operator at the keyboard, and the "
+            f"{source.platform.value.title()} tool filter gives you only these "
+            f"tools: {allowed}. There is no `bash`, computer use, screenshot, "
+            "browser or MCP tool. `write_file`, `edit_file` and `edit_json` "
+            "write only inside this session's project output directory. "
+            "`memory` lists and shows memories but does not record, change or "
+            "delete them. `schedule` changes and runs only jobs made under this "
+            "filter, and cannot raise a job's permission tier. If the request "
+            "needs more, explain what you would do and ask the operator to do "
+            "it from the desktop app."
         )
     else:
         lines.append(
