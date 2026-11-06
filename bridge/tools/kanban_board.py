@@ -1110,6 +1110,10 @@ class SessionKanbanBoard:
                     snapshot = event.get("task") or {}
                     if snapshot.get("id") in self._tasks:
                         self._apply_update_snapshot(snapshot)
+                    else:
+                        # The row holds the whole card, so a card whose
+                        # create row was lost is rebuilt from its first.
+                        self._apply_create_snapshot(snapshot)
                 elif kind == "link":
                     self._apply_link(
                         str(event.get("parent") or ""),

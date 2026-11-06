@@ -587,3 +587,32 @@ async def test_replay_never_hands_out_the_id_of_a_card_whose_rows_were_lost(
     assert fresh not in {parent, child, linked, made}
     assert (await restored.get(child)).parents == [linked]
     assert (await restored.get(fresh)).children == []
+
+
+@pytest.mark.asyncio
+async def test_replay_rebuilds_a_card_whose_create_row_was_lost_from_its_update_rows(
+    tmp_path,
+) -> None:
+    """Each update row holds the whole card, but replay skipped update
+    rows for a card it did not hold. A card whose create row was lost was
+    dropped though its snapshots were there, and its children waited on
+    a parent that never finishes."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    lost = (await live.create(title="lost")).id
+    await live.update(lost, actor="worker", status="running")
+    child = (await live.create(title="child", parents=[lost])).id
+    await live.update(lost, actor="worker", comment="halfway")
+
+    events = [
+        e for e in KanbanJournal(tmp_path / "kanban.jsonl").read_all()
+        if not (e["kind"] == "create" and e["task"]["id"] == lost)
+    ]
+    restored = SessionKanbanBoard()
+    restored.replay_events(events)
+
+    card = await restored.get(lost)
+    assert card is not None
+    assert (card.title, card.status, card.children) == ("lost", "running", [child])
+    assert [c.body for c in card.comments] == ["halfway"]
+    await restored.update(lost, actor="kanban-judge", status="done")
+    assert (await restored.get(child)).status == "ready"

@@ -1006,7 +1006,9 @@ function kanbanCardsFromJournal(id: string): Record<string, Record<string, unkno
       continue
     }
     const taskId = typeof row?.task?.id === 'string' ? row.task.id : ''
-    if (row?.kind === 'create' && taskId && !cards[taskId]) {
+    // An update row holds the whole card too, so a card whose create row
+    // was lost is rebuilt from its first.
+    if ((row?.kind === 'create' || row?.kind === 'update') && taskId && !cards[taskId]) {
       cards[taskId] = row.task
       if (!missionRoot && row.task.metadata?.role === 'mission_root') missionRoot = taskId
       // The row is the new card's alone; create() also added it to each
