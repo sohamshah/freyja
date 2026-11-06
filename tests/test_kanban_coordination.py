@@ -43,6 +43,26 @@ def test_coordination_strategy_normalization_and_capabilities() -> None:
     assert "KANBAN BOARD" in coordination_prompt(STRATEGY_KANBAN)
 
 
+def test_kanban_prompt_says_when_the_judge_runs_with_autopilot_on_or_off() -> None:
+    """The kanban prompt said a finished card is judged automatically and
+    "Judge runs. You don't drive this — the dispatcher does", but only
+    autopilot's tick starts a judge: with autopilot off a card waits in
+    review until the operator starts one. It also put the review cap at 5
+    cycles; the third failed review blocks the card. The prompt is part
+    of the system block, built once and kept across autopilot changes so
+    the prompt cache holds, so it says what is true in both modes rather
+    than following the toggle."""
+    from bridge.tools.kanban_board import MAX_REVIEW_ITERATIONS
+
+    prompt = " ".join(coordination_prompt(STRATEGY_KANBAN).split())
+    assert "automatically: a judge-deep" not in prompt
+    assert "Judge runs." not in prompt
+    assert "with autopilot on the dispatcher starts the judge" in prompt
+    assert "with autopilot off the card waits in review until the operator starts one" in prompt
+    assert "up to 5 cycles" not in prompt
+    assert f"after {MAX_REVIEW_ITERATIONS} failed reviews the card moves to `blocked`" in prompt
+
+
 @pytest.mark.asyncio
 async def test_kanban_tool_create_link_complete_and_promote() -> None:
     board = SessionKanbanBoard()

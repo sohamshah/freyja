@@ -145,6 +145,11 @@ def strategy_uses_kanban(value: str | None) -> bool:
 def coordination_prompt(value: str | None) -> str:
     strategy = normalize_coordination_strategy(value)
     if strategy == STRATEGY_KANBAN:
+        from bridge.tools.kanban_board import MAX_REVIEW_ITERATIONS
+
+        # Part of the system block, which is built once and kept when
+        # autopilot is turned on or off (a change would cost the prompt
+        # cache), so the judge's part says what is true in both modes.
         return (
             "Coordination strategy: KANBAN BOARD.\n"
             "\n"
@@ -156,10 +161,10 @@ def coordination_prompt(value: str | None) -> str:
             "\n"
             "One card = one shippable deliverable. Something a fresh agent could\n"
             "pick up cold, work on, and hand to a judge for pass/fail. Every card\n"
-            "a worker finishes flows through the REVIEW pipeline automatically: a\n"
-            "judge-deep subagent reads the artifacts and renders a verdict. Pass\n"
-            "→ done. Fail → the worker is rewoken (same session) with the judge's\n"
-            "critique to rework, up to 5 cycles before the card hits `blocked`.\n"
+            "a worker finishes goes to REVIEW, where a judge-deep subagent reads\n"
+            "the artifacts and renders a verdict. Pass → done. Fail → the worker\n"
+            "is rewoken (same session) with the judge's critique to rework; after\n"
+            f"{MAX_REVIEW_ITERATIONS} failed reviews the card moves to `blocked`.\n"
             "The board is the unit of dispatch, review, handoff, and parallel\n"
             "execution.\n"
             "\n"
@@ -182,9 +187,11 @@ def coordination_prompt(value: str | None) -> str:
             "     worker's session.\n"
             "  3. The worker does the work and calls `kanban` action=`complete`\n"
             "     when finished.\n"
-            "  4. Card auto-routes to REVIEW. Judge runs. You don't drive this —\n"
-            "     the dispatcher does. Verdict either lands the card in `done` or\n"
-            "     wakes the worker for rework.\n"
+            "  4. Card auto-routes to REVIEW. You don't start the judge: with\n"
+            "     autopilot on the dispatcher starts the judge, and with autopilot\n"
+            "     off the card waits in review until the operator starts one. The\n"
+            "     verdict either lands the card in `done` or wakes the worker for\n"
+            "     rework.\n"
             "  5. You can split a card MID-WORK by creating CHILD kanban cards\n"
             "     with `parents=[<parent_id>]`. Use this when a piece you're\n"
             "     working on turns out to need its own agent / its own judge /\n"
