@@ -143,6 +143,16 @@ class UsageAccumulator:
             total_tokens=last_prompt_tokens + self.last_output,
         )
 
+    def start_turn(self) -> None:
+        """Zero the turn's sums but keep the last call's values: they still
+        measure the context until the turn's first call reports."""
+        self.input = 0
+        self.output = 0
+        self.cache_read = 0
+        self.cache_write = 0
+        self.reasoning = 0
+        self.total = 0
+
     def reset(self) -> None:
         """Reset all counters to zero."""
         self.input = 0

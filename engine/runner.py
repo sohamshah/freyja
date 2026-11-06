@@ -1550,7 +1550,16 @@ class AsyncAgentRunner:
             getattr(provider, "model_id", "unknown"),
         )
 
-        self.usage.reset()
+        # The last call's size measures the context until this turn's first
+        # call reports. Zeroed here, every turn's first call read 0%: it went
+        # out without the pressure note, a reply past 55% raised a crossing
+        # "from band 0", and the pre-request check fell back to the tokenizer
+        # estimate. A transcript rewritten since that call (an edit, a
+        # delete, a manual compaction) starts from zero.
+        if self._continues_sent_prompt(session):
+            self.usage.start_turn()
+        else:
+            self.usage.reset()
         self._reminder_tailed = {}
         session.add_user_message(user_message)
 
@@ -2121,6 +2130,18 @@ class AsyncAgentRunner:
             message_count=len(request_messages),
             message_signature=message_signature(request_messages),
             sent_at=time.monotonic() if sent_at is None else sent_at,
+        )
+
+    def _continues_sent_prompt(self, session: Session) -> bool:
+        """Whether the session's messages still start with what the last call
+        sent: the transcript only grew since."""
+        sent = self._sent_prompt
+        if sent is None or sent.session is not session:
+            return False
+        messages = session.get_messages()
+        return (
+            len(messages) >= sent.message_count
+            and message_signature(messages[:sent.message_count]) == sent.message_signature
         )
 
     def _cached_prompt(self, session: Session) -> tuple[Any, list[Message], list | None] | None:
