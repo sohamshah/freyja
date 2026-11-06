@@ -14786,8 +14786,13 @@ async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
         try:
             await sess.run_turn(q_content, q_attachments)
         except asyncio.CancelledError:
+            # The stop is for this turn, as a stop of the turn the queue
+            # waited on is: the turns queued behind it still run, each
+            # starting with no stop pending on this task. Left queued, they
+            # waited for the next message and then ran after it.
+            _uncancel_current_task()
+            cancelled = True
             log("info", f"queued turn cancelled (session={sess.id})")
-            break
         except Exception as exc:  # noqa: BLE001
             log("error", f"queued turn failed (session={sess.id}): {exc}")
             _emit_turn_failed(sess, exc)

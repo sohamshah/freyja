@@ -536,6 +536,36 @@ async def test_a_second_stop_during_the_wait_keeps_it_quiet(monkeypatch):
     assert len(sess.inbox.unread) == 1
 
 
+async def test_a_stop_of_a_queued_turn_still_runs_the_turns_queued_behind_it(monkeypatch, tmp_path):
+    """A stop is for the running turn, as a stop of the turn the queue
+    waits on is. A queued turn stopped in the drain ended the drain: the
+    turns behind it waited for the next message, then ran after it."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "emit", lambda _e: None)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("session-desktop")
+    ran: list[tuple[str, int]] = []
+
+    async def run_turn(content, _attachments=None, **_kw):
+        # A turn after a stop must start with no stop pending on the task.
+        ran.append((content, asyncio.current_task().cancelling()))
+        if content == "second":
+            await asyncio.sleep(5)
+
+    sess.run_turn = run_turn
+    for text in ("first", "second", "third", "fourth"):
+        fb._schedule_or_queue_turn(sess, text)
+    for _ in range(200):
+        if ran[-1:] and ran[-1][0] == "second":
+            break
+        await asyncio.sleep(0)
+    await fb._handle_command(state, {"type": "cancel", "sessionId": "session-desktop", "scope": "turn"})
+    await asyncio.wait_for(asyncio.gather(sess.pending_task, return_exceptions=True), timeout=2)
+    fb._schedule_or_queue_turn(sess, "fifth")
+    await asyncio.wait_for(sess.pending_task, timeout=2)
+    assert ran == [("first", 0), ("second", 0), ("third", 0), ("fourth", 0), ("fifth", 0)]
+
+
 class _CancellableTask:
     def __init__(self):
         self.cancelled = False
