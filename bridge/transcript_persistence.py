@@ -802,11 +802,13 @@ def clone_compaction_snapshots(
     return written
 
 
-# Project-directory files whose rows carry ids and/or creation stamps.
+# Project-directory files whose rows carry ids and/or creation stamps:
+# the stamp fields, and how many ms one unit of them is.
 _PROJECT_JSONL = (
-    ("manifest.jsonl", ("createdAt",)),
-    ("action_ledger.jsonl", ("createdAt",)),
-    ("compactions.jsonl", ("createdAt", "ts")),
+    ("manifest.jsonl", ("createdAt",), 1),
+    ("action_ledger.jsonl", ("createdAt",), 1),
+    # The bridge's _append_compaction_log stamps ``ts`` in seconds.
+    ("compactions.jsonl", ("ts",), 1000),
 )
 _PROJECT_JSON = ("working_memory.json",)
 
@@ -862,14 +864,14 @@ def clone_project_dir(
     except Exception:
         logger.exception("branch: project dir copy failed %s -> %s", src_dir, dst_dir)
         return False
-    for name, ts_fields in _PROJECT_JSONL:
+    for name, ts_fields, unit_ms in _PROJECT_JSONL:
         path = dst_dir / name
         if path.exists():
             _clone_jsonl_file(
                 path,
                 path,
                 id_remap=id_remap,
-                cutoff_ms=cutoff_ms,
+                cutoff_ms=cutoff_ms / unit_ms if cutoff_ms is not None else None,
                 ts_fields=ts_fields,
             )
     for name in _PROJECT_JSON:

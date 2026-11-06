@@ -743,3 +743,24 @@ async def test_branch_at_a_summarized_message_without_a_snapshot_says_why(sessio
     assert "compaction summary" in err["message"]
     assert not [p for p in sessions_dir.iterdir() if "-branch-" in p.name]
 
+
+# ── compaction records a fork keeps ────────────────────────────────────
+
+
+def _rows(path: Path) -> list[dict]:
+    return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+
+
+def test_fork_drops_compaction_log_rows_written_after_the_branch_point(tmp_path):
+    # compactions.jsonl stamps its rows in seconds, the cutoff is in ms.
+    src = tmp_path / "projects" / "src"
+    _write(
+        src / "compactions.jsonl",
+        json.dumps({"ts": 1.0, "subtype": "context_pruning"})
+        + "\n"
+        + json.dumps({"ts": 9.0, "subtype": "context_pruning"})
+        + "\n",
+    )
+    dst = tmp_path / "projects" / "dst"
+    assert tp.clone_project_dir(src, dst, id_remap={}, cutoff_ms=5000)
+    assert [r["ts"] for r in _rows(dst / "compactions.jsonl")] == [1.0]
