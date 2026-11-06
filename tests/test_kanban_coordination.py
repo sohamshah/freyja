@@ -944,3 +944,25 @@ def test_registry_only_exposes_kanban_tool_in_kanban_mode(tmp_path) -> None:
     )
     assert board_registry.get_catalog_entry("kanban") is not None
 
+
+def test_kanban_tool_description_says_when_the_judge_runs_with_autopilot_on_or_off() -> None:
+    """The kanban tool's description said a judge checks every completion
+    ("all completions are reviewed"), but only autopilot's tick starts a
+    judge: with autopilot off a card waits in review until the operator
+    starts one. The description is part of the cached tool list, so it
+    has one wording, true with autopilot on or off."""
+    board = SessionKanbanBoard()
+    [description] = {
+        " ".join(
+            KanbanTool(
+                board,
+                actor_id="parent",
+                actor_label="parent",
+                autopilot_state_provider=lambda on=on: on,
+            ).definition.description.split()
+        )
+        for on in (True, False)
+    }
+    assert "all completions are reviewed" not in description
+    assert "with autopilot on the dispatcher starts the judge" in description
+    assert "with autopilot off the card waits in review until the operator starts one" in description

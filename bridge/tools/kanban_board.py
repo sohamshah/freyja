@@ -1470,6 +1470,8 @@ class KanbanTool:
                 "card; mutations are restricted to your assigned card."
             )
         else:
+            # Part of the cached tool list, so the judge's part says what
+            # is true with autopilot on or off rather than following it.
             description = (
                 "Create, inspect, and update a session-local Kanban "
                 "board. Use this in kanban coordination mode to decompose "
@@ -1479,8 +1481,10 @@ class KanbanTool:
                 "routes the card to `review`, where a judge subagent checks "
                 "the deliverable against the card's `definition_of_done` and "
                 "either seals it to `done`, sends it back for rework, or "
-                "blocks it. You do not opt into this — all completions are "
-                "reviewed. `requires_verification` is an optional hint that "
+                "blocks it. You do not opt into this or start the judge: "
+                "with autopilot on the dispatcher starts the judge, and with "
+                "autopilot off the card waits in review until the operator "
+                "starts one. `requires_verification` is an optional hint that "
                 "a card's success criteria are concretely checkable; it is "
                 "currently informational and does NOT change routing."
             )
