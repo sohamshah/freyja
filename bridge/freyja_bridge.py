@@ -4966,6 +4966,9 @@ class _BridgeSession:
         self.tool_yield = ToolYield()
         self.background_commands: dict[str, Any] = {}
         self._background_closed = False
+        # Set by the emergency stop: agents' messages wake nothing, and
+        # wait unread, until the operator sends something.
+        self._agent_wakes_held = False
         # What the next turn should be told about a turn the operator
         # stopped (set on cancel, consumed by the next run_turn).
         self._stop_note: str | None = None
@@ -6836,6 +6839,7 @@ class _BridgeSession:
             client_id=client_id,
         )
         self.inbox.push(msg)
+        self._agent_wakes_held = False
         interrupted = False
         if not after_turn:
             self._request_tool_yield(hard=msg.force)
@@ -7020,6 +7024,14 @@ class _BridgeSession:
         pending = self.pending_task
         if pending is not None and not pending.done():
             return "recipient busy — will process at its next iteration boundary"
+        if getattr(self, "_agent_wakes_held", False):
+            if not any(m.from_role == "operator" for m in self.inbox.unread):
+                _note_agent_wakes_held(self)
+                return (
+                    "recipient was stopped by the emergency stop — the message "
+                    "waits unread until the operator sends something"
+                )
+            self._agent_wakes_held = False
         promoted = _promote_followups(self)
         if promoted is not None:
             prompt, attachments = promoted
@@ -14453,7 +14465,8 @@ def _drop_queued_turns(sess: "_BridgeSession") -> int:
 
 def _emergency_stop_sessions(state: Any, *, seal: Any = None) -> int:
     """The emergency stop in this process: each session's turn, its
-    sub-agents and the turns queued behind it stop, and each scheduled run
+    sub-agents and the turns queued behind it stop, agents' messages wake
+    it no more until the operator sends something, and each scheduled run
     waiting on a turn here ends cancelled. Ended by its stopped turn, a run
     delivered that turn's partial answer to its sinks. ``seal`` is called
     with each session first: the gateway seals the Slack message its turn
@@ -14468,7 +14481,32 @@ def _emergency_stop_sessions(state: Any, *, seal: Any = None) -> int:
             seal(sess)
         stopped += _force_cancel_session(sess)
         _drop_queued_turns(sess)
+        sess._agent_wakes_held = True
     return stopped
+
+
+def _note_agent_wakes_held(sess: Any) -> None:
+    """Say in the chat that agents' messages wait unread, since the
+    emergency stop, until the operator sends something."""
+    count = sum(
+        1 for m in sess.inbox.unread
+        if m.from_role != "operator" and not (m.meta or {}).get("stoppedBatch")
+    )
+    if not count:
+        return
+    emit(
+        {
+            "type": "system_event",
+            "sessionId": sess.id,
+            "subtype": "agent_messages_held",
+            "message": (
+                f"{count} message{'' if count == 1 else 's'} from agents "
+                f"wait{'s' if count == 1 else ''} unread: after the emergency stop, "
+                "they go with the next message you send."
+            ),
+            "details": {"count": count, "chatVisible": True},
+        }
+    )
 
 
 # When this process started (imported this module). An emergency stop sent
@@ -15031,6 +15069,11 @@ async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
                     # the next turn (new ones still wake an idle session
                     # on their own).
                     break
+                if getattr(sess, "_agent_wakes_held", False):
+                    # The emergency stop: nothing runs until the operator
+                    # sends something.
+                    _note_agent_wakes_held(sess)
+                    break
                 # Agents may wake each other, and a stop doesn't take that
                 # away. A message that reached this session during the turn
                 # the operator stopped used to wait for their next message:
@@ -15148,6 +15191,10 @@ def _schedule_or_queue_turn(
         # thread, and would be saved over (see _BridgeSession._held_elsewhere).
         emit_error(_COPY_TURN.format(why=held), recoverable=True)
         return False
+    if content not in SYNTHETIC_WAKE_PROMPTS:
+        # A turn no agent's message asked for: what an emergency stop
+        # held goes with it, and agents wake the session again.
+        sess._agent_wakes_held = False
     if sess.pending_task and not sess.pending_task.done():
         sess.queued_messages.append((content, attachments, on_turn_start))
         log(
