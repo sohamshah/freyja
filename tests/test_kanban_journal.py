@@ -449,3 +449,71 @@ async def test_unblock_releases_a_child_whose_parent_create_row_was_lost(
 
     assert not result.is_error, result.content
     assert (await restored.get(child)).status == "ready"
+
+
+@pytest.mark.asyncio
+async def test_link_moves_only_a_card_that_has_not_started(tmp_path) -> None:
+    """link() set its child to triage or ready whatever lane it was in,
+    so linking a running card sent it back to triage, a move the
+    transition table forbids. Only a triage or ready card moves; a card
+    past that keeps its lane and records the new parent, and replay
+    does the same."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    tool = KanbanTool(live, actor_id="parent", actor_label="parent")
+    parent = (await live.create(title="parent")).id
+    lanes = {
+        "ready": [],
+        "running": ["running"],
+        "review": ["running", "review"],
+        "blocked": ["blocked"],
+        "cancelled": ["cancelled"],
+    }
+    children = {}
+    for lane, moves in lanes.items():
+        children[lane] = (await live.create(title=lane)).id
+        for status in moves:
+            await live.update(children[lane], actor="worker", status=status)
+
+    for child in children.values():
+        result = await tool.execute(
+            "link", {"action": "link", "parent_id": parent, "child_id": child}
+        )
+        assert not result.is_error, result.content
+
+    expected = {**{lane: lane for lane in lanes}, "ready": "triage"}
+    journal = KanbanJournal(tmp_path / "kanban.jsonl")
+    restored = SessionKanbanBoard(journal=journal)
+    restored.replay_events(journal.read_all())
+    for board in (live, restored):
+        for lane, child in children.items():
+            card = await board.get(child)
+            assert (card.status, card.parents) == (expected[lane], [parent]), lane
+        assert (await board.get(parent)).children == list(children.values())
+
+
+@pytest.mark.asyncio
+async def test_link_refuses_a_done_card_a_parent_that_is_not_done() -> None:
+    """A done card cannot wait on a new parent: done is final, and its
+    children were already released. link() reopened it instead. It now
+    refuses, and records a parent that is already done."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    pending = (await board.create(title="pending")).id
+    finished = (await board.create(title="finished")).id
+    child = (await board.create(title="child")).id
+    for card in (finished, child):
+        await board.update(card, actor="worker", status="running")
+        await board.update(card, actor="kanban-judge", status="done")
+
+    refused = await tool.execute(
+        "link", {"action": "link", "parent_id": pending, "child_id": child}
+    )
+    linked = await tool.execute(
+        "link", {"action": "link", "parent_id": finished, "child_id": child}
+    )
+
+    assert refused.is_error and "is done" in refused.content, refused.content
+    assert not linked.is_error, linked.content
+    card = await board.get(child)
+    assert (card.status, card.parents) == ("done", [finished])
+    assert (await board.get(pending)).children == []

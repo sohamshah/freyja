@@ -1020,11 +1020,11 @@ function kanbanCardsFromJournal(id: string): Record<string, Record<string, unkno
       cards[row.parent] = { ...cards[row.parent], children: ids(cards[row.parent].children, row.child) }
       const parents = ids(cards[row.child].parents, row.parent)
       cards[row.child] = { ...cards[row.child], parents }
-      // The row carries only the ids; link() also moved the child (the
-      // mission root counts as done, a parent whose create row was lost
-      // does not).
+      // The row carries only the ids; link() also moved the child if no
+      // worker had picked it up (the mission root counts as done, a parent
+      // whose create row was lost does not).
       const done = parents.every((pid) => pid === missionRoot || cards[pid]?.status === 'done')
-      cards[row.child].status = done ? 'ready' : 'triage'
+      if (['triage', 'ready'].includes(cards[row.child].status)) cards[row.child].status = done ? 'ready' : 'triage'
     } else if (row?.kind === 'unblock' && cards[row.id]) {
       cards[row.id] = { ...cards[row.id], status: 'ready' }
     }

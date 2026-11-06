@@ -52,6 +52,10 @@ TERMINAL_FAILURE_STATUSES = {"cancelled", "failed"}
 # Statuses that count as "still in the worker's hands" — claimed but not yet
 # back in the operator's queue.
 ACTIVE_STATUSES = {"running"}
+# Statuses no worker has picked up yet. `link` gates only these on a new
+# parent: the table has no move back to triage from anything later, so a
+# card past them keeps its lane and just records the parent.
+UNSTARTED_STATUSES = {"triage", "ready"}
 # End states from which retry is possible (via reclaim or operator action).
 RETRY_ELIGIBLE_STATUSES = {"crashed", "timed_out", "blocked"}
 # Statuses that finish a card. The kanban tool's `complete` is the only
@@ -727,11 +731,24 @@ class SessionKanbanBoard:
                 return None, "parent or child card not found"
             if self._would_create_cycle(parent_id, child_id):
                 return None, "link would create a dependency cycle"
+            # Done is final and its children are already released, so a
+            # done card cannot wait on a parent that has not finished.
+            if (
+                child.status == "done"
+                and parent_id != self._mission_root_id
+                and parent.status != "done"
+            ):
+                return None, (
+                    f"card {child_id} is done, so it cannot wait on {parent_id}, "
+                    "which is not; create a new card with that parent for the "
+                    "follow-up work"
+                )
             if child_id not in parent.children:
                 parent.children.append(child_id)
             if parent_id not in child.parents:
                 child.parents.append(parent_id)
-            child.status = "ready" if self._parents_done(child) else "triage"
+            if child.status in UNSTARTED_STATUSES:
+                child.status = "ready" if self._parents_done(child) else "triage"
             parent.updated_at = child.updated_at = time.time()
             parent.append_event(KanbanEvent("linked", actor, f"Linked to {child_id}"))
             child.append_event(KanbanEvent("linked", actor, f"Depends on {parent_id}"))
@@ -1156,8 +1173,10 @@ class SessionKanbanBoard:
             parent.children.append(child_id)
         if parent_id not in child.parents:
             child.parents.append(parent_id)
-        # The journal row carries only the ids; link() also moved the child.
-        child.status = "ready" if self._parents_done(child) else "triage"
+        # The journal row carries only the ids; link() also moved the child
+        # if no worker had picked it up.
+        if child.status in UNSTARTED_STATUSES:
+            child.status = "ready" if self._parents_done(child) else "triage"
 
     def _task_from_snapshot(self, snapshot: dict[str, Any]) -> KanbanTask:
         # `to_dict()` emits timestamps in milliseconds and a few field
