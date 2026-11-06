@@ -756,6 +756,46 @@ class SchedulerService:
             return
         if passing:
             await self._retry_after_passing_failure(job, run)
+        else:
+            await self._tell_if_one_shot_failed(job, run)
+
+    async def _tell_if_one_shot_failed(self, job: JobRecord, run: RunRecord) -> None:
+        """Post that ``job``, a one-shot, did not complete when its failed
+        ``run`` was the last it may have: it is used up and runs no more.
+        It never fails three runs in a row, so the stop notice never came,
+        and nobody was told the reminder did not run."""
+        if run.status not in _FAILED_RUN_STATUSES:
+            return
+        fresh = load_job(job.id)
+        if (
+            fresh is None
+            or not isinstance(fresh.schedule, OnceSchedule)
+            or fresh.enabled
+            or fresh.status != "disabled_max_fires"
+        ):
+            return
+        error = (run.error or _sink_errors(run) or "no error was recorded")[:600]
+        failed = "its run failed" if run.attempt == 0 else (
+            f"its run failed, and so did {run.attempt} "
+            f"{'retry' if run.attempt == 1 else 'retries'}"
+        )
+        notice = (
+            f"The one-time job *{fresh.name}* did not complete: {failed}, and "
+            f"it will not run again by itself. Last error: {error}. To run it "
+            "again, resume it: it runs once, right away."
+        )
+        append_event({
+            "type": "scheduler_one_shot_failed",
+            "job_id": job.id,
+            "run_id": run.run_id,
+            "error": error,
+        })
+        self.emit_event(
+            subtype="scheduler_one_shot_failed",
+            message=notice,
+            details={"jobId": job.id, "runId": run.run_id, "error": error},
+        )
+        await self._tell_stopped(fresh, run, notice)
 
     async def _retry_by_policy(self, job: JobRecord, run: RunRecord) -> bool:
         """Run ``job`` again after its failed ``run`` when its retry_policy
