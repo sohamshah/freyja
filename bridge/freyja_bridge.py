@@ -4984,6 +4984,9 @@ class _BridgeSession:
         # Background work an earlier run of a job that starts a new session
         # each run left running here (begin_fresh_run): its memos are dropped.
         self._earlier_runs_work: set[str] = set()
+        # Such a job's run has ended, and the next has not begun
+        # (end_fresh_run): an agent's talk to the session is dropped.
+        self._fresh_run_ended = False
         # What the next turn should be told about a turn the operator
         # stopped (set on cancel, consumed by the next run_turn).
         self._stop_note: str | None = None
@@ -6799,6 +6802,7 @@ class _BridgeSession:
         into it."""
         from bridge.inbox import KIND_MEMO, KIND_TALK
 
+        self._fresh_run_ended = False
         self._earlier_runs_work = {w.id for w in self._running_background_work()}
         for msg in list(self.inbox.unread):
             talk = msg.kind == KIND_TALK and msg.from_role != "operator"
@@ -6817,8 +6821,32 @@ class _BridgeSession:
         running is set aside, and its memos and talk left unread are
         dropped, as the next run's begin_fresh_run does. Set aside only
         then, a memo of that work woke a turn on the ended run's transcript
-        in between, which no run counted or delivered."""
+        in between, which no run counted or delivered. So did an agent's
+        talk to the session: until the next run begins, it is dropped as it
+        arrives (_talk_has_no_run)."""
         self.begin_fresh_run()
+        self._fresh_run_ended = True
+
+    def _talk_has_no_run(self, msg: Any) -> bool:
+        """Whether an agent's talk to this session is dropped, with a log
+        line, because it is the session of a job that starts a new session
+        each run, and the run it reached has ended (end_fresh_run). It woke
+        a turn on that run's transcript, which no run counted or delivered.
+        Held for the next run, it was dropped there unread (begin_fresh_run):
+        that run starts a new session, which knows nothing of what the talk
+        answers or asks about. The operator's messages still wake it."""
+        from bridge.inbox import KIND_TALK
+
+        if not getattr(self, "_fresh_run_ended", False):
+            return False
+        if msg.kind != KIND_TALK or msg.from_role == "operator":
+            return False
+        log(
+            "info",
+            f"message of {msg.from_label} ({msg.from_session}) dropped: the run "
+            f"of {self.id} it reached has ended, and each run starts a new session",
+        )
+        return True
 
     async def _note_stopped_by_operator(self, label: str, work_id: str, what: str) -> None:
         """Fold background work the operator stopped into ONE unread notice.
@@ -7142,6 +7170,12 @@ class _BridgeSession:
             return "recipient session was closed — nothing woke it"
         if self.inbox is None or not self.inbox.has_unread():
             return "no unread messages"
+        if getattr(self, "_fresh_run_ended", False):
+            for msg in list(self.inbox.unread):
+                if self._talk_has_no_run(msg):
+                    self.inbox.remove(msg.id)
+            if not self.inbox.has_unread():
+                return "dropped — the job's run has ended, and each run starts a new session"
         pending = self.pending_task
         if pending is not None and not pending.done():
             return "recipient busy — will process at its next iteration boundary"

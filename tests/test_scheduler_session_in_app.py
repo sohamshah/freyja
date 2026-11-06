@@ -711,6 +711,69 @@ async def test_a_sub_agent_under_a_copy_of_a_fresh_session_jobs_session_cannot_t
     assert "not delivered" in out.content
 
 
+async def _a_fresh_session_jobs_ended_run(tmp_path):
+    """The tick owner's copy of a fresh-session job's session, kept loaded
+    after its run ended (end_fresh_run), and the turns it runs."""
+    sess = _copy(tmp_path, owns_tick=True, sid=FRESH)
+    state = sess.state
+    state.sessions[FRESH] = sess
+    await sess.initialize()
+    ran: list[str] = []
+
+    async def run_turn(content, _attachments=None, **_kw):
+        ran.append(content)
+
+    sess.run_turn = run_turn
+    sess.begin_fresh_run()  # the run
+    sess.end_fresh_run()
+    return sess, ran
+
+
+async def test_an_agents_talk_to_a_fresh_session_jobs_session_between_runs_wakes_no_turn(
+    app_bridge, tmp_path
+):
+    # An agent with no part in the job talked to its session after the run
+    # ended: the talk woke a turn on the ended run's transcript, which no
+    # run counted or delivered.
+    import asyncio
+
+    from bridge.tools.talk_tool import TalkRouter, TalkRouterContext, TalkTool
+
+    sess, ran = await _a_fresh_session_jobs_ended_run(tmp_path)
+    state = sess.state
+    router = TalkRouter(
+        bridge_state=state,
+        get_running_sessions=lambda: dict(state.sessions),
+        resolve_archived_sub=lambda _sid: None,
+        wake_archived_sub=lambda _sid, _msg: None,
+    )
+    ctx = TalkRouterContext(
+        caller_session_id="session-1", caller_label="lead", caller_role="agent", parent_session_id=None,
+    )
+
+    out = await TalkTool(router, ctx).execute("c1", {"to": FRESH, "content": "how did the digest go?"})
+    await asyncio.sleep(0.05)
+
+    assert ran == [] and sess.inbox.unread == [] and _inbox_file(FRESH) == []
+    assert "not delivered" in out.content and "starts a new session" in out.content
+
+
+async def test_a_talk_queued_in_a_fresh_session_jobs_inbox_file_between_runs_wakes_no_turn(
+    app_bridge, tmp_path
+):
+    # The same talk from an agent in another process, queued in the
+    # session's inbox file, which the tick owner's inbox watch reads.
+    import asyncio
+
+    sess, ran = await _a_fresh_session_jobs_ended_run(tmp_path)
+    tp.append_inbox_messages(FRESH, [_talk("how did the digest go?").to_dict()])
+
+    fb._take_in_queued_inbox_messages(sess.state)
+    await asyncio.sleep(0.05)
+
+    assert ran == [] and sess.inbox.unread == [] and _inbox_file(FRESH) == []
+
+
 async def _take_the_tick(service, monkeypatch) -> None:
     """``service`` starts while a peer owns the tick, and takes it when the
     peer exits (the scheduler daemon restarts, and the gateway takes over)."""

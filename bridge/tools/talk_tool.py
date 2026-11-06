@@ -821,6 +821,16 @@ class TalkTool:
                     "your transcript"
                 )
                 continue
+            # Any agent's talk to such a job's session once its run has
+            # ended (_talk_has_no_run): it woke a turn on the ended run.
+            no_run = getattr(self._router.session_for(target_id), "_talk_has_no_run", None)
+            if callable(no_run) and no_run(msg):
+                results.append(
+                    f"'{ref}' → {target_id}: not delivered — its job's run has "
+                    "ended, and the job starts a new session each run, so no "
+                    "run would read it"
+                )
+                continue
 
             # Cross-process routing first: a local mirror of a session
             # owned by another process must NOT swallow the message.
