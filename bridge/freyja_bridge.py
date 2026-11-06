@@ -14579,6 +14579,31 @@ async def _drain_after_turn(sess: "_BridgeSession", *, cancelled: bool = False) 
     a parked config change, then run what arrived while the turn ran.
     Shared by the normal turn queue and the edit / rerun paths, which
     start their turn task directly."""
+    try:
+        await _drain_turns(sess, cancelled=cancelled)
+    except asyncio.CancelledError:
+        # A stop while the drain made a parked change or waited to wake
+        # after a stop. Nothing more runs, but a change parked by then is
+        # still made below.
+        _uncancel_current_task()
+        log("info", f"drain after turn stopped (session={sess.id})")
+
+    # A change parked during the last turn run here, or while this drain
+    # awaited (making a change loads the transcript and posts the Slack
+    # note), is made before the turn task ends. Left parked, it waited
+    # through the next turn, and was then made over any change picked in
+    # between, which no running turn had held.
+    while sess.pending_config:
+        try:
+            await _apply_pending_config(sess)
+        except asyncio.CancelledError:
+            # Stopped again while making one: a change parked meanwhile
+            # is still made.
+            _uncancel_current_task()
+
+
+async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
+    """The body of _drain_after_turn. A stop raises out of it."""
     # The turn is over, so a parked config change is now safe to apply.
     # Do this BEFORE draining the queue so messages the operator sent
     # after `/model X` run on X rather than on the old model.
@@ -14611,11 +14636,7 @@ async def _drain_after_turn(sess: "_BridgeSession", *, cancelled: bool = False) 
                     f"agent message(s) waiting on stopped session={sess.id}; "
                     f"waking in {TALK_WAKE_AFTER_STOP_S:g}s",
                 )
-                try:
-                    await asyncio.sleep(TALK_WAKE_AFTER_STOP_S)
-                except asyncio.CancelledError:
-                    log("info", f"wake after stop cancelled (session={sess.id})")
-                    return
+                await asyncio.sleep(TALK_WAKE_AFTER_STOP_S)
             nxt = _next_inbox_turn(sess)
             if nxt is None:
                 break
@@ -14678,14 +14699,6 @@ async def _drain_after_turn(sess: "_BridgeSession", *, cancelled: bool = False) 
         except Exception as exc:  # noqa: BLE001
             log("error", f"queued turn failed (session={sess.id}): {exc}")
             _emit_turn_failed(sess, exc)
-
-    # A change parked during the last turn run here, or while this drain
-    # awaited (making a change loads the transcript and posts the Slack
-    # note), is made before the turn task ends. Left parked, it waited
-    # through the next turn, and was then made over any change picked in
-    # between, which no running turn had held.
-    while sess.pending_config:
-        await _apply_pending_config(sess)
 
 
 def _schedule_or_queue_turn(

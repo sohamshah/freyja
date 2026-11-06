@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from bridge.freyja_bridge import _apply_pending_config
 from bridge.gateway.config import GatewayConfig
 from engine.providers import MODEL_REGISTRY
@@ -243,6 +245,57 @@ async def test_a_model_picked_while_the_drain_makes_a_held_change_is_made_too(mo
     ends[0].set_result(None)
     await sess.pending_task
     assert sess.model_id == "claude-opus-5-5" and not sess.pending_config
+
+
+async def _stop(fb, state) -> None:
+    await fb._handle_command(state, {"type": "cancel", "sessionId": "session-desktop", "scope": "turn"})
+
+
+@pytest.mark.parametrize("turns", [1, 2], ids=["after-the-turn", "after-the-last-queued-turn"])
+async def test_a_model_picked_while_a_stop_cuts_the_drain_short_is_made_too(monkeypatch, tmp_path, turns):
+    """A stop while the drain made a held change (its Slack note waits for the reply's seal) ended the drain there, and a change picked meanwhile stayed held into the next turn. A change held during a queued turn is made as the drain ends, and a stop there was the same."""
+    fb, state, sess, ends, ran = await _session_with_turns(monkeypatch, tmp_path, turns)
+    posting = asyncio.Event()
+
+    async def note(_sess, text):
+        if "glm-5.3-fireworks" in text:
+            posting.set()
+            await asyncio.sleep(5)  # the reply is still being sealed
+
+    state.thread_notice = note
+    for n in range(turns):
+        fb._schedule_or_queue_turn(sess, f"turn {n}")
+    for end in ends[:-1]:
+        end.set_result(None)
+    await _until(lambda: len(ran) == turns)
+    await _pick_model(fb, state, "glm-5.3-fireworks")
+    ends[-1].set_result(None)
+    await asyncio.wait_for(posting.wait(), timeout=2)
+    await _pick_model(fb, state, "claude-opus-5-5")  # held: the drain is running
+    await _stop(fb, state)
+    await asyncio.wait_for(asyncio.gather(sess.pending_task, return_exceptions=True), timeout=2)
+    assert sess.model_id == "claude-opus-5-5" and not sess.pending_config
+
+
+async def test_a_model_picked_while_a_stopped_session_waits_to_wake_is_made_when_stopped_again(monkeypatch, tmp_path):
+    """After a stop the drain waits a moment before waking for an agent's message. A second stop there ended the drain, and a change picked during the wait stayed held into the next turn."""
+    from bridge.inbox import InboxMessage, new_message_id
+
+    fb, state, sess, ends, ran = await _session_with_turns(monkeypatch, tmp_path, 1)
+    monkeypatch.setattr(fb, "TALK_WAKE_AFTER_STOP_S", 5)
+    fb._schedule_or_queue_turn(sess, "first")
+    await _until(lambda: len(ran) == 1)
+    sess.inbox.push(InboxMessage(
+        id=new_message_id(), from_session="sub_x", from_label="worker",
+        from_role="agent", content="tests pass",
+    ))
+    await _stop(fb, state)
+    await asyncio.sleep(0.05)  # the drain is waiting to wake
+    await _pick_model(fb, state, "glm-5.3-fireworks")  # held: the drain is running
+    await _stop(fb, state)
+    await asyncio.wait_for(asyncio.gather(sess.pending_task, return_exceptions=True), timeout=2)
+    assert sess.model_id == "glm-5.3-fireworks" and not sess.pending_config
+    assert ran == ["kimi-k3-fast"]
 
 
 # ── 3. validation ────────────────────────────────────────────────────
