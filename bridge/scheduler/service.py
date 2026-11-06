@@ -558,6 +558,7 @@ class SchedulerService:
             # The slot this fire is for: a run that starts long after it
             # says how late it is.
             slot = job.next_fire_at
+            attempt = job.retry_attempt
             # Pre-advance + persist BEFORE firing — at-most-once.
             job.waiting_slot = None
             self._recompute_next_fire(job, force=True, after_fire=True)
@@ -568,7 +569,7 @@ class SchedulerService:
             # The record lock goes now, so the job can be edited while
             # it runs; the run keeps the record it was claimed with.
             task = asyncio.create_task(
-                self._fire_with_concurrency(job, run_lock, slot),
+                self._fire_with_concurrency(job, run_lock, slot, attempt),
                 name=f"scheduler-fire-{job.id}",
             )
             self._in_flight_runs[task.get_name()] = task
@@ -629,69 +630,71 @@ class SchedulerService:
         })
 
     async def _fire_with_concurrency(
-        self, job: JobRecord, run_lock: FileLock, slot: float | None,
+        self, job: JobRecord, run_lock: FileLock, slot: float | None, attempt: int = 0,
     ) -> None:
         """Holds the job's run lock for the duration of the fire."""
         task_name = asyncio.current_task().get_name()
         try:
             async with self._concurrency:
-                await self._fire_under_lock(job, slot)
+                await self._fire_under_lock(job, slot, attempt)
         except Exception as exc:  # noqa: BLE001
             logger.exception("fire crashed (job=%s): %s", job.id, exc)
         finally:
             run_lock.release()
             self._in_flight_runs.pop(task_name, None)
 
-    async def _fire_under_lock(self, job: JobRecord, slot: float | None) -> None:
-        """Run the agent turn for ``job``'s ``slot``. Our caller holds
-        the job's run lock; the failure stop and retry writes take the
-        record lock and apply to the record as it is now."""
+    async def _fire_under_lock(
+        self, job: JobRecord, slot: float | None, attempt: int = 0,
+    ) -> None:
+        """Run the agent turn for ``job``'s ``slot``, retry ``attempt`` of
+        it under the job's retry_policy. Our caller holds the job's run
+        lock; the failure stop and retry writes take the record lock and
+        apply to the record as it is now. A run that failed for a passing
+        reason is retried by its own rule and does not use up a retry; a
+        slot is counted toward the stop once its retries are spent."""
         from bridge.scheduler.runtime import fire_job
-        run = await fire_job(self, job, scheduled_for=slot)
+        run = await fire_job(self, job, scheduled_for=slot, attempt=attempt)
+        passing = _failed_for_a_passing_reason(run)
+        if not passing and await self._retry_by_policy(job, run):
+            return
         if await self._stop_if_failing(job, run):
             return
-        if _failed_for_a_passing_reason(run):
-            await self._retry_after_passing_failure(job)
-            return
-        # Retry policy. If the run failed and the user configured
-        # retries, schedule a backoff fire.
+        if passing:
+            await self._retry_after_passing_failure(job, run)
+
+    async def _retry_by_policy(self, job: JobRecord, run: RunRecord) -> bool:
+        """Run ``job`` again after its failed ``run`` when its retry_policy
+        says so: at most ``max_retries`` times per slot, ``backoff_seconds``
+        after the slot's own run, ``backoff_multiplier`` times longer after
+        each retry. Returns True if it will. The attempt used to be read
+        from a run attribute nothing set, so every failure was the first:
+        retried without end, always after ``backoff_seconds``."""
         retry = job.retry_policy
         if (
-            retry is not None
-            and run.status in {"failed", "timed_out"}
-            and retry.max_retries > 0
-            and (not retry.on or _retry_kind(run) in retry.on)
+            retry is None
+            or run.status not in _FAILED_RUN_STATUSES
+            or run.attempt >= retry.max_retries
+            or (retry.on and _retry_kind(run) not in retry.on)
         ):
-            attempts = getattr(run, "_attempts", 0) + 1
-            if attempts <= retry.max_retries:
-                delay = retry.backoff_seconds * (
-                    retry.backoff_multiplier ** (attempts - 1)
-                )
+            return False
+        attempt = run.attempt + 1
+        delay = retry.backoff_seconds * retry.backoff_multiplier ** (attempt - 1)
+        if not await self._run_again_at(job, time.time() + delay, attempt):
+            return False
+        append_event({
+            "type": "scheduler_run_retrying",
+            "job_id": job.id,
+            "run_id": run.run_id,
+            "attempt": attempt,
+            "delay_seconds": delay,
+        })
+        return True
 
-                def _retry(fresh: JobRecord) -> None:
-                    fresh.next_fire_at = time.time() + float(delay)
-
-                await update_job_record(job.id, _retry)
-                append_event({
-                    "type": "scheduler_run_retrying",
-                    "job_id": job.id,
-                    "run_id": run.run_id,
-                    "attempt": attempts,
-                    "delay_seconds": delay,
-                })
-
-    async def _retry_after_passing_failure(self, job: JobRecord) -> None:
-        """Run ``job`` again soon after a run that failed for a passing
-        reason: 2 minutes later, twice as long after each such failure in
-        a row, at most an hour, and never after its next slot."""
-        _, passing = _failures_in_a_row(
-            load_runs_for_job(job.id, limit=MAX_PASSING_FAILURES_IN_A_ROW)
-        )
-        delay = min(
-            _PASSING_RETRY_MAX_SECONDS,
-            _PASSING_RETRY_FIRST_SECONDS * 2 ** (max(passing, 1) - 1),
-        )
-        retry_at = time.time() + delay
+    async def _run_again_at(self, job: JobRecord, retry_at: float, attempt: int) -> bool:
+        """Set ``job``'s next fire to ``retry_at``, as retry ``attempt`` of
+        its last slot: not when its next slot comes sooner, nor when it was
+        paused or stopped meanwhile. A one-shot whose only slot fired runs
+        again. Returns True if it will."""
         retried = False
 
         def _retry(fresh: JobRecord) -> None:
@@ -705,10 +708,25 @@ class SchedulerService:
             fresh.enabled = True
             fresh.status = "active"
             fresh.next_fire_at = retry_at
+            fresh.retry_attempt = attempt
             retried = True
 
         await update_job_record(job.id, _retry)
-        if not retried:
+        return retried
+
+    async def _retry_after_passing_failure(self, job: JobRecord, run: RunRecord) -> None:
+        """Run ``job`` again soon after its ``run`` failed for a passing
+        reason: 2 minutes later, twice as long after each such failure in
+        a row, at most an hour, and never after its next slot. It is the
+        same retry of the slot as ``run`` was."""
+        _, passing = _failures_in_a_row(
+            load_runs_for_job(job.id, limit=MAX_PASSING_FAILURES_IN_A_ROW)
+        )
+        delay = min(
+            _PASSING_RETRY_MAX_SECONDS,
+            _PASSING_RETRY_FIRST_SECONDS * 2 ** (max(passing, 1) - 1),
+        )
+        if not await self._run_again_at(job, time.time() + delay, run.attempt):
             return
         logger.info(
             "job %s: run failed for a passing reason; runs again in %d s",
@@ -725,8 +743,9 @@ class SchedulerService:
     async def _stop_if_failing(self, job: JobRecord, run: RunRecord) -> bool:
         """Disable ``job`` when its last ``MAX_FAILED_RUNS_IN_A_ROW`` runs
         all failed, not counting runs that failed for a passing reason
-        (or after ``MAX_PASSING_FAILURES_IN_A_ROW`` failed runs of any
-        kind), and post why to its sinks. Returns True if stopped."""
+        nor a slot's retries under retry_policy (or after
+        ``MAX_PASSING_FAILURES_IN_A_ROW`` failed runs of any kind), and
+        post why to its sinks. Returns True if stopped."""
         if run.status not in _FAILED_RUN_STATUSES:
             return False
         recent = load_runs_for_job(job.id, limit=MAX_PASSING_FAILURES_IN_A_ROW)
@@ -1080,6 +1099,8 @@ class SchedulerService:
             return
         if not force and job.next_fire_at and job.next_fire_at > time.time():
             return
+        # A next fire from the schedule is a slot's own run, not a retry.
+        job.retry_attempt = 0
         now = time.time()
         last = job.last_fire_at if after_fire else None
         # "fire_all" runs every missed slot: step on from the slot being
@@ -1261,14 +1282,16 @@ def _sink_errors(run: RunRecord) -> str:
 
 def _failures_in_a_row(runs: list[RunRecord]) -> tuple[int, int]:
     """``(real, passing)``: how many runs at the head of ``runs``
-    (newest first) failed, by cause."""
+    (newest first) failed, by cause. A slot's failed retries under the
+    job's retry_policy count as one with its own run: counted alone, a job
+    allowing two retries was stopped after one bad slot."""
     real = passing = 0
     for r in runs:
         if r.status not in _FAILED_RUN_STATUSES:
             break
         if _failed_for_a_passing_reason(r):
             passing += 1
-        else:
+        elif r.attempt == 0:
             real += 1
     return real, passing
 

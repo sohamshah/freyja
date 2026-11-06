@@ -477,6 +477,10 @@ class JobRecord:
     overlap_policy: Literal["queue", "skip_if_running", "cancel_running"] = "queue"
     timeout_seconds: int | None = None
     retry_policy: RetryPolicy | None = None
+    # Which retry under retry_policy the next run is: 0 for the run of a
+    # slot, n for the nth retry of that run. The claim takes it, and a
+    # next fire set from the schedule sets it back to 0.
+    retry_attempt: int = 0
 
     # Recursion guard — scheduled jobs cannot spawn more by default.
     allow_creates_schedules: bool = False
@@ -514,6 +518,7 @@ class JobRecord:
             "overlap_policy": self.overlap_policy,
             "timeout_seconds": self.timeout_seconds,
             "retry_policy": self.retry_policy.to_dict() if self.retry_policy else None,
+            "retry_attempt": self.retry_attempt,
             "allow_creates_schedules": self.allow_creates_schedules,
             "tags": list(self.tags),
         }
@@ -553,6 +558,7 @@ class JobRecord:
             overlap_policy=d.get("overlap_policy", "queue"),
             timeout_seconds=d.get("timeout_seconds"),
             retry_policy=RetryPolicy.from_dict(d["retry_policy"]) if d.get("retry_policy") else None,
+            retry_attempt=int(d.get("retry_attempt", 0)),
             allow_creates_schedules=bool(d.get("allow_creates_schedules", False)),
             tags=list(d.get("tags") or []),
         )
@@ -603,6 +609,7 @@ class RunRecord:
     status: RunStatus = "claimed"
     fire_number: int = 0             # nth fire of the job
     iteration: int = 0               # nth loop iteration (self-paced)
+    attempt: int = 0                 # nth retry of its slot (retry_policy); 0 = the slot's own run
 
     # Inputs (snapshot — job may be edited later)
     prompt: str = ""
