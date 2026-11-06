@@ -1,5 +1,5 @@
 """A session deleted with its files, replaced by a new session with its id,
-or reset by Slack's /reset saves no inbox or settings file again.
+or reset by Slack's /reset saves no inbox, goal or settings file again.
 
 dcd6133 stopped such a session's transcript saves (_discarded). Its inbox
 still saved on every change (_on_inbox_change -> _save_inbox): a message
@@ -55,6 +55,20 @@ async def test_a_replaced_session_writes_nothing_into_the_new_sessions_inbox_fil
     old.inbox.push(_talk("for the old session"))
 
     assert _unread(old.id) == ["for the new session"]
+
+
+async def test_a_replaced_session_writes_no_goal_file(state):
+    # A goal event (a judge's verdict that ends after the replace) saved
+    # its goal into the file the next session with its id loads.
+    from bridge.tools.goal_loop import GoalState
+
+    old = await state.ensure_session("session-desktop")
+    await fb._handle_command(state, {"type": "new_session", "sessionId": old.id})
+    old.goal_state = GoalState(goal="ship the old thing")
+
+    old._emit_goal_event("goal_verdict", "Goal judged")
+
+    assert tp.load_goal_state(old.id) is None
 
 
 async def _reset_thread(state):

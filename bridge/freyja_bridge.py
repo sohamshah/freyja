@@ -7349,9 +7349,9 @@ class _BridgeSession:
 
         Without this, the goal loop loses every verdict and the operator's
         brief on app restart. See `bridge/transcript_persistence.save_goal_state`
-        for the schema.
+        for the schema. A discarded session (_discarded) saves nothing.
         """
-        if self._held_elsewhere:
+        if self._held_elsewhere or getattr(self, "_discarded", False):
             return
         try:
             from bridge.transcript_persistence import save_goal_state
