@@ -793,6 +793,25 @@ async def test_see_display_switch_resets_cached_dims_before_refs(desk):
     assert desk.spec.native_dims is None and desk.spec.api_dims is None
 
 
+async def test_see_after_an_unplug_looks_at_the_main_display(desk, monkeypatch):
+    """The display last looked at was unplugged. Its id fails the capture
+    now (the capture proxy no longer answers it with another display), so
+    `see` drops it and looks at the main display."""
+    desk.spec.default_display_id = 2
+    monkeypatch.setattr(computer, "_layout", lambda: computer._describe_layout(_DESK[:1]))
+    res = await _run(desk.rig, "computer.see")
+    assert res.ok
+    assert desk.spec.default_display_id is None
+    assert desk.spec.native_dims is None and desk.spec.api_dims is None
+    # A display that is still connected stays the one looked at.
+    desk.spec.default_display_id = 3
+    monkeypatch.setattr(computer, "_layout", lambda: computer._describe_layout(_DESK))
+    monkeypatch.setattr(computer, "_window_display", lambda layout, pid: None)
+    res = await _run(desk.rig, "computer.see")
+    assert res.ok and res.data["display"] == 3
+    assert desk.spec.default_display_id == 3
+
+
 async def test_see_all_returns_a_labeled_overview(desk, monkeypatch):
     frames = {d.id: _png_bytes(1280, 720) for d in _DESK}
 

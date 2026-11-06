@@ -187,6 +187,16 @@ def _proxy_token_headers(env_var: str) -> dict[str, str]:
     return {"X-Freyja-Token": token} if token else {}
 
 
+class CaptureProxyError(RuntimeError):
+    """The capture proxy refused a capture. `status` is its HTTP code; the
+    message carries the proxy's plain-text reason. 404 means the window or
+    display asked for is not there."""
+
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(f"capture proxy {status}: {detail}")
+        self.status = status
+
+
 def _proxy_screenshot(
     proxy_url: str, *, display_id: int | None, window_id: int | None = None,
     window_bounds: tuple[float, float, float, float] | None = None,
@@ -212,9 +222,10 @@ def _proxy_screenshot(
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = resp.read()
     except urllib.error.HTTPError as exc:
-        # The proxy says why in the body (window not capturable, no permission).
+        # The proxy says why in the body (window not capturable, display not
+        # connected, no permission).
         detail = exc.read().decode("utf-8", "replace").strip()
-        raise RuntimeError(f"capture proxy {exc.code}: {detail}") from exc
+        raise CaptureProxyError(exc.code, detail) from exc
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     w, h = _parse_image_dimensions(data)
     return ScreenshotFrame(png=data, width=w, height=h, format=format.lower(), capture_ms=elapsed_ms)
@@ -238,10 +249,15 @@ def screenshot(
                 proxy_url, display_id=display_id, window_id=window_id,
                 window_bounds=window_bounds, max_dim=max_dim, format=format, quality=quality,
             )
-        except Exception:
+        except Exception as exc:
             if window_id is not None:
                 # The native path would return a privacy-filtered image of the
                 # window, which is worse than an error.
+                raise
+            if isinstance(exc, CaptureProxyError) and exc.status == 404:
+                # The display is not connected. The native path fails for it
+                # too, with a vaguer message, so keep the proxy's, which
+                # names the displays that are.
                 raise
     t0 = time.perf_counter()
     if window_id is not None:
@@ -450,7 +466,7 @@ def ax_perform(pid: int, x: float, y: float, role: str, bounds: Sequence[float],
 
 
 __all__ = [
-    "Bounds", "DisplayInfo", "WindowInfo", "ScreenshotFrame", "Permissions",
+    "Bounds", "DisplayInfo", "WindowInfo", "ScreenshotFrame", "CaptureProxyError", "Permissions",
     "list_displays", "screenshot", "list_windows", "get_frontmost_window",
     "focus_window", "focus_app", "click", "move_mouse", "type_text",
     "press_key", "key_down", "key_up", "scroll", "cursor_position",

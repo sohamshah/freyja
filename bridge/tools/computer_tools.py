@@ -764,6 +764,46 @@ def _effective_settle_ms(arguments: dict[str, Any]) -> int:
     return max(0, min(ms, 10_000))
 
 
+async def _missing_display_result(
+    call_id: str, tool: str, native: Any, display_id: int | None, *, pinned: bool
+) -> ToolResult | None:
+    """The error for a capture of a display that is not connected, which
+    names the ids that are. None when `display_id` is connected, or when the
+    displays cannot be listed.
+
+    Both capture paths fail for such an id (the capture proxy with a 404,
+    the native one because CGDisplayCreateImage returns null), and neither
+    error says which displays the model can use instead. `pinned` means the
+    id came from the session's default display, not from the call."""
+    if display_id is None:
+        return None
+    try:
+        displays = await asyncio.to_thread(native.list_displays)
+    except Exception:  # noqa: BLE001
+        return None
+    if not displays or any(d.id == display_id for d in displays):
+        return None
+    connected = ", ".join(f"{d.id} (primary)" if d.is_primary else str(d.id) for d in displays)
+    where = (
+        f"this session is pinned to display {display_id}, which is not connected"
+        if pinned
+        else f"display {display_id} is not connected"
+    )
+    hint = (
+        "Pass one of those ids as display_id."
+        if pinned
+        else "Pass one of those ids as display_id, or leave display_id out for the main display."
+    )
+    return ToolResult(
+        call_id=call_id,
+        content=(
+            f"{tool}: {where} (it may have been unplugged, or the id is from an old list). "
+            f"Connected displays: {connected}. {hint}"
+        ),
+        is_error=True,
+    )
+
+
 def _disabled_result(call_id: str, tool: str) -> ToolResult:
     return ToolResult(
         call_id=call_id,
@@ -1015,6 +1055,15 @@ decide where to act. Screenshots are cheap — take as many as you need.
                 is_error=True,
             )
         if frame is None:
+            missing = await _missing_display_result(
+                call_id,
+                "screenshot",
+                native,
+                display_id if display_id is not None else self._spec.default_display_id,
+                pinned=display_id is None,
+            )
+            if missing is not None:
+                return missing
             return ToolResult(
                 call_id=call_id,
                 content=(
@@ -2174,6 +2223,11 @@ one and costs less.
                 quality=100,
             )
         except Exception as exc:  # noqa: BLE001
+            missing = await _missing_display_result(
+                call_id, "inspect_region", native, effective_display, pinned=display_id is None
+            )
+            if missing is not None:
+                return missing
             return ToolResult(
                 call_id=call_id,
                 content=f"inspect_region capture failed: {exc}",

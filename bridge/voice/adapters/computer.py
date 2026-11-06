@@ -812,6 +812,18 @@ async def _see(args: dict[str, Any]) -> VerbResult:
         target = await asyncio.to_thread(_window_display, layout, resolved[1])
 
     _ensure_tools()
+    if (
+        target is None
+        and layout
+        and _SPEC is not None
+        and _SPEC.default_display_id is not None
+        and all(d.id != _SPEC.default_display_id for d in layout)
+    ):
+        # The display last looked at is gone (unplugged). Its id would fail
+        # the capture, so look at the main display again.
+        _SPEC.default_display_id = None
+        _SPEC.native_dims = None
+        _SPEC.api_dims = None
     if target is not None and _SPEC is not None and _SPEC.default_display_id != target.id:
         # Switch the coordinate space: screenshots, click mapping, and the
         # ref cache below all follow the display being looked at.

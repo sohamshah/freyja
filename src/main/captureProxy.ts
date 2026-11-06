@@ -24,7 +24,9 @@ import { hasProxyToken, newProxyToken } from './proxyToken.js'
  *  through this endpoint when its own preflight check fails.
  *
  *  Endpoint: GET /capture?display_id=<n>&max_dim=<n>&format=jpeg&quality=75
- *    - display_id: optional numeric CGDirectDisplayID. Omit for main.
+ *    - display_id: optional numeric CGDirectDisplayID. Omit for main. An id
+ *      that is not connected gets a 404 that lists the connected ids; it is
+ *      never answered with another display.
  *    - window_id: optional CGWindowID. Captures that one window instead of
  *      a display (appshots). display_id is ignored then.
  *    - w, h: with window_id, the window's size in points (CGWindowList
@@ -40,7 +42,8 @@ import { hasProxyToken, newProxyToken } from './proxyToken.js'
  *
  *  Response body: raw image bytes. 200 on success, 4xx/5xx on error. A
  *  window_id that is not among the capturable windows (closed or
- *  minimized) gets a 404 with a plain-text reason.
+ *  minimized), or a display_id that is not connected, gets a 404 with a
+ *  plain-text reason.
  *
  *  We bind to 127.0.0.1 exclusively and pick an ephemeral port so the
  *  endpoint is not reachable from off-machine. The URL is passed to
@@ -107,6 +110,16 @@ function scaleAt(x: number | null, y: number | null): number {
   } catch {
     return 2
   }
+}
+
+/** The 404 text for a display_id that is not connected. It names the ids
+ *  that are, so the caller can list the displays again and pick one. */
+function unknownDisplay(id: number, known: number[]): string {
+  const ids = known.length ? known.join(', ') : 'none'
+  return (
+    `display ${id} is not connected (it may have been unplugged, or the id is ` +
+    `from an old list); connected display ids: ${ids}`
+  )
 }
 
 function numberParam(url: URL, key: string): number | null {
@@ -191,12 +204,25 @@ export async function startCaptureProxy(): Promise<CaptureProxy> {
         return
       }
 
+      // An unknown display_id is an error, never another display: the
+      // caller would read this frame as display_id and click on the wrong
+      // screen. The Rust path (capture_display) fails for one too.
       const displays = screen.getAllDisplays()
       let target = screen.getPrimaryDisplay()
       if (displayIdParam) {
         const id = parseInt(displayIdParam, 10)
+        if (!Number.isFinite(id)) {
+          res.writeHead(400, { 'Content-Type': 'text/plain' })
+          res.end(`bad display_id: ${displayIdParam}`)
+          return
+        }
         const found = displays.find((d) => d.id === id)
-        if (found) target = found
+        if (!found) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' })
+          res.end(unknownDisplay(id, displays.map((d) => d.id)))
+          return
+        }
+        target = found
       }
 
       // desktopCapturer returns thumbnails at the requested size.
@@ -215,9 +241,21 @@ export async function startCaptureProxy(): Promise<CaptureProxy> {
 
       // Match the source that corresponds to our target display.
       // display_id from Electron's screen API maps to source.display_id
-      // as a string.
+      // as a string. Only the default capture may fall back to the first
+      // source; a display that has no source left (unplugged between the
+      // two calls) is unknown, as above.
       const targetIdStr = String(target.id)
       let src = sources.find((s) => s.display_id === targetIdStr)
+      if (!src && displayIdParam) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' })
+        res.end(
+          unknownDisplay(
+            target.id,
+            sources.map((s) => Number(s.display_id)).filter((n) => n > 0),
+          ),
+        )
+        return
+      }
       if (!src) src = sources[0]
       if (!src) {
         res.writeHead(500, { 'Content-Type': 'text/plain' })
