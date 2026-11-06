@@ -72,6 +72,7 @@ _FORGEABLE_TAGS = (
     "subagent-report",
     "command-output",
     "agent-steering",  # engine.constants.STEERING_TAG_OPEN
+    "untrusted-content",  # the gateway's envelope around others' Slack messages
 )
 
 

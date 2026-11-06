@@ -2619,11 +2619,20 @@ class SlackAdapter:
     _THREAD_MAX_PAGES = 5             # ⇒ scans up to ~5000 messages
     _THREAD_DEFAULT_LIMIT = 100       # how many recent replies the agent sees
 
-    def _normalize_thread_message(self, m: dict[str, Any]) -> dict[str, Any] | None:
+    def _normalize_thread_message(
+        self, m: dict[str, Any], team_id: str = ""
+    ) -> dict[str, Any] | None:
         """Convert a raw Slack message into the canonical dict the
         gateway renderer consumes. Returns ``None`` for messages with
         no text and no files (Slack joins/leaves, ephemeral system
-        notices, etc.) so callers can drop them upstream."""
+        notices, etc.) so callers can drop them upstream.
+
+        Only this app's own bot user is the ``assistant``. Everyone else
+        is a ``user`` with a ``trust`` class: ``operator`` (passes the
+        allowlist, so could have sent the turn itself), ``bot`` (another
+        app), ``external`` (a Slack Connect user from another workspace)
+        or ``member`` (anyone else in ``team_id``, the chat's workspace).
+        The renderer pastes all but the operator as untrusted text."""
         text = str(m.get("text") or "")
         blocks_text = extract_text_from_slack_blocks(m.get("blocks"))
         if blocks_text and len(blocks_text) > len(text):
@@ -2632,14 +2641,34 @@ class SlackAdapter:
         if not text and not files:
             return None
         user_id = str(m.get("user") or "")
-        is_bot = bool(m.get("bot_id")) or user_id == (self._bot_user_id or "")
-        return {
-            "role": "assistant" if is_bot else "user",
+        own_bot_ids = set(self._team_bot_user_ids.values())
+        if self._bot_user_id:
+            own_bot_ids.add(self._bot_user_id)
+        # Same author-team lookup as the inbound allowlist gate.
+        author_team = str(m.get("team") or m.get("user_team") or team_id)
+        if user_id and user_id in own_bot_ids:
+            trust = "self"
+        elif m.get("bot_id") or m.get("subtype") == "bot_message":
+            trust = "bot"
+        elif self.slack_config.user_allowed(author_team, user_id):
+            trust = "operator"
+        elif team_id and author_team != team_id:
+            trust = "external"
+        else:
+            trust = "member"
+        out = {
+            "role": "assistant" if trust == "self" else "user",
             "user_id": user_id,
             "text": text,
             "ts": str(m.get("ts") or ""),
             "files": files,
+            "trust": trust,
         }
+        if trust == "bot":
+            out["name"] = str(
+                (m.get("bot_profile") or {}).get("name") or m.get("username") or ""
+            )
+        return out
 
     async def fetch_thread_context(
         self,
@@ -2665,7 +2694,8 @@ class SlackAdapter:
         about what it can and can't see.
 
         Returns a chronological list of ``{role, user_id, text, ts,
-        files}`` dicts. Image/file refs survive on the ``files`` key so
+        files, trust}`` dicts (see ``_normalize_thread_message`` for
+        ``trust``). Image/file refs survive on the ``files`` key so
         the caller can decide which to download (capped via the
         ``MAX_PRIOR_IMAGES`` budget upstream).
 
@@ -2758,11 +2788,12 @@ class SlackAdapter:
         # Normalize + filter the tail. We deliberately do this AFTER
         # the rolling-buffer trim above so the buffer stays bounded
         # even if upstream calls us with a giant `limit`.
+        team_id = self._team_for({}, chat_id)
         tail_normalized: list[dict[str, Any]] = []
         for m in tail:
             if not _passes(m):
                 continue
-            normalized = self._normalize_thread_message(m)
+            normalized = self._normalize_thread_message(m, team_id)
             if normalized is not None:
                 tail_normalized.append(normalized)
 
@@ -2778,7 +2809,7 @@ class SlackAdapter:
 
         # Long-thread path: parent + gap marker + tail.
         out: list[dict[str, Any]] = []
-        parent_normalized = self._normalize_thread_message(parent)
+        parent_normalized = self._normalize_thread_message(parent, team_id)
         if parent_normalized is not None and _passes(parent):
             out.append(parent_normalized)
 
@@ -2839,6 +2870,7 @@ class SlackAdapter:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[slack] conversations.history failed: %s", exc)
             return []
+        team_id = self._team_for({}, chat_id)
         out: list[dict[str, Any]] = []
         # conversations.history returns NEWEST first; reverse for chronology.
         for m in reversed(res.get("messages") or []):
@@ -2847,22 +2879,9 @@ class SlackAdapter:
                 continue
             if oldest_ts and ts <= str(oldest_ts):
                 continue
-            text = str(m.get("text") or "")
-            blocks_text = extract_text_from_slack_blocks(m.get("blocks"))
-            if blocks_text and len(blocks_text) > len(text):
-                text = blocks_text
-            files = m.get("files") or []
-            if not text and not files:
-                continue
-            user_id = str(m.get("user") or "")
-            is_bot = bool(m.get("bot_id")) or user_id == (self._bot_user_id or "")
-            out.append({
-                "role": "assistant" if is_bot else "user",
-                "user_id": user_id,
-                "text": text,
-                "ts": ts,
-                "files": files,
-            })
+            normalized = self._normalize_thread_message(m, team_id)
+            if normalized is not None:
+                out.append(normalized)
         return out
 
     async def send_approval_request(
