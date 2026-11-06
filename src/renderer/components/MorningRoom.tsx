@@ -267,7 +267,12 @@ export function MorningRoom() {
     if (!b.brieferJobId) return
     try {
       const { schedulerApi } = await import('../state/scheduler-store')
-      await schedulerApi.resumeJob(b.brieferJobId)
+      // A resume the bridge refuses answers with an error; it does not throw.
+      const { error } = await schedulerApi.resumeJob(b.brieferJobId)
+      if (error) {
+        showToast(`Briefer did not resume: ${String(error).slice(0, 80)}`, 'warn')
+        return
+      }
       await load(b.date ?? undefined)
     } catch (err) {
       showToast(`Briefer did not resume: ${String(err).slice(0, 80)}`, 'warn')

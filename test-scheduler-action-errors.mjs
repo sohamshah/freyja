@@ -1,6 +1,7 @@
 // The schedules dashboard says why the bridge refused an action. Its card
 // and detail buttons awaited the bridge's answer and dropped it, so a
 // refused resume (a job that ran all its max fires) did nothing visible.
+// The Morning room's resume of the stopped briefer dropped it too.
 // Run from the repo root:
 //   npx tsx test-scheduler-action-errors.mjs
 
@@ -32,6 +33,8 @@ window.harness = {
 }
 const { bindSchedulerBridge, useSchedulerStore } = await import('./src/renderer/state/scheduler-store.ts')
 const { ScheduledJobsDashboard } = await import('./src/renderer/components/ScheduledJobsDashboard.tsx')
+const { MorningRoom } = await import('./src/renderer/components/MorningRoom.tsx')
+const { useHarness } = await import('./src/renderer/state/store.ts')
 
 const REFUSED = 'it ran all 1 of its max fires; raise or clear max fires first'
 const job = {
@@ -71,16 +74,16 @@ async function check(name, fn) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-function mount() {
+function mount(component = ScheduledJobsDashboard) {
   const host = document.createElement('div')
   document.body.appendChild(host)
   const root = createRoot(host)
-  flushSync(() => root.render(createElement(ScheduledJobsDashboard)))
+  flushSync(() => root.render(createElement(component)))
   return { host, unmount: () => { root.unmount(); host.remove() } }
 }
 
-function clickResume(host) {
-  const button = [...host.querySelectorAll('button')].find((b) => b.textContent.trim() === 'resume')
+function clickResume(host, label = 'resume') {
+  const button = [...host.querySelectorAll('button')].find((b) => b.textContent.trim() === label)
   assert.ok(button, 'a resume button')
   button.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
 }
@@ -102,6 +105,22 @@ await check('a refused resume in a schedule’s detail view says why', async () 
   clickResume(host)
   await sleep(20)
   assert.ok(host.textContent.includes(REFUSED), 'the bridge’s reason is shown')
+  unmount()
+})
+
+await check('a refused resume of the stopped briefer says why', async () => {
+  window.harness.getBriefing = async () => ({
+    dates: [], date: null, json: null, markdown: null,
+    brieferJobId: job.id, brieferStopped: 'the model call failed',
+  })
+  useHarness.setState({ toast: null })
+  // Its backdrop asks for WebGL, which jsdom has not.
+  window.HTMLCanvasElement.prototype.getContext = () => null
+  const { host, unmount } = mount(MorningRoom)
+  await sleep(20)
+  clickResume(host, '▸ resume')
+  await sleep(20)
+  assert.ok(useHarness.getState().toast?.message.includes(REFUSED), 'the bridge’s reason is shown')
   unmount()
 })
 
