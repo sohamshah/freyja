@@ -58,7 +58,6 @@ def _make_session(*, board: SessionKanbanBoard, sub_tool: _StubSubAgentTool) -> 
     session.id = "test-session"
     session.coordination_strategy = "kanban"
     session.kanban_board = board
-    session.mission_root_card_id = None
     session.auto_dispatch_enabled = True
     session.tool_registry = _StubToolRegistry({"sub_agent": sub_tool})
     session.subagent_registry = _StubSubagentRegistry()
@@ -250,7 +249,6 @@ async def test_dispatcher_skips_mission_root_card() -> None:
 
     sub_tool = _StubSubAgentTool()
     session = _make_session(board=board, sub_tool=sub_tool)
-    session.mission_root_card_id = root_id
     await session._kanban_tick(source="test")
 
     targets = [call["kanban_task_id"] for call in sub_tool.calls]
@@ -826,4 +824,34 @@ async def test_dispatcher_sends_a_card_unblock_released_past_a_failed_parent() -
     sub_tool = _StubSubAgentTool()
     session = _make_session(board=board, sub_tool=sub_tool)
 
+    assert card in await _dispatched(session, sub_tool)
+
+
+@pytest.mark.asyncio
+async def test_the_session_and_its_board_name_one_mission_root() -> None:
+    """The session kept its own copy of the mission root id, and the
+    triage lane read it where every other lane reads the board's. A board
+    that already had a root (the agent made one before a user message
+    reached the session) got a second one, and the session kept that
+    one's id, so the triage lane counted another card as done than the
+    board did."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    await tool.execute(
+        "r1",
+        {"action": "create", "title": "mission", "metadata": {"role": "mission_root"}},
+    )
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    session.tool_registry._tools["kanban"] = tool
+
+    await session._ensure_mission_root_card("plan the release")
+
+    roots = [t.id for t in await board.list() if t.metadata.get("role") == "mission_root"]
+    assert roots == [board._mission_root_id]
+    # A triage card whose other parent finished while its promotion row
+    # was lost: the triage lane counts the board's root as done.
+    parent = (await board.create(title="parent")).id
+    card = (await board.create(title="card", parents=[board._mission_root_id, parent])).id
+    board._tasks[parent].status = "done"
     assert card in await _dispatched(session, sub_tool)

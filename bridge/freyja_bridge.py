@@ -4823,11 +4823,6 @@ class _BridgeSession:
         from bridge.tools.message_bus import SessionMessageBus
         self.message_bus: SessionMessageBus = SessionMessageBus()
         self.kanban_board: Any | None = None
-        # Anchor card created from the user's first message under kanban
-        # coordination. Subsequent parent-spawned cards latch onto this id
-        # so the dashboard always has a mission cover-card to draw the
-        # rest of the work off of.
-        self.mission_root_card_id: str | None = None
         # Auto-dispatch state (Move A). Off by default — the dashboard
         # toggle flips it on per session. When enabled, the dispatcher
         # tick spawns specifier/worker/verifier sub-agents against the
@@ -5063,10 +5058,6 @@ class _BridgeSession:
             )
             if existing_events:
                 self.kanban_board.replay_events(existing_events)
-                # Repopulate the mission-root cache the bridge holds outside
-                # the board so post-restart card creation continues to graft
-                # onto the right anchor.
-                self.mission_root_card_id = self.kanban_board._mission_root_id  # noqa: SLF001
                 # Count how many prior restarts the journal has seen by
                 # tallying the `restarted` events already written. The
                 # dashboard reads these via `kanban_replay` system events
@@ -5765,7 +5756,6 @@ class _BridgeSession:
         self._base_system_prompt = ""
         self._system_prompt = ""
         self.kanban_board = None
-        self.mission_root_card_id = None
         # reset() clears the autopilot flag. Emit a disabled event ONLY
         # if it was previously on, so the renderer's toggle state stays
         # in sync and post-restore IPCs (see ensure_session) can re-arm
@@ -8919,13 +8909,15 @@ class _BridgeSession:
         the registered KanbanTool so the same `kanban_create` event flows out
         as any other card creation — the renderer doesn't need a separate
         code path to learn about the root card."""
-        if self.mission_root_card_id is not None:
-            return
         from bridge.tools.coordination import strategy_uses_kanban
 
         if not strategy_uses_kanban(self.coordination_strategy):
             return
         if self.kanban_board is None or self.tool_registry is None:
+            return
+        # The board's root, which every lane counts as done. A board that
+        # has one (the agent made it, or a journal held it) gets no second.
+        if self.kanban_board._mission_root_id is not None:  # noqa: SLF001
             return
         clean = user_content.strip()
         if not clean:
@@ -8951,17 +8943,6 @@ class _BridgeSession:
             )
         except Exception as exc:  # noqa: BLE001
             log("warn", f"mission root card creation failed: {exc}")
-            return
-        # The board assigns ids monotonically and we just created the first
-        # one in this session, so look it up off the board directly rather
-        # than parsing the tool result.
-        cards = await self.kanban_board.list()
-        if cards:
-            # The mission card is whichever we just stamped with the role tag.
-            for card in cards:
-                if card.metadata.get("role") == "mission_root":
-                    self.mission_root_card_id = card.id
-                    break
 
     # ─── Kanban auto-dispatch (Move A) + verifier (Move C) ────────────────
 
@@ -9430,8 +9411,9 @@ class _BridgeSession:
                     continue
                 # A specifier is only useful once the card body is non-empty
                 # *or* its parents are done — otherwise there's nothing to
-                # expand. Cards still gated on a parent stay in triage.
-                if not self._board_parents_satisfied(card):
+                # expand. Cards still gated on a parent stay in triage; the
+                # board's mission root counts as done, as in every lane.
+                if not self.kanban_board._parents_done(card):  # noqa: SLF001
                     continue
                 plans.append(
                     {
@@ -9524,17 +9506,6 @@ class _BridgeSession:
                     f"Card {card.id} stalled — no activity in {int(age)}s",
                     details={"cardId": card.id, "ageSeconds": int(age)},
                 )
-
-    def _board_parents_satisfied(self, card: Any) -> bool:
-        if self.kanban_board is None:
-            return True
-        for parent_id in getattr(card, "parents", []) or []:
-            if parent_id == self.mission_root_card_id:
-                continue
-            parent = self.kanban_board._tasks.get(parent_id)  # noqa: SLF001
-            if parent is None or parent.status != "done":
-                return False
-        return True
 
     async def _dispatch_kanban_card(
         self,
