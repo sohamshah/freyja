@@ -135,6 +135,18 @@ await check("a pin event marks the message in its own session, not the one on sc
   assert.deepEqual(pinnedIds(useHarness.getState().messages), ['a1'])
 })
 
+await check("an agent's pin marks the message holding the entry stamped `at`", async () => {
+  // summarize_context's ordinals count every entry, tool results too, so
+  // its event names the entry by its stamp: here a step of the reply a1
+  // after its tool results.
+  reset()
+  ev({ type: 'entry_pin_changed', entryId: 'e5', at: 1_200, pinned: true, source: 'agent_summarize_context' })
+  assert.deepEqual(pinnedIds(useHarness.getState().messages), ['a1'])
+  reset()
+  ev({ type: 'entry_pin_changed', entryId: 'e9', at: 2_000, pinned: true, source: 'agent_summarize_context' })
+  assert.deepEqual(pinnedIds(useHarness.getState().messages), ['u2'])
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

@@ -252,22 +252,26 @@ class SummarizeContextTool:
         # sees the new flags. We pin by message ordinal (the same
         # addressing scheme used by edit/rerun/delete IPC commands)
         # rather than transcript-entry id since the agent doesn't have
-        # entry-id visibility. Each ordinal maps to the Nth message
-        # across user+assistant entries that contain a Message.
+        # entry-id visibility. Each ordinal maps to the Nth entry that
+        # holds a Message, tool results included.
         pinned_now: list[int] = []
         if pin_ordinals:
             try:
-                pinned_now = _apply_pins_by_ordinal(transcript, pin_ordinals)
+                pinned = _apply_pins_by_ordinal(transcript, pin_ordinals)
+                pinned_now = list(pinned)
                 # Notify the renderer for each successful pin so the pin
                 # badge appears without waiting for a session reload
-                # (Gap M).
+                # (Gap M). It shows a turn's steps and tool results as one
+                # reply, so it counts messages differently: the event names
+                # the entry by its stamp, and the renderer marks the message
+                # holding it.
                 session_id_for_pin = getattr(session, "id", "") or ""
-                for ord_idx in pinned_now:
+                for entry in pinned.values():
                     self._emit_pin_changed({
                         "type": "entry_pin_changed",
                         "sessionId": session_id_for_pin,
-                        "entryId": None,
-                        "messageOrdinal": ord_idx,
+                        "entryId": entry.id,
+                        "at": entry.timestamp * 1000,
                         "pinned": True,
                         "source": "agent_summarize_context",
                     })
@@ -768,16 +772,16 @@ def _tool_name_by_id(transcript: Any) -> dict[str, str]:
     return tool_name_by_id
 
 
-def _apply_pins_by_ordinal(transcript: Any, ordinals: list[int]) -> list[int]:
+def _apply_pins_by_ordinal(transcript: Any, ordinals: list[int]) -> dict[int, Any]:
     """Mark transcript entries pinned, addressed by message ordinal.
 
     Ordinal indexing matches the bridge's IPC convention used by edit /
     rerun / delete commands: 0-indexed across entries that carry a
     Message (i.e. excluding compaction-only entries). Returns the
-    ordinals that were successfully pinned.
+    entries that were successfully pinned, by ordinal.
     """
     seen = set(ordinals)
-    pinned: list[int] = []
+    pinned: dict[int, Any] = {}
     idx = 0
     for entry in transcript.entries:
         if entry.message is None:
@@ -785,7 +789,7 @@ def _apply_pins_by_ordinal(transcript: Any, ordinals: list[int]) -> list[int]:
         if idx in seen:
             try:
                 transcript.set_entry_pinned(entry.id, True)
-                pinned.append(idx)
+                pinned[idx] = entry
             except Exception:
                 pass
         idx += 1

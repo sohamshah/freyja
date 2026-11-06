@@ -748,18 +748,66 @@ async def test_summarize_context_pin_entries_notifies_renderer() -> None:
         get_compactor=lambda: compactor,
         on_pin_changed=lambda e: pin_events.append(e),
     )
+    wanted = {tm.entries[i].id for i in (3, 5, 18)}
     await tool.execute("call-pin", {
         "scope": "all",
         "pin_entries": [3, 5, 18],
     })
-    pinned_ords = {e["messageOrdinal"] for e in pin_events}
+    pinned_ids = {e["entryId"] for e in pin_events}
     # The compactor's pinning step may not pin every requested ord if
     # the transcript shape doesn't match (e.g. ordinals beyond range).
     # Here all are valid → all three fired.
-    assert pinned_ords == {3, 5, 18}
+    assert pinned_ids == wanted
     for e in pin_events:
         assert e["pinned"] is True
         assert e["source"] == "agent_summarize_context"
+
+
+async def test_summarize_context_pin_event_names_the_entry_and_its_stamp() -> None:
+    """The agent's ordinals count every entry, tool results too; the renderer shows a turn's steps and results as one reply, so ordinal 3 there is another message. The event names the pinned entry and its stamp, which the renderer places in the message holding it."""
+    from bridge.tools.summarize_context_tool import SummarizeContextTool
+    from engine.compaction import SummaryCompaction
+    from engine.session import Session, TranscriptManager
+
+    tm = TranscriptManager()
+    tm.append_message(Message(role="user", content="look at the logs"))
+    tm.append_message(Message(
+        role="assistant", content="", tool_calls=[ToolCall(id="c1", name="bash", arguments={})],
+    ))
+    tm.append_message(Message(role="tool_result", content="ok", tool_call_id="c1"))
+    tm.append_message(Message(role="assistant", content="All fixed."))
+    tm.append_message(Message(role="user", content="thanks"))
+    for i, entry in enumerate(tm.entries):
+        entry.timestamp = 100.0 + i
+
+    class _Provider:
+        model_id = "fake"
+        def complete(self, *args, **kwargs):
+            class _R:
+                content = "<summary>fake</summary>"
+                tool_calls: list = []
+                usage = None
+            return _R()
+
+    session = Session(id="test-pin-stamp", transcript=tm, system_prompt="")
+    pin_events: list[dict] = []
+    tool = SummarizeContextTool(
+        get_session=lambda: session,
+        get_provider=lambda: _Provider(),
+        get_compactor=lambda: SummaryCompaction(),
+        on_pin_changed=lambda e: pin_events.append(e),
+    )
+    await tool.execute("call-pin", {"scope": "all", "pin_entries": [3]})
+    reply_end = tm.entries[3]
+    assert reply_end.compaction_excluded
+    assert pin_events == [{
+        "type": "entry_pin_changed",
+        "sessionId": "test-pin-stamp",
+        "entryId": reply_end.id,
+        "at": 103_000.0,
+        "pinned": True,
+        "source": "agent_summarize_context",
+    }]
 
 
 def test_compaction_result_carries_summary_tokens_and_summarizer_stats() -> None:

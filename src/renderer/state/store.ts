@@ -3447,8 +3447,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       // optimistic update in toggleEntryPin().
       if ((ev as any).type === 'entry_pin_changed') {
         const ordinal = (ev as any).messageOrdinal as number
+        const at = (ev as any).at as number | undefined
         const pinned = Boolean((ev as any).pinned)
-        if (typeof ordinal !== 'number' || ordinal < 0) return prev
+        if (typeof at !== 'number' && (typeof ordinal !== 'number' || ordinal < 0)) return prev
         // The session the pin is in, which need not be the one on screen
         // (an agent in the background pins through summarize_context).
         const sid: string = (ev as any).sessionId || prev.activeSessionId
@@ -3458,7 +3459,19 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         if (!messages) return prev
         // Counted as messageOrdinalById counts them.
         const userAssistant = messages.filter((m) => m.role === 'user' || m.role === 'assistant')
-        const targetId = userAssistant[ordinal]?.id
+        let targetId: string | undefined
+        if (typeof at === 'number') {
+          // An agent's pin names the entry by its stamp. An anchor resolves
+          // to the first entry stamped at or after its message, so the
+          // entry belongs to the last message stamped at or before it.
+          let holder: Message | undefined
+          for (const m of userAssistant) {
+            if (m.createdAt <= at && (!holder || m.createdAt >= holder.createdAt)) holder = m
+          }
+          targetId = holder?.id
+        } else {
+          targetId = userAssistant[ordinal]?.id
+        }
         if (!targetId) return prev
         const marked = messages.map((m) => (m.id === targetId ? { ...m, pinned } : m))
         if (active) return { ...prev, messages: marked }
