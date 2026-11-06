@@ -377,3 +377,34 @@ async def test_a_copy_restored_in_the_app_is_not_compacted(app_bridge, monkeypat
     assert await sess.try_restore_transcript()
     assert compacted == []
     assert [e["id"] for e in tp.load_transcript(SLACK)["transcript"]["entries"]] == ["g1"]
+
+
+# ── delete in the app hides; the gateway's files stay ────────────────
+
+
+async def test_deleting_a_slack_session_in_the_app_keeps_its_files(app_bridge, tmp_path):
+    # The gateway runs the thread and saves these. The user never deletes
+    # sessions; the app only stops showing it.
+    _state, _events, _built = app_bridge
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    _gateway_saved()
+    tp.save_inbox_state(SLACK, {"sessionId": SLACK, "unread": [], "delivered": []})
+    sub = "sub_abc_1"
+    tp.save_transcript(sub, {"version": 1, "session_id": sub, "metadata": {"parent_session_id": SLACK}})
+
+    await fb._handle_command(
+        state, {"type": "delete_session", "sessionId": SLACK, "cascadeSessionIds": [sub]},
+    )
+
+    assert [e["id"] for e in tp.load_transcript(SLACK)["transcript"]["entries"]] == ["g1"]
+    assert tp.load_inbox_state(SLACK) is not None
+    assert tp.load_transcript(sub) is not None
+
+
+async def test_deleting_a_desktop_session_still_removes_its_transcript(app_bridge, tmp_path):
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    tp.save_transcript("session-1", {"version": 1, "session_id": "session-1", "metadata": {}})
+
+    await fb._handle_command(state, {"type": "delete_session", "sessionId": "session-1"})
+
+    assert tp.load_transcript("session-1") is None

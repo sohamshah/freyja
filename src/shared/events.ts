@@ -1807,6 +1807,7 @@ export const IPC = {
   sessionSave: 'session:save',
   sessionIndexSave: 'session:index-save',
   sessionDelete: 'session:delete',
+  sessionHide: 'session:hide',
   sessionExport: 'session:export',
   sessionDownload: 'session:download',
   settingsGet: 'settings:get',

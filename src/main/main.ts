@@ -30,6 +30,7 @@ import { IPC, type AppInfo, type BridgeCommand } from '../shared/events.js'
 import { isBinaryType, isStreamableType, mimeTypeForPath } from '../shared/mime.js'
 import {
   deleteSession as persistDeleteSession,
+  hideSession as persistHideSession,
   exportSessionToFile as persistExportSession,
   writeSessionDownload as persistWriteSessionDownload,
   listSessions as persistListSessions,
@@ -1145,6 +1146,15 @@ function setupIpc() {
   ipcMain.handle(IPC.sessionDelete, async (_event, id: string) => {
     try {
       return { ok: persistDeleteSession(id) }
+    } catch (err) {
+      return { ok: false, error: String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.sessionHide, async (_event, id: string) => {
+    try {
+      persistHideSession(id)
+      return { ok: true }
     } catch (err) {
       return { ok: false, error: String(err) }
     }

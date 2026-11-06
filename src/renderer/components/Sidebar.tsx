@@ -1,6 +1,6 @@
 import React, { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { collectDescendantSessionIds, useHarness } from '../state/store'
+import { collectDescendantSessionIds, isInSlackThread, useHarness } from '../state/store'
 import { useSchedulerStore } from '../state/scheduler-store'
 import type {
   CoordinationStrategy,
@@ -2276,7 +2276,17 @@ const SessionRow = memo(function SessionRow({
               downloadSession(s.id)
             }}
           />
-          {!isActive && (
+          {!isActive && isInSlackThread(useHarness.getState().sessions, s.id) && (
+            <CtxBtn
+              label="Hide here"
+              title="Hides it in the app. The conversation stays in Slack, and nothing is deleted."
+              onClick={() => {
+                setMenuOpen(false)
+                deleteSession(s.id)
+              }}
+            />
+          )}
+          {!isActive && !isInSlackThread(useHarness.getState().sessions, s.id) && (
             <CtxBtn
               label={
                 subagentCount > 0
@@ -2354,13 +2364,16 @@ function CtxBtn({
   label,
   onClick,
   danger,
+  title,
 }: {
   label: string
   onClick: () => void
   danger?: boolean
+  title?: string
 }) {
   return (
     <button
+      title={title}
       onClick={(e) => {
         e.stopPropagation()
         onClick()

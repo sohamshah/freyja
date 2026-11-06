@@ -82,6 +82,9 @@ const api = {
   async sessionDelete(id: string): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke(IPC.sessionDelete, id)
   },
+  async sessionHide(id: string): Promise<{ ok: boolean; error?: string }> {
+    return ipcRenderer.invoke(IPC.sessionHide, id)
+  },
   async compactionMetrics(): Promise<{ ok: boolean; rows?: any[]; error?: string }> {
     return ipcRenderer.invoke(IPC.compactionMetrics)
   },

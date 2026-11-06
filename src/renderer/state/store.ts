@@ -914,6 +914,19 @@ export function sessionTreeIndex(sessions: SessionSnapshot[]): SessionTreeIndex 
   return index
 }
 
+/** A Slack session, or a sub-agent under one. The gateway runs and saves
+ *  those; the app only shows them. */
+export function isInSlackThread(sessions: SessionSnapshot[], sessionId: string): boolean {
+  const byId = new Map(sessions.map((s) => [s.id, s]))
+  let id: string | undefined = sessionId
+  for (let depth = 0; id && depth < 32; depth += 1) {
+    const s = byId.get(id)
+    if (id.startsWith('freyja:') || s?.agentType === 'gateway-slack') return true
+    id = s?.parentSessionId
+  }
+  return false
+}
+
 /** Walk the parent-child session graph and return every descendant id of
  *  `parentId`, in BFS order. Used to enumerate which subagent transcripts
  *  the bridge should clone alongside the parent during a branch. */
@@ -5985,6 +5998,10 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       return
     }
     const idsToDelete = new Set<string>([sessionId, ...descendants])
+    // A Slack session's thread runs in the gateway, which saves its files:
+    // the app only stops showing it and its sub-agents, and every file
+    // stays. Deleting it here removed the gateway's transcript.
+    const inSlack = isInSlackThread(state.sessions, sessionId)
 
     // Remove from store: sessions list, archive, any panes pointing at
     // a removed id. Frame caches get released for each archived slice.
@@ -6009,10 +6026,21 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       }
     })
 
+    const api = (window as any).harness
+    if (inSlack) {
+      const res = await api?.sessionHide?.(sessionId).catch(() => null)
+      await useHarness.getState().persistSessionIndex().catch(() => {})
+      if (res?.ok) {
+        state.showToast('Hidden from the app. The conversation stays in Slack.', 'info')
+      } else {
+        state.showToast("Couldn't hide this session; it shows again on the next refresh", 'warn')
+      }
+      return
+    }
+
     // Remove from disk: renderer-side metadata file (`{id}.json`) +
     // bridge-side transcript file (`{id}.transcript.json`) +
     // bridge in-memory `_BridgeState.sessions` entries.
-    const api = (window as any).harness
     const allIds = [sessionId, ...descendants]
     if (api?.sessionDelete) {
       await Promise.all(allIds.map((id) => api.sessionDelete(id).catch(() => {})))

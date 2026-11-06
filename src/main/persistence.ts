@@ -461,7 +461,53 @@ export function listSessions(): PersistedSessionMeta[] {
   // attaches to that id.
   rows = [...rows, ...mirrorGatewaySessions(new Set(rows.map((r) => r.id)))]
 
-  return sortSessions(dedupeSessions(rows))
+  return sortSessions(dedupeSessions(withoutHiddenSessions(rows)))
+}
+
+const HIDDEN_SESSIONS_FILE = '_hidden.json'
+
+/** Slack sessions deleted in the app, with when each was hidden (ms). The
+ *  gateway runs their threads and saves their files, so every file stays:
+ *  deleting one removed its transcript under the running gateway. The list
+ *  leaves a hidden session out, with its sub-agents, until its thread has a
+ *  turn after that (its transcript is saved again). */
+function readHiddenSessions(): Record<string, number> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, HIDDEN_SESSIONS_FILE), 'utf8'))
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+export function hideSession(id: string): void {
+  ensureDir()
+  writeJsonFile(path.join(SESSIONS_DIR, HIDDEN_SESSIONS_FILE), {
+    ...readHiddenSessions(),
+    [id]: Date.now(),
+  })
+}
+
+function withoutHiddenSessions(rows: PersistedSessionMeta[]): PersistedSessionMeta[] {
+  const hiddenAt = readHiddenSessions()
+  const hidden = new Set(
+    Object.keys(hiddenAt).filter((id) => {
+      try {
+        return fs.statSync(resolveSessionPath(id, '.transcript.json')).mtimeMs <= hiddenAt[id]
+      } catch {
+        return true
+      }
+    }),
+  )
+  if (hidden.size === 0) return rows
+  const parentOf = new Map(rows.map((row) => [row.id, row.parentSessionId]))
+  const isHidden = (id: string | undefined): boolean => {
+    for (let depth = 0; id && depth < 32; depth += 1, id = parentOf.get(id)) {
+      if (hidden.has(id)) return true
+    }
+    return false
+  }
+  return rows.filter((row) => !isHidden(row.id))
 }
 
 // Per-file mtime cache for parsed gateway-transcript metadata. The

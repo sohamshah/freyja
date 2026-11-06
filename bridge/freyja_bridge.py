@@ -15634,6 +15634,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             str(cid) for cid in raw_cascade if isinstance(cid, str) and cid
         ]
         all_ids = [session_id, *cascade_ids]
+        # A Slack session and its sub-agents are the gateway's: the app
+        # only stops showing them (persistence.ts hideSession), and every
+        # file stays. Deleted here, the transcript went from under the
+        # gateway, which still runs the thread.
+        keep_files = _gateway_holds(session_id)
 
         from bridge.transcript_persistence import delete_transcript
 
@@ -15669,6 +15674,8 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 except KeyError:
                     pass
                 _close_session_event_file(sid)
+            if keep_files:
+                continue
             try:
                 delete_transcript(sid)
                 deleted_count += 1
@@ -15680,6 +15687,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             cascade_note = f" (+{len(cascade_ids)} subagent{plural})"
         else:
             cascade_note = ""
+        if keep_files:
+            log("info", f"hid Slack session {session_id}{cascade_note} in the app — its files stay")
+            return
         log(
             "info",
             f"deleted session {session_id}{cascade_note} — "
