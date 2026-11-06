@@ -2404,8 +2404,8 @@ function CardFocusView({
             showToast(`Unblocked ${card.id}`, 'info')
           }}
           onForceDispatch={async () => {
+            // The store toasts the bridge's answer: it can refuse the card.
             await forceDispatchKanbanCard(sessionId, card.id)
-            showToast(`Force-dispatched ${card.id}`, 'info')
           }}
           onReassign={async () => {
             const current = card.assignee ?? ''

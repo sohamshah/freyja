@@ -979,6 +979,24 @@ function answerAutopilot(sessionId: string, subtype: string, message: string, de
   )
 }
 
+/** Cards the operator force dispatched, by session and card, until the
+ *  bridge answers. It can refuse the card (a parent it waits on, no free
+ *  worker slot), so the toast says what it did, not what was asked. */
+const forceDispatchAsked = new Set<string>()
+
+/** Toast the bridge's answer to a force dispatch: the reason it refused,
+ *  or that the card went out. */
+function answerForceDispatch(sessionId: string, subtype: string, message: string, details?: Record<string, unknown>): void {
+  const cardId = typeof details?.cardId === 'string' ? details.cardId : ''
+  const refused = subtype === 'kanban_operator_force_dispatch_failed'
+  const dispatched = subtype === 'kanban_dispatched' && details?.source === 'operator_force'
+  if (!refused && !dispatched) return
+  if (!forceDispatchAsked.delete(`${sessionId} ${cardId}`)) return
+  queueMicrotask(() =>
+    useHarness.getState().showToast(refused ? message : `Force-dispatched ${cardId}`, refused ? 'warn' : 'info'),
+  )
+}
+
 /** What was attached to a message sent to a Slack session, keyed on its
  *  bubble, for as long as the bridge may still refuse it (`send_refused`).
  *  The bubble keeps only previews, so a refusal gives these back to the
@@ -4560,6 +4578,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       if (ev.type === 'system_event' && ev.sessionId) {
         prev = undoRefusedChange(prev, ev.sessionId, ev.subtype, ev.details?.requestId)
         answerAutopilot(ev.sessionId, ev.subtype, ev.message, ev.details)
+        answerForceDispatch(ev.sessionId, ev.subtype, ev.message, ev.details)
       }
 
       // Session-scoped events: route to the right slice.
@@ -4951,6 +4970,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     if (!sessionId || !cardId) return
     const api = (window as any).harness
     if (!api?.sendCommand) return
+    forceDispatchAsked.add(`${sessionId} ${cardId}`)
     await api.sendCommand({
       type: 'kanban_operator_force_dispatch',
       sessionId,
