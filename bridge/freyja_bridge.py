@@ -6751,7 +6751,7 @@ class _BridgeSession:
         self.inbox.push(memo)
         self._schedule_memo_wake()
 
-    def _memo_has_no_reader(self, work_id: str, label: str) -> bool:
+    def _memo_has_no_reader(self, work_id: str, label: str, what: str = "memo") -> bool:
         """Whether a memo of background work is dropped, with a log line,
         because an earlier run left the work, in the session of a job that
         starts a new session each run: work begin_fresh_run or end_fresh_run
@@ -6760,7 +6760,8 @@ class _BridgeSession:
         That run has ended and delivered, and the session now holds another
         run, which the memo reached, or none. No run record shows such a
         memo, and the work's output stays where the work wrote it: a
-        sub-agent's transcript and artifact, a command's log."""
+        sub-agent's transcript and artifact, a command's log. A talk from
+        such a sub-agent to the session is dropped too (TalkTool)."""
         from bridge.scheduler.runtime import starts_new_session_each_run
 
         if not starts_new_session_each_run(self.id):
@@ -6769,7 +6770,7 @@ class _BridgeSession:
             return False
         log(
             "info",
-            f"memo of {label} ({work_id}) dropped: an earlier run of {self.id} "
+            f"{what} of {label} ({work_id}) dropped: an earlier run of {self.id} "
             "left that work, and each run starts a new session; its output "
             "stays in its transcript, artifact or log",
         )
@@ -6779,29 +6780,31 @@ class _BridgeSession:
         """A run of a job that starts a new session each run takes this
         session (the scheduler's _resolve_execution_session). reset() keeps
         the inbox and the background work still running, which an earlier
-        run left: the memos unread are dropped, and so are those of that
-        work when it ends (_memo_has_no_reader). They went with this run's
-        first turn, or slid into it."""
-        from bridge.inbox import KIND_MEMO
+        run left: the memos and agents' talk unread are dropped, and so are
+        that work's memos when it ends, and its talk to the session
+        (_memo_has_no_reader). They went with this run's first turn, or slid
+        into it."""
+        from bridge.inbox import KIND_MEMO, KIND_TALK
 
         self._earlier_runs_work = {w.id for w in self._running_background_work()}
         for msg in list(self.inbox.unread):
-            if msg.kind == KIND_MEMO:
+            talk = msg.kind == KIND_TALK and msg.from_role != "operator"
+            if msg.kind == KIND_MEMO or talk:
                 self.inbox.remove(msg.id)
                 log(
                     "info",
-                    f"memo of {msg.from_label} ({msg.from_session}) dropped: an "
-                    f"earlier run of {self.id} left it unread, and each run "
-                    "starts a new session",
+                    f"{'message' if talk else 'memo'} of {msg.from_label} "
+                    f"({msg.from_session}) dropped: an earlier run of {self.id} "
+                    "left it unread, and each run starts a new session",
                 )
 
     def end_fresh_run(self) -> None:
         """The run that took this session (begin_fresh_run) is over: it
         stops counting the session's cost and delivers. Its work still
-        running is set aside, and its memos left unread are dropped, as
-        the next run's begin_fresh_run does. Set aside only then, a memo
-        of that work woke a turn on the ended run's transcript in between,
-        which no run counted or delivered."""
+        running is set aside, and its memos and talk left unread are
+        dropped, as the next run's begin_fresh_run does. Set aside only
+        then, a memo of that work woke a turn on the ended run's transcript
+        in between, which no run counted or delivered."""
         self.begin_fresh_run()
 
     async def _note_stopped_by_operator(self, label: str, work_id: str, what: str) -> None:

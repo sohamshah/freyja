@@ -801,6 +801,27 @@ class TalkTool:
                 reply_to=(str(reply_to) if reply_to else None),
             )
 
+            # A sub-agent an ended run of a job left, talking to the job's
+            # session, which starts a new session each run: no run reads
+            # it, as none reads its memo (_memo_has_no_reader). It went
+            # into the next run, or woke a turn on the ended one.
+            parent = (
+                self._router.session_for(target_id)
+                if target_id == self._ctx.parent_session_id
+                else None
+            )
+            no_reader = getattr(parent, "_memo_has_no_reader", None)
+            if callable(no_reader) and no_reader(
+                self._ctx.caller_session_id, self._ctx.caller_label, "message"
+            ):
+                results.append(
+                    f"'{ref}' → {target_id}: not delivered — the run that "
+                    "started you has ended, and its job starts a new session "
+                    "each run, so no run would read it; your work stays in "
+                    "your transcript"
+                )
+                continue
+
             # Cross-process routing first: a local mirror of a session
             # owned by another process must NOT swallow the message.
             fwd = self._router.forward_cross_process(

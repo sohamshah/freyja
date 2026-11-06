@@ -545,6 +545,106 @@ async def test_work_a_fresh_session_jobs_run_left_wakes_no_turn_after_the_run(
     assert sess.inbox.unread == [] and _inbox_file(FRESH) == []
 
 
+async def test_a_fresh_session_jobs_next_run_gets_no_talk_an_earlier_runs_sub_agent_left_unread(
+    app_bridge, tmp_path
+):
+    # begin_fresh_run dropped the memos left unread, and not a sub-agent's
+    # talk to the session: it went with the next run's first turn.
+    from bridge.inbox import KIND_FOLLOWUP
+    from bridge.scheduler.models import CronSchedule, JobRecord, NewSession, NoopSinkSpec
+    from bridge.scheduler.runtime import _resolve_execution_session
+
+    sess = _copy(tmp_path, owns_tick=True, sid=FRESH)
+    state = sess.state
+    state.sessions[FRESH] = sess
+    await sess.initialize()
+    sess.inbox.push(InboxMessage(
+        id="t1", from_session="sub_19f0fresh_0", from_label="scout", from_role="agent",
+        content="one more finding",
+    ))
+    sess.inbox.push(InboxMessage(
+        id="o1", from_session="operator", from_label="operator", from_role="operator",
+        content="and the weather", kind=KIND_FOLLOWUP,
+    ))
+
+    async def ensure_session(_sid, **_kw):
+        return sess
+
+    state.ensure_session = ensure_session
+    job = JobRecord(id="sched_19f0", name="digest", schedule=CronSchedule(expression="0 6 * * *"),
+                    prompt="digest", execution=NewSession(), sinks=[NoopSinkSpec()])
+    await _resolve_execution_session(SimpleNamespace(state=state), job)
+
+    assert [m.id for m in sess.inbox.unread] == ["o1"]
+
+
+def _talk_from(sess, sub_id: str):
+    """The talk tool of sub-agent ``sub_id``, whose parent is ``sess``."""
+    from bridge.tools.talk_tool import TalkRouter, TalkRouterContext, TalkTool
+
+    state = sess.state
+    router = TalkRouter(
+        bridge_state=state,
+        get_running_sessions=lambda: dict(state.sessions),
+        resolve_archived_sub=lambda _sid: None,
+        wake_archived_sub=lambda _sid, _msg: None,
+    )
+    ctx = TalkRouterContext(
+        caller_session_id=sub_id, caller_label="worker", caller_role="agent", parent_session_id=sess.id,
+    )
+    return TalkTool(router, ctx)
+
+
+async def test_a_sub_agent_an_earlier_run_left_cannot_talk_into_a_fresh_session_jobs_next_run(
+    app_bridge, tmp_path
+):
+    from bridge.scheduler.models import CronSchedule, JobRecord, NewSession, NoopSinkSpec
+    from bridge.scheduler.runtime import _resolve_execution_session
+
+    sess = _copy(tmp_path, owns_tick=True, sid=FRESH)
+    state = sess.state
+    state.sessions[FRESH] = sess
+    await sess.initialize()
+    ran: list[str] = []
+
+    async def run_turn(content, _attachments=None, **_kw):
+        ran.append(content)
+
+    async def ensure_session(_sid, **_kw):
+        return sess
+
+    sess.run_turn = run_turn
+    state.ensure_session = ensure_session
+    earlier = sess.subagent_registry.register("sub_19f0fresh_1", "worker", "t", "general")
+    earlier.notify_parent = True
+    job = JobRecord(id="sched_19f0", name="digest", schedule=CronSchedule(expression="0 6 * * *"),
+                    prompt="digest", execution=NewSession(), sinks=[NoopSinkSpec()])
+    await _resolve_execution_session(SimpleNamespace(state=state), job)
+
+    out = await _talk_from(sess, earlier.id).execute("c1", {"to": "parent", "content": "one more finding"})
+
+    assert sess.inbox.unread == [] and ran == [] and _inbox_file(FRESH) == []
+    assert "not delivered" in out.content and "starts a new session" in out.content
+
+
+async def test_a_sub_agent_under_a_copy_of_a_fresh_session_jobs_session_cannot_talk_into_its_runs(
+    app_bridge, tmp_path
+):
+    # A run now in the app left the sub-agent, and the run ended. Its talk
+    # went to the session's inbox file, which the tick owner reads.
+    from bridge.tools.sub_agent_registry import SubAgentRegistry
+
+    sess = _copy(tmp_path, owns_tick=False, sid=FRESH)
+    sess.state.sessions[FRESH] = sess
+    sess.subagent_registry = SubAgentRegistry()
+    child = sess.subagent_registry.register("sub_19f0fresh_1", "worker", "t", "general")
+
+    out = await _talk_from(sess, child.id).execute("c1", {"to": "parent", "content": "one more finding"})
+
+    assert _inbox_file(FRESH) == [] and sess.inbox.unread == []
+    assert "not delivered" in out.content
+
+
 async def _take_the_tick(service, monkeypatch) -> None:
     """``service`` starts while a peer owns the tick, and takes it when the
     peer exits (the scheduler daemon restarts, and the gateway takes over)."""
