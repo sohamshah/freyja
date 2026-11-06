@@ -141,7 +141,17 @@ def get_running_pid() -> int | None:
 
 
 def write_pid(pid: int) -> None:
-    pid_path().write_text(str(pid), encoding="utf-8")
+    """Write the PID file whole: to a temp file, renamed over it. Written
+    in place, the file was empty between the truncate and the write, and
+    another process reading it then saw no gateway."""
+    path = pid_path()
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(str(pid), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def clear_pid() -> None:
