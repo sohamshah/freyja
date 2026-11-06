@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from bridge.scheduler.models import (
+    BudgetSpec,
     ExistingSession,
     JobRecord,
     NewSession,
@@ -182,9 +183,7 @@ async def fire_job(
     abort_job = False
     from bridge.freyja_bridge import register_session_listener, unregister_session_listener
 
-    run_cost = _RunCost(
-        run.run_id, job.budget.max_cost_usd_per_run if job.budget else None,
-    )
+    run_cost = _RunCost(run.run_id, job.budget)
     register_session_listener(sess_id, run_cost.on_event)
     try:
         from bridge.freyja_bridge import _schedule_or_queue_turn
@@ -301,17 +300,12 @@ async def fire_job(
                 "This result may be incomplete.)"
             ).strip()
 
-        # Capture per-run usage telemetry (tokens + cost): tokens from the
-        # session's recently-modified messages, cost from the run's own
-        # calls. This is what populates the dashboard Metrics view and the
-        # per-run cost in the filesystem sink's JSON output.
-        try:
-            in_tok, out_tok, cache_tok = _extract_run_usage(sess)
-            run.input_tokens = in_tok
-            run.output_tokens = out_tok
-            run.cache_read_tokens = cache_tok
-        except Exception:  # noqa: BLE001
-            pass
+        # Capture per-run usage telemetry (tokens + cost) from the run's
+        # own calls. This is what populates the dashboard Metrics view and
+        # the per-run cost in the filesystem sink's JSON output.
+        run.input_tokens = run_cost.input_tokens
+        run.output_tokens = run_cost.output_tokens
+        run.cache_read_tokens = run_cost.cache_read_tokens
         run.cost_usd = run_cost.cost
 
         # Budget enforcement — if a per-run cap was set and the run blew
@@ -319,8 +313,7 @@ async def fire_job(
         # on_exceeded=abort_job, disable the job (with the run's other
         # writes to the record, below). Marked timed_out, it was retried
         # by a retry_policy for timeouts and spent the budget again. A run
-        # over its cost cap was stopped at the call that took it over
-        # (_RunCost); its tokens are counted only here.
+        # over a cap was stopped at the call that took it over (_RunCost).
         if job.budget is not None:
             b = job.budget
             exceeded = (
@@ -932,23 +925,30 @@ def _extract_last_assistant_text(sess: Any) -> tuple[str, int]:
 
 
 class _RunCost:
-    """What a run's own model calls cost, added up from its session's
-    llm_call_metric events: the calls of the turn that runs the fire's
-    prompt, and of the turns after it that no message started (the wakes
-    its sub-agents' reports start, a goal loop's continuations). A run's
-    cost was how much the session's total grew while it ran, so a fire
-    into the operator's session was billed the turns of the messages the
-    operator sent while it waited. The calls of the sub-agents of its
-    session that started while it ran are its cost too: they report
-    under their own session ids, so neither of its budgets saw them.
+    """What a run's own model calls cost and the tokens they used, added
+    up from its session's llm_call_metric events: the calls of the turn
+    that runs the fire's prompt, and of the turns after it that no
+    message started (the wakes its sub-agents' reports start, a goal
+    loop's continuations). A run's cost was how much the session's total
+    grew while it ran, so a fire into the operator's session was billed
+    the turns of the messages the operator sent while it waited. The
+    calls of the sub-agents of its session that started while it ran are
+    its cost too: they report under their own session ids, so neither of
+    its budgets saw them.
 
-    The call that takes the run over ``cap`` stops it. Checked only when
-    the run ended, a run over its budget had spent the money by then."""
+    The call that takes the run over its ``budget``'s cost or token cap
+    stops it. Checked only when the run ended, a run over its budget had
+    spent the money by then. Its tokens were read from the transcript
+    after its last user entry, which left out every turn before the last
+    (a sub-agent's report wakes the session with a user message)."""
 
-    def __init__(self, run_id: str, cap: float | None) -> None:
+    def __init__(self, run_id: str, budget: BudgetSpec | None) -> None:
         self.cost = 0.0
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cache_read_tokens = 0
         self._run_id = run_id
-        self._cap = cap
+        self._budget = budget
         self._started = time.time()
         # emit() also runs on worker threads (compaction's calls).
         self._loop = asyncio.get_running_loop()
@@ -972,37 +972,19 @@ class _RunCost:
                 and float(event.get("subagentStartedAt") or 0.0) >= self._started)
         ):
             self.cost += float(event.get("costUsd") or 0.0)
-            if self._cap is not None and self.cost > self._cap:
+            self.input_tokens += int(event.get("inputTokens") or 0)
+            self.output_tokens += int(event.get("outputTokens") or 0)
+            self.cache_read_tokens += int(event.get("cacheReadTokens") or 0)
+            if self._over_budget():
                 self._loop.call_soon_threadsafe(stop_run_now, self._run_id, "budget_exceeded")
 
-
-def _extract_run_usage(sess: Any) -> tuple[int, int, int]:
-    """Walk back through the transcript adding up token counts on the
-    assistant messages after the fire's prompt."""
-    inner = getattr(sess, "session", None)
-    if inner is None:
-        return 0, 0, 0
-    in_tok = 0
-    out_tok = 0
-    cache_tok = 0
-    try:
-        entries = list(inner.transcript.entries)
-    except Exception:  # noqa: BLE001
-        return 0, 0, 0
-    for e in reversed(entries):
-        msg = getattr(e, "message", None)
-        if msg is None:
-            continue
-        # Stop when we cross back into a user turn (we only want the
-        # tail belonging to this fire).
-        if getattr(msg, "role", "") == "user":
-            break
-        if getattr(msg, "role", "") != "assistant":
-            continue
-        in_tok += int(getattr(msg, "input_tokens", 0) or 0)
-        out_tok += int(getattr(msg, "output_tokens", 0) or 0)
-        cache_tok += int(getattr(msg, "cache_read_tokens", 0) or 0)
-    return in_tok, out_tok, cache_tok
+    def _over_budget(self) -> bool:
+        b = self._budget
+        return b is not None and (
+            (b.max_cost_usd_per_run is not None and self.cost > b.max_cost_usd_per_run)
+            or (b.max_tokens_per_run is not None
+                and self.input_tokens + self.output_tokens > b.max_tokens_per_run)
+        )
 
 
 def _entry_ids(sess: Any) -> set[str] | None:

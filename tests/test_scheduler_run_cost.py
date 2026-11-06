@@ -11,6 +11,10 @@ it had already spent the money.
 
 A run's sub-agents report their calls under their own session ids, so
 neither the run's budget nor its job's daily one counted them.
+
+A run's tokens were read when it ended, from the transcript after its
+last user entry: the turns before a sub-agent's report woke the session
+were left out, and its token cap stopped nothing.
 """
 
 from __future__ import annotations
@@ -88,8 +92,9 @@ def operator_session(monkeypatch, tmp_path):
                 sess._on_llm_call({"provider": "anthropic", "model": "claude-sonnet-5-5",
                                    "input_tokens": 1000, "output_tokens": cents})
                 sess.made += 1
+                # Each call's reply is in the transcript with its usage.
+                session.add_assistant_message("done", input_tokens=1000, output_tokens=cents)
                 await asyncio.sleep(0.05)
-            session.add_assistant_message("done")
             return SimpleNamespace(success=True, response="done", stop_reason="end_turn")
 
     sess.initialize = _initialize
@@ -274,3 +279,47 @@ async def test_a_sub_agents_call_that_takes_the_run_over_its_budget_stops_it(
     assert sess.made == 1
     assert run.status == "budget_exceeded"
     assert run.cost_usd == pytest.approx(0.40)
+
+
+async def test_a_run_stops_at_the_call_that_takes_it_over_its_token_budget(operator_session):
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.costs = {"write the digest": 10}
+    sess.calls = 5
+
+    run = await fire_job(_Service({"s1": sess}), _job(budget=BudgetSpec(max_tokens_per_run=2500)))
+
+    # 1,010 tokens a call: the third takes it over 2,500.
+    assert sess.made == 3
+    assert run.status == "budget_exceeded"
+    assert (run.input_tokens, run.output_tokens) == (3000, 30)
+
+
+async def test_a_runs_tokens_are_those_of_all_its_turns_and_sub_agents(
+    operator_session, tmp_path, monkeypatch,
+):
+    import time
+
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.costs = {"write the digest": 20, fb.MEMO_WAKE_PROMPT: 30}
+    record, on_llm_call = await _sub_agent_of("s1", tmp_path, monkeypatch)
+
+    def _spawn_and_report():
+        record.start_time = time.time()
+        on_llm_call({"model": "claude-sonnet-5-5", "input_tokens": 500, "output_tokens": 5,
+                     "cache_read_tokens": 700})
+        sess.inbox.push(InboxMessage(
+            id=new_message_id(), from_session="sub_r_1", from_label="researcher",
+            from_role="agent", content="found three sources", kind=KIND_MEMO,
+        ))
+
+    sess.during_fire = _spawn_and_report
+
+    run = await fire_job(_Service({"s1": sess}), _job())
+
+    # The fire's turn, the turn the memo woke, and the sub-agent's call.
+    assert (run.input_tokens, run.output_tokens, run.cache_read_tokens) == (2500, 55, 700)

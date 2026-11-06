@@ -1740,6 +1740,9 @@ Parameters:
                     "sessionId": parent_session_id_local,
                     "subagentId": sub_id_local,
                     "subagentStartedAt": record.start_time,
+                    "inputTokens": in_tok,
+                    "outputTokens": out_tok,
+                    "cacheReadTokens": cr_tok,
                     "costUsd": float(cost) if cost is not None else None,
                 })
             except Exception:
