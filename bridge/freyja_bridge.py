@@ -12051,21 +12051,24 @@ class _BridgeSession:
 
         # Materialize the final assistant message in our transcript.
         # text_delta was already streamed to the renderer during the
-        # turn; this is the durable copy. For error turns we synthesize
-        # a visible assistant message from the harness error so the
-        # operator sees the cause inline instead of just a silent gap.
+        # turn; this is the durable copy. For error turns with no text we
+        # stream the harness error so the operator sees the cause inline
+        # instead of just a silent gap.
         final_text = result.text or ""
         result_error = getattr(result, "error", None) or ""
         result_is_error = bool(getattr(result, "is_error", False) or result_error)
+        if result_is_error:
+            # A failed turn, as when run_turn raises: a scheduled run whose
+            # turn it was ends with it (_RunCost).
+            self.last_turn_error = (result_error or final_text.strip() or "unknown")[:400]
         if not final_text and result_is_error:
-            final_text = f"[{adapter.label} error] {result_error or 'unknown'}"
-            # Also emit as a text_delta so the streaming assistant card
-            # shows the error in real time, not only after persistence.
+            # Shown, not kept as the turn's reply, as a native turn's
+            # failure is: kept, a scheduled run delivered it as its output.
             emit(
                 {
                     "type": "text_delta",
                     "sessionId": self.id,
-                    "text": final_text,
+                    "text": f"[{adapter.label} error] {result_error or 'unknown'}",
                 }
             )
         if final_text:
@@ -12090,7 +12093,7 @@ class _BridgeSession:
                 "type": "turn_complete",
                 "sessionId": self.id,
                 "turnId": self.current_turn_id,
-                "success": result.error is None,
+                "success": not result_is_error,
             }
         )
 
@@ -12108,7 +12111,7 @@ class _BridgeSession:
         # accumulated without ever being classified. Tick here so the
         # cadence + outcome watcher both see harness turns.
         self._tick_skill_learning_hooks(
-            success=result.error is None,
+            success=not result_is_error,
             had_user_message=True,
         )
 

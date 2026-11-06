@@ -181,3 +181,56 @@ async def test_a_run_does_not_take_the_error_of_a_turn_queued_behind_its_own(mon
     assert sess.last_turn_error == "the codex app-server exited"
     assert run.status == "failed"
     assert "the codex app-server exited" not in run.error
+
+
+class _ErrorResult(_Adapter):
+    """A harness whose turn ends with an error result: it does not raise."""
+
+    async def run_turn(self, text, *, mcp_servers=None, turn_id=""):
+        return SimpleNamespace(text="", error="Claude Code produced no output for 900s",
+                               is_error=True, stop_reason="error")
+
+
+async def test_a_run_whose_harness_turn_ends_with_an_error_result_fails_with_it(monkeypatch, tmp_path):
+    # _run_harness_turn noted no error and put "[Codex error] ..." in the
+    # transcript as the turn's reply, so the run succeeded and delivered it.
+    import bridge.scheduler.runtime as runtime
+    from bridge.scheduler.runtime import fire_job
+
+    _state, sess = await _harness_session(monkeypatch, tmp_path)
+    sess.harness_adapter = _ErrorResult()
+    delivered: list[str] = []
+
+    async def deliver_all(job, run, output, ctx):
+        delivered.append(output.text)
+        return []
+
+    monkeypatch.setattr(runtime, "deliver_all", deliver_all)
+
+    run = await asyncio.wait_for(fire_job(_Service({"h1": sess}), _report_job()), 10)
+
+    assert delivered == []
+    assert run.status == "failed"
+    assert "Claude Code produced no output for 900s" in run.error
+
+
+async def test_a_harness_error_result_with_no_message_ends_its_turn_failed(monkeypatch, tmp_path):
+    # Its turn_complete said success when the result carried is_error and
+    # no error text.
+    import bridge.freyja_bridge as fb
+
+    _state, sess = await _harness_session(monkeypatch, tmp_path)
+
+    class _Bare(_Adapter):
+        async def run_turn(self, text, *, mcp_servers=None, turn_id=""):
+            return SimpleNamespace(text="", error=None, is_error=True, stop_reason="end_turn")
+
+    sess.harness_adapter = _Bare()
+    events: list[dict] = []
+    fb.register_session_listener("h1", events.append)
+    fb._schedule_or_queue_turn(sess, "refactor the parser")
+    await asyncio.wait_for(sess.pending_task, 5)
+
+    assert [e["success"] for e in events if e["type"] == "turn_complete"] == [False]
+    assert sess.last_turn_error
+
