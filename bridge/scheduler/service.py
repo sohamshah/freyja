@@ -1067,6 +1067,17 @@ class SchedulerService:
                     setattr(job, field_name, val)
             if patch.clear_max_fires:
                 job.max_fires = None
+            # A cap lowered to the fires the job ran stops it now, as the
+            # end of the run that reaches the cap does. Nothing checks
+            # max_fires when a run is claimed: left active, it fired again.
+            if (
+                patch.max_fires is not None
+                and job.enabled and job.status == "active"
+                and job.fire_count >= patch.max_fires
+            ):
+                job.enabled = False
+                job.status = "disabled_max_fires"
+                job.next_fire_at = None
             # enabled pauses or resumes the job, as pause_job and
             # resume_job do. Set alone, a paused job kept status "paused",
             # which the tick skips, and never ran again.

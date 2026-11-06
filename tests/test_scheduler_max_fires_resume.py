@@ -137,3 +137,20 @@ async def test_the_schedule_tool_and_slack_say_to_raise_or_clear_max_fires(servi
         assert "ran all 1 of its max fires" in said
         assert "raise or clear max fires first" in said
     assert not load_job(done.id).enabled
+
+
+@pytest.mark.parametrize("max_fires", [2, 3])
+async def test_lowering_max_fires_to_the_fires_it_ran_stops_the_job_at_once(service, max_fires):
+    # Nothing checks max_fires when a run is claimed, so a job left active
+    # with its cap at or below its fire count fired once more.
+    save_job(JobRecord(
+        id="sched_digest", name="digest", prompt="digest",
+        schedule=IntervalSchedule(seconds=3600), fire_count=3,
+        execution=ExistingSession(session_id="s1"), sinks=[NoopSinkSpec()],
+    ))
+
+    updated = await service.update_job("sched_digest", JobPatch(max_fires=max_fires))
+    after = await _fire(service, "sched_digest")
+
+    assert after.fire_count == 3
+    assert (updated.enabled, updated.status, updated.next_fire_at) == (False, "disabled_max_fires", None)
