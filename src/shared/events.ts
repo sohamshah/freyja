@@ -1383,6 +1383,9 @@ export type BridgeEvent = Received & (
     } & SessionId)
   | ({ type: 'message_stop'; stopReason: string } & SessionId)
   | ({ type: 'turn_complete'; turnId: string; success: boolean } & SessionId)
+  // The turn raised past run_turn's own handler. No turn_complete follows.
+  // `hint` is advice for the Slack thread (where the gateway reads its keys).
+  | ({ type: 'turn_failed'; message: string; hint?: string; model?: string | null } & SessionId)
   | {
       type: 'scheduler_response'
       requestId?: string

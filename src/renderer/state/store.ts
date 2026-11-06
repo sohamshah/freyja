@@ -2270,6 +2270,12 @@ function endTurnWithError(
   return { messages, currentStreamingMessageId: null, currentTurnId: null, isStreaming: false }
 }
 
+/** A `turn_failed`: the message appended to the reply as for an `error`,
+ *  and the turn ended as `turn_complete` ends it, since none follows. */
+function endTurnWithFailure(slice: SessionSlice, message: string): SessionSlice {
+  return endTurn({ ...slice, messages: endTurnWithError(slice, message).messages }, 'Not run: the turn failed')
+}
+
 /** Close out tool chips in `parts` that are still running: `error` with
  *  `reason` as the result. Returns `toolCalls` itself when none were. */
 function settleUnfinishedTools(
@@ -3602,12 +3608,17 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         queueMicrotask(() => useHarness.getState().showToast(msg, tone))
         return prev
       }
-      if (ev.type === 'error') {
+      // A turn that raised past the bridge's own handler sends turn_failed
+      // and no turn_complete, so it is shown as an error that also ends
+      // the turn.
+      if (ev.type === 'error' || ev.type === 'turn_failed') {
+        const message = ev.type === 'turn_failed' ? `turn failed: ${ev.message}` : ev.message
+        const end = ev.type === 'turn_failed' ? endTurnWithFailure : endTurnWithError
         const notice = {
-          logs: [...prev.logs.slice(-200), { level: 'error' as const, message: ev.message, at: receivedAt(ev) }],
+          logs: [...prev.logs.slice(-200), { level: 'error' as const, message, at: receivedAt(ev) }],
           toast: {
             id: nextId('toast'),
-            message: ev.message,
+            message,
             tone: 'warn' as const,
             at: Date.now(),
           },
@@ -3619,14 +3630,14 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         const target = ev.sessionId
         if (!target) return { ...prev, ...notice }
         if (target === prev.activeSessionId) {
-          return { ...prev, ...notice, ...endTurnWithError(sliceFromState(prev), ev.message) }
+          return { ...prev, ...notice, ...end(sliceFromState(prev), message) }
         }
         const archived = prev.sessionArchive[target]
         if (!archived) return { ...prev, ...notice }
         return {
           ...prev,
           ...notice,
-          sessionArchive: { ...prev.sessionArchive, [target]: { ...archived, ...endTurnWithError(archived, ev.message) } },
+          sessionArchive: { ...prev.sessionArchive, [target]: { ...archived, ...end(archived, message) } },
         }
       }
       if (ev.type === 'memory_retrieved' || ev.type === 'memory_updated') {

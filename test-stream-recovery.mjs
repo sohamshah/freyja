@@ -191,6 +191,49 @@ await check("the active session's own error ends its turn", () => {
   assert.equal(h().messages.at(-1).parts.at(-1).text, 'turn failed: boom')
 })
 
+// ── A turn that raised past run_turn's own handler ──────────────────────
+// The bridge sends turn_failed and no turn_complete: turn_start then
+// turn_failed when the turn raised after it started, turn_failed alone
+// when it raised before.
+
+await check('turn_failed ends the turn on screen and shows why', () => {
+  seed()
+  emit({ type: 'turn_start', sessionId: P, turnId: 't1' })
+  emit({ type: 'text_delta', sessionId: P, text: 'Looking.' })
+  emit({ type: 'tool_use_start', sessionId: P, id: 'spin', name: 'bash' })
+  emit({ type: 'turn_failed', sessionId: P, message: 'cannot read the attachment', hint: '', model: 'claude-sonnet-5-5' })
+  assert.equal(h().isStreaming, false)
+  assert.equal(h().currentStreamingMessageId, null)
+  const reply = h().messages.at(-1)
+  assert.deepEqual(shape(reply), ['text:Looking.', 'tool:spin', 'system:turn failed: cannot read the attachment'])
+  assert.equal(reply.parts.at(-1).systemSubtype, 'error')
+  assert.ok(reply.completedAt, 'the reply carries its end time')
+  assert.equal(h().toolCalls.spin.status, 'error')
+  assert.equal(h().toast?.message, 'turn failed: cannot read the attachment')
+})
+
+await check("a background session's turn_failed ends its turn only", () => {
+  seed({ sessionArchive: { kid: slice([msg('k1', 'user', 'x')]) }, sessions: [row('p'), row('kid', { parentSessionId: 'p' })] })
+  emit({ type: 'turn_start', sessionId: P, turnId: 't1' })
+  emit({ type: 'turn_start', sessionId: 'kid', turnId: 'k' })
+  emit({ type: 'turn_failed', sessionId: 'kid', message: 'boom' })
+  assert.equal(h().isStreaming, true)
+  const kid = h().sessionArchive.kid
+  assert.equal(kid.isStreaming, false)
+  assert.equal(kid.messages.at(-1).parts.at(-1).text, 'turn failed: boom')
+})
+
+await check('turn_failed before the turn started shows why and adds nothing', () => {
+  seed()
+  emit({ type: 'turn_failed', sessionId: P, message: 'ANTHROPIC_API_KEY is not set' })
+  assert.equal(h().isStreaming, false)
+  assert.deepEqual(h().messages.map((m) => m.id), ['u1'])
+  assert.equal(h().toast?.message, 'turn failed: ANTHROPIC_API_KEY is not set')
+  // A session whose history is not loaded gets no stub slice either.
+  emit({ type: 'turn_failed', sessionId: 'cold', message: 'x' })
+  assert.equal(h().sessionArchive.cold, undefined)
+})
+
 // ── A new bridge ends the old bridge's turns ────────────────────────────
 
 await check('ready ends every turn still marked live, and settles its chips', () => {

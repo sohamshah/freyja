@@ -53,7 +53,7 @@ function runPostEventEffects(event: any, api: any) {
     schedulePersistSession(event.sessionId as string | undefined)
     schedulePersistIndex()
   }
-  if (event?.type === 'turn_complete' || event?.type === 'session_completed') {
+  if (event?.type === 'turn_complete' || event?.type === 'turn_failed' || event?.type === 'session_completed') {
     const state = useHarness.getState()
     schedulePersistSession((event.sessionId as string | undefined) || state.activeSessionId)
     schedulePersistIndex()
@@ -229,6 +229,7 @@ export function App() {
       eventQueueRef.current.push(event)
       const flushNow =
         event?.type === 'turn_complete' ||
+        event?.type === 'turn_failed' ||
         event?.type === 'session_completed' ||
         event?.type === 'permission_request' ||
         event?.type === 'emergency_stop'
