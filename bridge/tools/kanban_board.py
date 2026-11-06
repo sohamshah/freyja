@@ -54,23 +54,29 @@ TERMINAL_FAILURE_STATUSES = {"cancelled", "failed"}
 ACTIVE_STATUSES = {"running"}
 # End states from which retry is possible (via reclaim or operator action).
 RETRY_ELIGIBLE_STATUSES = {"crashed", "timed_out", "blocked"}
+# Statuses that finish a card. The kanban tool's `complete` is the only
+# agent path into them: it needs a claim in orchestrator mode and lands the
+# card in `review`, and the judge's verdict seals `done`. `update`,
+# `comment` and `heartbeat` refuse them.
+FINISH_STATUSES = {"review", "done_unverified", "done"}
 
 # Allowed transitions. Anything outside this table is rejected at write
 # time so accidental backflow (e.g. `done → running`) can't happen under
 # autonomy. Keep this table mechanically reviewable: the LEFT side is the
 # *current* status; the RIGHT side is the set of valid next-statuses.
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
-    # `done` and `done_unverified` are both allowed from triage/ready/blocked
-    # because the parent can legitimately seal a card via the `complete`
-    # action without ever spinning up a sub-agent. Whether complete writes
-    # `done` or `done_unverified` depends on the card's `requires_verification`
-    # flag. Worker writes are constrained separately by the worker-tool
-    # slim-down (Move E), not by this table.
+    # This table is what the board accepts, not what agents may write. The
+    # `done` / `done_unverified` edges out of triage/ready/running/blocked
+    # are not open to agents: `complete` needs a claim and always writes
+    # `review` (Move R), the judge's verdict writes `done` from `review`,
+    # and the kanban tool refuses FINISH_STATUSES on every other action.
+    # Worker writes are constrained further by the worker-tool slim-down
+    # (Move E).
     "triage": {"ready", "done", "done_unverified", "cancelled"},
     "ready": {"running", "done", "done_unverified", "cancelled", "blocked"},
     "running": {
         "done_unverified",
-        "done",  # parent agents that don't use the verifier skip straight here
+        "done",
         "review",  # default-on judge review path (Move R)
         "blocked",
         "crashed",
@@ -329,14 +335,10 @@ class KanbanTask:
     events: list[KanbanEvent] = field(default_factory=list)
     comment_count: int = 0
     event_count: int = 0
-    # Opt-in verification (Move C). When True, the worker's `complete`
-    # call (or the bridge's automatic terminal-marking) routes to
-    # `done_unverified` so the dispatcher's verifier lane picks it up
-    # for a sign-off pass. When False — the default — `complete` seals
-    # the card directly to `done`. Cheap/ambiguous work (quick web
-    # lookup, image gen, exploratory bash) doesn't need verification;
-    # the parent flips this on for cards whose definition_of_done is
-    # checkable enough to be worth the extra spawn.
+    # Hint that the card's definition_of_done is concretely checkable
+    # (Move C). Informational since Move R: `complete` and the bridge's
+    # terminal-marking route every card to `review` whatever the flag;
+    # the judge reads it back.
     requires_verification: bool = False
     # Circuit breaker. Crashes and timeouts increment this; a successful
     # run resets to zero. Past `FAILURE_THRESHOLD`, `update()` rewrites
@@ -1298,7 +1300,14 @@ class KanbanTool:
                     },
                     "parent_id": {"type": "string", "description": "Parent id for link"},
                     "child_id": {"type": "string", "description": "Child id for link"},
-                    "status": {"type": "string", "enum": list(STATUSES)},
+                    "status": {
+                        "type": "string",
+                        "enum": list(STATUSES),
+                        "description": (
+                            "New status for update. review, done_unverified and "
+                            "done are refused: finish a card with complete"
+                        ),
+                    },
                     "priority": {"type": "integer", "minimum": 0, "maximum": 5},
                     "comment": {"type": "string", "description": "Progress note or blocker reason"},
                     "summary": {"type": "string", "description": "Completion/handoff summary"},
@@ -1522,6 +1531,18 @@ class KanbanTool:
         if action in {"update", "comment", "complete", "block", "heartbeat"}:
             task = await self._require_task(arguments)
             status = arguments.get("status")
+            # Only `complete` finishes a card (the claim check in execute,
+            # then review). A `status` passed to the other actions may not.
+            if (
+                action not in {"complete", "block"}
+                and status
+                and normalize_status(str(status)) in FINISH_STATUSES
+            ):
+                raise ValueError(
+                    f"{action} cannot set status {status!r}. Only `complete` "
+                    "finishes a card: it sends the card to review, and the "
+                    "judge's pass seals it."
+                )
             comment = str(arguments.get("comment") or "").strip()
             summary = arguments.get("summary")
             result = arguments.get("result")

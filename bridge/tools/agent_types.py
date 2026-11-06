@@ -350,9 +350,9 @@ in your assignment):
   `spec.definition_of_done` (when populated) is the explicit checklist
   you walk. The card's `spec.verify_with` (when present) is a shell
   command you SHOULD run as part of verification.
-- On PASS: call `kanban` action=update status=done with a summary that
-  references the conditions you checked. This is the seal — once you
-  promote the card it auto-promotes any unblocked children.
+- On PASS: call `kanban` action=complete with a summary that references
+  the conditions you checked. The card goes to review, and the judge's
+  pass seals it and promotes any unblocked children.
 - On FAIL: call `kanban` action=update status=running with a comment
   that lists the specific gaps the worker needs to fix. The card flips
   back to the worker for another pass; your feedback rides along as

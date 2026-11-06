@@ -157,9 +157,9 @@ async def test_dispatcher_spawns_verify_for_done_unverified_cards() -> None:
     await tool.execute(
         "u1", {"action": "update", "task_id": card_id, "status": "running"}
     )
-    await tool.execute(
-        "u2", {"action": "update", "task_id": card_id, "status": "done_unverified"}
-    )
+    # The tool's `update` refuses done_unverified; legacy cards reach it
+    # through the board.
+    await board.update(card_id, actor="dispatcher", status="done_unverified")
 
     sub_tool = _StubSubAgentTool()
     session = _make_session(board=board, sub_tool=sub_tool)

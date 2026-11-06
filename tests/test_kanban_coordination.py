@@ -10,7 +10,7 @@ from bridge.tools.coordination import (
     strategy_uses_kanban,
     strategy_uses_message_bus,
 )
-from bridge.tools.kanban_board import KanbanTool, SessionKanbanBoard
+from bridge.tools.kanban_board import KanbanTool, SessionKanbanBoard, is_valid_transition
 from bridge.tools.registry import build_desktop_registry
 
 
@@ -414,7 +414,7 @@ async def test_kanban_new_end_states_are_reachable_from_running() -> None:
         )
         return cid
 
-    for next_status in ("crashed", "timed_out", "done_unverified"):
+    for next_status in ("crashed", "timed_out"):
         cid = await make_running()
         result = await tool.execute(
             f"t-{cid}",
@@ -424,17 +424,13 @@ async def test_kanban_new_end_states_are_reachable_from_running() -> None:
         show = await tool.execute(f"s-{cid}", {"action": "show", "task_id": cid})
         assert json.loads(show.content)["task"]["status"] == next_status
 
-    # done_unverified → done is the verifier's seal-the-deal transition.
+    # done_unverified and its seal to done are board-level edges; the tool's
+    # `update` refuses both (test_update_cannot_finish_a_card).
     cid = await make_running()
-    await tool.execute(
-        f"u-{cid}", {"action": "update", "task_id": cid, "status": "done_unverified"},
-    )
-    seal = await tool.execute(
-        f"d-{cid}", {"action": "update", "task_id": cid, "status": "done"},
-    )
-    assert not seal.is_error
-    show = await tool.execute(f"f-{cid}", {"action": "show", "task_id": cid})
-    assert json.loads(show.content)["task"]["status"] == "done"
+    unverified = await board.update(cid, actor="dispatcher", status="done_unverified")
+    assert unverified.status == "done_unverified"
+    sealed = await board.update(cid, actor="kanban-judge", status="done")
+    assert sealed.status == "done"
 
 
 @pytest.mark.asyncio
@@ -790,10 +786,12 @@ async def test_requires_verification_flag_settable_via_update() -> None:
 
 
 @pytest.mark.asyncio
-async def test_done_unverified_to_done_remains_legal_for_verifier_seal() -> None:
-    """The verifier's final seal must still work: a `done_unverified` card
-    transitions to `done` via the regular update path. This guards
-    against the table being tightened past its intent."""
+async def test_verifier_pass_on_done_unverified_card_goes_through_review() -> None:
+    """A verify worker on a `done_unverified` card passes it with
+    `complete`, which sends it to review like any other completion; its
+    `update status=done` is refused. The board itself still accepts
+    `done_unverified -> done`, so the table is not tightened past its
+    intent."""
     board = SessionKanbanBoard()
     tool = KanbanTool(board, actor_id="parent", actor_label="parent")
     create = await tool.execute(
@@ -804,23 +802,79 @@ async def test_done_unverified_to_done_remains_legal_for_verifier_seal() -> None
     await tool.execute(
         "c2", {"action": "update", "task_id": card_id, "status": "running"}
     )
-    unverified = await tool.execute(
-        "c3", {"action": "update", "task_id": card_id, "status": "done_unverified"}
-    )
-    assert json.loads(unverified.content)["task"]["status"] == "done_unverified"
+    await board.update(card_id, actor="dispatcher", status="done_unverified")
+    assert is_valid_transition("done_unverified", "done")
 
-    # Now simulate the verifier sealing the card.
-    seal = await tool.execute(
-        "c4",
-        {
-            "action": "update",
-            "task_id": card_id,
-            "status": "done",
-            "comment": "PASS — definition_of_done walked",
-        },
+    verifier = KanbanTool(
+        board, actor_id="verifier", actor_label="verify", owned_task_id=card_id
     )
-    assert not seal.is_error
-    assert json.loads(seal.content)["task"]["status"] == "done"
+    seal = await verifier.execute(
+        "c3", {"action": "update", "status": "done", "comment": "PASS"}
+    )
+    assert seal.is_error
+    passed = await verifier.execute(
+        "c4",
+        {"action": "complete", "summary": "PASS — definition_of_done walked"},
+    )
+    assert not passed.is_error, passed.content
+    assert json.loads(passed.content)["task"]["status"] == "review"
+
+
+@pytest.mark.asyncio
+async def test_update_cannot_finish_a_card() -> None:
+    """`complete` is the only way to finish a card: the orchestrator must
+    claim the card first, and the card lands in `review` for the judge.
+    `update`, and `comment` / `heartbeat` (which take the same `status`
+    field), must not write `review`, `done_unverified` or `done`, or an
+    unclaimed card could be sealed without a judge pass."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    create = await tool.execute("c1", {"action": "create", "title": "work"})
+    card_id = json.loads(create.content)["task"]["id"]
+
+    for action in ("update", "comment"):
+        for status in ("done", "done_unverified"):
+            refused = await tool.execute(
+                f"{action}-{status}",
+                {
+                    "action": action,
+                    "task_id": card_id,
+                    "status": status,
+                    "comment": "did it myself",
+                },
+            )
+            assert refused.is_error, f"{action} {status}: {refused.content}"
+            assert "`complete`" in refused.content
+    assert (await board.get(card_id)).status == "ready"
+
+    # The worker on the card cannot skip review either.
+    await tool.execute(
+        "c2", {"action": "update", "task_id": card_id, "status": "running"}
+    )
+    worker = KanbanTool(
+        board, actor_id="worker", actor_label="worker", owned_task_id=card_id
+    )
+    for action in ("update", "heartbeat"):
+        for status in ("done", "review"):
+            refused = await worker.execute(
+                f"w-{action}-{status}", {"action": action, "status": status}
+            )
+            assert refused.is_error, f"{action} {status}: {refused.content}"
+    card = await board.get(card_id)
+    assert card.status == "running"
+    assert card.review_iteration == 0
+
+    # `update` still edits the card and moves it between working statuses,
+    # and `complete` still finishes it through review.
+    edit = await worker.execute(
+        "c3", {"action": "update", "body": "narrower ask", "status": "running"}
+    )
+    assert not edit.is_error, edit.content
+    assert json.loads(edit.content)["task"]["body"] == "narrower ask"
+    complete = await worker.execute(
+        "c4", {"action": "complete", "summary": "finished"}
+    )
+    assert json.loads(complete.content)["task"]["status"] == "review"
 
 
 def test_registry_only_exposes_kanban_tool_in_kanban_mode(tmp_path) -> None:
