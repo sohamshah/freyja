@@ -22,6 +22,8 @@ import json
 import os
 from types import SimpleNamespace
 
+import pytest
+
 from bridge.inbox import InboxMessage, SessionInbox, new_message_id
 from bridge.tools import talk_tool as tt
 from bridge.tools.talk_tool import (
@@ -542,6 +544,86 @@ async def test_talk_to_closed_desktop_root_cold_loads_and_wakes(monkeypatch, tmp
     assert status == "woken"
     assert [m.content for m in pushed] == ["hello"]
     assert woke == [sid]
+
+
+def _scheduler_daemon(monkeypatch, tmp_path) -> tuple[TalkTool, list[str]]:
+    """A talk tool in the scheduler daemon: neither the gateway nor the
+    app's bridge. Records every session the daemon would load."""
+    from bridge import freyja_bridge as fb
+    from bridge import transcript_persistence as tp
+
+    monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: False)
+    monkeypatch.setattr(tt, "_gateway_owner_pid", lambda: os.getpid() + 1)
+    built: list[str] = []
+
+    async def ensure_session(session_id, **_kw):
+        built.append(session_id)
+        raise AssertionError(f"the scheduler daemon loaded a copy of {session_id}")
+
+    state = SimpleNamespace(
+        sessions={}, active_session_id=None, ensure_session=ensure_session, talk_wake_hook_factory=None,
+    )
+    router = TalkRouter(
+        bridge_state=state, get_running_sessions=dict,
+        resolve_archived_sub=fb._resolve_archived_subagent,
+        wake_archived_sub=lambda sid, _msg: built.append(sid),
+    )
+    return TalkTool(router, _ctx()), built
+
+
+def _closed_desktop_session(tmp_path, sid: str) -> None:
+    from bridge import transcript_persistence as tp
+
+    (tmp_path / f"{sid}.transcript.json").write_text("{}")
+    if sid.startswith("sub_"):
+        tp.save_subagent_state(sid, {"sessionId": sid, "parentSessionId": "session-1", "transcript": {}})
+
+
+@pytest.mark.parametrize("sid", ["session-closed2", "sub_19f0desk_2"])
+async def test_a_talk_from_the_scheduler_daemon_to_a_closed_desktop_session_loads_no_copy(monkeypatch, tmp_path, sid):
+    """The daemon loaded the session (or re-woke the sub-agent under its
+    parent, loaded there) and ran the message as a turn, while the app's
+    bridge loads and saves the same files. With no app running, the
+    message waits in the session's inbox file."""
+    from bridge import transcript_persistence as tp
+
+    tool, built = _scheduler_daemon(monkeypatch, tmp_path)
+    _closed_desktop_session(tmp_path, sid)
+
+    await tool.execute("c1", {"to": sid, "content": "the report is ready"})
+
+    assert built == []
+    assert [u["content"] for u in tp.load_inbox_state(sid)["unread"]] == ["the report is ready"]
+
+
+async def test_a_talk_from_the_scheduler_daemon_to_a_desktop_session_goes_to_the_app_while_it_runs(
+    monkeypatch, tmp_path
+):
+    import fcntl
+
+    from bridge import transcript_persistence as tp
+    from bridge.gateway import pid as gp
+    from bridge.gateway.control_channel import desktop_commands_path
+
+    tool, built = _scheduler_daemon(monkeypatch, tmp_path)
+    sid = "session-closed3"
+    _closed_desktop_session(tmp_path, sid)
+    with gp.desktop_lock_path().open("a") as app:  # the app's bridge, in its own process
+        fcntl.flock(app.fileno(), fcntl.LOCK_EX)
+        await tool.execute("c1", {"to": sid, "content": "the report is ready"})
+
+    assert built == [] and tp.load_inbox_state(sid) is None
+    (line,) = desktop_commands_path().read_text().splitlines()
+    cmd = json.loads(line)
+    assert (cmd["type"], cmd["to"], cmd["message"]["content"]) == ("talk_deliver", sid, "the report is ready")
+
+
+async def test_the_apps_bridge_delivers_a_talk_to_its_own_closed_session_itself(monkeypatch, tmp_path):
+    from bridge.gateway import pid as gp
+
+    monkeypatch.setattr(gp, "_desktop_lock", object())
+    assert _router({}).forward_cross_process("session-closed4", _msg(), live_local=False, archived_state=None) is None
 
 
 async def test_talk_to_closed_subagent_is_not_cold_loaded_as_a_root(monkeypatch, tmp_path):

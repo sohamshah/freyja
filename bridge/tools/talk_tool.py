@@ -87,6 +87,25 @@ def _holds_gateway_lock() -> bool:
         return False
 
 
+def _in_desktop_bridge() -> bool:
+    """True in the app's bridge, which owns desktop sessions."""
+    try:
+        from bridge.gateway.pid import holds_desktop_lock
+
+        return holds_desktop_lock()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _desktop_bridge_runs() -> bool:
+    try:
+        from bridge.gateway.pid import desktop_bridge_runs
+
+        return desktop_bridge_runs()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _session_exists_on_disk(session_id: str) -> bool:
     """True when a persisted transcript or inbox sidecar exists for the
     session — i.e. it has actually run somewhere and can be resumed."""
@@ -381,6 +400,18 @@ class TalkRouter:
             # was lost.
             return send_to_gateway(target_id, msg)
 
+        # Neither the gateway nor the app's bridge (the scheduler daemon),
+        # and not running here: a saved desktop session or sub-agent is
+        # the app's. Loaded here, it ran and saved beside the app's copy.
+        if not (am_owner or live_local or _in_desktop_bridge()) and (
+            archived_state is not None or _session_exists_on_disk(target_id)
+        ):
+            from bridge.freyja_bridge import _gateway_holds
+
+            parent_id = str((archived_state or {}).get("parentSessionId") or "")
+            if not (_is_gateway_session_id(parent_id) or _gateway_holds(target_id)):
+                return self._send_to_desktop(target_id, msg)
+
         # Non-gateway recipient. If we're the gateway daemon and can't
         # serve it live, it lives in the desktop bridge — forward there.
         # Archived sub-agents route by their parent's shape.
@@ -405,6 +436,16 @@ class TalkRouter:
         except Exception as exc:  # noqa: BLE001
             return f"forward to gateway daemon failed: {exc}"
         return f"forwarded to the gateway daemon (pid {owner}) which hosts it"
+
+    def _send_to_desktop(self, target_id: str, msg: InboxMessage) -> str:
+        """To the app's bridge while it runs; else the session's inbox
+        file, read when it next loads. Whether the app runs is asked again
+        under the inbox lock, as send_to_gateway asks for the gateway."""
+        if not _desktop_bridge_runs():
+            queued = queue_to_inbox_sidecar(target_id, msg, unless=_desktop_bridge_runs)
+            if queued is not None:
+                return queued
+        return self._forward_to_desktop(target_id, msg)
 
     def _forward_to_desktop(self, target_id: str, msg: InboxMessage) -> str:
         try:

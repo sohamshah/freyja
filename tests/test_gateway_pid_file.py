@@ -89,3 +89,22 @@ def test_the_gateway_knows_it_holds_the_lock_whatever_the_pid_file_says():
     finally:
         gp.release_lock()
     assert not fb._process_owns_gateway()
+
+
+def test_other_processes_see_the_apps_bridge_while_it_holds_its_lock(monkeypatch):
+    import subprocess
+    import sys
+
+    monkeypatch.setattr(gp, "_desktop_lock", None)
+    probe = [sys.executable, "-c", "from bridge.gateway import pid; print(pid.desktop_bridge_runs())"]
+
+    def _runs_elsewhere() -> str:
+        return subprocess.run(probe, capture_output=True, text=True, check=True).stdout.strip()
+
+    assert _runs_elsewhere() == "False" and not gp.holds_desktop_lock()
+    assert gp.hold_desktop_lock()
+    try:
+        assert gp.holds_desktop_lock() and gp.desktop_bridge_runs()
+        assert _runs_elsewhere() == "True"
+    finally:
+        gp._desktop_lock.close()

@@ -23,6 +23,7 @@ import os
 import signal
 import time
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,64 @@ def holds_lock() -> bool:
     file was gone treated its own Slack sessions as copies and saved
     nothing."""
     return _lock_holder == os.getpid()
+
+
+# The app's bridge (the Electron app's Python process) owns desktop
+# sessions: it loads, runs and saves them, and reads the desktop control
+# channel. It holds an exclusive flock on this file for its whole life, and
+# the kernel lets go when it dies. Other processes ask desktop_bridge_runs.
+_desktop_lock: Any = None
+
+
+def desktop_lock_path() -> Path:
+    return freyja_home() / ".desktop-bridge.lock"
+
+
+def hold_desktop_lock() -> bool:
+    """Take the app's bridge's lock for this process, if free. True when
+    this process holds it."""
+    global _desktop_lock
+    if _desktop_lock is not None:
+        return True
+    import fcntl
+
+    try:
+        fp = desktop_lock_path().open("a")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fp.close()
+        return False
+    _desktop_lock = fp
+    return True
+
+
+def holds_desktop_lock() -> bool:
+    """True in the app's bridge."""
+    return _desktop_lock is not None
+
+
+def desktop_bridge_runs() -> bool:
+    """True while the app's bridge runs, in any process. The probe takes a
+    shared lock for a moment, so it never blocks another probe."""
+    if _desktop_lock is not None:
+        return True
+    import fcntl
+
+    try:
+        fp = desktop_lock_path().open("a")
+    except OSError:
+        return False
+    with fp:
+        try:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        except OSError:
+            return False
+    return False
 
 
 def write_pid(pid: int) -> None:

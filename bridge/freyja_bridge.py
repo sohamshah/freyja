@@ -2256,6 +2256,13 @@ def _build_user_message_with_attachments(
 # ─── Entry point ───────────────────────────────────────────────────────────
 
 
+async def _hold_desktop_lock() -> None:
+    from bridge.gateway.pid import hold_desktop_lock
+
+    while not hold_desktop_lock():
+        await asyncio.sleep(1.0)
+
+
 async def _main() -> None:
     boot_session_id = f"desktop-{int(time.time() * 1000):x}"
     workspace = str(Path(os.environ.get("FREYJA_WORKSPACE", os.getcwd())).expanduser().resolve())
@@ -2328,6 +2335,16 @@ async def _main() -> None:
     )
 
     state = _BridgeState(workspace=workspace, default_model=default_model)
+    # This process owns desktop sessions. The scheduler daemon hands it
+    # its talks for them while it runs (TalkRouter._send_to_desktop)
+    # instead of loading a copy. Taken before any session loads; a bridge
+    # the app restarted waits for the old one to let go.
+    from bridge.gateway.pid import hold_desktop_lock
+
+    if not hold_desktop_lock():
+        state._desktop_lock_task = asyncio.create_task(  # noqa: SLF001
+            _hold_desktop_lock(), name="desktop-lock",
+        )
     # External MCP servers (~/.freyja/mcp.json). A missing/empty catalog is
     # a silent no-op: no manager task, no behavior change.
     try:
