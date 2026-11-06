@@ -11677,6 +11677,9 @@ class _BridgeSession:
                     _backfill_orphan_tool_results(self.session)
                 except Exception as be:  # noqa: BLE001
                     log("warn", f"orphan backfill failed: {be}")
+            # Why it failed, as for a runner that gave up: a scheduled run
+            # whose turn it was ends with it (_RunCost).
+            self.last_turn_error = (str(exc).strip() or exc.__class__.__name__)[:400]
             emit_error(f"turn failed: {exc}", recoverable=True, session_id=self.id)
             traceback.print_exc(file=sys.stderr)
             emit(

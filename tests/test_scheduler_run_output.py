@@ -276,3 +276,64 @@ async def test_a_run_whose_turn_fails_before_its_prompt_is_added_has_no_earlier_
     run = await asyncio.wait_for(fire_job(_Service({"s1": sess}), _job()), 10)
 
     assert (run.status, run.output_text, run.delivery_reports) == ("failed", "", [])
+
+
+# ─── a run whose runner raises ────────────────────────────────────────
+
+
+class _Raises:
+    """A runner that raises the error ``fails`` gives for a prompt holding
+    its key, once that prompt's hold (if any) is set, as it builds the
+    request; other prompts run as the session's runner runs them."""
+
+    def __init__(self, sess, fails: dict) -> None:
+        self.usage = sess.runner.usage
+        self._sess = sess
+        self._runner = sess.runner
+        self._fails = fails
+
+    async def run(self, session, message, stream=True):
+        prompt = _text(message)
+        for key, error in self._fails.items():
+            if key in prompt:
+                if key in self._sess.holds:
+                    await self._sess.holds[key].wait()
+                raise error
+        return await self._runner.run(session, message, stream=stream)
+
+
+async def test_a_run_whose_runner_raises_fails_with_the_runners_error(operator_session):
+    # run_turn caught the error and set no last_turn_error, so the run said
+    # it was most likely asleep through its time.
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.runner = _Raises(sess, {"write the digest": RuntimeError("the request could not be built")})
+
+    run = await asyncio.wait_for(fire_job(_Service({"s1": sess}), _job()), 10)
+
+    assert (run.status, run.output_text) == ("failed", "")
+    assert "the request could not be built" in run.error
+
+
+async def test_a_turn_queued_behind_a_run_whose_runner_raises_does_not_clear_its_error(operator_session):
+    # The session's last error is its last turn's: the operator's turn that
+    # ran in the run's wait had none.
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.replies = {"how is the build": "The build is green"}
+    sess.holds = {"write the digest": asyncio.Event()}
+    sess.runner = _Raises(sess, {"write the digest": RuntimeError("the request could not be built")})
+    fire = asyncio.create_task(fire_job(_Service({"s1": sess}), _job()))
+    while sess.pending_task is None:
+        await asyncio.sleep(0.01)
+    fb._schedule_or_queue_turn(sess, "how is the build?")  # Sent while the run's turn runs.
+    sess.holds["write the digest"].set()
+
+    run = await asyncio.wait_for(fire, 10)
+
+    assert _last_reply(sess) == "The build is green"
+    assert (run.status, run.output_text) == ("failed", "")
+    assert "the request could not be built" in run.error

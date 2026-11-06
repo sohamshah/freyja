@@ -1157,9 +1157,10 @@ class _RunCost:
     its prompt was queued, and took it back out (take_prompt_back).
     ``stopped``: a turn of the run was stopped (the app's Stop, Slack's,
     /stop), which ends the run cancelled. ``error``: why the run's turn
-    failed before it could reply, as its turn_failed said. ``reply``: the
-    reply of the last turn of the run to end in ``sess``, and how many
-    assistant messages it had, read as that turn ended.
+    failed before it could reply, as its turn_failed said, or as the
+    session noted as the turn ended failed. ``reply``: the reply of the
+    last turn of the run to end in ``sess``, and how many assistant
+    messages it had, read as that turn ended.
 
     The run's turn is the one that says the run's id (run_turn): it ran the
     run's prompt. It was the session's next turn to start, and a turn that
@@ -1244,6 +1245,10 @@ class _RunCost:
             stop_run_now(self._run_id)
         elif kind == "turn_complete" and event.get("turnId") in self._turns:
             self.reply = _extract_last_assistant_text(self._sess, self._entries_before)
+            if not event.get("success", True):
+                # Read as it ends: a turn queued behind it runs in the run's
+                # wait, and the session's error is then that turn's.
+                self.error = getattr(self._sess, "last_turn_error", None) or self.error
         elif kind == "turn_stopped" and ours and self._prompt_runs:
             # The run's turn was stopped before it said turn_start, so it said
             # nothing (turn_stopped comes from the task that ran it). The run
