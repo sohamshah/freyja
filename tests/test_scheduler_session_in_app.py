@@ -275,6 +275,59 @@ async def test_a_run_that_goes_on_after_the_app_handed_the_tick_away_still_saves
     assert _saved_entries() == saved
 
 
+async def _take_the_tick(service, monkeypatch) -> None:
+    """``service`` starts while a peer owns the tick, and takes it when the
+    peer exits (the scheduler daemon restarts, and the gateway takes over)."""
+    import asyncio
+
+    import bridge.scheduler.service as service_mod
+    from bridge.scheduler.persistence import FileLock, owner_lock_path
+
+    monkeypatch.setattr(service_mod, "_OWNER_RETRY_SECONDS", 0.02)
+    peer = FileLock(owner_lock_path())
+    assert peer.acquire()
+    await service.start()
+    assert not service._is_owner
+    peer.release()
+    for _ in range(200):
+        if service._is_owner:
+            return
+        await asyncio.sleep(0.01)
+
+
+async def test_a_process_that_takes_the_tick_drops_the_copies_of_job_sessions_it_had_loaded(
+    app_bridge, monkeypatch, tmp_path
+):
+    # The copy here missed the runs the old owner made since. Kept as the
+    # new owner's, the job's next run went on it, and so did a talk the
+    # inbox watch took in, and each saved it over those runs.
+    _owner_saved()
+    sess = _copy(tmp_path, owns_tick=False)
+    state = sess.state
+    state.sessions[SCHED] = sess
+
+    await _take_the_tick(state.scheduler, monkeypatch)
+
+    assert state.scheduler._is_owner
+    assert SCHED not in state.sessions
+    await state.scheduler.stop()
+
+
+async def test_a_process_that_takes_the_tick_keeps_a_job_session_its_own_run_holds(
+    app_bridge, monkeypatch, tmp_path
+):
+    sess = _copy(tmp_path, owns_tick=False)
+    state = sess.state
+    state.sessions[SCHED] = sess
+    state.scheduler._sessions_in_runs[SCHED] += 1  # a run now here goes on
+
+    await _take_the_tick(state.scheduler, monkeypatch)
+
+    assert state.scheduler._is_owner
+    assert state.sessions[SCHED] is sess
+    await state.scheduler.stop()
+
+
 # ── talks and sub-agents ─────────────────────────────────────────────
 
 

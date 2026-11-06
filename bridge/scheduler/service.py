@@ -408,6 +408,12 @@ class SchedulerService:
             return
 
     def _boot_as_owner(self, *, mode: str) -> None:
+        # Copies of job sessions loaded while another process held them
+        # would count as ours now, with what that process ran since
+        # missing from them.
+        from bridge.freyja_bridge import _drop_job_session_copies
+
+        _drop_job_session_copies(self.state)
         self._is_owner = True
         # Owner: recompute next_fire_at for every job and persist —
         # the prior process may have crashed mid-update, leaving stale

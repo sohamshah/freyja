@@ -13880,6 +13880,32 @@ def _held_elsewhere(state: Any, session_id: str) -> str | None:
     return None
 
 
+def _drop_job_session_copies(state: Any) -> None:
+    """Drop the loaded copies of scheduled jobs' sessions that another
+    process's scheduler holds (_scheduler_runs_elsewhere). The scheduler
+    calls this as this process takes the tick: from then on each copy
+    counted as the job's own, and it missed the runs the old owner made
+    since it was loaded. The job's next run went on it, as did a talk the
+    inbox watch took in, and each saved it over those runs. Dropped, the
+    session loads from its files when next needed. A copy with a turn
+    going on is left alone."""
+    sessions = getattr(state, "sessions", None) or {}
+    for sid, sess in list(sessions.items()):
+        if not _scheduler_runs_elsewhere(state, sid):
+            continue
+        pending = getattr(sess, "pending_task", None)
+        if pending is not None and not pending.done():
+            continue
+        sess._background_closed = True
+        try:
+            sess.shutdown_skill_learning()
+        except Exception:  # noqa: BLE001
+            pass
+        sessions.pop(sid, None)
+        _close_session_event_file(sid)
+        log("info", f"dropped the copy of {sid}: this process takes the scheduler's tick")
+
+
 def _refuse_held_elsewhere(
     state: Any, sid: str, cmd: dict[str, Any], what: str, refused: str | None = None
 ) -> bool:
