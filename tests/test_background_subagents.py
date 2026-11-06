@@ -591,6 +591,42 @@ async def test_a_stop_before_a_turn_task_runs_still_runs_the_turns_queued_behind
     assert sess.queued_messages == []
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        {"type": "edit_user_message", "messageOrdinal": 0, "content": "first, again"},
+        {"type": "rerun_user_message", "messageOrdinal": 0},
+    ],
+)
+async def test_a_stop_before_an_edit_or_rerun_runs_still_runs_the_turns_queued_behind_it(
+    monkeypatch, tmp_path, command,
+):
+    """An edit's or a rerun's turn task had no done callback: stopped before
+    its first step, the turns queued behind it waited for the next message."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "emit", lambda _e: None)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("session-desktop")
+    await sess.initialize()
+    sess.session.add_user_message("first")
+    ran: list[tuple[str, int]] = []
+
+    async def run_turn(content, _attachments=None, **_kw):
+        ran.append((content, asyncio.current_task().cancelling()))
+
+    sess.run_turn = run_turn
+    await fb._handle_command(state, {**command, "sessionId": "session-desktop"})
+    for text in ("second", "third"):
+        fb._schedule_or_queue_turn(sess, text)
+    fb._force_cancel_session(sess, scope="turn")  # The app's Stop, at once.
+    for _ in range(200):
+        if len(ran) == 2:
+            break
+        await asyncio.sleep(0)
+    assert ran == [("second", 0), ("third", 0)]
+    assert sess.queued_messages == []
+
+
 async def test_the_emergency_stop_drops_the_turns_queued_behind_the_running_one(monkeypatch, tmp_path):
     """The emergency stop stops everything. It cancelled the running turn
     only, and the drain then ran every turn queued behind it. The chat says

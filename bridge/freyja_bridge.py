@@ -17229,6 +17229,8 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         # session again (_schedule_or_queue_turn).
         sess._agent_wakes_held = False
         sess.pending_task = asyncio.create_task(_run_edit(), name=f"edit-{sess.id}")
+        # Stopped before its first step, it ran none of its drain either.
+        sess.pending_task.add_done_callback(lambda t: _drain_after_stop_before_first_step(sess, t))
         return
 
     if ctype == "rerun_user_message":
@@ -17295,6 +17297,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
 
         sess._agent_wakes_held = False  # as for an edit
         sess.pending_task = asyncio.create_task(_run_rerun(), name=f"rerun-{sess.id}")
+        sess.pending_task.add_done_callback(lambda t: _drain_after_stop_before_first_step(sess, t))
         return
 
     if ctype == "delete_session":
