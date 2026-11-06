@@ -465,6 +465,8 @@ async def test_control_channel_roundtrip_delivers_and_wakes(
 
     cmd_file = tmp_path / "cmds.jsonl"
     off_file = tmp_path / "cmds.offset"
+    # The reader of the gateway's channel is the gateway.
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
 
     wake_log: list = []
     sess = _fake_root(GW_ID, wake_log=wake_log)

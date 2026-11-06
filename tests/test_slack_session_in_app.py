@@ -109,6 +109,7 @@ async def test_the_gateway_runs_the_forwarded_message_with_its_slack_hook(app_br
     thread.wake_for_inbox = lambda: fb._BridgeSession.wake_for_inbox(thread)
     thread.accepts_followups = lambda: fb._BridgeSession.accepts_followups(thread)
     gateway = SimpleNamespace(sessions={SLACK: thread}, talk_wake_hook_factory=lambda _sess: hook)
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
     await fb._handle_talk_deliver_command(gateway, cmd)
     assert turns == [("check the build", hook)]
 
@@ -499,6 +500,41 @@ async def test_a_message_for_a_slack_sub_agent_goes_to_a_gateway_that_started_be
     tp.save_inbox_state(SLACK_SUB, gateway[0] or {"sessionId": SLACK_SUB, "unread": [], "delivered": []})
 
     assert [cmd["message"]["content"] for cmd in _forwarded()] == ["also check X"]
+
+
+def _gateway_sub_agent_running(sub: str = SLACK_SUB, parent: str = SLACK) -> None:
+    """A first run still going in the gateway: its transcript is saved,
+    and its sidecar is not yet."""
+    tp.save_transcript(sub, {
+        "version": 1, "session_id": sub, "metadata": {"parent_session_id": parent},
+        "transcript": {"entries": [{"id": "g1"}], "head_id": "g1"},
+    })
+
+
+def _talk(content: str) -> InboxMessage:
+    return InboxMessage(id=f"t-{content}", from_session="session-1", from_label="lead", from_role="agent", content=content)
+
+
+async def test_a_talk_to_a_running_slack_sub_agent_goes_to_the_gateway(app_bridge, monkeypatch):
+    # It counted as a closed root session: the app loaded a root copy of
+    # it, which saves nothing, and pushed the message into that copy.
+    state, _events, built = app_bridge
+    _gateway_running(monkeypatch, os.getpid() + 1)
+    _gateway_sub_agent_running()
+
+    await fb.deliver_talk_message_locally(state, SLACK_SUB, _talk("status?"))
+
+    assert built == []
+    (cmd,) = _forwarded()
+    assert (cmd["type"], cmd["to"], cmd["message"]["content"]) == ("talk_deliver", SLACK_SUB, "status?")
+
+
+def test_a_sub_agent_whose_first_run_is_going_is_not_a_closed_root_session(app_bridge):
+    _gateway_sub_agent_running()
+    _gateway_sub_agent_running("sub_19f0desk_1", parent="session-1")
+
+    assert not fb._is_closed_root_session(SLACK_SUB)
+    assert not fb._is_closed_root_session("sub_19f0desk_1")
 
 
 async def test_a_copy_of_a_slack_sub_agent_saves_nothing_over_its_files(app_bridge, tmp_path):

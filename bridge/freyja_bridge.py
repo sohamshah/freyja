@@ -1019,13 +1019,13 @@ async def deliver_talk_message_locally(
 ) -> str:
     """Deliver an InboxMessage to a session owned by THIS process.
 
-    Strictly local — never re-forwards to another process (the sender
-    already decided this process is the owner; bouncing would loop).
-    Order of preference: running sub-agent record, live root session
-    (push + wake), closed root session this process hosts (load from
-    disk, then push + wake), archived sub-agent (re-wake), inbox sidecar
-    (delivered on next load). Returns a short status string for logs /
-    tool results.
+    Local — never re-forwards to another process (the sender already
+    decided this process is the owner; bouncing would loop), except to
+    the gateway for a session it runs. Order of preference: running
+    sub-agent record, live root session (push + wake), closed root
+    session this process hosts (load from disk, then push + wake),
+    archived sub-agent (re-wake), inbox sidecar (delivered on next load).
+    Returns a short status string for logs / tool results.
     """
     # A running sub-agent first. A root session with the same id is a
     # stray copy (see _is_subagent_session_id) and must not take its mail.
@@ -1037,6 +1037,14 @@ async def deliver_talk_message_locally(
     ):
         live_rec.inbox.push(msg)
         return "delivered to sub-agent"
+
+    # A Slack thread, or a sub-agent under one, in a process that is not
+    # the gateway: the gateway runs it, and a copy here saves nothing, so a
+    # message pushed into one was lost.
+    if _gateway_holds(sid):
+        from bridge.tools.talk_tool import send_to_gateway
+
+        return send_to_gateway(sid, msg)
 
     sess = state.sessions.get(sid)
 
@@ -1182,13 +1190,15 @@ async def deliver_artifact_note(
 
 def _is_closed_root_session(sid: str) -> bool:
     """A persisted ROOT session (has a transcript on disk) that is not a
-    sub-agent. Sub-agents re-wake through their own sidecar path."""
+    sub-agent. Sub-agents re-wake through their own sidecar path. A
+    sub-agent whose first run is still going has no sidecar yet, and its
+    transcript names its parent (_root_session_id)."""
     try:
         from bridge.transcript_persistence import _transcript_path
 
         if not _transcript_path(sid).exists():
             return False
-        return _resolve_archived_subagent(sid) is None
+        return _resolve_archived_subagent(sid) is None and _root_session_id(sid) == sid
     except Exception:  # noqa: BLE001
         return False
 
