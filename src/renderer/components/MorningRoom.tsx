@@ -62,6 +62,8 @@ interface BriefingState {
   doc: BriefingDoc | null
   markdown: string | null
   brieferJobId: string | null
+  /** Last error when the scheduler stopped the briefer, else null. */
+  brieferStopped: string | null
 }
 
 export function MorningRoom() {
@@ -78,6 +80,7 @@ export function MorningRoom() {
     doc: null,
     markdown: null,
     brieferJobId: null,
+    brieferStopped: null,
   })
   const [generating, setGenerating] = useState(false)
   const [dispatched, setDispatched] = useState<Set<string>>(new Set())
@@ -113,6 +116,7 @@ export function MorningRoom() {
       doc: res.json ?? null,
       markdown: res.markdown ?? null,
       brieferJobId: res.brieferJobId ?? null,
+      brieferStopped: res.brieferStopped ?? null,
     })
   }, [])
 
@@ -257,6 +261,19 @@ export function MorningRoom() {
     }
   }, [b.brieferJobId, b.doc, b.date, generating, load, showToast])
 
+  // The scheduler stopped the briefer after its runs kept failing. Its
+  // sink is noop, so nothing else tells the user.
+  const resumeBriefer = useCallback(async () => {
+    if (!b.brieferJobId) return
+    try {
+      const { schedulerApi } = await import('../state/scheduler-store')
+      await schedulerApi.resumeJob(b.brieferJobId)
+      await load(b.date ?? undefined)
+    } catch (err) {
+      showToast(`Briefer did not resume: ${String(err).slice(0, 80)}`, 'warn')
+    }
+  }, [b.brieferJobId, b.date, load, showToast])
+
   // Clear any in-flight generate-now poll when the room unmounts.
   useEffect(() => {
     return () => {
@@ -353,6 +370,17 @@ export function MorningRoom() {
       </header>
 
       <main className="mroom-brief">
+        {!b.loading && b.brieferStopped && (
+          <div className="mroom-recovery">
+            <span className="mroom-recovery-msg">
+              The morning briefing is stopped: its runs kept failing. Last
+              error: {b.brieferStopped}
+            </span>
+            <button className="mroom-recovery-go" onClick={resumeBriefer}>
+              ▸ resume
+            </button>
+          </div>
+        )}
         {b.loading ? (
           <div className="mroom-empty">loading…</div>
         ) : !doc ? (

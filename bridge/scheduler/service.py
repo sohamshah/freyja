@@ -34,8 +34,10 @@ the agent's decision itself, under the lock it already holds
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
+import re
 import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
@@ -61,6 +63,7 @@ from bridge.scheduler.models import (
     new_job_id,
 )
 from bridge.scheduler.daemon import always_on_scheduler_installed
+from bridge.scheduler.machine import why_runs_wait
 from bridge.scheduler.persistence import (
     FileLock,
     append_event,
@@ -82,6 +85,12 @@ from bridge.scheduler.scheduling import (
     cadence_label,
     compute_next_fire,
     parse_when,
+)
+from engine.errors import (
+    is_api_internal_error,
+    is_overloaded_error,
+    is_timeout_error,
+    is_transient_connection_error,
 )
 
 if TYPE_CHECKING:
@@ -121,6 +130,26 @@ _STOP_RUN_GRACE_SECONDS = 5.0
 # 180 times in six hours before anyone noticed.
 MAX_FAILED_RUNS_IN_A_ROW = 3
 _FAILED_RUN_STATUSES = frozenset({"failed", "timed_out"})
+
+# A run that failed for a passing reason (no network, a timeout, an
+# overloaded provider) says nothing about the job and does not count
+# toward the three above: three runs in DarkWake stopped the Morning
+# briefing for good. The job runs again 2 minutes later, then 4, 8 and so
+# on up to an hour, never after its next slot. It is stopped only after
+# this many failed runs in a row, about a day of retries.
+MAX_PASSING_FAILURES_IN_A_ROW = 24
+_PASSING_RETRY_FIRST_SECONDS = 120
+_PASSING_RETRY_MAX_SECONDS = 3600
+
+# Run errors that pass by themselves, beyond those the engine already
+# classifies: a provider's 5xx, and a host the network could not reach
+# (a sink posting to Slack while offline).
+_PASSING_ERROR = re.compile(
+    r"error code:? 5\d\d\b|bad gateway|gateway time-?out|cannot connect to host"
+    r"|nodename nor servname|name or service not known|name resolution"
+    r"|network is unreachable|no route to host",
+    re.IGNORECASE,
+)
 
 
 class SchedulerService:
@@ -180,6 +209,8 @@ class SchedulerService:
         # Jobs that came due but could not fire yet. The loop does not
         # wake early for them: it looks again at its usual once a second.
         self._waiting_job_ids: set[str] = set()
+        # Why due runs wait right now (DarkWake, offline), or None.
+        self._runs_wait_for: str | None = None
         # Wake-mtime watermark: peers bump ``.wake`` on every CRUD;
         # we use it to know whether to bother re-scanning even if our
         # sleep timed out early. Currently informational — the tick
@@ -278,6 +309,20 @@ class SchedulerService:
                     # via the normal scan path.
                     continue
                 fresh = load_job(job.id) or job
+                if _stopped_only_by_passing_failures(fresh):
+                    # Stopped before such runs stopped counting: the
+                    # Morning briefing and the Routing radar after three
+                    # runs in DarkWake. A job the user paused stays paused.
+                    fresh.enabled = True
+                    fresh.status = "active"
+                    logger.info(
+                        "job %s (%s) runs again: only passing failures stopped it",
+                        fresh.id, fresh.name,
+                    )
+                    append_event({
+                        "type": "scheduler_job_resumed_after_passing_failures",
+                        "job_id": fresh.id,
+                    })
                 if not _catches_up(fresh, now):
                     self._recompute_next_fire(fresh)
                 save_job(fresh)
@@ -371,6 +416,26 @@ class SchedulerService:
             if job.next_fire_at is None or job.next_fire_at > now:
                 continue
             candidates.append(job_id)
+        if not candidates:
+            return
+        # Started in DarkWake or offline, a run fails with "Connection
+        # error". Due jobs stay due and start once the Mac is awake and
+        # online; a run that starts late says so.
+        reason = why_runs_wait()
+        if reason is not None:
+            if reason != self._runs_wait_for:
+                logger.info("%d due job(s) wait: %s", len(candidates), reason)
+                append_event({
+                    "type": "scheduler_runs_waiting",
+                    "reason": reason,
+                    "job_ids": candidates,
+                })
+            self._runs_wait_for = reason
+            self._waiting_job_ids.update(candidates)
+            return
+        if self._runs_wait_for is not None:
+            logger.info("due jobs start: the wait is over (%s)", self._runs_wait_for)
+            self._runs_wait_for = None
         for job_id in candidates:
             asyncio.create_task(
                 self._try_claim_and_fire(job_id),
@@ -450,6 +515,9 @@ class SchedulerService:
         run = await fire_job(self, job, scheduled_for=slot)
         if await self._stop_if_failing(job, run):
             return
+        if _failed_for_a_passing_reason(run):
+            self._retry_after_passing_failure(job)
+            return
         # Retry policy. If the run failed and the user configured
         # retries, schedule a backoff fire.
         retry = job.retry_policy
@@ -479,15 +547,51 @@ class SchedulerService:
                     "delay_seconds": delay,
                 })
 
+    def _retry_after_passing_failure(self, job: JobRecord) -> None:
+        """Run ``job`` again soon after a run that failed for a passing
+        reason: 2 minutes later, twice as long after each such failure in
+        a row, at most an hour, and never after its next slot."""
+        _, passing = _failures_in_a_row(
+            load_runs_for_job(job.id, limit=MAX_PASSING_FAILURES_IN_A_ROW)
+        )
+        delay = min(
+            _PASSING_RETRY_MAX_SECONDS,
+            _PASSING_RETRY_FIRST_SECONDS * 2 ** (max(passing, 1) - 1),
+        )
+        retry_at = time.time() + delay
+        fresh = load_job(job.id) or job
+        if fresh.enabled and fresh.status == "active":
+            if fresh.next_fire_at is not None and fresh.next_fire_at <= retry_at:
+                return
+        elif not _one_shot_used_up(fresh):
+            # Paused or stopped meanwhile.
+            return
+        fresh.enabled = True
+        fresh.status = "active"
+        fresh.next_fire_at = retry_at
+        save_job(fresh)
+        touch_wake()
+        logger.info(
+            "job %s: run failed for a passing reason; runs again in %d s",
+            job.id, delay,
+        )
+        append_event({
+            "type": "scheduler_run_retrying",
+            "job_id": job.id,
+            "attempt": passing,
+            "delay_seconds": delay,
+            "reason": "passing_failure",
+        })
+
     async def _stop_if_failing(self, job: JobRecord, run: RunRecord) -> bool:
         """Disable ``job`` when its last ``MAX_FAILED_RUNS_IN_A_ROW`` runs
-        all failed, and post why to its sinks. Returns True if stopped."""
+        all failed, not counting runs that failed for a passing reason
+        (or after ``MAX_PASSING_FAILURES_IN_A_ROW`` failed runs of any
+        kind), and post why to its sinks. Returns True if stopped."""
         if run.status not in _FAILED_RUN_STATUSES:
             return False
-        recent = load_runs_for_job(job.id, limit=MAX_FAILED_RUNS_IN_A_ROW)
-        if len(recent) < MAX_FAILED_RUNS_IN_A_ROW or any(
-            r.status not in _FAILED_RUN_STATUSES for r in recent
-        ):
+        recent = load_runs_for_job(job.id, limit=MAX_PASSING_FAILURES_IN_A_ROW)
+        if not _should_stop(recent):
             return False
         fresh = load_job(job.id) or job
         if not fresh.enabled:
@@ -497,10 +601,10 @@ class SchedulerService:
         fresh.next_fire_at = None
         save_job(fresh)
         touch_wake()
-        error = (run.error or "no error was recorded")[:600]
+        error = (run.error or _sink_errors(run) or "no error was recorded")[:600]
         notice = (
             f"I stopped the scheduled job *{fresh.name}*: its last "
-            f"{MAX_FAILED_RUNS_IN_A_ROW} runs failed. Last error: {error}"
+            f"{sum(_failures_in_a_row(recent))} runs failed. Last error: {error}"
         )
         append_event({
             "type": "scheduler_job_stopped_failing",
@@ -516,11 +620,20 @@ class SchedulerService:
         from bridge.scheduler.persistence import write_run_output
         from bridge.scheduler.sinks import RunOutput, SinkContext, deliver_all
 
+        # A notice only in sinks nobody reads tells no one: the Morning
+        # briefing's sink is noop. It also goes to the conversation the
+        # job was made in.
+        told = fresh
+        creator_sink = _creator_conversation(fresh.creator)
+        if creator_sink is not None and not any(
+            isinstance(s, (SlackSinkSpec, DesktopSinkSpec)) for s in fresh.sinks
+        ):
+            told = dataclasses.replace(fresh, sinks=[*fresh.sinks, creator_sink])
         try:
             await deliver_all(
-                fresh,
+                told,
                 run,
-                RunOutput(text=notice, attachments=[], run=run, job=fresh),
+                RunOutput(text=notice, attachments=[], run=run, job=told),
                 SinkContext(state=self.state, outputs_dir=write_run_output, log=logger.info),
             )
         except Exception:  # noqa: BLE001
@@ -907,6 +1020,89 @@ def _catches_up(job: JobRecord, now: float) -> bool:
         and job.next_fire_at is not None
         and job.next_fire_at <= now
     )
+
+
+def _failed_for_a_passing_reason(run: RunRecord) -> bool:
+    """True when ``run`` failed for a reason that passes by itself: the
+    network was down (the Mac asleep or in DarkWake, no Wi-Fi), a request
+    timed out, or the provider was overloaded or failed. A wall-clock
+    timeout or a budget overrun ends a run as timed_out, not failed: those
+    are the job's own."""
+    if run.status != "failed":
+        return False
+    errors = [run.error] if run.error else [
+        r.error or "" for r in run.delivery_reports if not r.success
+    ]
+    return bool(errors) and all(_passing_error(e) for e in errors)
+
+
+def _passing_error(error: str) -> bool:
+    return bool(error) and (
+        is_transient_connection_error(error)
+        or is_timeout_error(error)
+        or is_overloaded_error(error)
+        or is_api_internal_error(error)
+        or _PASSING_ERROR.search(error) is not None
+    )
+
+
+def _sink_errors(run: RunRecord) -> str:
+    return "; ".join(r.error for r in run.delivery_reports if not r.success and r.error)
+
+
+def _failures_in_a_row(runs: list[RunRecord]) -> tuple[int, int]:
+    """``(real, passing)``: how many runs at the head of ``runs``
+    (newest first) failed, by cause."""
+    real = passing = 0
+    for r in runs:
+        if r.status not in _FAILED_RUN_STATUSES:
+            break
+        if _failed_for_a_passing_reason(r):
+            passing += 1
+        else:
+            real += 1
+    return real, passing
+
+
+def _should_stop(runs: list[RunRecord]) -> bool:
+    real, passing = _failures_in_a_row(runs)
+    return (
+        real >= MAX_FAILED_RUNS_IN_A_ROW
+        or real + passing >= MAX_PASSING_FAILURES_IN_A_ROW
+    )
+
+
+def _stopped_only_by_passing_failures(job: JobRecord) -> bool:
+    """True when ``job`` was stopped for failing, but its runs do not
+    stop it now that passing failures do not count."""
+    if job.enabled or job.status != "disabled_error":
+        return False
+    runs = load_runs_for_job(job.id, limit=MAX_PASSING_FAILURES_IN_A_ROW)
+    return bool(runs) and _failed_for_a_passing_reason(runs[0]) and not _should_stop(runs)
+
+
+def _one_shot_used_up(job: JobRecord) -> bool:
+    """True when ``job`` is a one-shot that was disabled because its
+    only slot fired (the pre-advance does it before the run)."""
+    return (
+        isinstance(job.schedule, OnceSchedule)
+        and job.status == "disabled_max_fires"
+        and (job.max_fires is None or job.fire_count < job.max_fires)
+    )
+
+
+def _creator_conversation(creator: CreatorRef) -> SinkSpec | None:
+    """A sink to the desktop session or Slack thread a job was made in;
+    None for a job no person made (the Morning briefing)."""
+    if creator.surface == "slack" and creator.chat_id:
+        return SlackSinkSpec(
+            workspace_id=creator.workspace_id or "",
+            chat_id=creator.chat_id,
+            thread_ts=creator.thread_id,
+        )
+    if creator.surface == "desktop" and creator.session_id:
+        return DesktopSinkSpec(session_id=creator.session_id)
+    return None
 
 
 def _bound_catch_up(job: JobRecord, now: float) -> None:

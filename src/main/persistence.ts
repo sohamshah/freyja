@@ -1153,6 +1153,7 @@ export function readBriefing(date?: string): {
   json: any | null
   markdown: string | null
   brieferJobId: string | null
+  brieferStopped: string | null
   error?: string
 } {
   try {
@@ -1199,7 +1200,8 @@ export function readBriefing(date?: string): {
         /* ignore */
       }
     }
-    return { ok: true, dates, date: chosen, json, markdown, brieferJobId }
+    const brieferStopped = brieferJobId ? readStoppedJobError(brieferJobId) : null
+    return { ok: true, dates, date: chosen, json, markdown, brieferJobId, brieferStopped }
   } catch (err) {
     return {
       ok: false,
@@ -1208,9 +1210,40 @@ export function readBriefing(date?: string): {
       json: null,
       markdown: null,
       brieferJobId: null,
+      brieferStopped: null,
       error: String(err),
     }
   }
+}
+
+/**
+ * The last run's error when the scheduler stopped job `jobId` because its
+ * runs kept failing (status `disabled_error`), else null. The briefer's
+ * sink is noop, so the Morning Room is the one place that can say so.
+ */
+function readStoppedJobError(jobId: string): string | null {
+  const root = path.join(os.homedir(), '.freyja', 'schedules')
+  try {
+    const job = JSON.parse(fs.readFileSync(path.join(root, 'jobs', `${jobId}.json`), 'utf8'))
+    if (job?.status !== 'disabled_error') return null
+  } catch {
+    return null
+  }
+  try {
+    const runsDir = path.join(root, 'runs', jobId)
+    const newest = fs
+      .readdirSync(runsDir)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => ({ f, at: fs.statSync(path.join(runsDir, f)).mtimeMs }))
+      .sort((a, b) => b.at - a.at)[0]
+    if (newest) {
+      const run = JSON.parse(fs.readFileSync(path.join(runsDir, newest.f), 'utf8'))
+      if (typeof run?.error === 'string' && run.error) return run.error
+    }
+  } catch {
+    /* no runs on disk */
+  }
+  return 'no error was recorded'
 }
 
 /**
