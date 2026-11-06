@@ -2469,6 +2469,12 @@ class GatewayDaemon:
             if job is None:
                 return f"_No job matched `{body}`._"
             run = await service.run_job_now(job.id)
+            if run.status == "claimed":
+                # Its desktop session runs in the app, which runs it.
+                return (
+                    f"Started *{job.name}* (`{job.id}`) in the app, which runs "
+                    f"its session: run `{run.run_id}`."
+                )
             return (
                 f"Ran *{job.name}* (`{job.id}`): {run.status}.\n"
                 f"```{(run.output_text or '')[:1500]}```"

@@ -267,13 +267,21 @@ class ScheduleTool:
     async def _action_run_now(self, args: dict[str, Any]) -> dict[str, Any]:
         job_id = _require_job_id(args)
         run = await self._service.run_job_now(job_id)
-        return {
+        payload = {
             "action": "run_now",
             "job_id": job_id,
             "run_id": run.run_id,
             "status": run.status,
             "preview": (run.output_text or "")[:300],
         }
+        if run.status == "claimed":
+            # Handed to the gateway or the app, which runs the job's session.
+            payload["note"] = (
+                "The job's session runs in another Freyja process (the Slack "
+                "gateway or the app), so the run was handed to it and runs "
+                "there. Use action='get_run' with this run_id for its outcome."
+            )
+        return payload
 
     async def _action_runs(self, args: dict[str, Any]) -> dict[str, Any]:
         job_id = _require_job_id(args)

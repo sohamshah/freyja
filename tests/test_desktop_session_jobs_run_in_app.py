@@ -182,15 +182,63 @@ async def test_a_desktop_session_job_fires_in_the_apps_own_tick(daemon, monkeypa
     assert fired == [job.id] and _app_commands() == []
 
 
-async def test_a_manual_run_outside_the_app_builds_no_copy(daemon):
+async def test_a_run_now_outside_the_app_goes_to_the_app(daemon):
+    # The schedule tool in the scheduler daemon or the gateway, or the
+    # gateway's /freyja schedule run: it failed with "its session runs in
+    # the app".
     service, built = daemon
     job = _desktop_session_job()
 
     with _app_running():
         run = await service.run_job_now(job.id)
 
-    assert built == []
-    assert run.status == "failed" and "app" in run.error
+    assert built == [] and not service._in_flight_runs
+    (cmd,) = _app_commands()
+    assert (cmd["type"], cmd["job_id"], cmd["run_id"], cmd["scheduled_for"]) == (
+        "scheduler_fire", job.id, run.run_id, None,
+    )
+    assert run.status == "claimed"
+    # A manual run leaves the job's cadence alone.
+    assert load_job(job.id).next_fire_at == job.next_fire_at
+
+
+async def test_a_run_now_outside_the_app_while_the_app_is_closed_says_so(daemon):
+    service, built = daemon
+    job = _desktop_session_job()
+
+    with pytest.raises(ValueError, match="the app is not open"):
+        await service.run_job_now(job.id)
+
+    assert built == [] and _app_commands() == [] and not service._in_flight_runs
+
+
+async def test_the_app_runs_a_run_now_it_was_handed_under_its_run_id(daemon, monkeypatch):
+    import bridge.gateway.pid as gp
+
+    service, _built = daemon
+    job = _desktop_session_job()
+    with _app_running():
+        run = await service.run_job_now(job.id)
+    (cmd,) = _app_commands()
+
+    monkeypatch.setattr(gp, "_desktop_lock", object())  # this process is now the app's bridge
+    fired: list[tuple] = []
+
+    async def fake_fire(_service, fresh, **kw):
+        assert not FileLock(job_run_lock_path(fresh.id)).acquire()
+        fired.append((fresh.id, kw.get("run_id"), kw.get("scheduled_for")))
+        return RunRecord(run_id=kw["run_id"], job_id=fresh.id, job_name=fresh.name,
+                         started_at=time.time(), status="succeeded")
+
+    monkeypatch.setattr(runtime, "fire_job", fake_fire)
+    app_service = SchedulerService(SimpleNamespace(sessions={}))
+    monkeypatch.setattr(app_service, "emit_event", lambda **_kw: None)
+
+    await fb._handle_scheduler_fire_command(SimpleNamespace(scheduler=app_service), cmd)
+    await asyncio.gather(*app_service._in_flight_runs.values())
+
+    assert fired == [(job.id, run.run_id, None)]
+    assert load_job(job.id).next_fire_at == job.next_fire_at
 
 
 # ── A job aimed at a sub-agent ───────────────────────────────────────

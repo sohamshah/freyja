@@ -186,10 +186,10 @@ _RUNS_WAIT_AT_MOST_SECONDS = 30 * 60
 _REFUSED_RETRY_FIRST_SECONDS = 1.0
 _REFUSED_RETRY_MAX_SECONDS = 60.0
 
-# A run now handed to the gateway waits in its control file until the
-# gateway reads it. Sent just before the gateway exited, it ran whenever the
-# gateway next started, maybe days later. Read later than this after it was
-# sent, it is recorded as expired and does not run.
+# A run now handed to the gateway or the app waits in its control file
+# until that process reads it. Sent just before the process exited, it ran
+# whenever the process next started, maybe days later. Read later than this
+# after it was sent, it is recorded as expired and does not run.
 _HANDED_RUN_NOW_EXPIRES_SECONDS = 5 * 60
 
 # A run whose process exited before it ended (a crash, a quit app, a
@@ -1484,7 +1484,11 @@ class SchedulerService:
         """Fire a job immediately and wait for its run. Acquires the job's
         run lock so a concurrent scheduled tick won't start a second run.
         Doesn't touch ``next_fire_at`` — manual runs are independent of
-        cadence."""
+        cadence. A job whose session another process runs is handed to it
+        (_hand_run_now), and its record is returned as that run starts."""
+        handed = self._hand_run_now(job_id)
+        if handed is not None:
+            return handed
         job, lock = self._take_run_lock(job_id)
         return await self._run_now(job, lock)
 
@@ -1495,13 +1499,11 @@ class SchedulerService:
         time: waiting for the run there held every other command until it
         ended, and the renderer gave up on the run after 30 s.
 
-        A job that fires into a Slack thread runs in the gateway, as its
-        scheduled fires do (_hand_over): run here, it went on a copy of the
-        thread, and failed with that reason. The gateway runs it under the
-        id answered here (run_now_handed_over)."""
-        job = load_job(job_id)
-        if job is not None and _fires_in_the_gateway(job):
-            return self._hand_run_now_to_gateway(job)
+        A job whose session another process runs is handed to it
+        (_hand_run_now)."""
+        handed = self._hand_run_now(job_id)
+        if handed is not None:
+            return handed
         job, lock = self._take_run_lock(job_id)
         run = RunRecord(
             run_id=new_run_id(), job_id=job.id, job_name=job.name,
@@ -1525,14 +1527,31 @@ class SchedulerService:
 
         self._in_flight_runs[name] = asyncio.create_task(_run(), name=name)
 
-    def _hand_run_now_to_gateway(self, job: JobRecord) -> RunRecord:
-        """Hand a run now of ``job``, whose Slack thread the gateway runs,
-        to the gateway, and return the record it will run under."""
-        if not _gateway_runs():
+    def _hand_run_now(self, job_id: str) -> RunRecord | None:
+        """Hand a run now of ``job_id`` to the process that runs its
+        session, as its scheduled fires are (_hand_over): the gateway a
+        Slack thread's, the app a desktop session's. Run here, it went on a
+        copy of the session, and failed with that reason. Returns the
+        record that process runs it under (run_now_handed_over), or None
+        when this process runs it. Refused when that process is not
+        running."""
+        job = load_job(job_id)
+        if job is None:
+            return None
+        in_gateway = _fires_in_the_gateway(job)
+        if not in_gateway and not _fires_in_the_app(job):
+            return None
+        if in_gateway and not _gateway_runs():
             raise ValueError(
                 f"{job.name} runs in its Slack thread, and the Slack gateway "
                 "is not running. Start the gateway, or let the job run at its "
                 "next scheduled time"
+            )
+        if not in_gateway and not _app_runs():
+            raise ValueError(
+                f"{job.name} runs in a desktop session, and the app is not "
+                "open. Open the app, or let the job run at its next scheduled "
+                "time"
             )
         with FileLock(job_run_lock_path(job.id)) as free:
             if not free:
@@ -1541,18 +1560,19 @@ class SchedulerService:
             run_id=new_run_id(), job_id=job.id, job_name=job.name,
             started_at=time.time(), fire_number=job.fire_count + 1, prompt=job.prompt,
         )
-        if not _hand_over(job, None, 0, to_app=False, run_id=run.run_id):
-            raise RuntimeError(f"{job.name} could not be handed to the Slack gateway")
+        if not _hand_over(job, None, 0, to_app=not in_gateway, run_id=run.run_id):
+            owner = "the Slack gateway" if in_gateway else "the app"
+            raise RuntimeError(f"{job.name} could not be handed to {owner}")
         return run
 
     async def run_now_handed_over(self, job_id: str, run_id: str, sent_at: float | None = None) -> bool:
-        """Run ``job_id`` now as ``run_id``: a run now that the app handed
-        to this process, which runs the job's session
-        (_hand_run_now_to_gateway), at ``sent_at``. It is a manual run, as
-        run_job_now makes: no slot, no retries, and the cadence is left
-        alone. When it cannot start, or it was sent more than
-        _HANDED_RUN_NOW_EXPIRES_SECONDS ago, its record says why, so the
-        app's run does not stay "claimed" or vanish. Returns False then."""
+        """Run ``job_id`` now as ``run_id``: a run now that another process
+        handed to this one, which runs the job's session (_hand_run_now),
+        at ``sent_at``. It is a manual run, as run_job_now makes: no slot,
+        no retries, and the cadence is left alone. When it cannot start, or
+        it was sent more than _HANDED_RUN_NOW_EXPIRES_SECONDS ago, its
+        record says why, so the run the other process answered with does
+        not stay "claimed" or vanish. Returns False then."""
         job = load_job(job_id)
         if job is None:
             logger.warning("job %s: handed a run now, but the job is gone", job_id)

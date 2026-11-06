@@ -168,15 +168,21 @@ async def test_a_job_into_the_gateways_own_thread_fires_in_the_gateway(daemon, m
     assert fired == [job.id] and _commands() == []
 
 
-async def test_a_manual_run_outside_the_gateway_builds_no_copy(daemon):
-    # Run now from the app or the schedule tool fires in its own process.
+async def test_the_schedule_tools_run_now_outside_the_gateway_goes_to_the_gateway(daemon):
+    # The schedule tool's run now ran in its own process, where it failed
+    # with "its Slack thread runs in the Slack gateway".
+    from bridge.tools.schedule_tool import ScheduleTool
+
     service, built = daemon
     job = _slack_thread_job()
+    tool = ScheduleTool(service=service, current_session_id="session-1")
 
-    run = await service.run_job_now(job.id)
+    result = await tool.execute("c1", {"action": "run_now", "job_id": job.id})
 
-    assert built == []
-    assert run.status == "failed" and "Slack gateway" in run.error
+    assert not result.is_error and built == [] and not service._in_flight_runs
+    (cmd,) = _commands()
+    assert (cmd["type"], cmd["job_id"], cmd["scheduled_for"]) == ("scheduler_fire", job.id, None)
+    assert cmd["run_id"] in result.content and "runs there" in result.content
 
 
 async def test_a_copy_in_the_scheduler_daemon_saves_nothing_over_the_gateways_files(daemon, tmp_path):
