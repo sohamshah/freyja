@@ -153,6 +153,27 @@ class RateLimitError(ProviderError):
         self.retry_after = retry_after
 
 
+class FastModeUnavailableError(ProviderError):
+    """Fast mode is not enabled for this model on the organization.
+
+    The API answers a ``speed: "fast"`` request with a 429 whose message
+    is "rate limit of 0 fast mode input tokens per minute". It looks like
+    a rate limit but it is a standing condition: the org has no fast-mode
+    quota for the model, and no amount of waiting changes that. The
+    provider drops the fast tier for the rest of its life when it sees
+    this, so the request is retryable at once, at standard speed.
+
+    ``model`` is the base model and ``tier_model_id`` the ``-fast`` id the
+    caller configured.
+    """
+
+    def __init__(self, message: str, *, model: str, tier_model_id: str, **kwargs):
+        kwargs.setdefault("retryable", True)
+        super().__init__(message, status=429, code="fast_mode_unavailable", **kwargs)
+        self.model = model
+        self.tier_model_id = tier_model_id
+
+
 class BillingError(ProviderError):
     """Billing or payment required."""
 

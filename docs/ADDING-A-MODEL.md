@@ -75,6 +75,8 @@ variant, the base id (without `-fast`) goes here.
 Missing entry → `_fast_mode` request raises ValueError at construct
 time before any API call.
 
+An allowlisted model can still be refused per org. Without fast-mode quota the API answers every `speed: "fast"` request with 429 `rate limit of 0 fast mode input tokens per minute` (on this org, 2026-11-05: Opus 4.8 and Opus 5; Opus 5.5 is served at ~265 tok/s). `_request_error` turns that into `FastModeUnavailableError`, the provider drops the tier for the rest of its life (`model_id` becomes the base id, so the meter prices the standard calls), and the runner resends at once and posts a `fast_mode_dropped` notice in the chat. A `-fast` catalog entry the org has no quota for carries `gated` in `AVAILABLE_MODELS` and `available: false` plus `unavailableReason` in `ModelPicker.tsx`'s `FALLBACK_MODELS`, so the picker says why; drop both when the quota arrives. Probe with a raw `/v1/messages` call carrying `speed: "fast"` and the `fast-mode-2026-02-01` beta header; a 200 reports `usage.speed`.
+
 ### 7a. `engine/anthropic_provider.py` — capability sets (Anthropic only)
 Three more allowlists in the same file. They are *not* optional polish —
 each one is a request the API rejects if the set is wrong:

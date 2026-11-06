@@ -60,6 +60,7 @@ from engine.errors import (
 from engine.providers import (
     AuthProfileManager,
     ContextOverflowError,
+    FastModeUnavailableError,
     ImageDimensionsTooLargeError,
     ImagePayloadTooLargeError,
     ModelFallbackChain,
@@ -684,10 +685,14 @@ class AgentRunner:
 
                 # An uploaded image is gone; the provider dropped the file IDs
                 # this request used, so resend at once (those images inline).
-                # Likewise a refusal fallback the API refused: the provider
-                # dropped it. Not a reason to back off or fall back to
-                # another model.
-                if getattr(e, "code", None) in ("file_not_found", "invalid_fallback") and e.retryable:
+                # Likewise a refusal fallback the API refused, or a fast tier
+                # the org has no quota for: the provider dropped it. Not a
+                # reason to back off or fall back to another model.
+                if (
+                    getattr(e, "code", None)
+                    in ("file_not_found", "invalid_fallback", "fast_mode_unavailable")
+                    and e.retryable
+                ):
                     ctx.state = RunnerState.RUNNING
                     continue
 
@@ -1945,6 +1950,33 @@ class AsyncAgentRunner:
                 _err_reason = classify_failover_reason(str(e))
                 _is_rate_limit = _err_reason == "rate_limit"
                 _is_too_much_media = "too much media" in str(e).lower()
+
+                # Fast mode is not enabled for this model on the org: the
+                # API answered 429 "rate limit of 0 fast mode input tokens
+                # per minute". It reads like a rate limit but never clears,
+                # so the provider dropped the fast tier for good. Resend at
+                # once at standard speed, and say so in the chat: the
+                # operator chose the tier and would otherwise wait through
+                # three backoffs for a "provider overloaded" verdict.
+                if isinstance(e, FastModeUnavailableError) and e.retryable:
+                    await self._emit_system_event(SystemEvent(
+                        type="fast_mode_dropped",
+                        message=(
+                            f"Fast mode is not enabled for {e.model} on this "
+                            "API key (the org's fast-mode quota is 0 tokens "
+                            f"per minute). Continuing on {e.model} at standard "
+                            f"speed and price; pick {e.model} in the model "
+                            "picker to stop this notice."
+                        ),
+                        details={
+                            "model": e.model,
+                            "tierModel": e.tier_model_id,
+                            "trigger": "provider_error",
+                            "chatVisible": True,
+                        },
+                    ))
+                    ctx.state = RunnerState.RUNNING
+                    continue
 
                 # An uploaded image is gone; the provider dropped the file IDs
                 # this request used, so resend at once (those images inline).

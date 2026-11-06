@@ -704,6 +704,19 @@ def _format_user_facing_runner_failure(
     # readable. The full message is in the bridge log anyway.
     if len(short) > 260:
         short = short[:260].rstrip() + "…"
+    lowered = (message or "").lower()
+    if "rate limit of 0 fast mode" in lowered:
+        # Not overload: the org has no fast-mode quota for this model, so
+        # the API refuses every fast request. The provider normally drops
+        # the tier and resends before this is reached; this is the wording
+        # for the case where it did not.
+        return (
+            "Fast mode is not enabled for this model on your Anthropic org — "
+            "the API allows 0 fast-mode tokens per minute for it, so every "
+            f"fast request is refused. Detail: {short}. Switch to the "
+            "standard tier, e.g. `/model claude-opus-5-5`, or ask Anthropic "
+            "for fast-mode quota."
+        )
     if reason == "rate_limit":
         return (
             "Provider is overloaded right now — the model returned "
@@ -2226,7 +2239,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_000_000,
         "thinking": True,
         "envVar": "ANTHROPIC_API_KEY",
-        "description": "Opus 5.5 with fast mode enabled (research preview): same weights, ~2.5x output tokens/sec at 2x pricing ($8/$40 per MTok). Requires fast-mode allowlist; may 429 if your org hasn't been granted access.",
+        "description": "Opus 5.5 with fast mode enabled (research preview): same weights at 2x pricing ($8/$40 per MTok). Measured Nov 5, 2026: ~265 output tok/s against ~100 standard, first token 0.6 s against 0.9 s. Needs fast-mode quota on the org; without it the API answers 429 'rate limit of 0 fast mode input tokens per minute' and Freyja drops the turn to standard speed with a notice.",
     },
     {
         "id": "claude-opus-4-8",
@@ -2246,7 +2259,16 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_000_000,
         "thinking": True,
         "envVar": "ANTHROPIC_API_KEY",
-        "description": "Opus 4.8 with fast mode enabled (research preview): same weights, ~2.5x output tokens/sec at premium pricing ($10/$50 per MTok input/output). Requires fast-mode allowlist; may 429 if your org hasn't been granted access.",
+        # Probed 2026-11-05 with the app's own key: every fast request on
+        # 4.8 (and on Opus 5) answers 429 "rate limit of 0 fast mode input
+        # tokens per minute", while 5.5 fast is served. That is the org's
+        # quota, not the code, so the picker holds the seat and says why.
+        # A session already on this id keeps working: the provider drops
+        # the tier on the first 429 and posts a fast_mode_dropped notice.
+        # Drop `gated` (here and in ModelPicker.tsx FALLBACK_MODELS) once
+        # Anthropic grants the quota.
+        "gated": "Fast mode is not enabled for Opus 4.8 on this org: the API answers 'rate limit of 0 fast mode input tokens per minute' (probed Nov 5, 2026). Ask Anthropic for fast-mode quota.",
+        "description": "Opus 4.8 with fast mode enabled (research preview): same weights at premium pricing ($10/$50 per MTok). Needs fast-mode quota on the org; this org has none for 4.8 (429 'rate limit of 0 fast mode input tokens per minute', Nov 5, 2026), so a session on this id runs at standard speed with a notice.",
     },
     {
         "id": "claude-opus-4-7",

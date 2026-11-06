@@ -33,6 +33,7 @@ from engine.providers import (
     AuthenticationError,
     BillingError,
     ContextOverflowError,
+    FastModeUnavailableError,
     ImageDimensionsTooLargeError,
     ImagePayloadTooLargeError,
     ModelNotFoundError,
@@ -147,6 +148,13 @@ FAST_MODE_MODELS = {
     "claude-opus-4-6",
 }
 FAST_MODE_BETA = "fast-mode-2026-02-01"
+# What an org without fast-mode quota for a model gets on every
+# `speed: "fast"` request, as a 429: "This request would exceed your
+# organization's rate limit of 0 fast mode input tokens per minute
+# (org: …, model: claude-opus-4-8)". A standing condition, not a burst to
+# wait out: see _rate_limit_error and _drop_fast_mode. Probed 2026-11-05:
+# Opus 5.5 fast served, Opus 4.8 and Opus 5 fast answered this.
+_FAST_MODE_NO_QUOTA = re.compile(r"rate limit of 0 fast mode", re.IGNORECASE)
 
 # Models that accept `role: "system"` mid-conversation in the messages
 # array (after a user turn). Per Anthropic docs only Opus 4.8 supports
@@ -1526,7 +1534,43 @@ class AnthropicProvider:
                         del _REFUSED_FALLBACKS[pair]
             # Without a fallback in the request, resending changes nothing.
             converted.retryable = bool(sent)
+        elif converted.code == "fast_mode_unavailable":
+            self._drop_fast_mode(converted)
         return converted
+
+    def _rate_limit_error(
+        self, message: str, retry_after: float | None = None
+    ) -> ProviderError:
+        """A 429. One kind never clears: the org has no fast-mode quota for
+        the model ("rate limit of 0 fast mode input tokens per minute"). On
+        a fast-tier provider that is the tier being refused, not a burst to
+        wait out, and _request_error drops the tier for it."""
+        if self._fast_mode and _FAST_MODE_NO_QUOTA.search(message):
+            return FastModeUnavailableError(
+                message, model=self._model, tier_model_id=self._public_model_id
+            )
+        return RateLimitError(message, retry_after=retry_after)
+
+    def _drop_fast_mode(self, error: ProviderError) -> None:
+        """Run the rest of this provider's life at standard speed.
+
+        The org has no fast-mode quota for the model, so every further
+        `speed: "fast"` request would get the same 429. From here requests
+        go without `speed` and the beta header, and `model_id` is the base
+        id, so the cost meter prices the calls the API actually serves.
+        The error stays retryable: the resend goes at standard speed. A
+        fresh provider on the same `-fast` id tries fast once more, which
+        costs one refused request and keeps the notice honest when the
+        quota does arrive."""
+        if not self._fast_mode:
+            return
+        logger.warning(
+            "fast mode is not enabled for %s on this org; continuing at "
+            "standard speed as %s | session=%s | %s",
+            self._public_model_id, self._model, self.session_id, error,
+        )
+        self._fast_mode = False
+        self._public_model_id = self._model
 
     def _convert_api_error(self, error: APIStatusError) -> ProviderError:
         """Convert Anthropic API error to internal error type."""
@@ -1549,7 +1593,7 @@ class AnthropicProvider:
                     message, status=status, code=error_type, retryable=True
                 )
             if error_type == "rate_limit_error":
-                return RateLimitError(message)
+                return self._rate_limit_error(message)
 
         if status == 401:
             return AuthenticationError(message)
@@ -1564,7 +1608,7 @@ class AnthropicProvider:
                         retry_after = float(retry_after_str)
                     except ValueError:
                         pass
-            return RateLimitError(message, retry_after=retry_after)
+            return self._rate_limit_error(message, retry_after=retry_after)
         elif status == 404:
             if _is_missing_file_error(message):
                 # A referenced upload is gone (see _request_error).

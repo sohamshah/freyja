@@ -717,6 +717,9 @@ SystemEventType = Literal[
     # Distinct from output_truncation, which is a single response being
     # cut off by max_tokens.
     "iteration_limit",
+    # The org has no fast-mode quota for the model: the provider dropped
+    # the `-fast` tier and the turn continues at standard speed.
+    "fast_mode_dropped",
 ]
 
 
