@@ -11850,6 +11850,21 @@ class _BridgeSession:
                 mcp_servers=None,  # MCP bridge lands in Stage 2
                 turn_id=self.current_turn_id,
             )
+        except asyncio.CancelledError:
+            # Stopped: said as a native turn says it. Unsaid, the app could
+            # show the turn as running, and a scheduled run whose turn it was
+            # went on as a finished run (_RunCost).
+            emit(
+                {
+                    "type": "turn_complete",
+                    "sessionId": self.id,
+                    "turnId": self.current_turn_id,
+                    "success": False,
+                    "stopped": True,
+                }
+            )
+            self._save_transcript()
+            raise
         except Exception as exc:  # noqa: BLE001
             log("warn", f"harness run_turn raised: {exc}")
             traceback.print_exc(file=sys.stderr)
