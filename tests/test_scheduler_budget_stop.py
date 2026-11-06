@@ -6,6 +6,10 @@ tick skips such a job, so the time was never used, but the dashboard,
 which labels every disabled job "paused", showed a paused job due at
 that time, and the schedule tool and Slack showed the time with a status
 that did not say how to run the job again.
+
+Nobody was told of the stop either: the run delivers nothing, and unlike
+a job stopped for failing, no notice went to the job's sinks or to the
+conversation it was made in.
 """
 
 from __future__ import annotations
@@ -108,3 +112,34 @@ async def test_slack_says_the_job_went_over_budget_and_how_to_resume(service):
         assert f"/freyja schedule resume {saved.id}" in text
         assert "disabled_budget_exhausted" not in text
     assert "next: —" in _format_jobs_table([saved])
+
+
+async def test_the_job_s_sinks_and_the_conversation_it_came_from_are_told_it_stopped(service, monkeypatch):
+    import bridge.scheduler.sinks as sinks
+    from bridge.scheduler.models import CreatorRef, DesktopSinkSpec
+
+    posted: list[tuple[list, str]] = []
+
+    async def deliver_all(job, run, output, ctx):
+        posted.append((list(job.sinks), output.text))
+        return []
+
+    monkeypatch.setattr(sinks, "deliver_all", deliver_all)
+    job = JobRecord(
+        id="sched_digest", name="digest", schedule=IntervalSchedule(seconds=3600),
+        prompt="digest", execution=ExistingSession(session_id="s1"),
+        creator=CreatorRef(surface="desktop", session_id="session-abc"),
+        sinks=[NoopSinkSpec()],
+        budget=BudgetSpec(max_cost_usd_per_run=0.10, on_exceeded="abort_job"),
+    )
+    job.next_fire_at = time.time() - 1
+    save_job(job)
+
+    await service._try_claim_and_fire(job.id)
+    await asyncio.gather(*service._in_flight_runs.values())
+
+    [(told, text)] = posted
+    assert told == [NoopSinkSpec(), DesktopSinkSpec(session_id="session-abc")]
+    assert "digest" in text
+    assert "went over its budget (it cost $0.50, the budget is $0.10 a run)" in text
+    assert "resume" in text

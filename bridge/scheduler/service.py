@@ -663,6 +663,8 @@ class SchedulerService:
         slot is counted toward the stop once its retries are spent."""
         from bridge.scheduler.runtime import fire_job
         run = await fire_job(self, job, scheduled_for=slot, attempt=attempt)
+        if await self._tell_if_stopped_over_budget(job, run):
+            return
         passing = _failed_for_a_passing_reason(run)
         if not passing and await self._retry_by_policy(job, run):
             return
@@ -796,18 +798,54 @@ class SchedulerService:
             message=notice,
             details={"jobId": job.id, "runId": run.run_id, "error": error},
         )
+        await self._tell_stopped(fresh, run, notice)
+        return True
+
+    async def _tell_if_stopped_over_budget(self, job: JobRecord, run: RunRecord) -> bool:
+        """Post why to ``job``'s sinks when its ``run`` went over its
+        budget and stopped it (on_exceeded abort_job). The run delivers
+        nothing, so the job stopped and told no one. Returns True if it
+        was stopped."""
+        budget = job.budget
+        if run.status != "budget_exceeded" or budget is None or budget.on_exceeded != "abort_job":
+            return False
+        fresh = load_job(job.id)
+        if fresh is None or fresh.status != "disabled_budget_exhausted":
+            return False
+        notice = (
+            f"I stopped the scheduled job *{fresh.name}*: a run went over its "
+            f"budget ({_over_budget_said(budget, run)}). To run it again, raise "
+            "or remove the budget, then resume it."
+        )
+        append_event({
+            "type": "scheduler_job_stopped_over_budget",
+            "job_id": job.id,
+            "run_id": run.run_id,
+            "error": run.error,
+        })
+        self.emit_event(
+            subtype="scheduler_job_stopped_over_budget",
+            message=notice,
+            details={"jobId": job.id, "runId": run.run_id, "error": run.error},
+        )
+        await self._tell_stopped(fresh, run, notice)
+        return True
+
+    async def _tell_stopped(self, job: JobRecord, run: RunRecord, notice: str) -> None:
+        """Post ``notice`` of why ``job`` stopped, with its last ``run``,
+        to its sinks."""
         from bridge.scheduler.persistence import write_run_output
         from bridge.scheduler.sinks import RunOutput, SinkContext, deliver_all
 
         # A notice only in sinks nobody reads tells no one: the Morning
         # briefing's sink is noop. It also goes to the conversation the
         # job was made in.
-        told = fresh
-        creator_sink = _creator_conversation(fresh.creator)
+        told = job
+        creator_sink = _creator_conversation(job.creator)
         if creator_sink is not None and not any(
-            isinstance(s, (SlackSinkSpec, DesktopSinkSpec)) for s in fresh.sinks
+            isinstance(s, (SlackSinkSpec, DesktopSinkSpec)) for s in job.sinks
         ):
-            told = dataclasses.replace(fresh, sinks=[*fresh.sinks, creator_sink])
+            told = dataclasses.replace(job, sinks=[*job.sinks, creator_sink])
         try:
             await deliver_all(
                 told,
@@ -816,8 +854,7 @@ class SchedulerService:
                 SinkContext(state=self.state, outputs_dir=write_run_output, log=logger.info),
             )
         except Exception:  # noqa: BLE001
-            logger.exception("failure notice for job %s was not delivered", job.id)
-        return True
+            logger.exception("stop notice for job %s was not delivered", job.id)
 
     # ─── CRUD ─────────────────────────────────────────────────────────
 
@@ -1362,6 +1399,21 @@ def _failed_runs_said(runs: list[RunRecord]) -> str:
             retries += 1
     said = f"its last {failed} runs failed"
     return f"{said}, {retries} of them retries under its retry policy" if retries else said
+
+
+def _over_budget_said(budget: BudgetSpec, run: RunRecord) -> str:
+    """What of its per-run ``budget`` ``run`` went over, for the notice
+    of the stop."""
+    said = []
+    tokens = run.input_tokens + run.output_tokens
+    if budget.max_tokens_per_run is not None and tokens > budget.max_tokens_per_run:
+        said.append(f"it used {tokens:,} tokens, the budget is {budget.max_tokens_per_run:,} a run")
+    if budget.max_cost_usd_per_run is not None and run.cost_usd > budget.max_cost_usd_per_run:
+        said.append(
+            f"it cost ${run.cost_usd:.2f}, the budget is "
+            f"${budget.max_cost_usd_per_run:.2f} a run"
+        )
+    return "; ".join(said)
 
 
 def _stopped_only_by_passing_failures(job: JobRecord) -> bool:
