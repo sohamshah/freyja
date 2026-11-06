@@ -230,3 +230,38 @@ async def test_a_loops_fire_due_while_its_run_is_queued_waits_for_that_run(monke
     await asyncio.sleep(0)
     with FileLock(job_run_lock_path(job.id)) as free:
         assert free
+
+
+async def test_a_queued_runs_prompt_is_queued_before_run_now_answers():
+    # It was queued one step after the call returned. A calling turn that
+    # ended by then had left no turn running, and the prompt started as a
+    # new turn.
+    sess = _stub_session()
+    sess.id = "s1"
+    sess.pending_config = None
+    started: list[str] = []
+
+    async def run_turn(content, *_a, **_kw):
+        started.append(content)
+
+    sess.run_turn = run_turn
+    job = JobRecord(id="sched_digest", name="digest", prompt="write the digest",
+                    schedule=IntervalSchedule(seconds=3600),
+                    execution=ExistingSession(session_id="s1"))
+    save_job(job)
+    queued_as_answered: list[int] = []
+
+    async def calling_turn():
+        from bridge.scheduler.runtime import fire_job
+
+        sess.pending_task = asyncio.current_task()
+        run = await fire_job(_Service({"s1": sess}), job)
+        queued_as_answered.append(len(sess.queued_messages))
+        return run  # The turn ends as the call returns.
+
+    run = await asyncio.ensure_future(calling_turn())
+    await _ended(job.id, run.run_id)
+
+    assert queued_as_answered == [1]
+    assert started == []
+    assert ["write the digest" in entry[0] for entry in sess.queued_messages] == [True]

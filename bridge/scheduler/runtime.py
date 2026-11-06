@@ -235,10 +235,13 @@ async def fire_job(
     if getattr(sess, "pending_task", None) is asyncio.current_task():
         # Run now from a tool call of the session's own turn: its prompt can
         # only run once that turn ends, and the turn waits for this call. The
-        # call is answered "queued" now, and the run goes on by itself: it
-        # queues its prompt and ends as any run does, with its turn's cost
+        # prompt is queued and the call answered "queued" now, and the run
+        # goes on by itself: it ends as any run does, with its turn's cost
         # and reply, delivered. Ended here, the turn that ran the prompt was
-        # no run's: no cost, no output, nothing delivered.
+        # no run's: no cost, no output, nothing delivered. Queued a step
+        # later, after a calling turn that had ended by then, the prompt
+        # started as a new turn.
+        handed = _hand_over_prompt(sess, sess_id, prompt, run, run_cost)
         run.status = "queued"
         save_run(run)
         append_event({
@@ -253,7 +256,7 @@ async def fire_job(
         )
         rest = asyncio.ensure_future(_run_fire(
             service, job, run, sess, sess_id, owns_session, prompt, run_cost,
-            loop_decision, registered_loop_tools,
+            loop_decision, registered_loop_tools, handed,
         ))
         _queued_runs[run.run_id] = rest
         rest.add_done_callback(lambda _t: _queued_runs.pop(run.run_id, None))
@@ -262,6 +265,31 @@ async def fire_job(
         service, job, run, sess, sess_id, owns_session, prompt, run_cost,
         loop_decision, registered_loop_tools,
     )
+
+
+def _hand_over_prompt(
+    sess: Any, sess_id: str, prompt: str, run: RunRecord, run_cost: "_RunCost",
+) -> tuple[set[str], set[str] | None]:
+    """Hand the fire's ``prompt`` to ``sess``: its turn starts now, or once
+    the turn running there ends (_schedule_or_queue_turn returns True for
+    immediate dispatch and False for queued), and ``run_cost`` hears the
+    session's events from now on. Returns the background work already
+    running in the session, and the transcript's entries before the prompt.
+    That work (a fire into the operator's own session) isn't this fire's:
+    it neither waits for it nor stops it on timeout."""
+    from bridge.freyja_bridge import _schedule_or_queue_turn, register_session_listener
+
+    register_session_listener(sess_id, run_cost.on_event)
+    _running_work = getattr(sess, "_running_background_work", None)
+    preexisting = {
+        w.id for w in (_running_work() if callable(_running_work) else [])
+    }
+    entries_before = _entry_ids(sess)
+    _schedule_or_queue_turn(
+        sess, prompt, attachments=None, on_turn_start=run_cost.our_turn_starts,
+        run_id=run.run_id,
+    )
+    return preexisting, entries_before
 
 
 # The rest of each run whose prompt is queued behind the turn that started
@@ -295,38 +323,25 @@ async def _run_fire(
     run_cost: "_RunCost",
     loop_decision: Any,
     registered_loop_tools: list[str],
+    handed: tuple[set[str], set[str] | None] | None = None,
 ) -> RunRecord:
     """Run ``prompt``, the fire of ``job`` that ``run`` records, in ``sess``,
     and end the run: its output and cost (``run_cost``), its sinks, the
     job's record. ``registered_loop_tools`` are a loop's tools, removed once
     its turns are done, and ``loop_decision`` what its agent chose with
-    them."""
+    them. ``handed`` is what _hand_over_prompt returned when the prompt was
+    handed to the session already."""
     # ── Run the agent turn ────────────────────────────────────────────
     output_text = ""
     output_attachments: list[dict[str, Any]] = []
     iteration_count = 0
     entries_before: set[str] | None = None
     abort_job = False
-    from bridge.freyja_bridge import register_session_listener, unregister_session_listener
+    from bridge.freyja_bridge import unregister_session_listener
 
-    register_session_listener(sess_id, run_cost.on_event)
     try:
-        from bridge.freyja_bridge import _schedule_or_queue_turn
-
-        # _schedule_or_queue_turn returns True for immediate dispatch
-        # and False for queued. Either way we'll await sess.pending_task
-        # below to wait for completion.
-        # Background work already running in this session (a fire into
-        # the operator's own session) isn't this fire's: it neither waits
-        # for it nor stops it on timeout.
-        _running_work = getattr(sess, "_running_background_work", None)
-        preexisting = {
-            w.id for w in (_running_work() if callable(_running_work) else [])
-        }
-        entries_before = _entry_ids(sess)
-        _schedule_or_queue_turn(
-            sess, prompt, attachments=None, on_turn_start=run_cost.our_turn_starts,
-            run_id=run.run_id,
+        preexisting, entries_before = handed or _hand_over_prompt(
+            sess, sess_id, prompt, run, run_cost,
         )
         pending = getattr(sess, "pending_task", None)
         if pending is not None:

@@ -246,7 +246,7 @@ async def test_a_loop_run_queued_behind_the_turn_that_started_it_keeps_its_loop_
     async def calling_turn():
         run = await fire_job(_Service({"s1": sess}), job)  # Its tool call.
         answered = run.status
-        await asyncio.sleep(0)  # Its next model call: the run queues its prompt.
+        await asyncio.sleep(0)  # Its next model call.
         # The turn ends, and its task runs the queued prompt (_drain_turns).
         _prompt, _attachments, on_turn_start, run_id = sess.queued_messages.pop(0)
         on_turn_start()
@@ -296,7 +296,7 @@ async def test_the_turn_that_queued_a_loops_run_cannot_decide_for_it(monkeypatch
     async def calling_turn():
         sess.current_turn_id = "turn-1"
         await fire_job(_Service({"s1": sess}), job)  # Its tool call.
-        await asyncio.sleep(0)  # Its next model call: the run queues its prompt.
+        await asyncio.sleep(0)  # Its next model call.
         said = await sess.tool_registry.get(COMPLETE_LOOP_TOOL).execute("call-1", {"reason": "done"})
         # The turn ends, and its task runs the queued prompt, which decides
         # nothing.
