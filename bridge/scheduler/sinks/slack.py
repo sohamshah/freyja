@@ -46,6 +46,7 @@ async def deliver_slack(
                 spec.chat_id,
                 banner,
                 thread_id=spec.thread_ts,
+                team_id=spec.workspace_id,
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("scheduler banner send failed (non-fatal): %s", exc)
@@ -67,6 +68,7 @@ async def deliver_slack(
         spec.chat_id,
         body,
         thread_id=spec.thread_ts,
+        team_id=spec.workspace_id,
     )
     if not getattr(result, "ok", False):
         raise RuntimeError(

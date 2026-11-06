@@ -1383,10 +1383,14 @@ class SlackAdapter:
         ephemeral_user_id: str | None = None,
         raw_hint: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        team_id: str | None = None,
     ) -> SendResult:
+        """``team_id`` names the workspace whose token posts. Without it
+        the channel's workspace comes from inbound events, and a
+        send-only adapter, which never sees one, uses the first."""
         if not self._app:
             return SendResult(ok=False, error="not connected")
-        client = self._get_client(chat_id)
+        client = self._get_client(chat_id, team_id)
         if client is None:
             return SendResult(ok=False, error=f"no client for chat {chat_id}")
 

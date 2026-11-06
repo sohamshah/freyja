@@ -123,3 +123,38 @@ async def test_a_scheduled_run_posts_through_the_gateway_s_slack_adapter(
     assert ts == "1793000000.000100"
     assert adapter.sent == [("C1", "the digest", "1793000000.000001")]
     assert adapter.listen is start_kwargs.get("listen", True)
+
+
+class _WebClient:
+    def __init__(self, team: str, posted: list[tuple[str, str]]) -> None:
+        self.team = team
+        self.posted = posted
+
+    async def chat_postMessage(self, **kwargs):
+        self.posted.append((self.team, kwargs["channel"]))
+        return {"ok": True, "ts": "1793000000.000200"}
+
+
+async def test_a_scheduled_run_posts_with_its_own_workspace_s_token():
+    # A send-only adapter has never seen an inbound event, so it knows no
+    # channel's workspace and fell back to the first one: a job for a
+    # second workspace posted with the wrong token.
+    from bridge.gateway.platforms.slack import SlackAdapter
+
+    posted: list[tuple[str, str]] = []
+    adapter = SlackAdapter()
+    adapter._app = object()  # connected, send-only
+    adapter._team_clients = {
+        "T1": _WebClient("T1", posted),
+        "T2": _WebClient("T2", posted),
+    }
+    state = SimpleNamespace(gateway_runner=SimpleNamespace(adapters=[adapter]))
+    spec = SlackSinkSpec(workspace_id="T2", chat_id="C2", include_metadata=False)
+    job = SimpleNamespace(id="sched_2", name="digest")
+    run = SimpleNamespace(run_id="run_2", iteration=0)
+    ctx = SinkContext(state=state, outputs_dir=None, log=lambda *_a: None)
+
+    await deliver_slack(spec, job, run, RunOutput(text="the digest"), ctx)
+
+    # The banner, then the output.
+    assert posted == [("T2", "C2"), ("T2", "C2")]
