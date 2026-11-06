@@ -2573,7 +2573,8 @@ class AsyncAgentRunner:
                     f"during this turn (was band {band_then} at turn start). "
                     "Finish your current immediate goal, then call "
                     "summarize_context() before issuing more tool calls. "
-                    "Tool calls beyond ~5 more may be rejected.]"
+                    "Past 70% the runtime compacts the history before its "
+                    "next request.]"
                 )
         except Exception:  # noqa: BLE001
             pass

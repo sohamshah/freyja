@@ -156,3 +156,35 @@ async def test_a_transcript_cut_since_the_last_call_is_measured_afresh():
     await runner.run(session, "a different task")
 
     assert compactor.calls == 0
+
+
+# ─── what the advisories promise ─────────────────────────────────────
+# Nothing counts or rejects tool calls. Past 70% of the usable window the
+# runtime compacts the history before its next request.
+
+
+async def test_the_crossing_advisory_says_what_happens_past_70_percent():
+    runner, _ = _runner([_tools("c1", 30_000), _end(31_000)])
+    await runner.run(Session.create(system_prompt="t"), "a task")
+
+    advisory = runner.consume_channel3_advisory()
+
+    assert "crossed 60-69%" in advisory
+    assert "rejected" not in advisory
+    assert "Past 70% the runtime compacts the history before its next request" in advisory
+
+
+def test_the_tag_past_70_percent_says_what_happens():
+    from types import SimpleNamespace
+
+    from bridge.freyja_bridge import _build_pressure_tag
+    from engine.usage import UsageAccumulator
+
+    usage = UsageAccumulator(last_input=36_000)
+    runner = SimpleNamespace(provider=_Provider([]), config=AgentConfig(max_tokens_per_turn=RESERVED), usage=usage)
+
+    tag = _build_pressure_tag(runner)
+
+    assert tag.startswith("[ctx: 72% (36,000/50,000)")
+    assert "rejected" not in tag
+    assert "the runtime compacts the history before its next request" in tag

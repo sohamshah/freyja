@@ -1841,10 +1841,7 @@ def _build_pressure_tag(runner: Any) -> str:
             return ""
         pct = int(ratio * 100)
         if ratio >= _PRESSURE_TAG_FALLBACK:
-            advisory = (
-                "fallback imminent — call summarize_context() NOW or further "
-                "tool calls may be rejected"
-            )
+            advisory = "the runtime compacts the history before its next request"
         elif ratio >= _PRESSURE_TAG_STRONG:
             advisory = "summarize_context() recommended before continuing"
         elif ratio >= _PRESSURE_TAG_SOFT:
