@@ -69,12 +69,13 @@ export interface KanbanCardView {
    *  body and as a count chip on the kanban card. */
   artifacts?: string[]
   /** Move R — default-on judge-review pipeline. `reviewIteration`
-   *  counts how many review->rework cycles this card has been
-   *  through. Sticky session ids preserve worker/judge continuity
-   *  across reworks. `workerTerminalState` records what state the
-   *  worker exited at (done / failed / cancelled / crashed /
-   *  timed_out) so the UI can communicate whether a card in review
-   *  is being judged on a clean delivery or a partial crash dump. */
+   *  counts entries to review, one per judge review; the third
+   *  failed verdict blocks the card. Sticky session ids preserve
+   *  worker/judge continuity across reworks. `workerTerminalState`
+   *  records what state the worker exited at (done / failed /
+   *  cancelled / crashed / timed_out) so the UI can communicate
+   *  whether a card in review is being judged on a clean delivery
+   *  or a partial crash dump. */
   reviewIteration?: number
   workerSessionId?: string
   judgeSessionId?: string
