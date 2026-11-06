@@ -414,3 +414,23 @@ async def test_a_wake_after_the_operators_turn_is_not_the_runs(operator_session)
 
     assert _last_reply(sess) == "The reviewer found two bugs"  # The wake ran in the run's wait.
     assert (run.output_text, run.cost_usd) == ("Here is the digest", 0)
+
+
+# ─── a run whose turn never started ───────────────────────────────────
+
+
+async def test_a_run_whose_turn_never_started_does_not_take_the_sessions_last_error(operator_session):
+    # Its prompt stayed queued behind a turn task that ended without its
+    # drain (an edit's, stopped before its first step), and the run read the
+    # session's error as it ended: that of a turn before the run's.
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.last_turn_error = "rate_limit: Error code: 429 - too many requests"
+    sess.pending_task = asyncio.ensure_future(asyncio.sleep(0.05))
+
+    run = await asyncio.wait_for(fire_job(_Service({"s1": sess}), _job()), 10)
+
+    assert run.status == "failed"
+    assert "429" not in run.error
+    assert "never started" in run.error

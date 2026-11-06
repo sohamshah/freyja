@@ -500,14 +500,23 @@ async def _run_fire(
     # downstream recovery can re-fire.
     if run.status in ("running", "queued") and iteration_count == 0 and not (output_text or "").strip():
         run.status = "failed"
-        turn_error = run_cost.error or getattr(sess, "last_turn_error", None)
-        run.error = (
-            f"the turn failed before the model replied — {turn_error}"
-            if turn_error
-            else "agent made 0 iterations and produced no output — the fire was "
-            "interrupted before it could start (most often the machine slept "
-            "through the scheduled time). Nothing was produced."
-        )
+        # The error of the run's own turn alone. The session's, read now, is
+        # that of its last turn: one queued behind the run's that ran in its
+        # wait, or, when the run's never started, a turn before it.
+        if run_cost.error:
+            run.error = f"the turn failed before the model replied — {run_cost.error}"
+        elif run_cost.reply is None:
+            # None of its turns ended: with the session quiet, none started.
+            run.error = (
+                "the run's turn never started: its prompt did not run in its "
+                "session. Nothing was produced."
+            )
+        else:
+            run.error = (
+                "agent made 0 iterations and produced no output — the fire was "
+                "interrupted before it could start (most often the machine slept "
+                "through the scheduled time). Nothing was produced."
+            )
 
     # A fire that nothing answered takes its prompt back out of the session's
     # history; the run record keeps it. Left in, each failed fire adds one:

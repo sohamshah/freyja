@@ -85,11 +85,12 @@ def _drive_fire(
     offered: list[str] = []
 
     async def turn(prompt: str, run_id: str) -> None:
-        # A turn says it started before it calls any tool, and says it ended.
+        # A turn says it started before it calls any tool, and says it ended,
+        # failed when the provider rejected it.
         sess.current_turn_id = "turn-1"
         fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-1", "runId": run_id})
         await reply(prompt)
-        fb.emit({"type": "turn_complete", "sessionId": "s1", "turnId": "turn-1"})
+        fb.emit({"type": "turn_complete", "sessionId": "s1", "turnId": "turn-1", "success": replies})
 
     async def reply(prompt: str) -> None:
         transcript = sess.session.transcript

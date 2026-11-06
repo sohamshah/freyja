@@ -10,6 +10,7 @@ of the stop (2b373c0), so it ran on as a finished run.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from bridge.scheduler.models import ExistingSession, IntervalSchedule, JobRecord, NoopSinkSpec
 from bridge.scheduler.persistence import load_runs_for_job, save_job
@@ -142,3 +143,41 @@ async def test_a_run_whose_harness_cannot_be_built_fails_with_why(monkeypatch, t
 
     assert run.status == "failed"
     assert "unknown harness runtime: 'aider'" in run.error
+
+
+class _NoReplyForTheRun(_Adapter):
+    """A harness whose turn for the run's prompt ends, once ``release`` is
+    set, with no reply and no error, and whose turn for any other prompt
+    raises."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def run_turn(self, text, *, mcp_servers=None, turn_id=""):
+        if "write the report" not in text:
+            raise RuntimeError("the codex app-server exited")
+        self.working.set()
+        await self.release.wait()
+        return SimpleNamespace(text="", error=None, is_error=False, stop_reason="end_turn")
+
+
+async def test_a_run_does_not_take_the_error_of_a_turn_queued_behind_its_own(monkeypatch, tmp_path):
+    # Its own turn ended with no reply and no error; the run read the
+    # session's error as it ended: that of the operator's turn, which ran
+    # in the run's wait.
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.runtime import fire_job
+
+    _state, sess = await _harness_session(monkeypatch, tmp_path)
+    sess.harness_adapter = _NoReplyForTheRun()
+    fire = asyncio.create_task(fire_job(_Service({"h1": sess}), _report_job()))
+    await asyncio.wait_for(sess.harness_adapter.working.wait(), 5)
+    fb._schedule_or_queue_turn(sess, "how is the build?")  # Sent while the run's turn runs.
+    sess.harness_adapter.release.set()
+
+    run = await asyncio.wait_for(fire, 10)
+
+    assert sess.last_turn_error == "the codex app-server exited"
+    assert run.status == "failed"
+    assert "the codex app-server exited" not in run.error
