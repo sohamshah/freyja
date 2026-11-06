@@ -51,11 +51,15 @@ from bridge.tools.base import (
     ToolTier,
 )
 
-# When set, every emitted frame is also dumped to disk so you can open
-# it with Preview and verify the native layer is actually capturing
-# what you think it is. Disk-dump is off by default — if you're
-# debugging a "screenshots look wrong" situation, set this env var to
-# a directory and restart the bridge.
+# Every emitted frame is also written to disk so you can open it with
+# Preview and check that the native layer captured what the agent
+# thinks it did. This is ON by default: FREYJA_FRAME_DUMP=0 (or false,
+# no) turns it off, and FREYJA_FRAME_DUMP_DIR moves it from
+# ~/.freyja/last-frames; both are read when the bridge starts. Each
+# session keeps its newest 20 frames per format, plus latest.jpg /
+# latest.png for the last frame of any session. Nothing removes the
+# frames of earlier sessions, so the folder grows by up to 20 frames
+# for every session that takes a screenshot.
 _FRAME_DUMP_DIR = os.environ.get("FREYJA_FRAME_DUMP_DIR") or str(
     Path.home() / ".freyja" / "last-frames"
 )
@@ -387,10 +391,8 @@ async def _emit_frame(
             logger.debug("cursor overlay failed: %s", exc)
             png_bytes = frame.png
 
-    # Dump to disk for debugging — so you can open Preview on the
-    # resulting file and verify the native layer captured what the
-    # agent thinks it did. We keep only the last ~20 frames per
-    # session to avoid filling the disk during long runs.
+    # Dump to disk for debugging (see _FRAME_DUMP_ENABLED). A long run
+    # keeps only its newest 20 frames; earlier sessions' frames stay.
     if _FRAME_DUMP_ENABLED:
         try:
             dump_dir = Path(_FRAME_DUMP_DIR)
