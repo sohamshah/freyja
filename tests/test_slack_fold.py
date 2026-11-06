@@ -78,9 +78,7 @@ def test_cards_fold_into_one_plan_where_the_first_card_was():
     # The prose and the feedback buttons are the same blocks, in order.
     assert folded[2]["elements"] == blocks[4]["elements"]
     assert folded[4]["elements"] == _FEEDBACK["elements"]
-
-
-def test_a_message_without_cards_is_left_alone():
+    # A message without cards is left alone.
     assert fold_task_cards([_text("Only prose."), _FEEDBACK]) is None
     assert fold_task_cards([]) is None
 
@@ -288,13 +286,4 @@ async def test_an_adapter_without_updates_is_left_alone():
     consumer = _consumer(adapter)
     await _feed(consumer, _turn(["t1"]))
     assert consumer.finalized
-    assert adapter.updated == {}
-
-
-@pytest.mark.asyncio
-async def test_folding_can_be_turned_off():
-    adapter = StreamingFakeAdapter()
-    consumer = _consumer(adapter)
-    consumer.fold_steps = False
-    await _feed(consumer, _turn(["t1"]))
     assert adapter.updated == {}

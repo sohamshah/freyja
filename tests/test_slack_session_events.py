@@ -6,8 +6,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import pytest
-
 from bridge.gateway.platforms.slack import SlackAdapter
 from bridge.gateway.slack_bindings import ThreadBindings
 
@@ -166,8 +164,11 @@ def test_gateway_maps_slack_coordinates_to_session_keys(tmp_path):
 
 
 def test_clean_title_drops_what_slack_rejects(tmp_path):
+    """Colons make rename fail with invalid_name; raw agent output often opens with bold or quote chrome and newlines, and a title beginning with '*' or a line break reads as broken."""
     a = _adapter(tmp_path)
     assert a._clean_title("Fix: the `bug` in *main*") == "Fix the bug in main"
+    multiline = a._clean_title("*:warning: Alert*\n\nsecond line")
+    assert multiline.startswith("warning") and "\n" not in multiline
     long = a._clean_title("word " * 40)
     assert len(long) <= a._THREAD_TITLE_MAX + 1 and long.endswith("…")
     assert a._clean_title("   ") == ""

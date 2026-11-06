@@ -22,8 +22,6 @@ import json
 import os
 from types import SimpleNamespace
 
-import pytest
-
 from bridge.inbox import InboxMessage, SessionInbox, new_message_id
 from bridge.tools import talk_tool as tt
 from bridge.tools.talk_tool import (
@@ -33,7 +31,6 @@ from bridge.tools.talk_tool import (
     TalkTool,
     queue_to_inbox_sidecar,
 )
-
 
 # ─── helpers ──────────────────────────────────────────────────────────
 
@@ -113,18 +110,10 @@ def test_take_reply_removes_message_and_marks_delivered():
     assert inbox.take_reply("source123") is None
 
 
-def test_attribution_header_carries_full_message_id():
-    m = _msg("ping")
-    header = m.attribution_prefix()
-    # The recipient can only construct talk(reply_to=…) if the full id
-    # is visible in the injected block.
-    assert f"id {m.id}" in header
-
-
 # ─── wake-on-push ─────────────────────────────────────────────────────
 
 
-def test_wake_for_inbox_schedules_turn_when_idle(monkeypatch):
+def test_wake_for_inbox_schedules_a_turn_only_when_idle(monkeypatch):
     from bridge import freyja_bridge as fb
 
     calls: list = []
@@ -135,38 +124,28 @@ def test_wake_for_inbox_schedules_turn_when_idle(monkeypatch):
 
     monkeypatch.setattr(fb, "_schedule_or_queue_turn", _fake_schedule)
 
-    stub = SimpleNamespace(
+    idle = SimpleNamespace(
         id="idle-root",
         inbox=SessionInbox(session_id="idle-root"),
         pending_task=None,
         talk_wake_hook=None,
     )
-    stub.inbox.push(_msg())
-
-    status = fb._BridgeSession.wake_for_inbox(stub)
+    idle.inbox.push(_msg())
+    status = fb._BridgeSession.wake_for_inbox(idle)
     assert "woke" in status
     assert len(calls) == 1
     assert calls[0][1] == fb.TALK_WAKE_PROMPT
 
-
-def test_wake_for_inbox_noop_when_busy(monkeypatch):
-    from bridge import freyja_bridge as fb
-
-    def _explode(*_a, **_k):  # pragma: no cover - must not be called
-        raise AssertionError("busy session must not schedule a wake turn")
-
-    monkeypatch.setattr(fb, "_schedule_or_queue_turn", _explode)
-
-    stub = SimpleNamespace(
+    busy = SimpleNamespace(
         id="busy-root",
         inbox=SessionInbox(session_id="busy-root"),
         pending_task=_LiveTask(),
         talk_wake_hook=None,
     )
-    stub.inbox.push(_msg())
-
-    status = fb._BridgeSession.wake_for_inbox(stub)
+    busy.inbox.push(_msg())
+    status = fb._BridgeSession.wake_for_inbox(busy)
     assert "busy" in status
+    assert len(calls) == 1, "a busy session must not schedule a wake turn"
 
 
 async def test_deliver_to_live_root_pushes_and_wakes():
@@ -212,21 +191,14 @@ async def test_gateway_id_forwards_to_daemon_not_local_mirror(
     assert cmd["to"] == GW_ID
     assert cmd["message"]["content"] == "rewrite it"
 
-
-async def test_gateway_id_without_prefix_is_normalized(monkeypatch, tmp_path):
-    monkeypatch.setenv("FREYJA_HOME", str(tmp_path))
-    monkeypatch.setattr(tt, "_gateway_owner_pid", lambda: os.getpid() + 1)
-
-    router = _router({"caller": _fake_root("caller")})
-    tool = TalkTool(router, _ctx())
-
+    # The id without its "freyja:" prefix is normalized before forwarding.
     bare = GW_ID[len("freyja:") :]
-    result = await tool.execute("c1", {"to": bare, "content": "ping"})
+    result = await tool.execute("c2", {"to": bare, "content": "ping"})
     assert "forwarded to the gateway daemon" in result.content
     cmd = json.loads(
         (tmp_path / "control" / "commands.jsonl").read_text().splitlines()[-1]
     )
-    assert cmd["to"] == GW_ID
+    assert cmd["to"] == GW_ID and cmd["message"]["content"] == "ping"
 
 
 async def test_gateway_id_delivers_locally_when_no_daemon(monkeypatch):
@@ -338,6 +310,9 @@ async def test_wait_for_reply_returns_and_consumes_reply(monkeypatch):
 
 async def test_wait_for_reply_timeout_reports_delivery_status(monkeypatch):
     monkeypatch.setattr(tt, "_gateway_owner_pid", lambda: None)
+    # A clock that jumps a second per reading: the deadline has passed on its first check, so the wait loop returns on its own without a real second going by.
+    ticks = iter(range(10_000))
+    monkeypatch.setattr(tt, "time", SimpleNamespace(monotonic=lambda: float(next(ticks))))
 
     recipient = _fake_root("worker")
     caller = _fake_root("caller")

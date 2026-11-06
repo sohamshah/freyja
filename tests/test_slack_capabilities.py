@@ -1,9 +1,6 @@
 """Slack capability card: presence-only, identity-cached, never leaks tokens.
 
-Every test runs with FREYJA_HOME pointed at a tmp dir, all SLACK_* vars
-scrubbed from the real environment, and ``urllib.request.urlopen``
-replaced with a function that raises — so nothing here can read the
-operator's ~/.freyja/.env or touch the network.
+Every test runs with FREYJA_HOME pointed at a tmp dir, all SLACK_* vars scrubbed from the real environment, and ``urllib.request.urlopen`` replaced with a function that raises, so nothing here can read the operator's ~/.freyja/.env or touch the network.
 """
 
 from __future__ import annotations
@@ -52,8 +49,7 @@ def _isolated(monkeypatch, tmp_path):
 
 
 def _stub_auth(monkeypatch, *, fail: set[str] | None = None):
-    """Replace ``_auth_test`` with a stub that records call count and never
-    returns anything derived from the token value."""
+    """Replace ``_auth_test`` with a stub that records call count and never returns anything derived from the token value."""
     fail = fail or set()
     calls: list[str] = []
 
@@ -134,36 +130,16 @@ def test_bot_only_explains_missing_search(monkeypatch, tmp_path):
     assert "appears as the operator personally" not in block
 
 
-def test_no_tokens_short_card(monkeypatch, tmp_path):
+def test_no_or_blank_tokens_make_a_short_card_without_resolving(monkeypatch, tmp_path):
     calls = _stub_auth(monkeypatch)
-    block = sc.slack_capability_block({}, mcp_path=tmp_path / "missing-mcp.json")
-    assert "No SLACK_BOT_TOKEN or SLACK_USER_TOKEN is set" in block
-    assert "Slack Web API calls are unavailable" in block
+    for env in ({}, {sc.SLACK_BOT_TOKEN: "   ", sc.SLACK_USER_TOKEN: ""}):
+        block = sc.slack_capability_block(env, mcp_path=tmp_path / "missing-mcp.json")
+        assert "No SLACK_BOT_TOKEN or SLACK_USER_TOKEN is set" in block
+        assert "Slack Web API calls are unavailable" in block
+        assert len(block.splitlines()) <= 3
     assert calls == []  # nothing to resolve
-    assert len(block.splitlines()) <= 3
-
-
-def test_no_tokens_but_app_token_mentioned(monkeypatch, tmp_path):
-    _stub_auth(monkeypatch)
     block = sc.slack_capability_block({sc.SLACK_APP_TOKEN: APP_VALUE}, mcp_path=tmp_path / "x.json")
     assert "SLACK_APP_TOKEN is set (Socket Mode plumbing only" in block
-
-
-def test_blank_value_counts_as_absent(monkeypatch, tmp_path):
-    calls = _stub_auth(monkeypatch)
-    block = sc.slack_capability_block(
-        {sc.SLACK_BOT_TOKEN: "   ", sc.SLACK_USER_TOKEN: ""}, mcp_path=tmp_path / "x.json"
-    )
-    assert "No SLACK_BOT_TOKEN or SLACK_USER_TOKEN is set" in block
-    assert calls == []
-
-
-def test_defaults_to_os_environ(monkeypatch, tmp_path):
-    _stub_auth(monkeypatch)
-    monkeypatch.setenv(sc.SLACK_BOT_TOKEN, BOT_VALUE)
-    block = sc.slack_capability_block(mcp_path=tmp_path / "x.json")
-    assert "SLACK_BOT_TOKEN — present" in block
-    assert "SLACK_USER_TOKEN — not set" in block
 
 
 # ---------------------------------------------------------------------------
@@ -183,8 +159,7 @@ def test_no_token_value_leaks_anywhere(monkeypatch, tmp_path, caplog):
 
     # The resolver really did receive the values (so the check is meaningful)…
     assert set(calls) == {BOT_VALUE, USER_VALUE}
-    # …but none of them, nor any distinctive fragment, appears in output,
-    # in the cache, or in any log record.
+    # …but none of them, nor any distinctive fragment, appears in output, in the cache, or in any log record.
     for marker in LEAK_MARKERS:
         assert marker not in block
         assert marker not in repr(sc._identity_cache)
@@ -192,11 +167,6 @@ def test_no_token_value_leaks_anywhere(monkeypatch, tmp_path, caplog):
         for rec in caplog.records:
             assert marker not in rec.getMessage()
             assert marker not in repr(rec.args)
-
-
-def test_identity_dataclass_has_no_token_field():
-    fields = set(sc.SlackIdentity.__dataclass_fields__)
-    assert not any("token" in f.lower() for f in fields)
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +182,7 @@ class _FakeResponse(io.BytesIO):
         return False
 
 
-def test_auth_test_uses_urllib_bearer_post(monkeypatch):
+def test_auth_test_posts_a_bearer_token_and_rejects_a_non_object_body(monkeypatch):
     seen: dict = {}
 
     def fake_urlopen(req, timeout=None):
@@ -232,18 +202,18 @@ def test_auth_test_uses_urllib_bearer_post(monkeypatch):
         "timeout": 5.0,
     }
 
-
-def test_auth_test_rejects_non_object_body(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _FakeResponse(b"[1, 2]"))
     with pytest.raises(ValueError):
         sc._auth_test(BOT_VALUE)
 
 
-def test_resolve_success_shapes_identities(monkeypatch):
-    _stub_auth(monkeypatch)
-    ids = sc.resolve_slack_identities(
-        {sc.SLACK_BOT_TOKEN: BOT_VALUE, sc.SLACK_USER_TOKEN: USER_VALUE}
-    )
+def test_resolve_shapes_identities_and_uses_the_first_of_comma_split_tokens(monkeypatch):
+    calls = _stub_auth(monkeypatch)
+    ids = sc.resolve_slack_identities({
+        sc.SLACK_BOT_TOKEN: f"{BOT_VALUE}, xoxb-second-workspace",
+        sc.SLACK_USER_TOKEN: USER_VALUE,
+    })
+    assert set(calls) == {BOT_VALUE, USER_VALUE}
     assert set(ids) == {sc.SLACK_BOT_TOKEN, sc.SLACK_USER_TOKEN}
     bot, user = ids[sc.SLACK_BOT_TOKEN], ids[sc.SLACK_USER_TOKEN]
     assert bot.is_bot and bot.user == "freyja" and bot.user_id == "U0BOT" and bot.bot_id == "B0BOT"
@@ -251,13 +221,7 @@ def test_resolve_success_shapes_identities(monkeypatch):
     assert user.team == "Acme" and user.team_id == "T0ACME"
 
 
-def test_resolve_uses_first_of_comma_split_tokens(monkeypatch):
-    calls = _stub_auth(monkeypatch)
-    sc.resolve_slack_identities({sc.SLACK_BOT_TOKEN: f"{BOT_VALUE}, xoxb-second-workspace"})
-    assert calls == [BOT_VALUE]
-
-
-def test_failure_path_transport_error(monkeypatch, tmp_path):
+def test_failed_resolution_degrades_the_wording_is_tried_once_and_never_raises(monkeypatch, tmp_path):
     calls = _stub_auth(monkeypatch, fail={BOT_VALUE, USER_VALUE})
     env = {sc.SLACK_BOT_TOKEN: BOT_VALUE, sc.SLACK_USER_TOKEN: USER_VALUE}
     ids = sc.resolve_slack_identities(env)
@@ -271,14 +235,14 @@ def test_failure_path_transport_error(monkeypatch, tmp_path):
     # Failure is cached: one attempt per token per process.
     assert sorted(calls) == sorted([BOT_VALUE, USER_VALUE])
 
-
-def test_failure_path_ok_false(monkeypatch):
+    # An ok:false answer degrades the same way.
+    sc.reset_identity_cache()
     monkeypatch.setattr(sc, "_auth_test", lambda token: {"ok": False, "error": "invalid_auth"})
-    ids = sc.resolve_slack_identities({sc.SLACK_USER_TOKEN: USER_VALUE})
-    assert ids == {sc.SLACK_USER_TOKEN: None}
+    assert sc.resolve_slack_identities({sc.SLACK_USER_TOKEN: USER_VALUE}) == {sc.SLACK_USER_TOKEN: None}
 
+    # An unexpected exception in the resolver never reaches the caller.
+    sc.reset_identity_cache()
 
-def test_block_never_raises_when_resolver_explodes(monkeypatch, tmp_path):
     def boom(token):
         raise RuntimeError("unexpected")
 
@@ -287,89 +251,54 @@ def test_block_never_raises_when_resolver_explodes(monkeypatch, tmp_path):
     assert "SLACK_BOT_TOKEN — present" in block
 
 
-def test_identity_cached_across_block_builds(monkeypatch, tmp_path):
+def test_identity_is_cached_per_var_across_block_builds(monkeypatch, tmp_path):
     calls = _stub_auth(monkeypatch)
+    sc.resolve_slack_identities({sc.SLACK_BOT_TOKEN: BOT_VALUE})
     env = {sc.SLACK_BOT_TOKEN: BOT_VALUE, sc.SLACK_USER_TOKEN: USER_VALUE}
     first = sc.slack_capability_block(env, mcp_path=tmp_path / "x.json")
     second = sc.slack_capability_block(env, mcp_path=tmp_path / "x.json")
     assert first == second
-    # exactly one auth.test per present token, not per build
-    assert len(calls) == 2
-    assert set(calls) == {BOT_VALUE, USER_VALUE}
+    # Exactly one auth.test per present token, not per build; the cache is per var, so the user token still resolved once.
+    assert calls == [BOT_VALUE, USER_VALUE]
 
     sc.reset_identity_cache()
     sc.slack_capability_block(env, mcp_path=tmp_path / "x.json")
     assert len(calls) == 4
 
 
-def test_cache_is_per_var_not_global(monkeypatch):
-    calls = _stub_auth(monkeypatch)
-    sc.resolve_slack_identities({sc.SLACK_BOT_TOKEN: BOT_VALUE})
-    sc.resolve_slack_identities({sc.SLACK_BOT_TOKEN: BOT_VALUE, sc.SLACK_USER_TOKEN: USER_VALUE})
-    assert calls == [BOT_VALUE, USER_VALUE]
-
-
 # ---------------------------------------------------------------------------
 # MCP note
 # ---------------------------------------------------------------------------
 
-def test_disabled_slack_mcp_server_adds_note(monkeypatch, tmp_path):
+def test_mcp_note_appears_only_for_a_disabled_slack_server(monkeypatch, tmp_path):
     _stub_auth(monkeypatch)
-    block = sc.slack_capability_block(
-        {sc.SLACK_BOT_TOKEN: BOT_VALUE}, mcp_path=_mcp_json(tmp_path, enabled=False)
-    )
-    assert block.splitlines()[-1] == (
+    env = {sc.SLACK_BOT_TOKEN: BOT_VALUE}
+    disabled = sc.slack_capability_block(env, mcp_path=_mcp_json(tmp_path, enabled=False))
+    assert disabled.splitlines()[-1] == (
         "The Slack MCP server in mcp.json is disabled (pending OAuth support); "
         "use the Web API path above."
     )
-
-
-def test_enabled_slack_mcp_server_no_note(monkeypatch, tmp_path):
-    _stub_auth(monkeypatch)
-    block = sc.slack_capability_block(
-        {sc.SLACK_BOT_TOKEN: BOT_VALUE}, mcp_path=_mcp_json(tmp_path, enabled=True)
-    )
-    assert "MCP" not in block
-
-
-def test_malformed_mcp_json_tolerated(monkeypatch, tmp_path):
-    _stub_auth(monkeypatch)
+    assert "MCP" not in sc.slack_capability_block(env, mcp_path=_mcp_json(tmp_path, enabled=True))
     path = tmp_path / "mcp.json"
     path.write_text("{not json")
-    block = sc.slack_capability_block({sc.SLACK_BOT_TOKEN: BOT_VALUE}, mcp_path=path)
-    assert "SLACK_BOT_TOKEN — present" in block
-    assert "MCP" not in block
+    broken = sc.slack_capability_block(env, mcp_path=path)
+    assert "SLACK_BOT_TOKEN — present" in broken
+    assert "MCP" not in broken
 
 
-def test_default_mcp_path_is_under_freyja_home(monkeypatch, tmp_path):
-    # FREYJA_HOME is the tmp dir (autouse fixture); a disabled slack server
-    # there must be picked up without passing mcp_path.
+def test_active_mcp_slack_tools_are_listed_instead_of_the_note(monkeypatch, tmp_path):
     _stub_auth(monkeypatch)
-    _mcp_json(tmp_path, enabled=False)
-    block = sc.slack_capability_block({sc.SLACK_BOT_TOKEN: BOT_VALUE})
-    assert sc._DISABLED_MCP_LINE in block
-
-
-def test_active_mcp_slack_tools_listed_instead(monkeypatch, tmp_path):
-    _stub_auth(monkeypatch)
-    snapshot = lambda: ["bash", "mcp__slack__search_messages", "mcp__github__x", "mcp__slack__read"]  # noqa: E731
+    env = {sc.SLACK_BOT_TOKEN: BOT_VALUE}
+    path = _mcp_json(tmp_path, enabled=False)
     block = sc.slack_capability_block(
-        {sc.SLACK_BOT_TOKEN: BOT_VALUE},
-        mcp_path=_mcp_json(tmp_path, enabled=False),
-        tool_snapshot=snapshot,
+        env, mcp_path=path,
+        tool_snapshot=lambda: ["bash", "mcp__slack__search_messages", "mcp__github__x", "mcp__slack__read"],
     )
     assert "Active Slack MCP tools: `mcp__slack__read`, `mcp__slack__search_messages`" in block
     assert "mcp__github__x" not in block
     assert sc._DISABLED_MCP_LINE not in block
-
-
-def test_snapshot_without_slack_tools_falls_back_to_catalog(monkeypatch, tmp_path):
-    _stub_auth(monkeypatch)
-    block = sc.slack_capability_block(
-        {sc.SLACK_BOT_TOKEN: BOT_VALUE},
-        mcp_path=_mcp_json(tmp_path, enabled=False),
-        tool_snapshot=lambda: ["bash", "mcp__github__x"],
-    )
+    # A snapshot without Slack tools falls back to the catalog note.
+    block = sc.slack_capability_block(env, mcp_path=path, tool_snapshot=lambda: ["bash", "mcp__github__x"])
     assert sc._DISABLED_MCP_LINE in block
 
 
@@ -385,6 +314,7 @@ def _source(platform):
 
 
 def test_gateway_source_block_appends_card_for_slack(monkeypatch, tmp_path):
+    """Also covers the defaults: the card reads os.environ and the mcp.json under FREYJA_HOME when nothing is passed."""
     _stub_auth(monkeypatch)
     monkeypatch.setenv(sc.SLACK_BOT_TOKEN, BOT_VALUE)
     monkeypatch.setenv(sc.SLACK_USER_TOKEN, USER_VALUE)

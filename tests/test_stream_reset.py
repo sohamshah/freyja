@@ -1,14 +1,8 @@
 """A model call that fails mid-stream and is retried must not show twice.
 
-Listeners (the bridge, the renderer, Slack) append every delta to what
-they show. The runner marks where each streamed call begins
-(``stream_start``) and, before a retry of a call that had streamed
-something, tells them to cut back to that mark (``stream_reset``). A
-final failure sends no reset: its partial stays beside the error. The
-provider's mid-stream refusal fallback (``text_reset``) is a reset too.
+Listeners (the bridge, the renderer, Slack) append every delta to what they show. The runner marks where each streamed call begins (``stream_start``) and, before a retry of a call that had streamed something, tells them to cut back to that mark (``stream_reset``). A final failure sends no reset: its partial stays beside the error. The provider's mid-stream refusal fallback (``text_reset``) is a reset too. What the Slack consumer does with these markers is in test_slack_stream_turn.py.
 
-Also here: GPT reasoning-summary parts stream with a paragraph break
-between them, so step titles stay on their own lines.
+Also here: GPT reasoning-summary parts stream with a paragraph break between them, so step titles stay on their own lines.
 """
 
 from __future__ import annotations
@@ -16,10 +10,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
-
-from bridge.gateway.platforms.base import MessageSource, SendResult
-from bridge.gateway.stream_consumer import SlackStreamConsumer
 from engine.openai_provider import _summary_delta
 from engine.providers import APIUsage, ProviderError, ProviderResponse
 from engine.runner import AsyncAgentRunner
@@ -128,45 +118,6 @@ async def test_refusal_fallback_text_reset_becomes_stream_reset():
     ])
     assert result.success
     assert seen == ["stream_start", "text_delta", "stream_reset", "text_delta"]
-
-
-# ── Slack consumer ────────────────────────────────────────────────────
-
-
-from tests.slack_fakes import StreamingFakeAdapter as _FakeAdapter
-
-
-def _consumer(adapter: _FakeAdapter) -> SlackStreamConsumer:
-    source = MessageSource(
-        platform="slack", workspace_id="T1", chat_id="C1", chat_type="channel",
-        user_id="U1", message_id="1.1", thread_id="1.1",
-    )
-    return SlackStreamConsumer(
-        adapter,  # type: ignore[arg-type]
-        source,
-        session_key="freyja:slack:T1:channel:C1:1.1",
-        verbosity="off",
-    )
-
-
-@pytest.mark.asyncio
-async def test_slack_body_drops_the_failed_call_and_keeps_paragraphs():
-    adapter = _FakeAdapter()
-    consumer = _consumer(adapter)
-    for ev in [
-        {"type": "stream_start"},
-        {"type": "text_delta", "text": "First."},
-        {"type": "tool_use_start", "id": "t1", "name": "bash"},
-        {"type": "tool_result", "id": "t1", "preview": "ok"},
-        {"type": "stream_start"},
-        {"type": "text_delta", "text": "Seco"},
-        {"type": "stream_reset"},
-        {"type": "stream_start"},
-        {"type": "text_delta", "text": "Second."},
-        {"type": "turn_complete"},
-    ]:
-        await consumer._handle_event_async(ev)
-    assert adapter.body == "First.\n\nSecond."
 
 
 # ── GPT reasoning summaries ───────────────────────────────────────────

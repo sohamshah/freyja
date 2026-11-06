@@ -1,18 +1,11 @@
 """Regression tests for the 2026-08-26 Slack rendering incident.
 
-One @mention produced: (a) a run-on body where every interstitial
-prose block was concatenated with no separator ("…checks.Now let me
-see…"), and (b) the ENTIRE body posted twice. Root causes:
+One @mention produced: (a) a run-on body where every interstitial prose block was concatenated with no separator ("…checks.Now let me see…"), and (b) the ENTIRE body posted twice. Root causes:
 
-  · body_buffer appended text_delta blocks with no paragraph break
-    between phases (tool calls / thinking between prose blocks);
-  · a turn that died before turn_complete ("ZAI_API_KEY is not set")
-    never finalized its SlackStreamConsumer, so the consumer stayed
-    registered and the NEXT turn's events fanned out to two consumers
-    — two thinking streams, two identical body postMessages.
+  · body_buffer appended text_delta blocks with no paragraph break between phases (tool calls / thinking between prose blocks);
+  · a turn that died before turn_complete ("ZAI_API_KEY is not set") never finalized its SlackStreamConsumer, so the consumer stayed registered and the NEXT turn's events fanned out to two consumers: two thinking streams, two identical body postMessages.
 
-These tests pin the paragraph-break insertion in the consumer and the
-single-consumer-per-session takeover in the gateway hooks.
+These tests pin the paragraph-break insertion in the consumer and the single-consumer-per-session takeover in the gateway hooks.
 """
 
 from __future__ import annotations
@@ -22,11 +15,9 @@ from typing import Any
 
 import pytest
 
-from bridge.gateway.platforms.base import MessageSource, SendResult
+from bridge.gateway.platforms.base import MessageSource
 from bridge.gateway.run import _attach_turn_consumer, _detach_turn_consumer
 from bridge.gateway.stream_consumer import SlackStreamConsumer
-
-
 from tests.slack_fakes import StreamingFakeAdapter as _FakeAdapter
 
 
@@ -56,53 +47,32 @@ async def _feed(consumer: SlackStreamConsumer, events: list[dict[str, Any]]) -> 
         await consumer._handle_event_async(ev)
 
 
-@pytest.mark.asyncio
-async def test_body_gets_paragraph_break_between_phases() -> None:
-    adapter = _FakeAdapter()
-    consumer = _consumer(adapter)
-    await _feed(
-        consumer,
-        [
-            {"type": "text_delta", "text": "Looking at the repo"},
-            {"type": "text_delta", "text": " now."},
-            {"type": "tool_use_start", "id": "t1", "name": "bash"},
-            {"type": "tool_result", "id": "t1", "preview": "ok"},
-            {"type": "text_delta", "text": "Found the bug."},
-            {"type": "turn_complete"},
-        ],
-    )
-    assert adapter.body == "Looking at the repo now.\n\nFound the bug."
+def _text(text: str) -> dict[str, Any]:
+    return {"type": "text_delta", "text": text}
+
+
+_TOOL = [
+    {"type": "tool_use_start", "id": "t1", "name": "bash"},
+    {"type": "tool_result", "id": "t1", "preview": "ok"},
+]
 
 
 @pytest.mark.asyncio
-async def test_contiguous_deltas_not_split() -> None:
+@pytest.mark.parametrize(
+    "events, body",
+    [
+        ([_text("Looking at the repo"), _text(" now."), *_TOOL, _text("Found the bug.")],
+         "Looking at the repo now.\n\nFound the bug."),
+        ([_text("One block"), _text(", still one block.")], "One block, still one block."),
+        ([_text("Para one.\n\n"), _TOOL[0], _text("Para two.")], "Para one.\n\nPara two."),
+    ],
+    ids=["break-between-phases", "contiguous-deltas-stay-one-block", "no-double-break"],
+)
+async def test_paragraph_breaks_sit_between_phases_and_nowhere_else(events, body) -> None:
     adapter = _FakeAdapter()
     consumer = _consumer(adapter)
-    await _feed(
-        consumer,
-        [
-            {"type": "text_delta", "text": "One block"},
-            {"type": "text_delta", "text": ", still one block."},
-            {"type": "turn_complete"},
-        ],
-    )
-    assert adapter.body == "One block, still one block."
-
-
-@pytest.mark.asyncio
-async def test_no_double_break_when_block_already_ends_with_newline() -> None:
-    adapter = _FakeAdapter()
-    consumer = _consumer(adapter)
-    await _feed(
-        consumer,
-        [
-            {"type": "text_delta", "text": "Para one.\n\n"},
-            {"type": "tool_use_start", "id": "t1", "name": "bash"},
-            {"type": "text_delta", "text": "Para two."},
-            {"type": "turn_complete"},
-        ],
-    )
-    assert adapter.body == "Para one.\n\nPara two."
+    await _feed(consumer, [*events, {"type": "turn_complete"}])
+    assert adapter.body == body
 
 
 class _FakeSession:
@@ -111,8 +81,7 @@ class _FakeSession:
 
 @pytest.mark.asyncio
 async def test_stale_consumer_torn_down_on_next_registration(monkeypatch) -> None:
-    """A consumer orphaned by a failed turn (no turn_complete) must be
-    unregistered and neutralized when the next turn attaches its own."""
+    """A consumer orphaned by a failed turn (no turn_complete) must be unregistered and neutralized when the next turn attaches its own."""
     registered: list[Any] = []
 
     def _register(key: str, cb: Any) -> None:
@@ -136,14 +105,13 @@ async def test_stale_consumer_torn_down_on_next_registration(monkeypatch) -> Non
     assert registered == [orphan.on_event]
     assert not orphan.finalized
 
-    # Turn dies without turn_complete; next inbound attaches a fresh
-    # consumer. The orphan must be gone and dead.
+    # Turn dies without turn_complete; next inbound attaches a fresh consumer. The orphan must be gone and dead.
     fresh = _consumer(adapter)
     _attach_turn_consumer(session, key, fresh)
     assert registered == [fresh.on_event]
     assert orphan.finalized
 
-    # Orphan drops all further events — nothing is buffered or sent.
+    # Orphan drops all further events: nothing is buffered or sent.
     orphan.on_event({"type": "text_delta", "text": "ghost"})
     await asyncio.sleep(0)
     assert orphan._state.body_buffer == ""
@@ -152,30 +120,3 @@ async def test_stale_consumer_torn_down_on_next_registration(monkeypatch) -> Non
     await fresh.finalize()
     _detach_turn_consumer(session, fresh.on_event)
     assert getattr(session, "_active_stream_consumer", None) is None
-
-
-@pytest.mark.asyncio
-async def test_abort_seals_open_stream() -> None:
-    adapter = _FakeAdapter()
-    consumer = SlackStreamConsumer(
-        adapter,  # type: ignore[arg-type]
-        _source(),
-        session_key="k",
-        verbosity="all",
-    )
-    await consumer._handle_event_async(
-        {"type": "thinking_delta", "thinking": "hmm"}
-    )
-    assert consumer._state.stream_ts == "stream-ts"
-
-    consumer.abort()
-    # abort schedules the seal via run_coroutine_threadsafe; give the
-    # loop a few cycles to run it.
-    for _ in range(20):
-        if adapter.streams_stopped:
-            break
-        await asyncio.sleep(0.01)
-    assert consumer.finalized
-    assert adapter.streams_stopped == ["stream-ts"]
-    # Body from the dead turn is never delivered.
-    assert adapter.body == ""

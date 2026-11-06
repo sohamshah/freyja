@@ -106,6 +106,26 @@ async def test_retry_after_streamed_text_keeps_it_and_marks_the_retry():
 
 
 @pytest.mark.asyncio
+async def test_a_reset_before_the_first_flush_cuts_the_failed_call_silently():
+    """Prose Slack never saw is cut back to the call's start with no retry note; the paragraph break before the retried call stays."""
+    adapter = StreamingFakeAdapter()
+    consumer = _consumer(adapter, verbosity="off")
+    await _feed(consumer, [
+        {"type": "stream_start"},
+        {"type": "text_delta", "text": "First."},
+        {"type": "tool_use_start", "id": "t1", "name": "bash"},
+        {"type": "tool_result", "id": "t1", "preview": "ok"},
+        {"type": "stream_start"},
+        {"type": "text_delta", "text": "Seco"},
+        {"type": "stream_reset"},
+        {"type": "stream_start"},
+        {"type": "text_delta", "text": "Second."},
+        {"type": "turn_complete"},
+    ])
+    assert adapter.body == "First.\n\nSecond."
+
+
+@pytest.mark.asyncio
 async def test_stream_failure_falls_back_to_one_post():
     adapter = StreamingFakeAdapter(start_ok=False)
     consumer = _consumer(adapter)
@@ -158,6 +178,8 @@ async def test_plain_abort_seals_the_stream_and_sets_active():
     await _feed(consumer, [{"type": "text_delta", "text": "working"}])
     consumer.abort()
     await asyncio.sleep(0.01)
+    assert consumer.finalized
+    assert adapter.streams_stopped == ["stream-ts"]
     assert adapter.stop_calls[-1]["session_status"] == "active"
 
 

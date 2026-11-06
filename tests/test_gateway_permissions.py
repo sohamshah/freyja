@@ -2,21 +2,13 @@
 
 Two independent guarantees, easy to break separately:
 
-1. A chat-gateway session auto-approves every permission level including
-   DANGEROUS, because a prompt there stalls the turn until the operator
-   looks at their phone (and hard-denies after the 10-minute timeout).
-2. Skill promotion is NOT a permission-tier decision — candidates ride a
-   separate ``skill_candidate`` → operator promote/discard flow. If a
-   future refactor ever routes promotion through ``request_permission``,
-   yolo would start silently publishing skills; that is what test 2 is
-   here to catch.
+1. A chat-gateway session auto-approves every permission level including DANGEROUS, because a prompt there stalls the turn until the operator looks at their phone (and hard-denies after the 10-minute timeout).
+2. Skill promotion is NOT a permission-tier decision: candidates ride a separate ``skill_candidate`` → operator promote/discard flow. If a future refactor ever routes promotion through ``request_permission``, yolo would start silently publishing skills; that is what the last two tests are here to catch.
 """
 
 from __future__ import annotations
 
 import inspect
-
-import pytest
 
 from bridge.freyja_bridge import (
     DesktopPermissionHandler,
@@ -48,27 +40,22 @@ def test_yolo_tier_covers_every_level_including_dangerous():
     assert PermissionLevel.DANGEROUS not in _parse_auto_approve("high")
 
 
-@pytest.mark.parametrize(
-    "level",
-    [
+def test_yolo_handler_never_prompts():
+    """Auto-approval must return a resolved answer, not a coroutine that would round-trip to a UI that may never answer."""
+    handler = DesktopPermissionHandler(GATEWAY_SESSION, initial_tier="yolo")
+    for level in (
         PermissionLevel.LOW,
         PermissionLevel.MEDIUM,
         PermissionLevel.HIGH,
         PermissionLevel.DANGEROUS,
-    ],
-)
-def test_yolo_handler_never_prompts(level):
-    """Auto-approval must return a resolved answer, not a coroutine that
-    would round-trip to a UI that may never answer."""
-    handler = DesktopPermissionHandler(GATEWAY_SESSION, initial_tier="yolo")
-    result = handler.request_permission(action="rm -rf ./build", level=level)
-    assert not inspect.iscoroutine(result), f"{level} still round-trips to a prompt"
-    assert result.approved
+    ):
+        result = handler.request_permission(action="rm -rf ./build", level=level)
+        assert not inspect.iscoroutine(result), f"{level} still round-trips to a prompt"
+        assert result.approved
 
 
 def test_dangerous_bash_still_prompts_on_the_desktop_default():
-    """Desktop sessions keep the conservative default — the yolo change is
-    scoped to gateway-routed sessions only."""
+    """Desktop sessions keep the conservative default; the yolo change is scoped to gateway-routed sessions only."""
     handler = DesktopPermissionHandler(DESKTOP_SESSION, initial_tier="low")
     result = handler.request_permission(
         action="sudo rm -rf /", level=PermissionLevel.DANGEROUS
@@ -78,21 +65,18 @@ def test_dangerous_bash_still_prompts_on_the_desktop_default():
 
 
 def test_skill_promotion_is_not_gated_on_permission_tier():
-    """Promotion runs through confirmation.promote, reached only by an
-    explicit operator action — never through the auto-approve tier."""
+    """Promotion runs through confirmation.promote, reached only by an explicit operator action, never through the auto-approve tier."""
     from bridge.knowledge.learning import confirmation
 
     source = inspect.getsource(confirmation)
     assert "request_permission" not in source
     assert "_parse_auto_approve" not in source
-    # promote() takes an explicit actor — it is an operator-initiated call.
+    # promote() takes an explicit actor: it is an operator-initiated call.
     assert "actor" in inspect.signature(confirmation.promote).parameters
 
 
 def test_skill_tools_declare_no_permission_prompt():
-    """A tool only reaches the auto-approve tier if it exposes
-    `permission_prompt`. The skill tools deliberately do not, so no tier
-    (yolo included) can approve a promotion on the operator's behalf."""
+    """A tool only reaches the auto-approve tier if it exposes `permission_prompt`. The skill tools deliberately do not, so no tier (yolo included) can approve a promotion on the operator's behalf."""
     from bridge.tools import skill_tools
 
     for name, obj in vars(skill_tools).items():
