@@ -16523,8 +16523,10 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         # A Slack session and its sub-agents are the gateway's: the app
         # only stops showing them (persistence.ts hideSession), and every
         # file stays. Deleted here, the transcript went from under the
-        # gateway, which still runs the thread.
-        keep_files = _gateway_holds(session_id)
+        # gateway, which still runs the thread. A scheduled job's session
+        # held by the tick owner elsewhere, likewise: the owner has it
+        # loaded, maybe running the job, and saves it again.
+        keep_files = _held_elsewhere(state, session_id) is not None
 
         from bridge.transcript_persistence import delete_transcript
 
@@ -16574,7 +16576,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         else:
             cascade_note = ""
         if keep_files:
-            log("info", f"hid Slack session {session_id}{cascade_note} in the app — its files stay")
+            log("info", f"hid {session_id}{cascade_note} in the app — another process runs it, and its files stay")
             return
         log(
             "info",
