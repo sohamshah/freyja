@@ -445,6 +445,10 @@ class JobRecord:
     # it (DarkWake, offline). It was not missed: when the next fire is
     # still this slot, a restart leaves it due, whatever the misfire policy.
     waiting_slot: float | None = None
+    # When the job was last resumed from a pause or a stop. Runs from
+    # before do not count toward a stop for failing: counted, the runs
+    # that stopped the job stopped it again at its next failure.
+    resumed_at: float | None = None
 
     # Execution
     prompt: str = ""
@@ -504,6 +508,7 @@ class JobRecord:
             "next_fire_at": self.next_fire_at,
             "last_fire_at": self.last_fire_at,
             "waiting_slot": self.waiting_slot,
+            "resumed_at": self.resumed_at,
             "prompt": self.prompt,
             "execution": self.execution.to_dict(),
             "permission_snapshot": self.permission_snapshot,
@@ -540,6 +545,7 @@ class JobRecord:
             next_fire_at=d.get("next_fire_at"),
             last_fire_at=d.get("last_fire_at"),
             waiting_slot=d.get("waiting_slot"),
+            resumed_at=d.get("resumed_at"),
             prompt=d.get("prompt", ""),
             execution=execution_from_dict(d.get("execution") or {}),
             permission_snapshot=d.get("permission_snapshot", "low"),

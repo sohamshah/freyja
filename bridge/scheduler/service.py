@@ -755,11 +755,13 @@ class SchedulerService:
         """Disable ``job`` when its last ``MAX_FAILED_RUNS_IN_A_ROW`` runs
         all failed, not counting runs that failed for a passing reason
         nor a slot's retries under retry_policy (or after
-        ``MAX_PASSING_FAILURES_IN_A_ROW`` failed runs of any kind), and
-        post why to its sinks. Returns True if stopped."""
+        ``MAX_PASSING_FAILURES_IN_A_ROW`` failed runs of any kind), all
+        since it was last resumed, and post why to its sinks. Returns True
+        if stopped."""
         if run.status not in _FAILED_RUN_STATUSES:
             return False
-        recent = load_runs_for_job(job.id, limit=_FAILURE_WINDOW_RUNS)
+        # Resumed since the claim, the job counts from that resume.
+        recent = _runs_since_resumed(load_job(job.id) or job)
         if not _should_stop(recent):
             return False
         stopped = False
@@ -919,6 +921,8 @@ class SchedulerService:
             ):
                 job.enabled = patch.enabled
                 job.status = "active" if patch.enabled else "paused"
+                if patch.enabled:
+                    job.resumed_at = time.time()
                 switched = True
             if patch.schedule is not None:
                 job.schedule = patch.schedule
@@ -971,6 +975,8 @@ class SchedulerService:
             job = load_job(job_id)
             if job is None:
                 raise KeyError(job_id)
+            if not (job.enabled and job.status == "active"):
+                job.resumed_at = time.time()
             job.enabled = True
             job.status = "active"
             self._recompute_next_fire(job, force=True)
@@ -1322,6 +1328,16 @@ def _failures_in_a_row(runs: list[RunRecord]) -> tuple[int, int]:
     return real, passing
 
 
+def _runs_since_resumed(job: JobRecord) -> list[RunRecord]:
+    """``job``'s latest runs, newest first, that count toward a stop for
+    failing: those started since it was last resumed. With the runs that
+    had stopped it, a resumed job was stopped again by one failure."""
+    runs = load_runs_for_job(job.id, limit=_FAILURE_WINDOW_RUNS)
+    if job.resumed_at is None:
+        return runs
+    return [r for r in runs if r.started_at >= job.resumed_at]
+
+
 def _should_stop(runs: list[RunRecord]) -> bool:
     real, passing = _failures_in_a_row(runs)
     return (
@@ -1351,7 +1367,7 @@ def _stopped_only_by_passing_failures(job: JobRecord) -> bool:
     stop it now that passing failures do not count."""
     if job.enabled or job.status != "disabled_error":
         return False
-    runs = load_runs_for_job(job.id, limit=_FAILURE_WINDOW_RUNS)
+    runs = _runs_since_resumed(job)
     return bool(runs) and _failed_for_a_passing_reason(runs[0]) and not _should_stop(runs)
 
 
