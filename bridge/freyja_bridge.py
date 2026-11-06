@@ -1523,6 +1523,29 @@ def _route_stop_to_gateway(sid: str, cmd: dict[str, Any]) -> bool:
     return True
 
 
+def _route_command_to_gateway(sid: str, cmd: dict[str, Any], down: str) -> bool:
+    """A command from the app for a Slack session, whose state (its kanban
+    board, its model) the gateway holds: hand it to the gateway on the
+    control channel, which runs it there. Returns False when ``sid`` is not
+    a Slack session the gateway holds; ``down`` is the error when no
+    gateway runs."""
+    if not _gateway_holds(sid):
+        return False
+    from bridge.gateway.control_channel import append_command
+    from bridge.gateway.pid import get_running_pid
+
+    if get_running_pid() is None:
+        emit_error(down, recoverable=True)
+        return True
+    try:
+        append_command({**cmd, "sessionId": sid})
+    except Exception as exc:  # noqa: BLE001
+        emit_error(f"Not sent to the Slack gateway: {exc}", recoverable=True)
+        return True
+    log("info", f"{cmd.get('type')} → gateway for {sid}")
+    return True
+
+
 def _stop_is_stale(sess: Any, cmd: dict[str, Any], kind: str) -> bool:
     """A stop names the turn the operator was looking at. Memo wake turns
     start on their own (and in Slack, anyone's message in the thread), so
@@ -4860,7 +4883,14 @@ class _BridgeSession:
         self.artifact_store.ensure()
         self.memory_store = MemoryStore(Path(self.workspace))
         self.skill_store = SkillStore(Path(self.workspace))
-        if strategy_uses_kanban(self.coordination_strategy) and self.kanban_board is None:
+        # A copy of a Slack thread gets no board: the gateway's board writes
+        # the same journal, and a second writer (or its dispatcher) would
+        # append cards and restarts to it and start workers here.
+        if (
+            strategy_uses_kanban(self.coordination_strategy)
+            and self.kanban_board is None
+            and not self._gateway_copy
+        ):
             from bridge.kanban_journal import KanbanJournal, journal_path
 
             journal = KanbanJournal(journal_path(self.id))
@@ -13252,6 +13282,22 @@ _STOP_GATEWAY_DOWN = (
     "Not stopped: this session's turn runs in the Slack gateway, which is "
     "not running."
 )
+_KANBAN_GATEWAY_DOWN = (
+    "Not done: this session's kanban board is in the Slack gateway, which is "
+    "not running."
+)
+# The board's commands. A Slack session's board is the gateway's, so they
+# run there (_route_command_to_gateway, GatewayDaemon._on_kanban_command).
+_KANBAN_COMMANDS = frozenset(
+    {
+        "kanban_autopilot",
+        "kanban_operator_create",
+        "kanban_operator_cancel",
+        "kanban_operator_unblock",
+        "kanban_operator_force_dispatch",
+        "kanban_operator_reassign",
+    }
+)
 
 
 def _gateway_holds(session_id: str) -> bool:
@@ -14606,6 +14652,14 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 },
             }
         )
+        return
+
+    if ctype in _KANBAN_COMMANDS and session_id and _route_command_to_gateway(
+        session_id, cmd, _KANBAN_GATEWAY_DOWN
+    ):
+        # A Slack session's board is the gateway's. Run on a copy here, a
+        # card went into the journal the gateway's board writes, under an
+        # id that board gave out again, and a dispatch started workers here.
         return
 
     if ctype == "kanban_autopilot":

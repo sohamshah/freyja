@@ -28,7 +28,8 @@ that live in the desktop process.
 
 Command types today: ``permission_response``, ``set_permission_policy``,
 ``skill_candidate_resolve``, ``skill_learn_this``, ``talk_deliver``,
-``artifact_note``, ``cancel_turn``, ``scheduler_fire``.
+``artifact_note``, ``cancel_turn``, ``scheduler_fire``, and the
+kanban board's commands (``kanban_operator_create`` and the rest).
 The dispatch table is a plain dict so adding more is one line each.
 """
 

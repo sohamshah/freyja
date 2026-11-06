@@ -2967,6 +2967,10 @@ class GatewayDaemon:
         reader.register("artifact_note", self._on_artifact_note)
         reader.register("cancel_turn", self._on_cancel_turn)
         reader.register("scheduler_fire", self._on_scheduler_fire)
+        from bridge.freyja_bridge import _KANBAN_COMMANDS
+
+        for kind in _KANBAN_COMMANDS:
+            reader.register(kind, self._on_kanban_command)
         await reader.start()
         self.control_channel = reader
 
@@ -3009,6 +3013,38 @@ class GatewayDaemon:
                 "details": {"fired": int(cancelled), "kind": kind, "scope": "turn"},
             }
         )
+
+    async def _on_kanban_command(self, cmd: dict[str, Any]) -> None:
+        """A kanban board command from the app (add, cancel, unblock,
+        dispatch or reassign a card; autopilot) for a Slack session. Its
+        board is this process's: the app's bridge ran these on a copy,
+        whose board wrote the same journal and could start workers there.
+        A thread not loaded here has no board to run it on, so the app is
+        told it did not run."""
+        from bridge.freyja_bridge import _handle_command, _install_talk_wake_hook, emit
+
+        session_id = str(cmd.get("sessionId") or "")
+        sess = (getattr(self.state, "sessions", None) or {}).get(session_id)
+        if sess is None:
+            logger.info("control: %s — session %s not loaded", cmd.get("type"), session_id)
+            if session_id:
+                emit(
+                    {
+                        "type": "system_event",
+                        "sessionId": session_id,
+                        "subtype": "control_command_skipped",
+                        "message": (
+                            "The kanban change was not made: the gateway has not "
+                            "loaded this thread since it started. Send a message "
+                            "in the thread, then try again."
+                        ),
+                        "details": {"command": cmd.get("type"), "chatVisible": True},
+                    }
+                )
+            return
+        # A worker's memo wakes the thread; its turn has to stream there.
+        _install_talk_wake_hook(self.state, sess)
+        await _handle_command(self.state, cmd)
 
     async def _on_artifact_note(self, cmd: dict[str, Any]) -> None:
         """Operator comment on an artifact, addressed to a session this daemon
