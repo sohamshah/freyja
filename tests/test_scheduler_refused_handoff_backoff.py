@@ -161,3 +161,57 @@ async def test_the_next_slot_is_handed_at_once(owner, fired, monkeypatch):
     await gateway.read_commands()
 
     assert len(gateway.handed_at) == count + 1
+
+
+async def test_a_one_shot_that_ran_after_many_refusals_and_is_resumed_is_handed_at_once(
+    owner, monkeypatch,
+):
+    # The backoff is for one fire that keeps coming back. A one-shot keeps
+    # its only slot: refused many times, then run and failed, then resumed,
+    # it waited out the old backoff, and each refusal after that a minute.
+    from datetime import datetime, timezone
+
+    from bridge.scheduler.models import OnceSchedule
+    from bridge.scheduler.persistence import save_run
+
+    monkeypatch.setattr(service_mod, "_REFUSED_RETRY_FIRST_SECONDS", 0.02)
+    monkeypatch.setattr(service_mod, "_REFUSED_RETRY_MAX_SECONDS", 60.0)
+
+    async def failing_fire(_service, job, **_kw):
+        run = RunRecord(run_id="run_1", job_id=job.id, job_name=job.name, started_at=time.time(),
+                        finished_at=time.time(), status="failed", error="the sheet is gone")
+        save_run(run)
+        return run
+
+    monkeypatch.setattr(runtime, "fire_job", failing_fire)
+    job = JobRecord(
+        id="sched_reminder", name="call the dentist", prompt="Remind me to call the dentist.",
+        schedule=OnceSchedule(at_iso=datetime.fromtimestamp(DUE, timezone.utc).isoformat()),
+        execution=ExistingSession(session_id=SLACK), sinks=[NoopSinkSpec()],
+    )
+    job.next_fire_at = DUE
+    save_job(job)
+    gateway = _Gateway(monkeypatch)
+
+    async def ticks(handed: int, *, taken: bool = False, seconds: float = 5.0) -> None:
+        """The owner's ticks until the gateway was handed ``handed`` fires;
+        it runs them when ``taken``, and refuses them otherwise."""
+        end = time.monotonic() + seconds
+        while len(gateway.handed_at) < handed and time.monotonic() < end:
+            await owner._try_claim_and_fire(job.id)
+            monkeypatch.setattr(fb, "_process_owns_gateway", lambda: taken)
+            await gateway.read_commands()
+            monkeypatch.setattr(fb, "_process_owns_gateway", lambda: False)
+            await asyncio.sleep(0.01)
+
+    # Refused seven times, then run: it would be handed again 1.28 s later.
+    await ticks(7)
+    await ticks(8, taken=True)
+    assert len(gateway.handed_at) == 8
+    assert load_job(job.id).status == "disabled_max_fires"
+
+    await owner.resume_job(job.id)
+    await ticks(10, seconds=0.5)
+
+    # Handed at once, and again at the next look after a refusal.
+    assert len(gateway.handed_at) == 10

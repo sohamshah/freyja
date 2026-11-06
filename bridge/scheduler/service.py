@@ -276,9 +276,10 @@ class SchedulerService:
         # When each due job began to wait for the Mac, by time.monotonic().
         self._waiting_since: dict[str, float] = {}
         # Each job's last fire handed to the gateway or the app: its slot,
-        # how many times in a row that slot was handed, and when it may be
-        # handed again if it comes back due, by time.monotonic().
-        self._handed: dict[str, tuple[float | None, int, float]] = {}
+        # how many times in a row that slot was handed, when it may be
+        # handed again if it comes back due, by time.monotonic(), and when
+        # it was handed, by time.time().
+        self._handed: dict[str, tuple[float | None, int, float, float]] = {}
         # Wake-mtime watermark: peers bump ``.wake`` on every CRUD;
         # we use it to know whether to bother re-scanning even if our
         # sleep timed out early. Currently informational — the tick
@@ -660,7 +661,7 @@ class SchedulerService:
             # says how late it is.
             slot = job.next_fire_at
             attempt = job.retry_attempt
-            if (in_gateway or in_app) and self._hand_over_later(job.id, slot):
+            if (in_gateway or in_app) and self._hand_over_later(job, slot):
                 self._waiting_job_ids.add(job.id)
                 return
             # Pre-advance + persist BEFORE firing — at-most-once.
@@ -708,12 +709,21 @@ class SchedulerService:
             if run_lock is not None:
                 run_lock.release()
 
-    def _hand_over_later(self, job_id: str, slot: float | None) -> bool:
-        """True when the fire of ``job_id`` for ``slot`` was handed to the
+    def _hand_over_later(self, job: JobRecord, slot: float | None) -> bool:
+        """True when the fire of ``job`` for ``slot`` was handed to the
         gateway or the app, came back due (refused, or not sent), and may
-        not be handed again yet."""
-        handed = self._handed.get(job_id)
-        return handed is not None and handed[0] == slot and time.monotonic() < handed[2]
+        not be handed again yet. A run of the job that started since it was
+        last handed, or a resume since, ends that wait and its count: a
+        one-shot keeps its only slot, and one refused many times, then run
+        and resumed, waited out the old wait and a minute after each
+        refusal."""
+        handed = self._handed.get(job.id)
+        if handed is None or handed[0] != slot:
+            return False
+        if (job.resumed_at or 0) >= handed[3] or load_runs_started_since(job.id, handed[3]):
+            del self._handed[job.id]
+            return False
+        return time.monotonic() < handed[2]
 
     def _note_handed(self, job: JobRecord, slot: float | None) -> None:
         """Note that ``job``'s fire for ``slot`` is handed over now, and when
@@ -725,7 +735,7 @@ class SchedulerService:
             _REFUSED_RETRY_MAX_SECONDS,
             _REFUSED_RETRY_FIRST_SECONDS * 2 ** (times - 2),
         )
-        self._handed[job.id] = (slot, times, time.monotonic() + wait)
+        self._handed[job.id] = (slot, times, time.monotonic() + wait, time.time())
         if times > 1:
             logger.info(
                 "job %s: the fire for slot %s came back %d times; handed again, "
