@@ -881,13 +881,16 @@ class GatewayDaemon:
         # any images fetched from prior thread messages. The agent now
         # sees BOTH "what the user just attached" AND "what's been
         # floating around earlier in the thread" as proper image
-        # content blocks (not text descriptions).
+        # content blocks (not text descriptions). Oldest first and the
+        # trigger's own last: each operator image registered takes the
+        # latest_user_image alias, so the one just attached must be the
+        # last one, not an older one from the thread.
         downstream_attachments = [
-            a for a in (message.attachments or [])
+            a for a in prior_attachments
             if a.get("type") in {"image", "video"}
         ]
         downstream_attachments.extend(
-            a for a in prior_attachments
+            a for a in (message.attachments or [])
             if a.get("type") in {"image", "video"}
         )
         if not downstream_attachments:

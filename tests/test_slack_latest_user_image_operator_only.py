@@ -1,6 +1,6 @@
 """Only the operator's own images become `latest_user_image`.
 
-The gateway hands the operator's turn their own attachments first, then
+The gateway handed the operator's turn their own attachments first, then
 up to eight earlier thread images, and each image registered took the
 `latest_user_image` and `latest_image` aliases. So the newest earlier
 image won, whoever posted it, and `generate_image
@@ -71,7 +71,7 @@ async def _latest_user_image(thread: list[dict[str, Any]], attached: list[str]) 
     daemon = GatewayDaemon.__new__(GatewayDaemon)
     _text, prior = await daemon._fetch_prior_context(message, adapter)
     # The turn's attachments, in the order the gateway hands them over.
-    attachments = [await _download(_png(f), "") for f in attached] + prior
+    attachments = prior + [await _download(_png(f), "") for f in attached]
     session = SimpleNamespace(image_store=SessionImageStore())
     _BridgeSession._register_user_image_refs(session, attachments)  # type: ignore[arg-type]
     asset = session.image_store.resolve("latest_user_image")
