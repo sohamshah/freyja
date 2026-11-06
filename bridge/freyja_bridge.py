@@ -4977,6 +4977,9 @@ class _BridgeSession:
         # again. The turn and the children the close stopped saved as they
         # ended, into the files the delete removed or the new session's.
         self._discarded = False
+        # Background work an earlier run of a job that starts a new session
+        # each run left running here (begin_fresh_run): its memos are dropped.
+        self._earlier_runs_work: set[str] = set()
         # What the next turn should be told about a turn the operator
         # stopped (set on cancel, consumed by the next run_turn).
         self._stop_note: str | None = None
@@ -6687,6 +6690,8 @@ class _BridgeSession:
 
         if getattr(self, "_background_closed", False) or bg.cancel_origin == "operator":
             return
+        if self._memo_has_no_reader(bg.id, bg.summary):
+            return
         if self._held_elsewhere:
             # Each event goes on its own: only an inbox here folds them.
             await self._push_memo(build_monitor_memo(bg, output))
@@ -6737,12 +6742,58 @@ class _BridgeSession:
         pushed there was lost. Work started here can outlive this
         process's hold on the session: a run in the app outlived its wait
         on a sub-agent, and the app then handed the tick over."""
+        if self._memo_has_no_reader(memo.from_session, memo.from_label):
+            return
         if self._held_elsewhere:
             status = await deliver_talk_message_locally(self.state, self.id, memo)
             log("info", f"memo for {self.id}, which another process runs: {status}")
             return
         self.inbox.push(memo)
         self._schedule_memo_wake()
+
+    def _memo_has_no_reader(self, work_id: str, label: str) -> bool:
+        """Whether a memo of background work is dropped, with a log line,
+        because an earlier run left the work, in the session of a job that
+        starts a new session each run: work begin_fresh_run set aside, or
+        any work under a copy of the session that another process runs (the
+        run that started it went on here, and is over). That run has ended
+        and delivered, and the session now holds another run, which the
+        memo reached. No run record shows such a memo, and the work's
+        output stays where the work wrote it: a sub-agent's transcript and
+        artifact, a command's log."""
+        from bridge.scheduler.runtime import starts_new_session_each_run
+
+        if not starts_new_session_each_run(self.id):
+            return False
+        if work_id not in getattr(self, "_earlier_runs_work", ()) and not self._held_elsewhere:
+            return False
+        log(
+            "info",
+            f"memo of {label} ({work_id}) dropped: an earlier run of {self.id} "
+            "left that work, and each run starts a new session; its output "
+            "stays in its transcript, artifact or log",
+        )
+        return True
+
+    def begin_fresh_run(self) -> None:
+        """A run of a job that starts a new session each run takes this
+        session (the scheduler's _resolve_execution_session). reset() keeps
+        the inbox and the background work still running, which an earlier
+        run left: the memos unread are dropped, and so are those of that
+        work when it ends (_memo_has_no_reader). They went with this run's
+        first turn, or slid into it."""
+        from bridge.inbox import KIND_MEMO
+
+        self._earlier_runs_work = {w.id for w in self._running_background_work()}
+        for msg in list(self.inbox.unread):
+            if msg.kind == KIND_MEMO:
+                self.inbox.remove(msg.id)
+                log(
+                    "info",
+                    f"memo of {msg.from_label} ({msg.from_session}) dropped: an "
+                    f"earlier run of {self.id} left it unread, and each run "
+                    "starts a new session",
+                )
 
     async def _note_stopped_by_operator(self, label: str, work_id: str, what: str) -> None:
         """Fold background work the operator stopped into ONE unread notice.
@@ -6756,6 +6807,8 @@ class _BridgeSession:
         """
         from bridge.inbox import KIND_MEMO, InboxMessage, new_message_id
 
+        if self._memo_has_no_reader(work_id, label):
+            return
         if not self._held_elsewhere:
             for m in self.inbox.unread:
                 if m.kind == KIND_MEMO and (m.meta or {}).get("stoppedBatch"):

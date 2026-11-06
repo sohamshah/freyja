@@ -53,6 +53,13 @@ def scheduler_session_id(job_id: str) -> str:
     return f"{_SCHED_SESSION_PREFIX}{job_id}"
 
 
+def starts_new_session_each_run(session_id: str) -> bool:
+    """Whether ``session_id`` is the session of a job that starts a new
+    session each run (NewSession): each run resets it
+    (_resolve_execution_session)."""
+    return session_id.startswith(_SCHED_SESSION_PREFIX) and session_id.endswith(".ephemeral")
+
+
 def job_tool_filter(session_id: str) -> str | None:
     """The tool filter (``JobRecord.tool_filter``) of the job whose own
     session ``session_id`` is (_resolve_execution_session names them), or
@@ -726,6 +733,11 @@ async def _resolve_execution_session(
             await sess.initialize()
     except Exception:  # noqa: BLE001
         pass
+    # reset() keeps the inbox and the background work still running: what
+    # an earlier run left is set aside, or its memos went to this run.
+    begin_fresh_run = getattr(sess, "begin_fresh_run", None)
+    if callable(begin_fresh_run):
+        begin_fresh_run()
     _apply_job_tier(sess, job)
     return sess, sess_id, True
 

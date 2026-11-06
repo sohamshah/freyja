@@ -181,7 +181,7 @@ async def test_a_pin_in_a_scheduled_jobs_session_in_the_app_is_taken_back(app_br
 # ── a copy writes nothing ────────────────────────────────────────────
 
 
-def _copy(tmp_path, *, owns_tick: bool):
+def _copy(tmp_path, *, owns_tick: bool, sid: str = SCHED):
     """A bridge session for the job's session over a real engine session,
     in a process whose scheduler owns (or does not own) the tick."""
     from engine.session import Session
@@ -189,7 +189,7 @@ def _copy(tmp_path, *, owns_tick: bool):
     state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
     state.scheduler._is_owner = owns_tick
     sess = fb._BridgeSession(
-        SCHED, workspace=str(tmp_path), model_id="claude-sonnet-5-5",
+        sid, workspace=str(tmp_path), model_id="claude-sonnet-5-5",
         reasoning_level="auto", coordination_strategy="bus", state=state,
     )
     sess.session = Session.create(system_prompt="t")
@@ -424,6 +424,75 @@ async def test_a_stop_in_the_app_on_a_job_session_copy_tells_the_session_through
     assert all("[background work stopped by the operator]" in n for n in notices)
     assert "worker (sub-agent" in notices[0] and "build (command" in notices[1]
     assert sess.inbox.unread == []
+
+
+FRESH = "scheduler:sched_19f0.ephemeral"
+
+
+async def test_work_left_under_a_copy_of_a_fresh_session_jobs_session_reports_to_no_other_run(
+    app_bridge, tmp_path
+):
+    # A run now in the app of a job that starts a new session each run
+    # left a sub-agent, and the run ended. Routed to the session's inbox
+    # file, its memo reached the tick owner's copy, which holds another
+    # run's transcript, or the first turn of the job's next run.
+    from bridge.tools.sub_agent_registry import SubAgentRegistry, SubAgentState
+
+    sess = _copy(tmp_path, owns_tick=False, sid=FRESH)
+    sess.state.sessions[FRESH] = sess
+    sess.subagent_registry = SubAgentRegistry()
+    child = sess.subagent_registry.register("sub_19f0fresh_1", "worker", "t", "general")
+    child.notify_parent = True
+
+    sess.subagent_registry.mark_done(child.id, "the report", SubAgentState.DONE)
+    await sess._on_child_terminal(child)
+
+    assert _inbox_file(FRESH) == []
+    assert sess.inbox.unread == []
+
+
+async def test_a_fresh_session_jobs_next_run_gets_no_memo_of_work_an_earlier_run_left(
+    app_bridge, monkeypatch, tmp_path
+):
+    # reset() keeps the inbox, and carries the sub-agents still running:
+    # a memo an earlier run's work left unread went with the next run's
+    # first turn, and one such work sent later slid into that run.
+    from bridge.inbox import KIND_MEMO
+    from bridge.scheduler.models import CronSchedule, JobRecord, NewSession, NoopSinkSpec
+    from bridge.scheduler.runtime import _resolve_execution_session
+    from bridge.tools.sub_agent_registry import SubAgentState
+
+    monkeypatch.setattr(fb, "MEMO_WAKE_DEBOUNCE_S", 3600)
+    sess = _copy(tmp_path, owns_tick=True, sid=FRESH)
+    state = sess.state
+    state.sessions[FRESH] = sess
+    await sess.initialize()
+    earlier = sess.subagent_registry.register("sub_19f0fresh_1", "worker", "t", "general")
+    earlier.notify_parent = True
+    sess.inbox.push(InboxMessage(
+        id="m1", from_session="sub_19f0fresh_0", from_label="scout", from_role="agent",
+        content="the scout's report", kind=KIND_MEMO,
+    ))
+
+    async def ensure_session(_sid, **_kw):
+        return sess
+
+    state.ensure_session = ensure_session
+    job = JobRecord(id="sched_19f0", name="digest", schedule=CronSchedule(expression="0 6 * * *"),
+                    prompt="digest", execution=NewSession(), sinks=[NoopSinkSpec()])
+    await _resolve_execution_session(SimpleNamespace(state=state), job)
+    assert sess.inbox.unread == []
+
+    sess.subagent_registry.mark_done(earlier.id, "the worker's report", SubAgentState.DONE)
+    await sess._on_child_terminal(earlier)
+    assert sess.inbox.unread == []
+    # Work the run itself starts still reports to it.
+    own = sess.subagent_registry.register("sub_19f0fresh_2", "checker", "t", "general")
+    own.notify_parent = True
+    sess.subagent_registry.mark_done(own.id, "the checker's report", SubAgentState.DONE)
+    await sess._on_child_terminal(own)
+    assert [m.from_session for m in sess.inbox.unread] == [own.id]
+    assert _inbox_file(FRESH) == [sess.inbox.unread[0].content]
 
 
 async def _take_the_tick(service, monkeypatch) -> None:
