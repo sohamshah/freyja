@@ -438,12 +438,16 @@ function ScheduleCard(props: {
 }) {
   const { job, runs, focused, now } = props
   const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   const act = async (verb: string, fn: () => Promise<unknown>) => {
     setBusy(verb)
+    setError(null)
     try {
-      await fn()
+      setError(actionError(await fn()))
       schedulerApi.listJobs().catch(() => {})
+    } catch (e) {
+      setError((e as Error).message)
     } finally { setBusy(null) }
   }
 
@@ -539,8 +543,18 @@ function ScheduleCard(props: {
           </span>
         )}
       </div>
+      {error && (
+        <p className="m-0 mt-2 font-mono text-[11px] text-danger">{error}</p>
+      )}
     </div>
   )
+}
+
+/** What the bridge said was wrong with an action, from its answer: a
+ *  refused resume (all max fires used) answers with an error. */
+function actionError(resp: unknown): string | null {
+  const error = (resp as { error?: unknown } | null | undefined)?.error
+  return typeof error === 'string' && error ? error : null
 }
 
 function CardButton(props: {
@@ -820,9 +834,12 @@ function ScheduleDetail(props: {
 
   const act = async (verb: string, fn: () => Promise<unknown>) => {
     setBusy(verb)
+    setError(null)
     try {
-      await fn()
+      setError(actionError(await fn()))
       schedulerApi.listJobs().catch(() => {})
+    } catch (e) {
+      setError((e as Error).message)
     } finally { setBusy(null) }
   }
 
