@@ -222,6 +222,8 @@ class ScheduleTool:
         ):
             if k in args:
                 setattr(patch, k, args[k])
+        if "max_fires" in args and args["max_fires"] is None:
+            patch.clear_max_fires = True
         if "when" in args or "schedule" in args:
             patch.schedule = build_schedule(
                 args.get("when"), args.get("schedule"),
@@ -764,7 +766,13 @@ _PARAMETERS = {
                 "until resumed)."
             ),
         },
-        "max_fires": {"type": "integer"},
+        "max_fires": {
+            "type": "integer",
+            "description": (
+                "Stop the job after this many fires. Omit for no cap; "
+                "with action='update', null removes the cap."
+            ),
+        },
         "misfire_policy": {
             "type": "string",
             "enum": ["skip", "fire_once", "fire_all"],

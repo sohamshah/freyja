@@ -16506,8 +16506,12 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             if "prompt" in payload: patch.prompt = payload.get("prompt")
             if "enabled" in payload: patch.enabled = bool(payload.get("enabled"))
             if "max_fires" in payload:
+                # The dashboard sends null for an emptied field.
                 v = payload.get("max_fires")
-                patch.max_fires = int(v) if v is not None else None
+                if v is None:
+                    patch.clear_max_fires = True
+                else:
+                    patch.max_fires = int(v)
             if "timeout_seconds" in payload:
                 v = payload.get("timeout_seconds")
                 patch.timeout_seconds = int(v) if v is not None else None

@@ -1053,6 +1053,8 @@ class SchedulerService:
                 val = getattr(patch, field_name)
                 if val is not None:
                     setattr(job, field_name, val)
+            if patch.clear_max_fires:
+                job.max_fires = None
             # enabled pauses or resumes the job, as pause_job and
             # resume_job do. Set alone, a paused job kept status "paused",
             # which the tick skips, and never ran again.

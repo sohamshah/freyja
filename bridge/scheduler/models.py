@@ -701,6 +701,8 @@ class JobPatch:
     timeout_seconds: int | None = None
     retry_policy: RetryPolicy | None = None
     tags: list[str] | None = None
+    # True clears max_fires (no cap), which a None there cannot say.
+    clear_max_fires: bool = False
 
 
 @dataclass
