@@ -277,6 +277,31 @@ async def test_a_model_picked_while_a_stop_cuts_the_drain_short_is_made_too(monk
     assert sess.model_id == "claude-opus-5-5" and not sess.pending_config
 
 
+async def test_a_stop_while_the_drain_makes_a_held_change_between_queued_turns_still_runs_them(monkeypatch, tmp_path):
+    """The drain makes a held change before each queued turn. A stop there ended the drain: the turn it had taken off the queue never ran, and the turns behind it waited for the next message. The stop is for the turn that ended, as a stop of a queued turn is."""
+    fb, state, sess, ends, ran = await _session_with_turns(monkeypatch, tmp_path, 4)
+    posting = asyncio.Event()
+
+    async def note(_sess, text):
+        if "glm-5.3-fireworks" in text:
+            posting.set()
+            await asyncio.sleep(5)  # the reply is still being sealed
+
+    state.thread_notice = note
+    for n in range(4):
+        fb._schedule_or_queue_turn(sess, f"turn {n}")
+    ends[0].set_result(None)
+    await _until(lambda: len(ran) == 2)
+    await _pick_model(fb, state, "glm-5.3-fireworks")  # held for the next queued turn
+    for end in ends[1:]:
+        end.set_result(None)
+    await asyncio.wait_for(posting.wait(), timeout=2)
+    await _stop(fb, state)  # between turn 1 and turn 2
+    await asyncio.wait_for(asyncio.gather(sess.pending_task, return_exceptions=True), timeout=2)
+    assert ran == ["kimi-k3-fast", "kimi-k3-fast", "glm-5.3-fireworks", "glm-5.3-fireworks"]
+    assert sess.queued_messages == []
+
+
 async def test_a_model_picked_while_a_stopped_session_waits_to_wake_is_made_when_stopped_again(monkeypatch, tmp_path):
     """After a stop the drain waits a moment before waking for an agent's message. A second stop there ended the drain, and a change picked during the wait stayed held into the next turn."""
     from bridge.inbox import InboxMessage, new_message_id

@@ -14768,9 +14768,10 @@ async def _drain_after_turn(sess: "_BridgeSession", *, cancelled: bool = False) 
         await _drain_turns(sess, cancelled=cancelled)
     except asyncio.CancelledError:
         # A stop while the drain made a parked change or waited to wake
-        # after a stop. Nothing more runs, but a change parked by then is
-        # still made below.
+        # after a stop. No wake turn runs, but a change parked by then is
+        # still made below, and the turns still queued run after it.
         _uncancel_current_task()
+        cancelled = True
         log("info", f"drain after turn stopped (session={sess.id})")
 
     # A change parked during the last turn run here, or while this drain
@@ -14785,6 +14786,12 @@ async def _drain_after_turn(sess: "_BridgeSession", *, cancelled: bool = False) 
             # Stopped again while making one: a change parked meanwhile
             # is still made.
             _uncancel_current_task()
+
+    # The stop was for the turn that had ended, as a stop of a queued turn
+    # is for that turn only, so the queue goes on. Left queued, those turns
+    # waited for the next message.
+    if sess.queued_messages:
+        await _drain_after_turn(sess, cancelled=cancelled)
 
 
 async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
@@ -14857,6 +14864,14 @@ async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
                 log("warn", f"inbox items not drained on {sess.id}; stopping")
                 break
             continue
+        # Each queued turn is its own turn, so drain again here: a
+        # `/model X` sent while a QUEUED message was running parks the
+        # same way, and this loop never returns to the call site above.
+        # Made before the turn leaves the queue, so a stop while it is
+        # made leaves the turn queued for _drain_after_turn to run.
+        await _apply_pending_config(sess)
+        if not sess.queued_messages:
+            continue
         entry = sess.queued_messages.pop(0)
         # Queue entries are (content, attachments[, on_turn_start]).
         # The hook is what installs per-turn state right before
@@ -14877,10 +14892,6 @@ async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
             f"processing queued message on session={sess.id} "
             f"({len(sess.queued_messages)} remaining)",
         )
-        # Each queued turn is its own turn, so drain again here: a
-        # `/model X` sent while a QUEUED message was running parks the
-        # same way, and this loop never returns to the call site above.
-        await _apply_pending_config(sess)
         _run_pre_turn_hook(q_hook, sess)
         try:
             await sess.run_turn(q_content, q_attachments)
