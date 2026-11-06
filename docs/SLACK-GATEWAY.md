@@ -471,24 +471,19 @@ Run `auth_test()` against both tokens to verify they work and capture `team_id`,
 
 If auth fails, surface Slack's error message verbatim and offer to re-enter tokens.
 
-### Step 6 — Capability defaults
+### Step 6 — Allowlist and capability defaults
 
-Show a brief explanation of what the Slack-routed agent can do by default, ask for confirmation:
+The wizard asks for the Slack user ids this workspace lets in, or `"*"` for every member, and asks again on a blank or malformed answer (see section 7.2). Then it prints what those people get. It asks nothing here, because nothing is restricted by default:
 
-> Default Slack agent permissions:
->   ✓ Read files in your workspace dir
->   ✓ Search the web
->   ✓ Spawn sub-agents
->   ✗ Write to files outside the project output dir
->   ✗ Run arbitrary shell commands
->   ✗ Use computer-use tools (mouse / keyboard / screen)
->   ✗ Use the browser tools
+> Tool surface for Slack-routed sessions (filter OFF — full access):
+>   ✓ All tools available  (same as desktop: bash, computer-use, browser, write, memory, sub-agents)
 >
-> You can change this anytime in ~/.freyja/gateway.yaml or via /perms in Slack.
->
-> Accept defaults? [Y/n]
+> Flip slack.enable_tool_filter to true in ~/.freyja/gateway.yaml
+> for a restricted read-mostly surface (e.g. shared workspaces).
 
-(This is a simpler version of the capability set design from `ALWAYS-ON-PLATFORM.md`. v1 = a flat default, not per-workflow capabilities. The mechanism is "tool exclude list applied to all Slack sessions.")
+Two settings decide this. `slack.enable_tool_filter` is `false` by default (`bridge/gateway/config.py`), so a Slack session gets the same tools as the desktop. A gateway session also runs at the `yolo` permission tier (`_BridgeSession.__init__` in `bridge/freyja_bridge.py`), so every permission level, `DANGEROUS` included, is approved without a prompt. Set `FREYJA_GATEWAY_PERMISSION_AUTO` (`none`, `low`, `medium`, `high` or `yolo`) in the gateway's environment to get prompts back. So everyone on the allowlist can run shell commands, write files, and use computer use and the browser on the operator's Mac. `/perms` in Slack shows the current tool surface.
+
+With `slack.enable_tool_filter: true`, a Slack session gets only the tools in `SLACK_TOOL_ALLOWLIST` (`bridge/gateway/capabilities.py`): file reads and writes, web search, sub-agents, skills, memory and schedules, but no shell, computer use or browser. The setting applies to Slack sessions created after the change. The permission tier stays `yolo` either way.
 
 ### Step 7 — Install gateway daemon
 
@@ -845,6 +840,7 @@ That last criterion is the real one. If the demo doesn't make people lean in, we
 - 2026-10-22: Section 14 adds the fold: a sealed message's step cards collapse into one plan block through `chat.update`.
 - 2026-10-27: Section 14: the notice before a slow reply reads the runner's context outlook and says "Compacting" only when the runner will compact. A restore compaction reports failure and gets a deadline that grows with the transcript.
 - 2026-11-06: Section 7.2 shows the `gateway.yaml` the gateway reads today. The allowlist takes explicit user ids per workspace, or `"*"` to open one; the old sketch's `allowed_user_ids: []` lets nobody in.
+- 2026-11-06: Section 5 Step 6 describes what the wizard does today. The tool filter is off by default and gateway sessions run at the `yolo` tier, so everyone on the allowlist gets the full toolset with no approval prompts; the old step described a restricted default that the code never had.
 
 ## 14. The agent session surface (October 2026)
 
