@@ -332,14 +332,15 @@ async def test_replaying_a_link_survives_a_parent_whose_create_row_was_lost(
     assert card.parents == [lost, other]
 
 
-async def _restore_without(tmp_path, lost: str) -> SessionKanbanBoard:
-    """Cut `lost`'s rows short, so the journal skips them as malformed,
-    and restore a board from it the way the bridge does."""
+async def _restore_without(tmp_path, *lost: str) -> SessionKanbanBoard:
+    """Cut the rows of the cards in `lost` short, so the journal skips
+    them as malformed, and restore a board from it the way the bridge
+    does."""
     path = tmp_path / "kanban.jsonl"
     lines = path.read_text().splitlines()
     path.write_text(
         "\n".join(
-            line[:40] if json.loads(line).get("task", {}).get("id") == lost else line
+            line[:40] if json.loads(line).get("task", {}).get("id") in lost else line
             for line in lines
         )
         + "\n"
@@ -559,3 +560,30 @@ async def test_create_refuses_parents_the_board_does_not_hold() -> None:
     assert result.is_error, result.content
     assert "card_02, card_9" in result.content
     assert {card.title for card in await board.list()} == {"mission", "parent"}
+
+
+@pytest.mark.asyncio
+async def test_replay_never_hands_out_the_id_of_a_card_whose_rows_were_lost(
+    tmp_path,
+) -> None:
+    """Replay restored the id counter from create rows alone. When the
+    card whose rows were lost had the highest id, the next card got that
+    id, and a child naming the lost card then waited on an unrelated
+    one. The counter now passes every id the journal names."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    parent = (await live.create(title="parent")).id
+    child = (await live.create(title="child")).id
+    # Named by a link row and the child's next snapshot.
+    linked = (await live.create(title="linked")).id
+    await live.link(linked, child, actor="parent")
+    await live.update(child, actor="parent", comment="waits on linked")
+    # Named only in its parent's update snapshot.
+    made = (await live.create(title="made", parents=[parent])).id
+    await live.update(parent, actor="worker", status="running")
+    restored = await _restore_without(tmp_path, linked, made)
+
+    fresh = (await restored.create(title="fresh")).id
+
+    assert fresh not in {parent, child, linked, made}
+    assert (await restored.get(child)).parents == [linked]
+    assert (await restored.get(fresh)).children == []

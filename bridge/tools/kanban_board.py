@@ -1102,6 +1102,7 @@ class SessionKanbanBoard:
         self._replaying = True
         try:
             for event in events:
+                self._count_ids(event)
                 kind = event.get("kind")
                 if kind == "create":
                     self._apply_create_snapshot(event.get("task") or {})
@@ -1122,17 +1123,26 @@ class SessionKanbanBoard:
         finally:
             self._replaying = False
 
+    def _count_ids(self, event: dict[str, Any]) -> None:
+        # Counter must track the highest assigned id so the next create
+        # generates a fresh, non-clashing id. A card whose create row was
+        # lost is still named by link rows and other cards' snapshots, so
+        # every id counts: reusing its id would make whatever names it
+        # wait on an unrelated card.
+        snapshot = event.get("task") or {}
+        ids = [event.get("id"), event.get("parent"), event.get("child"), snapshot.get("id")]
+        ids += [*(snapshot.get("parents") or []), *(snapshot.get("children") or [])]
+        for card_id in ids:
+            suffix = str(card_id or "").rsplit("_", 1)[-1]
+            if suffix.isdigit():
+                self._counter = max(self._counter, int(suffix))
+
     def _apply_create_snapshot(self, snapshot: dict[str, Any]) -> None:
         cid = snapshot.get("id")
         if not cid or cid in self._tasks:
             return
         task = self._task_from_snapshot(snapshot)
         self._tasks[task.id] = task
-        # Counter must track the highest assigned id so the next create
-        # generates a fresh, non-clashing id.
-        suffix = task.id.rsplit("_", 1)[-1]
-        if suffix.isdigit():
-            self._counter = max(self._counter, int(suffix))
         if task.metadata.get("role") == "mission_root" and self._mission_root_id is None:
             self._mission_root_id = task.id
         # The row is the new card's alone; create() also added it to each
