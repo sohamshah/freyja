@@ -1083,7 +1083,13 @@ export type BridgeEvent =
   // it is only a notice.
   | ({ type: 'error'; message: string; recoverable?: boolean } & SessionId)
   | { type: 'log'; level: 'info' | 'warn' | 'error' | 'debug'; message: string }
-  | ({ type: 'turn_start'; turnId: string } & SessionId)
+  | ({
+      type: 'turn_start'
+      turnId: string
+      /** Where to show the reply (ms): just past the turn's user entry,
+       *  which the bridge stamps when the turn starts. */
+      at?: number
+    } & SessionId)
   | ({ type: 'text_delta'; text: string } & SessionId)
   | ({ type: 'thinking_delta'; thinking: string } & SessionId)
   // A model call starts streaming / the engine retries one that failed

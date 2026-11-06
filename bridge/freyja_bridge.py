@@ -889,6 +889,16 @@ def _wake_prompt_for(inbox: Any) -> str:
     return TALK_WAKE_PROMPT
 
 
+def _stamp_turn_user_entry(session: Any, content: Any, started: float) -> None:
+    """Stamp the user entry the runner appended for ``content`` with the
+    time its turn started, if it was appended later (see run_turn)."""
+    for entry in reversed(session.transcript.entries):
+        msg = entry.message
+        if msg is not None and msg.role == "user" and msg.content is content:
+            entry.timestamp = min(entry.timestamp, started)
+            return
+
+
 def _promoted_stamps(sess: Any, count: int, now_ms: float) -> list[float]:
     """Where the renderer shows ``count`` follow-ups promoted to the turn
     about to start (ms wall-clock, in order). Branch, edit, rerun and
@@ -10453,7 +10463,18 @@ class _BridgeSession:
         self._turn_text_parts = []
         self._turn_text_mark = 0
         self.last_turn_error = None
-        emit({"type": "turn_start", "sessionId": self.id, "turnId": self.current_turn_id})
+        # The renderer shows the reply from `at`. The runner appends this
+        # turn's user entry only once it has built the request, often tens
+        # of ms later, so the entry is stamped back to now (below): an
+        # anchor on the reply resolves past it, one on the user message
+        # still resolves to it.
+        turn_started = time.time()
+        emit({
+            "type": "turn_start",
+            "sessionId": self.id,
+            "turnId": self.current_turn_id,
+            "at": turn_started * 1000 + 0.5,
+        })
 
         if pre_formed_message is not None:
             # `pre_formed_message` is the engine's stored content blocks
@@ -10480,7 +10501,10 @@ class _BridgeSession:
             )
 
         try:
-            result = await self.runner.run(self.session, message, stream=True)
+            try:
+                result = await self.runner.run(self.session, message, stream=True)
+            finally:
+                _stamp_turn_user_entry(self.session, message, turn_started)
             usage = self.runner.usage
             # We emit TWO numbers the UI cares about:
             #   - `contextTokens` = CURRENT request size (what a fresh

@@ -114,6 +114,15 @@ await check('a refusal of an earlier command does not undo the latest one', asyn
   assert.deepEqual(ids(), ['u1'])
 })
 
+await check("a reply is shown from the bridge's turn_start stamp, past its user message's entry", async () => {
+  reset()
+  const at = Date.now() - 50.5
+  ev({ type: 'turn_start', turnId: 'turn-1', at })
+  const reply = useHarness.getState().messages.find((m) => m.id === useHarness.getState().currentStreamingMessageId)
+  assert.equal(reply.createdAt, at)
+  ev({ type: 'turn_complete', turnId: 'turn-1', success: true })
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

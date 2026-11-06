@@ -2165,7 +2165,9 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         id: msgId,
         role: 'assistant',
         parts: [],
-        createdAt: Date.now(),
+        // Past the turn's user entry, so an anchor on the reply (branch,
+        // pin, delete) resolves to the reply's own entries.
+        createdAt: ev.at ?? Date.now(),
       }
       next.messages = [...slice.messages, newMessage]
       next.currentStreamingMessageId = msgId

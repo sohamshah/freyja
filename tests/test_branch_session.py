@@ -1247,3 +1247,58 @@ async def test_anchors_on_promoted_followups_resolve_to_their_turn(monkeypatch, 
         shown = item.get("createdAt", promoted["at"] - n + j)
         idx = fb._find_message_entry_index(entries, 0, shown / 1000)
         assert entries[idx].message.content == content
+
+
+# ── a turn's reply and its user message ────────────────────────────────
+
+
+async def test_an_anchor_on_a_reply_resolves_past_its_user_message(monkeypatch, tmp_path):
+    # The renderer shows a turn's reply from turn_start on, but the runner
+    # appends the turn's user entry after building the request (in October
+    # a quarter of real turns did so 26 ms later at the median). An anchor
+    # on the reply then resolved to the user message: a fork before the
+    # reply lost it, a delete from the reply deleted it.
+    import asyncio
+    import time as _time
+    from types import SimpleNamespace
+
+    import bridge.freyja_bridge as fb
+    from engine.session import Session
+
+    shown: dict[str, float] = {}
+
+    def _emit(ev):
+        if ev["type"] == "turn_start":
+            # Where the renderer stamps the reply (store.ts, turn_start).
+            shown["reply"] = ev.get("at", _time.time() * 1000)
+
+    monkeypatch.setattr(fb, "emit", _emit)
+    monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path / "sessions")
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    sess = fb._BridgeSession("s", workspace=str(tmp_path), model_id="claude-sonnet-5-5",
+                             reasoning_level="auto", coordination_strategy="bus", state=state)
+    sess.session = Session.create(system_prompt="t")
+
+    async def _initialize():
+        return None
+
+    class _Runner:
+        usage = SimpleNamespace(input=0, output=0, cache_read=0, cache_write=0,
+                                effective_context_tokens=lambda: 0)
+
+        async def run(self, session, message, stream=True):
+            await asyncio.sleep(0.02)  # building the request
+            session.add_user_message(message)
+            await asyncio.sleep(0.02)  # the model's reply
+            session.add_assistant_message("all green")
+            return SimpleNamespace(success=True, response="all green", stop_reason="end_turn")
+
+    sess.initialize = _initialize
+    sess.runner = _Runner()
+    sent_at = _time.time() * 1000 - 5  # the renderer stamped the user message on send
+    await sess.run_turn("run the checks")
+
+    entries = sess.session.transcript.entries
+    question = fb._find_message_entry_index(entries, 0, sent_at / 1000)
+    reply = fb._find_message_entry_index(entries, 1, shown["reply"] / 1000)
+    assert [entries[question].message.content, entries[reply].message.content] == ["run the checks", "all green"]
