@@ -998,7 +998,9 @@ function kanbanCardsFromJournal(id: string): Record<string, Record<string, unkno
     ...new Set([...(Array.isArray(list) ? list : []), add]),
   ]
   // Stamps a card with a link or unblock row's time (never back) and
-  // adds the event the live write added, at that time.
+  // adds the event the live write added, at that time. A card that
+  // already has that event (the rows came twice) gets none, as the
+  // bridge's replay run twice on one board adds none.
   const addRowEvent = (cardId: string, kind: string, message: string, row: any) => {
     const card = cards[cardId]
     if (!card) return
@@ -1007,7 +1009,8 @@ function kanbanCardsFromJournal(id: string): Record<string, Record<string, unkno
     const events = Array.isArray(card.events) ? card.events : []
     // The bridge keeps a card's last 30 events (DEFAULT_HISTORY_TAIL).
     const event = { kind, actor, message, timestamp: at ?? Date.now(), details: {} }
-    cards[cardId] = { ...card, events: [...events, event].slice(-30), eventCount: (Number(card.eventCount) || events.length) + 1 }
+    const seen = events.some((e: any) => e?.kind === kind && e?.actor === actor && e?.message === message && e?.timestamp === event.timestamp)
+    if (!seen) cards[cardId] = { ...card, events: [...events, event].slice(-30), eventCount: (Number(card.eventCount) || events.length) + 1 }
     if (at !== undefined && card.updatedAt < at) cards[cardId].updatedAt = at
   }
   let missionRoot = ''

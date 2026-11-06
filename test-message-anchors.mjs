@@ -407,6 +407,54 @@ await check("a Slack session's linked kanban card is in the lane link() gave it,
   }
 })
 
+await check("a Slack session's kanban journal gives the same cards when its rows come twice, as the bridge's replay does run twice on one board", async () => {
+  // Replay is idempotent: a second pass finds the event a link or unblock
+  // row stands for already on a card with no later update row. The rows
+  // come from link() and unblock() on a live board.
+  const sessionsDir = path.join(home, '.freyja', 'sessions')
+  const card = (id, status, parents, children = []) => ({ id, title: id, status, parents, children, metadata: {}, events: [], eventCount: 0, createdAt: 1_000, updatedAt: 1_000 })
+  const rows = [
+    { ts: 1_000, kind: 'create', task: card('card_001', 'ready', []) },
+    { ts: 2_000, kind: 'create', task: card('card_002', 'ready', []) },
+    { ts: 3_000, kind: 'update', id: 'card_002', actor: 'worker', task: card('card_002', 'running', []) },
+    { ts: 4_000, kind: 'link', parent: 'card_001', child: 'card_002', actor: 'parent' },
+    { ts: 5_000, kind: 'create', task: card('card_003', 'cancelled', []) },
+    { ts: 6_000, kind: 'create', task: card('card_004', 'triage', ['card_003']) },
+    { ts: 7_000, kind: 'unblock', id: 'card_004', actor: 'operator' },
+  ].map((row) => JSON.stringify(row))
+  const save = (name, id, lines) => {
+    fs.writeFileSync(
+      path.join(sessionsDir, `freyja_slack_T1_channel_${name}.json`),
+      JSON.stringify({ version: 1, id, agentType: 'gateway-slack', slice: { messages: [], kanbanCards: {} } }),
+    )
+    const journal = path.join(sessionsDir, `freyjaslackT1channel${name.replace('_', '')}.kanban.jsonl`)
+    fs.writeFileSync(journal, lines.join('\n') + '\n')
+    return journal
+  }
+  const journal = save('C5_5.0', 'freyja:slack:T1:channel:C5:5.0', rows)
+  save('C6_6.0', 'freyja:slack:T1:channel:C6:6.0', [...rows, ...rows])
+  const { loadSession } = await import('./src/main/persistence.ts')
+  const once = loadSession('freyja:slack:T1:channel:C5:5.0').slice.kanbanCards
+  const twice = loadSession('freyja:slack:T1:channel:C6:6.0').slice.kanbanCards
+  assert.deepEqual(twice, once)
+  assert.deepEqual(once.card_002.events.map((e) => e.kind), ['linked'])
+  const replay = [
+    'import asyncio, json, sys',
+    'from pathlib import Path',
+    'from bridge.kanban_journal import KanbanJournal',
+    'from bridge.tools.kanban_board import SessionKanbanBoard',
+    'board = SessionKanbanBoard()',
+    'rows = KanbanJournal(Path(sys.argv[1])).read_all()',
+    'board.replay_events(rows)',
+    'board.replay_events(rows)',
+    'print(json.dumps([t.to_dict() for t in asyncio.run(board.list())]))',
+  ].join('\n')
+  const out = execFileSync('uv', ['run', '--extra', 'dev', 'python', '-c', replay, journal], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  for (const { id, status, updatedAt, events, eventCount } of JSON.parse(out)) {
+    assert.deepEqual({ status, updatedAt, events, eventCount }, (({ status, updatedAt, events, eventCount }) => ({ status, updatedAt, events, eventCount }))(once[id]), id)
+  }
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

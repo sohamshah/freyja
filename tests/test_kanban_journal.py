@@ -716,3 +716,28 @@ async def test_replaying_an_unblock_stamps_the_card_and_adds_its_event(tmp_path)
     ]
     assert got["events"][-1]["timestamp"] == events[-1]["ts"]
     assert got["eventCount"] == want["eventCount"]
+
+
+@pytest.mark.asyncio
+async def test_replaying_a_journal_twice_on_one_board_gives_the_same_board(tmp_path) -> None:
+    """replay_events says replay is idempotent, but a second replay on the
+    same board gave a card with no later update row its "linked" or
+    "unblocked" event again: the row's step adds an event, and the card
+    already had it."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    parent = (await live.create(title="parent")).id
+    running = (await live.create(title="running")).id
+    await live.update(running, actor="worker", status="running", worker_session_id="sub_w")
+    await live.link(parent, running, actor="parent")
+    dropped = (await live.create(title="dropped")).id
+    released = (await live.create(title="released", parents=[dropped])).id
+    await live.update(dropped, actor="parent", status="cancelled")
+    await live.unblock(released, actor="operator")
+    events = KanbanJournal(tmp_path / "kanban.jsonl").read_all()
+
+    board = SessionKanbanBoard()
+    board.replay_events(events)
+    once = [task.to_dict() for task in await board.list()]
+    board.replay_events(events)
+
+    assert [task.to_dict() for task in await board.list()] == once

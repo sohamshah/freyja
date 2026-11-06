@@ -1276,18 +1276,24 @@ class SessionKanbanBoard:
         self, card: KanbanTask, kind: str, actor: str, message: str, ts: Any
     ) -> None:
         # Stamp the card with the row's time (never back) and add the
-        # event the live write added, at that time.
+        # event the live write added, at that time. A second replay on the
+        # same board finds that event already there, so it adds none.
         when = float(ts) / 1000.0 if isinstance(ts, (int, float)) else None
         if when is not None:
             card.updated_at = max(card.updated_at, when)
-        card.append_event(
-            KanbanEvent(
-                kind,
-                actor,
-                message,
-                timestamp=when if when is not None else time.time(),
-            )
+        event = KanbanEvent(
+            kind,
+            actor,
+            message,
+            timestamp=when if when is not None else time.time(),
         )
+        if any(
+            (e.kind, e.actor, e.message, e.timestamp)
+            == (event.kind, event.actor, event.message, event.timestamp)
+            for e in card.events
+        ):
+            return
+        card.append_event(event)
 
     def _task_from_snapshot(self, snapshot: dict[str, Any]) -> KanbanTask:
         # `to_dict()` emits timestamps in milliseconds and a few field
