@@ -1,5 +1,5 @@
 // main's tail of the gateway's log follows a rotation of it without losing
-// or repeating an event.
+// or repeating an event, one while the app runs or one while it is closed.
 //
 // The gateway rotates gateway.log in place (bridge/gateway/pid.py,
 // rotate_log_if_large): it copies the whole log to gateway.log.1, each byte
@@ -7,6 +7,11 @@
 // gzipped first), then empties the log. The tail saw only a log shorter than
 // where it was, and read on from its start: the events written since its
 // last read, now at the end of .1, were lost.
+//
+// The tail saves its offset for the app's next start, but not which .1 it
+// had read: one made while the app was closed was taken as read, so the
+// events written before it were lost and the log was read on from the old
+// offset, in the middle of its first lines.
 // Run from the repo root:
 //   npx tsx test-gateway-log-rotation.mjs
 import assert from 'node:assert/strict'
@@ -54,8 +59,13 @@ async function check(name, fn) {
 
 write(0) // Before the app first started: not replayed.
 const forwarded = []
-const tailer = new GatewayLogTailer((e) => forwarded.push(e.message))
-tailer.start()
+// The app starts: the tail resumes from the offset it saved.
+function open() {
+  const tail = new GatewayLogTailer((e) => forwarded.push(e.message))
+  tail.start()
+  return tail
+}
+let tailer = open()
 const events = (...ns) => ns.map((n) => `event ${n}`)
 
 write(1, 2)
@@ -96,6 +106,49 @@ write(10)
 await sleep(400)
 await check('a log emptied by hand is read again from its start', () => {
   assert.deepEqual(forwarded, events(1, 2, 3, 4, 5, 6, 7, 8, 9, 10))
+})
+
+tailer.stop() // The app closes.
+write(11, 12)
+rotate()
+write(13)
+tailer = open()
+await sleep(400)
+await check('events written before a rotation while the app was closed are read from .1, then the new log', () => {
+  assert.deepEqual(forwarded, events(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13))
+})
+
+tailer.stop()
+write(14, 15, 16)
+rotate()
+write(17, 18) // The new log grows past where the tail was.
+tailer = open()
+await sleep(400)
+await check('a new log longer than where the tail was is read from its start', () => {
+  assert.deepEqual(forwarded, events(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18))
+})
+
+write(19)
+rotate()
+await sleep(400) // Read from .1 while the app runs.
+tailer.stop()
+tailer = open()
+write(20)
+await sleep(400)
+await check('a rotation read before the app closed is not read again', () => {
+  assert.deepEqual(forwarded, events(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20))
+})
+
+tailer.stop()
+write(21)
+rotate({ empty: false }) // The app opens while the log is being rotated.
+tailer = open()
+await sleep(400)
+fs.truncateSync(log, 0)
+write(22)
+await sleep(400)
+await check('an app that opens in the middle of a rotation reads each event once', () => {
+  assert.deepEqual(forwarded, events(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22))
 })
 
 tailer.stop()

@@ -25,9 +25,13 @@ import os from 'node:os'
  *
  * Offset persistence:
  *   ~/.freyja/control/desktop-tail.offset stores the last byte we've
- *   consumed. On first start (no offset file) we jump to EOF so we don't
- *   replay days of historical log lines. Across desktop restarts we
- *   resume cleanly so a brief restart doesn't miss in-flight events.
+ *   consumed and the inode of the .1 we had read. On first start (no
+ *   offset file) we jump to EOF so we don't replay days of historical log
+ *   lines. Across desktop restarts we resume cleanly so a brief restart
+ *   doesn't miss in-flight events, nor those of a rotation while the app
+ *   was closed: a .1 that is not the one we had read is read on from the
+ *   offset, then the log from its start. A bare offset (written before
+ *   the inode was saved) takes the .1 there now as read.
  *
  * Rotation:
  *   The gateway rotates its log in place (rotate_log_if_large in
@@ -58,7 +62,7 @@ export class GatewayLogTailer {
   private stopped = false
   private partial = '' // Accumulator for the trailing partial line.
   // The inode of the .1 the tail has read to its end, or that was there
-  // when it started.
+  // when it first started; saved with the offset.
   private segment: number | null = null
   // Every sessionId we've seen emit a daemon-side event. Includes both
   // gateway root sessions (``freyja:<platform>:...``) and sub-agents
@@ -102,7 +106,6 @@ export class GatewayLogTailer {
     this.stopped = false
     this.ensureControlDir()
     this.loadOffset()
-    this.segment = statOf(GATEWAY_LOG_SEGMENT)?.ino ?? null
     // Schedule the first poll inline so we drain anything new on the
     // very next tick, then enter the polling cadence.
     queueMicrotask(() => this.tick())
@@ -125,9 +128,11 @@ export class GatewayLogTailer {
   private loadOffset(): void {
     try {
       const raw = fs.readFileSync(OFFSET_FILE, 'utf8').trim()
-      const n = Number.parseInt(raw, 10)
+      const saved = raw.startsWith('{') ? JSON.parse(raw) : { offset: Number.parseInt(raw, 10) }
+      const n = saved.offset
       if (Number.isFinite(n) && n >= 0) {
         this.offset = n
+        this.segment = 'segment' in saved ? saved.segment : statOf(GATEWAY_LOG_SEGMENT)?.ino ?? null
         return
       }
     } catch {
@@ -138,12 +143,13 @@ export class GatewayLogTailer {
     } catch {
       this.offset = 0
     }
+    this.segment = statOf(GATEWAY_LOG_SEGMENT)?.ino ?? null
     this.persistOffset()
   }
 
   private persistOffset(): void {
     try {
-      fs.writeFileSync(OFFSET_FILE, String(this.offset), 'utf8')
+      fs.writeFileSync(OFFSET_FILE, JSON.stringify({ offset: this.offset, segment: this.segment }), 'utf8')
     } catch {
       // Non-fatal — at worst we replay a small window on the next start.
     }
