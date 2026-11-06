@@ -400,3 +400,23 @@ async def test_a_live_link_survives_a_child_whose_parent_create_row_was_lost(
     again = SessionKanbanBoard(journal=journal)
     again.replay_events(journal.read_all())
     assert (await again.get(child)).status == card.status
+
+
+@pytest.mark.asyncio
+async def test_replay_gives_a_parent_the_children_made_after_it(tmp_path) -> None:
+    """create() adds the new card to each parent's children but journals
+    only the new card's row. Replay must add it too, or after a restart
+    the parent has no children until its next update, and its done
+    leaves them in triage."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    parent = (await live.create(title="parent")).id
+    child = (await live.create(title="child", parents=[parent])).id
+
+    journal = KanbanJournal(tmp_path / "kanban.jsonl")
+    restored = SessionKanbanBoard(journal=journal)
+    restored.replay_events(journal.read_all())
+
+    assert (await restored.get(parent)).children == [child]
+    await restored.update(parent, actor="worker", status="running")
+    await restored.update(parent, actor="kanban-judge", status="done")
+    assert (await restored.get(child)).status == "ready"
