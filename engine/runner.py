@@ -1671,7 +1671,6 @@ class AsyncAgentRunner:
                     ))
                     continue
 
-                self.usage.update(response.usage)
                 last_stop_reason = response.stop_reason
                 # Channel 3 (mid-stream advisory): now that usage is
                 # updated and the band is current, see if pressure
@@ -2286,6 +2285,9 @@ class AsyncAgentRunner:
         if interrupted:
             raise TurnInterrupted("")
         self._sent_prompt = sent
+        # Before the report: the bridge's pressure telemetry reads the
+        # accumulator from on_llm_call.
+        self.usage.update(response.usage)
         self._notify_llm_call(provider, start, streaming=False, response=response, error=None)
         return response
 
@@ -2381,6 +2383,8 @@ class AsyncAgentRunner:
         if interrupted:
             raise TurnInterrupted("".join(streamed_text))
         self._sent_prompt = sent
+        # Before the report: see _call_provider_async.
+        self.usage.update(response.usage)
         self._notify_llm_call(provider, start, streaming=True, response=response, error=None)
         return response
 

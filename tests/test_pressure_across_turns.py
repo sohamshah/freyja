@@ -117,17 +117,19 @@ async def test_the_turns_first_request_carries_the_pressure_note():
     assert "Context window is at 60-69%" in turn_message.get_text()
 
 
-async def test_the_turns_first_call_reports_against_the_last_measure():
-    # The bridge's pressure telemetry reads the accumulator from on_llm_call.
+async def test_each_call_is_reported_with_its_own_measure():
+    # The bridge's pressure telemetry reads the accumulator from on_llm_call,
+    # which fired before the accumulator took the call's usage: every
+    # pressure_signal row showed the call before it.
     seen: list[int] = []
-    runner, _ = _runner([_end(30_000), _end(31_000)],
+    runner, _ = _runner([_tools("c1", 10_000), _end(30_000), _end(31_000)],
                         on_llm_call=lambda _p: seen.append(runner.usage.effective_context_tokens()))
     session = Session.create(system_prompt="t")
     await runner.run(session, "first task")
 
     await runner.run(session, "second task")
 
-    assert seen[1] == 30_000
+    assert seen == [10_000, 30_000, 31_000]
 
 
 async def test_the_outlook_that_says_compact_holds_at_the_turns_first_request():
