@@ -64,7 +64,7 @@ The sync `AgentRunner` (`_handle_context_pressure`) halves after each call past 
 | **D** Manual | `manual` | `bridge/freyja_bridge.py:force_compact` | The user runs `/compact`. It is skipped while a turn runs. |
 | **E** Restore | `restore` | `bridge/freyja_bridge.py:try_restore_transcript` | A transcript is loaded from disk and the runner's measure (`context_outlook`) is past 70% of the usable window (reason `pressure`). Or a Slack session was idle 6 hours or more and has more than 50 messages (reason `slack_idle_revisit`). |
 
-The agent's cheap scopes, `tool_results_only` and `exploration_only`, make no model call. They replace each matching tool result with a one-line preview and end with `context_pruning`. They save nothing; the raw log still has the results.
+The agent's cheap scopes, `tool_results_only` and `exploration_only`, make no model call. They replace each matching tool result with a one-line preview and end with `context_pruning`. Like halving, they first save each result whole through the truncator to `~/.freyja/truncated`, and the preview names that file and says to read it with grep or sed. A result that could not be saved, that the preview would not make shorter, or that was condensed before stays as it is.
 
 Every path runs `SummaryCompaction.compact()` in a worker thread through `run_off_loop` (`engine/runner.py`), so the event loop keeps serving while the summary call blocks. A stop waits for the worker, because the worker rewrites the transcript when the summary returns.
 
@@ -179,7 +179,7 @@ Paths A and B reach the telemetry through the runner's `on_system_event`: `_Brid
 | `~/.freyja/projects/<sid>/compactions.jsonl` | `_append_compaction_log` | One row per compaction event, with the full summary. |
 | `~/.freyja/sessions/compactions/<sid>-<ms>-{before,after}.{md,json}` | `_write_compaction_snapshot` | The transcript before and after a compaction (every path). A fork at a message a summary folded in is cut from the newest `-before.json` that still holds it. |
 | `~/.freyja/telemetry/compaction.jsonl` | `bridge/compaction_telemetry.append_telemetry` | The cross-session rows the metrics dashboard reads (section 8). |
-| `~/.freyja/truncated/*.txt` | `ToolResultTruncator.write_full_content` | The whole text of each result the truncator cut to fit, and of each result halving cut. The cut text names its file. |
+| `~/.freyja/truncated/*.txt` | `ToolResultTruncator.write_full_content` | The whole text of each result the truncator cut to fit, each result halving cut and each result a cheap `summarize_context` scope condensed. The cut text names its file. |
 
 An export (`exportSessionToFile` in `src/main/persistence.ts`) writes three files. `<dest>.json` is the saved session with each tool result whole. `<dest>.bundle.json` holds `raw_transcript` (the raw log), `full_tool_results`, `live_transcript` (the renderer's messages), `telemetry` (the session's rows by type) and `compactions`. `<dest>.trace.txt` is the session as text. A result the truncator cut is read back from its file (`src/main/sessionRecord.ts`). A halved result needs no read-back: the raw log has it whole.
 
@@ -441,3 +441,4 @@ The tool returns a JSON body (`{action, path, bytes, content, ...}`). The agent 
 - 2026-10-27 (fdc1f00, 04d5bed): pre-request, overflow and agent compactions run off the event loop (`run_off_loop`); the summary deadline grows with the transcript.
 - 2026-11-06 (ca37eee to 8c4e96d): a turn keeps the last call's measure; summary costs count from every path; the advisories stop saying tool calls may be rejected.
 - 2026-11-06 (this round): a halved result is saved whole under `~/.freyja/truncated` and its marker names the file; halving rows carry the size before and after, and the 70% check after halving uses the smaller size; a manual compaction stops the keep-alive; restore compactions write telemetry and `compactions.jsonl`; a sub-agent's call reports move to the event loop; the accumulator takes a call's usage before the call is reported; the turn after a manual compaction keeps the size it left; the sync runner takes `on_llm_call`.
+- 2026-11-06 (pruning round): a cheap `summarize_context` scope saves each result whole before it condenses it, and the preview names the file.

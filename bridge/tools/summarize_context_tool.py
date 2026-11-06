@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Any, Callable
 
@@ -32,6 +33,12 @@ logger = logging.getLogger(__name__)
 # split_point are kept verbatim in the tail. The result of every scope
 # resolution is one of these integers.
 ScopeResolver = Callable[[Any], int]
+
+# The preview a cheap scope replaces a result with, before and after it named
+# the file holding the whole result.
+_CONDENSED_RE = re.compile(r"\[(?:tool|exploration) result condensed\b")
+# About what naming the file adds to the preview, with the file's path.
+_CONDENSED_FILE_ROOM = 300
 
 
 class SummarizeContextTool:
@@ -115,6 +122,8 @@ class SummarizeContextTool:
         self._on_summarizer_llm_call = on_summarizer_llm_call
         # One call at a time: see execute.
         self._lock = asyncio.Lock()
+        # Saves each result a cheap scope condenses; built on first use.
+        self._truncator: Any = None
 
     @property
     def definition(self) -> ToolDefinition:
@@ -616,16 +625,48 @@ class SummarizeContextTool:
             working_memory_state=working_memory_state,
         )
 
+    def _save_original(self, text: str, tool_name: str | None) -> str | None:
+        """Write a result whole where the truncator saves the results it cuts
+        (``~/.freyja/truncated``) and return the file, or None if it failed."""
+        if self._truncator is None:
+            from engine.tools import ToolResultTruncator
+            from engine.types import AgentConfig
+
+            self._truncator = ToolResultTruncator(AgentConfig())
+        return self._truncator.write_full_content(text, tool_name)
+
+    def _condensed(self, text: str, label: str, tool_name: str | None) -> str | None:
+        """The preview that replaces ``text``, naming the file that holds it
+        whole. None when the text stays: it was condensed before, the preview
+        would not shorten it, or it could not be saved."""
+        if _CONDENSED_RE.match(text):
+            return None
+        preview = text.strip().splitlines()[0][:200] if text.strip() else ""
+        head = f"[{label}: {len(text):,} chars"
+        tail = f" · preview: {preview!r}]"
+        # Only condense if it actually shrinks; some results are already short.
+        if len(head) + _CONDENSED_FILE_ROOM + len(tail) >= len(text):
+            return None
+        saved = self._save_original(text, tool_name)
+        if not saved:
+            return None
+        return (
+            f"{head} · full output saved to: {saved} (read it from that file, "
+            f"e.g. with grep or sed){tail}"
+        )
+
     def _compact_tool_results_only(self, transcript: Any):
         """Replace every tool-result message body with a 1-liner.
 
         Cheap because there's no LLM call — we just rewrite the
         transcript in place. Catches the common case where the agent
         knows recent tool output is no longer needed but the assistant
-        reasoning is still useful.
+        reasoning is still useful. Each result is saved whole first, and
+        the 1-liner names the file.
         """
         from engine.compaction import CompactionResult
 
+        tool_name_by_id = _tool_name_by_id(transcript)
         before = transcript.estimate_tokens()
         rewritten = 0
         for entry in transcript.entries:
@@ -647,13 +688,9 @@ class SummarizeContextTool:
                 text = "\n".join(parts)
             if not text:
                 continue
-            preview = text.strip().splitlines()[0][:200] if text.strip() else ""
-            replacement = (
-                f"[tool result condensed: {len(text):,} chars · preview: "
-                f"{preview!r}]"
-            )
-            # Only condense if it actually shrinks; some results are already short.
-            if len(replacement) < len(text):
+            tool_name = tool_name_by_id.get(getattr(msg, "tool_call_id", "") or "")
+            replacement = self._condensed(text, "tool result condensed", tool_name)
+            if replacement is not None:
                 msg.content = replacement
                 rewritten += 1
 
@@ -674,18 +711,11 @@ class SummarizeContextTool:
         Maps tool calls back to their results via the matching
         ``tool_call_id`` field on the tool_result message and skips any
         whose originating tool name is *not* in ``EXPLORATION_TOOLS``.
+        Each result is saved whole first, as in ``tool_results_only``.
         """
         from engine.compaction import CompactionResult
 
-        # Build call_id → tool_name map.
-        tool_name_by_id: dict[str, str] = {}
-        for entry in transcript.entries:
-            msg = entry.message
-            if msg is None or not getattr(msg, "tool_calls", None):
-                continue
-            for call in msg.tool_calls:
-                tool_name_by_id[call.id] = call.name
-
+        tool_name_by_id = _tool_name_by_id(transcript)
         before = transcript.estimate_tokens()
         rewritten = 0
         for entry in transcript.entries:
@@ -708,12 +738,10 @@ class SummarizeContextTool:
                 text = "\n".join(parts)
             if not text:
                 continue
-            preview = text.strip().splitlines()[0][:200] if text.strip() else ""
-            replacement = (
-                f"[exploration result condensed ({tool_name}): "
-                f"{len(text):,} chars · preview: {preview!r}]"
+            replacement = self._condensed(
+                text, f"exploration result condensed ({tool_name})", tool_name
             )
-            if len(replacement) < len(text):
+            if replacement is not None:
                 msg.content = replacement
                 rewritten += 1
 
@@ -726,6 +754,18 @@ class SummarizeContextTool:
             entries_removed=0,
             error=None if rewritten > 0 else "no exploration results were condensable",
         )
+
+
+def _tool_name_by_id(transcript: Any) -> dict[str, str]:
+    """Each tool call's name, by call id."""
+    tool_name_by_id: dict[str, str] = {}
+    for entry in transcript.entries:
+        msg = entry.message
+        if msg is None or not getattr(msg, "tool_calls", None):
+            continue
+        for call in msg.tool_calls:
+            tool_name_by_id[call.id] = call.name
+    return tool_name_by_id
 
 
 def _apply_pins_by_ordinal(transcript: Any, ordinals: list[int]) -> list[int]:
