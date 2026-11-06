@@ -142,6 +142,46 @@ async def test_cancelled_parent_emits_orphan_and_unblock_promotes_child() -> Non
 
 
 @pytest.mark.asyncio
+async def test_an_orphaned_child_is_told_an_action_that_works_for_its_status() -> None:
+    """A failed parent marks its triage and ready children orphaned. The
+    event told each to "use unblock to proceed", but unblock refuses a
+    card that is not in triage, and a triage card while another parent
+    is pending. A ready card does not wait on a failed parent at all."""
+    board = SessionKanbanBoard()
+    dropped = (await board.create(title="dropped")).id
+    other = (await board.create(title="other")).id
+    alone = (await board.create(title="alone", parents=[dropped])).id
+    paired = (await board.create(title="paired", parents=[dropped, other])).id
+    ready = (await board.create(title="ready")).id
+    await board.update(ready, actor="worker", status="running", worker_session_id="sub_w")
+    await board.link(dropped, ready, actor="parent")
+    await board.update(ready, actor="worker", status="review")
+    await board.update(ready, actor="kanban-judge", status="ready")
+
+    await board.update(dropped, actor="parent", status="cancelled")
+
+    async def orphaned(card_id: str) -> str:
+        card = await board.get(card_id)
+        assert card.events[-1].kind == "orphaned"
+        return card.events[-1].message
+
+    assert await orphaned(alone) == f"Parent {dropped} is cancelled; use unblock to proceed"
+    assert (await board.unblock(alone, actor="parent"))[1] == "unblocked"
+    assert await orphaned(paired) == (
+        f"Parent {dropped} is cancelled; use unblock to proceed once {other} is done"
+    )
+    assert (await board.unblock(paired, actor="parent"))[1] != "unblocked"
+    await board.update(other, actor="worker", status="running")
+    await board.update(other, actor="kanban-judge", status="done")
+    assert (await board.unblock(paired, actor="parent"))[1] == "unblocked"
+    assert await orphaned(ready) == (
+        f"Parent {dropped} is cancelled; this card goes ahead without it, "
+        "unless you cancel it"
+    )
+    assert not board._parents_pending(await board.get(ready))
+
+
+@pytest.mark.asyncio
 async def test_board_reports_each_child_a_write_changes_on_its_own() -> None:
     """A write to one card can change its children: done promotes them out
     of triage, a failure marks them orphaned. Whoever wrote the card sends

@@ -1050,11 +1050,24 @@ class SessionKanbanBoard:
             child = self._tasks.get(child_id)
             if not child or child.status not in {"triage", "ready"}:
                 continue
+            # `unblock` takes only a triage card past a failed parent, and
+            # only once no other parent can still finish. A ready card does
+            # not wait on a failed parent, so the dispatcher sends it.
+            pending = self._pending_parents(child)
+            after = (
+                f" once {', '.join(pending)} {'is' if len(pending) == 1 else 'are'} done"
+                if pending
+                else ""
+            )
+            if child.status == "triage":
+                step = f"use unblock to proceed{after}"
+            else:
+                step = f"this card goes ahead without it{after}, unless you cancel it"
             child.append_event(
                 KanbanEvent(
                     "orphaned",
                     actor,
-                    f"Parent {parent_id} is {parent.status}; use unblock to proceed",
+                    f"Parent {parent_id} is {parent.status}; {step}",
                     details={"parent": parent_id, "parent_status": parent.status},
                 )
             )
