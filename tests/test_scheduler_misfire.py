@@ -139,6 +139,15 @@ async def test_a_late_tick_after_sleep_follows_the_policy(fired, policy, runs):
     assert load_job(job.id).next_fire_at > time.time()
 
 
+async def _run_owner(fired: list[str], runs: int) -> None:
+    """Own the tick loop until ``runs`` fires have landed, then stop."""
+    service = SchedulerService(SimpleNamespace())
+    await service.start()
+    assert service._is_owner
+    await _settled(fired, runs)
+    await service.stop()
+
+
 def _events(kind: str) -> list[dict]:
     from bridge.scheduler.persistence import events_path
 
@@ -162,7 +171,7 @@ async def test_fire_all_catches_up_at_most_ten_slots(fired):
     job.next_fire_at = job.last_fire_at + 60
     save_job(job)
 
-    await _run_owner(1.5)
+    await _run_owner(fired, 10)
 
     assert fired == [job.id] * 10
     assert load_job(job.id).next_fire_at > time.time()
@@ -189,7 +198,7 @@ async def test_fire_all_drops_slots_older_than_a_week(fired):
     job.next_fire_at = job.last_fire_at + DAY
     save_job(job)
 
-    await _run_owner(1.0)
+    await _run_owner(fired, 7)
 
     assert fired == [job.id] * 7
     [dropped] = _events("scheduler_missed_slots_dropped")

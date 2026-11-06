@@ -28,7 +28,7 @@ def fired(tmp_path, monkeypatch) -> list[str]:
     monkeypatch.setenv("FREYJA_HOME", str(tmp_path))
     out: list[str] = []
 
-    async def fake_fire(_service, job):
+    async def fake_fire(_service, job, **_kw):
         out.append(job.id)
         await asyncio.sleep(0)  # the run holds the lock across a loop turn
         return RunRecord(run_id=f"run_{len(out)}", job_id=job.id, job_name=job.name,
