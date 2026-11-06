@@ -5882,6 +5882,24 @@ class _BridgeSession:
                 chat_visible=False,
             )
 
+        # Step 2d: Kanban autopilot comes back with the board. Only the
+        # app's renderer sent it back (with switch_session), so a Slack
+        # thread lost it at every gateway restart, and at every model or
+        # mode change, whose reset() turns it off. A copy of a Slack thread
+        # has no board, so its autopilot stays off.
+        if (
+            metadata.get("auto_dispatch_enabled")
+            and self.kanban_board is not None
+            and not self.auto_dispatch_enabled
+        ):
+            self.auto_dispatch_enabled = True
+            self._start_kanban_dispatcher()
+            self._emit_kanban_event(
+                "kanban_autopilot_enabled",
+                "Kanban auto-dispatch restored",
+                details={"reason": "restored_from_disk"},
+            )
+
         # Step 3: Detect provider family mismatch.
         persisted_model = data.get("metadata", {}).get("model_id", "")
         if persisted_model and provider_family(persisted_model) != provider_family(self.model_id):
@@ -6851,6 +6869,8 @@ class _BridgeSession:
             # session that ran as goal/kanban — notably Slack sessions whose
             # mode was set via an inline `--mode` flag rather than the UI.
             data.setdefault("metadata", {})["coordination_strategy"] = self.coordination_strategy
+            # And kanban autopilot, which a load turns back on with the board.
+            data.setdefault("metadata", {})["auto_dispatch_enabled"] = self.auto_dispatch_enabled
             save_transcript(self.id, data)
         except Exception as exc:
             log("warn", f"failed to save transcript for {self.id}: {exc}")
@@ -9148,6 +9168,9 @@ class _BridgeSession:
                 "Kanban auto-dispatch disabled",
                 chat_visible=True,
             )
+        # Saved now, as a model or mode change is, so a restart before the
+        # next turn ends keeps it.
+        self._save_transcript()
 
     def _start_kanban_dispatcher(self) -> None:
         if self._kanban_dispatcher_task is not None and not self._kanban_dispatcher_task.done():

@@ -416,7 +416,7 @@ async def test_slash_mode_during_a_running_turn_says_the_mode_waits_for_the_turn
     assert "`kanban`" in text and "turn" in text
 
 
-# ── saved when made ──────────────────────────────────────────────────
+# ── saved when made, and kept over a restart ─────────────────────────
 
 
 def _saved() -> dict:
@@ -472,6 +472,54 @@ async def test_a_change_held_for_a_running_turn_is_saved_when_the_turn_ends(gate
     turn.set_result(None)
     await fb._drain_after_turn(thread)
     assert (_saved()["model_id"], _saved()["coordination_strategy"]) == ("claude-opus-5-5", "goal")
+
+
+async def test_kanban_autopilot_comes_back_after_a_gateway_restart(gateway, tmp_path):
+    # Only the app's renderer sent a session's autopilot back to a bridge
+    # (with switch_session). Nothing sends the gateway a thread's, so a
+    # kanban thread came back with its board and no autopilot.
+    daemon, state, _events = gateway
+    _thread_saved("kanban")
+    await daemon._on_kanban_command({"type": "kanban_autopilot", "sessionId": SLACK, "enabled": True})
+    assert state.sessions[SLACK].auto_dispatch_enabled
+    thread = await _after_a_restart(tmp_path)
+    try:
+        assert thread.coordination_strategy == "kanban" and thread.auto_dispatch_enabled
+    finally:
+        thread._stop_kanban_dispatcher()
+
+
+async def test_kanban_autopilot_turned_off_stays_off_after_a_gateway_restart(gateway, tmp_path):
+    daemon, state, _events = gateway
+    _thread_saved("bus")
+    await daemon._on_set_coordination_strategy(
+        {"type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "kanban"},
+    )
+    assert state.sessions[SLACK].auto_dispatch_enabled
+    await daemon._on_kanban_command({"type": "kanban_autopilot", "sessionId": SLACK, "enabled": False})
+    thread = await _after_a_restart(tmp_path)
+    assert thread.coordination_strategy == "kanban" and not thread.auto_dispatch_enabled
+
+
+async def test_a_model_change_leaves_a_kanban_threads_autopilot_on(gateway):
+    # The change rebuilds the session (reset, then a load from disk), and
+    # the reset turned autopilot off.
+    daemon, state, _events = gateway
+    _thread_saved("kanban")
+    await daemon._on_kanban_command({"type": "kanban_autopilot", "sessionId": SLACK, "enabled": True})
+    await daemon._on_set_model({"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5"})
+    thread = state.sessions[SLACK]
+    assert thread.model_id == "claude-opus-5-5" and thread.auto_dispatch_enabled
+
+
+async def test_a_copy_of_the_thread_in_the_app_does_not_turn_autopilot_on(app):
+    state, _events = app
+    _thread_saved("kanban")
+    data = tp.load_transcript(SLACK)
+    data["metadata"]["auto_dispatch_enabled"] = True
+    tp.save_transcript(SLACK, data)
+    copy = await state.ensure_session(SLACK)
+    assert not copy.auto_dispatch_enabled and copy._kanban_dispatcher_task is None
 
 
 # ── goal ─────────────────────────────────────────────────────────────

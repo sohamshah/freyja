@@ -31,6 +31,7 @@ def test_save_transcript_stamps_coordination_strategy_and_keeps_existing_metadat
         model_id="claude-opus-4-8",
         reasoning_level="high",
         coordination_strategy="goal",
+        auto_dispatch_enabled=True,
         id="freyja-slack-T0-channel-C0-1781025596.714409",
         _save_goal_state=lambda: None,
         _gateway_copy=False,
@@ -42,6 +43,8 @@ def test_save_transcript_stamps_coordination_strategy_and_keeps_existing_metadat
 
     md = captured.get("metadata", {})
     assert md.get("coordination_strategy") == "goal"  # the fix
+    # Kanban autopilot too, which a load turns back on with the board.
+    assert md.get("auto_dispatch_enabled") is True
     # The pre-existing stamps still land, and existing keys are not clobbered.
     assert md.get("model_id") == "claude-opus-4-8"
     assert md.get("reasoning_level") == "high"
