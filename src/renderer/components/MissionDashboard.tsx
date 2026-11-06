@@ -2939,7 +2939,6 @@ function collectKanbanCards(
 
   for (const card of cards.values()) {
     card.agents = agents.filter((agent) => agent.kanbanTaskId === card.id)
-    card.progress = kanbanCardProgress(card)
   }
 
   return [...cards.values()].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
@@ -2996,12 +2995,6 @@ function mergeKanbanEvents(
     merged.set(`${item.kind ?? ''}:${item.actor ?? ''}:${item.timestamp ?? 0}:${item.message ?? ''}`, item)
   }
   return [...merged.values()].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0))
-}
-
-function kanbanProgress(cards: KanbanCardView[]): number {
-  if (cards.length === 0) return 0
-  const total = cards.reduce((acc, card) => acc + kanbanCardProgress(card), 0)
-  return Math.round(total / cards.length)
 }
 
 // Matches the bridge's `KANBAN_STALE_SECONDS` constant — keep in sync.
@@ -3215,15 +3208,6 @@ function KanbanVerdictBadge({ card }: { card: KanbanCardView }) {
       ✗ rejected
     </span>
   )
-}
-
-function kanbanCardProgress(card: KanbanCardView): number {
-  if (card.status === 'done') return 100
-  if (card.status === 'cancelled') return 100
-  if (card.status === 'running') return 62
-  if (card.status === 'blocked') return 35
-  if (card.status === 'ready') return 18
-  return 4
 }
 
 function latestKanbanActivity(card: KanbanCardView): { label: string; text: string } | null {

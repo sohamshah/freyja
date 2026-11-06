@@ -58,6 +58,9 @@ export interface KanbanCardView {
     details?: Record<string, unknown>
   }>
   agents?: AgentView[]
+  /** Worker-reported progress as a 0–1 fraction; the board shows it as
+   *  a percent. Nothing reports it yet, so in-flight cards show the
+   *  heartbeat bar. */
   progress?: number
   createdAt?: number
   startedAt?: number
