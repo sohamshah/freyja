@@ -17,7 +17,7 @@
 //!   press_key(key, modifiers)
 //!   scroll(x, y, dx, dy)
 //!   list_windows()                  -> Vec<WindowInfo>
-//!   focus_window(window_id)
+//!   focus_window(window_id)         -> bool (the window itself was raised)
 //!   get_frontmost_window()          -> WindowInfo
 //!   read_ax_tree(window_id)         -> JSON string
 //!   read_window_text(pid, ...)      -> JSON string (reader mode)
@@ -212,9 +212,10 @@ fn get_frontmost_window(py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
 }
 
 // Raising the window asks the app over AX, so the GIL is released as for
-// the AX calls below.
+// the AX calls below. True when the window itself was raised, false when
+// only its app was activated. Builds before this returned None.
 #[pyfunction]
-fn focus_window(py: Python<'_>, window_id: u32) -> PyResult<()> {
+fn focus_window(py: Python<'_>, window_id: u32) -> PyResult<bool> {
     py.allow_threads(|| windows::focus_window(window_id)).map_err(err)
 }
 

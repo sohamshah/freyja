@@ -10,7 +10,7 @@
 //! finds the window among the app's AX windows and raises it with AXRaise
 //! and AXMain, so the window asked for is the one in front. When the AX
 //! window cannot be told apart from the app's others, only the app is
-//! activated, as before.
+//! activated, as before, and `focus_window` returns false to say so.
 
 use crate::ax::{frame_matches, AX_MESSAGING_TIMEOUT_SECS};
 use accessibility::{AXUIElement, AXUIElementAttributes};
@@ -113,14 +113,16 @@ pub fn get_frontmost_window() -> Result<Option<WindowInfo>, WindowError> {
 /// the app's key window forward, and then raises the window itself through
 /// its AX window (`raise_ax_window`). When that window cannot be found, the
 /// activation alone stands, as it did before.
-pub fn focus_window(window_id: u32) -> Result<(), WindowError> {
+///
+/// Ok(true) when the window itself was raised. Ok(false) when only its app
+/// was activated, so another window of the app may be the one in front.
+pub fn focus_window(window_id: u32) -> Result<bool, WindowError> {
     let windows = list_windows()?;
     let Some(target) = windows.into_iter().find(|w| w.id == window_id) else {
         return Err(WindowError::NoApp(-1));
     };
     activate_pid(target.pid)?;
-    raise_ax_window(&target);
-    Ok(())
+    Ok(raise_ax_window(&target))
 }
 
 /// Focus an app by bundle id, e.g. "com.apple.finder".
@@ -214,13 +216,14 @@ fn ax_window_facts(window: &AXUIElement, get_window: Option<GetWindowFn>) -> AxW
 /// Raise `target` above its app's other windows and make it the app's main
 /// window, through the app's AX window for it. Best effort: does nothing when
 /// the app does not answer or `pick_ax_window` finds no single match.
-fn raise_ax_window(target: &WindowInfo) {
+/// True only when the window was found and its AXRaise succeeded.
+fn raise_ax_window(target: &WindowInfo) -> bool {
     let app = AXUIElement::application(target.pid);
     unsafe {
         AXUIElementSetMessagingTimeout(app.as_concrete_TypeRef(), AX_MESSAGING_TIMEOUT_SECS);
     }
     let Ok(list) = app.windows() else {
-        return;
+        return false;
     };
     let windows: Vec<AXUIElement> = list.iter().map(|w| w.clone()).collect();
     for w in &windows {
@@ -231,11 +234,12 @@ fn raise_ax_window(target: &WindowInfo) {
     let get_window = ax_get_window();
     let facts: Vec<AxWindowFacts> = windows.iter().map(|w| ax_window_facts(w, get_window)).collect();
     let Some(i) = pick_ax_window(&facts, target) else {
-        return;
+        return false;
     };
     let window = &windows[i];
-    let _ = window.perform_action(&CFString::from_static_string("AXRaise"));
+    let raised = window.perform_action(&CFString::from_static_string("AXRaise")).is_ok();
     let _ = window.set_main(CFBoolean::true_value());
+    raised
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────

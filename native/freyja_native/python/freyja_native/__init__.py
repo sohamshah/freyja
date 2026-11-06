@@ -296,8 +296,14 @@ def get_frontmost_window() -> WindowInfo | None:
     return _window_from_raw(raw) if raw is not None else None
 
 
-def focus_window(window_id: int) -> None:
-    _native.focus_window(window_id)
+def focus_window(window_id: int) -> bool | None:
+    """Activate the app that owns window `window_id` and raise the window
+    above the app's other windows. True when the window itself was raised.
+    False when only its app came forward (the window could not be told apart
+    from the app's others, or the app did not answer), so another of its
+    windows may be in front. None from a native module built before it said."""
+    raised = _native.focus_window(window_id)
+    return None if raised is None else bool(raised)
 
 
 def focus_app(bundle_id: str) -> None:

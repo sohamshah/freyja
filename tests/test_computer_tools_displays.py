@@ -5,14 +5,18 @@ Input events use one global space across displays (primary top-left at
 local to N. The spec's native_origin carries N's corner so api <-> native
 translation lands on the right monitor. A display id that is not connected
 is an error that names the displays that are. The screenshot after an action,
-and the frame-dump trim, are checked here too. No screen is touched.
+and the frame-dump trim, are checked here too, and what focus_window says when
+only the app came forward. No screen is touched, and the freyja_native wrapper
+is loaded over a stub, never the built extension.
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import re
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -235,6 +239,10 @@ class _Monitors(_Hands):
         self.shots = []
         self.cursor = (0, 0)
         self.windows = []
+        # What focus_window says: True when the window itself was raised,
+        # False when only its app came forward, None from a native module
+        # built before it said.
+        self.raised = None
 
     def list_displays(self):
         return list(self.displays.values())
@@ -268,6 +276,7 @@ class _Monitors(_Hands):
 
     def focus_window(self, window_id):
         self.sent.append(("focus_window", window_id))
+        return self.raised
 
     def list_windows(self, include_helpers=False):
         return list(self.windows)
@@ -652,3 +661,80 @@ async def test_focus_window_with_no_display_layout_shows_the_display_last_looked
     await tools["screenshot"].execute("c1", {"display_id": 2})
     await tools["focus_window"].execute("c2", {"window_id": 5, "settle_ms": 0})
     assert screens.shots == [2, 2]
+
+
+@pytest.mark.parametrize("raised", [True, None])
+async def test_focus_window_that_raised_the_window_says_focused(monkeypatch, raised):
+    # None is a native module built before focus_window said whether it raised
+    # the window: the result reads as it always did.
+    screens = _Monitors(only_primary=True)
+    screens.windows = [_window(5, "com.apple.Notes", 100, 100)]
+    screens.raised = raised
+    tools, _ = _session(monkeypatch, screens)
+    res = await tools["focus_window"].execute("c1", {"window_id": 5, "settle_ms": 0})
+    assert not res.is_error
+    assert _text(res) == "Focused window #5."
+
+
+async def test_focus_window_that_brought_only_the_app_forward_says_so(monkeypatch):
+    # The app has several windows that could not be told apart, so it was
+    # activated but window 5 was not raised. Another of its windows may be the
+    # one in front, and the model must not read the screenshot as window 5.
+    screens = _Monitors(only_primary=True)
+    screens.windows = [_window(5, "com.apple.Notes", 100, 100)]
+    screens.raised = False
+    tools, _ = _session(monkeypatch, screens)
+    res = await tools["focus_window"].execute("c1", {"window_id": 5, "settle_ms": 0})
+    assert not res.is_error
+    assert screens.sent == [("focus_window", 5)]
+    assert _text(res) == (
+        "Brought forward the app of window #5, but could not raise window #5 itself. "
+        "Another window of that app may be in front of it."
+    )
+
+
+async def test_focus_window_that_brought_only_the_app_forward_names_the_display(monkeypatch):
+    screens = _Monitors()
+    screens.windows = [_window(5, "com.apple.Notes", -2000, 200)]
+    screens.raised = False
+    tools, _ = _session(monkeypatch, screens)
+    await tools["screenshot"].execute("c1", {})
+    res = await tools["focus_window"].execute("c2", {"window_id": 5, "settle_ms": 0})
+    assert screens.shots == [None, 2]
+    assert _text(res) == (
+        "Brought forward the app of window #5, but could not raise window #5 itself, "
+        "which is on display 2. Another window of that app may be in front of it. "
+        "The screenshot is of display 2 (1280x720); your next x,y refer to it."
+    )
+
+
+WRAPPER = (
+    Path(__file__).resolve().parents[1]
+    / "native" / "freyja_native" / "python" / "freyja_native" / "__init__.py"
+)
+
+
+def _wrapper_over(monkeypatch, stub):
+    """The freyja_native wrapper from this checkout over `stub` as its
+    _native, under its own name, so no built extension is loaded."""
+    name = "freyja_native_focus_test"
+    monkeypatch.setitem(sys.modules, f"{name}._native", stub)
+    spec = importlib.util.spec_from_file_location(name, WRAPPER, submodule_search_locations=[])
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(("answer", "said"), [(True, True), (False, False), (None, None)])
+def test_the_wrapper_passes_on_whether_focus_window_raised_the_window(monkeypatch, answer, said):
+    # None is what a native module built before the answer existed returns.
+    asked = []
+
+    def focus_window(window_id):
+        asked.append(window_id)
+        return answer
+
+    native = _wrapper_over(monkeypatch, SimpleNamespace(focus_window=focus_window))
+    assert native.focus_window(5) is said
+    assert asked == [5]

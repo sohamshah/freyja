@@ -1543,7 +1543,7 @@ the owning app is activated and the window is raised above the app's
 other windows. Pass `bundle_id` (e.g. `com.apple.finder`) to activate an
 application by bundle identifier; it brings its own key window forward.
 If a window cannot be raised, its app still comes forward with whichever
-window it had in front, so check the screenshot.
+window it had in front, and the result says so.
 
 This is a cross-app handoff and may count as a permission-gated
 action depending on the policy.
@@ -1604,9 +1604,13 @@ action depending on the policy.
         if not await _await_highlight_or_cancel(self._spec):
             return _cancelled_result(call_id, "focus_window")
 
+        # Whether the window itself was raised: False when only its app came
+        # forward, None for an app focused by bundle id or a native module
+        # built before focus_window said.
+        raised: bool | None = None
         try:
             if window_id:
-                await asyncio.to_thread(native.focus_window, int(window_id))
+                raised = await asyncio.to_thread(native.focus_window, int(window_id))
             else:
                 await asyncio.to_thread(native.focus_app, str(bundle_id))
         except Exception as exc:  # noqa: BLE001
@@ -1640,7 +1644,13 @@ action depending on the policy.
                 "durationMs": ACTION_HIGHLIGHT_MS + settle_ms,
             },
         )
-        summary = f"Focused {bundle_id or f'window #{window_id}'}"
+        if window_id and raised is False:
+            summary = (
+                f"Brought forward the app of window #{window_id}, but could not "
+                f"raise window #{window_id} itself"
+            )
+        else:
+            summary = f"Focused {bundle_id or f'window #{window_id}'}"
         if held is not None and pinned is not None and held[0] != pinned:
             summary += (
                 f", which is on display {held[0]}, outside this session's display "
@@ -1648,7 +1658,10 @@ action depending on the policy.
             )
         elif held is not None and held[1] > 1:
             summary += f", which is on display {held[0]}"
-        return _result_with_frame(call_id, summary + ".", frame)
+        summary += "."
+        if window_id and raised is False:
+            summary += " Another window of that app may be in front of it."
+        return _result_with_frame(call_id, summary, frame)
 
 
 class ClickTool:
