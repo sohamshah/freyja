@@ -25,6 +25,7 @@ Or from Electron main via spawn().
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import inspect
 import base64
@@ -16865,16 +16866,39 @@ def _search_workspace_files(
 # ─── Entrypoint ────────────────────────────────────────────────────────────
 
 
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    """Parse the bridge's flags. --help and unknown flags print usage and
+    exit here, before anything starts: they used to fall through to a full
+    interactive bridge against ~/.freyja."""
+    parser = argparse.ArgumentParser(
+        prog="freyja_bridge.py",
+        description=(
+            "Freyja JSONL bridge: reads commands on stdin, writes events on "
+            "stdout. Electron main starts it with no flags."
+        ),
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="LaunchAgent daemon: scheduler and gateway, no stdin loop",
+    )
+    parser.add_argument(
+        "--scheduler-only", action="store_true", help="same as --headless"
+    )
+    return parser.parse_args(argv)
+
+
 def main() -> None:
+    args = _parse_args(sys.argv[1:])
     # Headless / scheduler-only mode (LaunchAgent daemon entry).
     # No stdin command loop, no renderer IPC — just bring up the
     # scheduler and the gateway, then run until killed. The flag also
     # propagates via FREYJA_HEADLESS so child processes know.
     headless = (
-        "--headless" in sys.argv
+        args.headless
         or os.environ.get("FREYJA_HEADLESS", "").lower() in ("1", "true", "yes")
     )
-    scheduler_only = "--scheduler-only" in sys.argv or headless
+    scheduler_only = args.scheduler_only or headless
     try:
         if scheduler_only:
             os.environ["FREYJA_HEADLESS"] = "1"
