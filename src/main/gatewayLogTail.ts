@@ -211,8 +211,12 @@ export class GatewayLogTailer {
       // Skip events with no sessionId (daemon boot/shutdown messages,
       // adapter status logs, etc.) — the renderer's store routes by
       // sessionId so an undirected event has nowhere meaningful to
-      // land.
-      if (!sid) continue
+      // land. An error is the exception: one that names no session is a
+      // notice, shown as the local bridge's own are.
+      if (!sid) {
+        if (event.type === 'error') this.forward(event)
+        continue
+      }
       // Record ownership so future commands for this session route to
       // the daemon. ``session_spawned`` events for sub-agents carry
       // the child's id here and the parent's id in ``parentSessionId``;
