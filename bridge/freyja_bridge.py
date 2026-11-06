@@ -5722,10 +5722,19 @@ class _BridgeSession:
                 # The rows every other compaction writes: compaction_event
                 # telemetry for the dashboard, and compactions.jsonl, with
                 # the summary, for exports.
+                window = outlook.effective_window or None
                 restore_details = {
                     "trigger": "restore",
                     "reason": reason,
                     "tokens_before": estimated,
+                    # The sizes and pressure every runtime compaction event
+                    # carries (Runner._compaction_event_details): the chat's
+                    # compacted card reads context_tokens_*.
+                    "context_tokens_before": estimated,
+                    "effective_window": window,
+                    "pressure_pct_before": (
+                        round(estimated / window * 100, 1) if window else None
+                    ),
                 }
                 self._mirror_compaction_event("compaction_start", restore_details)
                 self._snapshot_compaction_boundary("compaction_start", restore_details)
@@ -5765,6 +5774,14 @@ class _BridgeSession:
                 # ran inside `compactor.compact()` above, whether or not the
                 # summary came back.
                 self._last_compaction_turn_id = self.current_turn_id
+                tokens_after = self.session.estimate_tokens()
+                sizes_after = {
+                    "tokens_after": tokens_after,
+                    "context_tokens_after": tokens_after,
+                    "pressure_pct_after": (
+                        round(tokens_after / window * 100, 1) if window else None
+                    ),
+                }
                 if not getattr(compaction_result, "success", False):
                     # Say so. On 2026-10-25 and 10-26 both idle-revisit
                     # compactions of the operator's DM ran 224 s, hit the
@@ -5774,7 +5791,7 @@ class _BridgeSession:
                     log("warn", f"restore compaction failed ({reason}): {error}")
                     failed_details = {
                         **restore_details,
-                        "tokens_after": self.session.estimate_tokens(),
+                        **sizes_after,
                         "error": error,
                     }
                     emit(
@@ -5794,7 +5811,7 @@ class _BridgeSession:
                     self.session.compaction_count += 1
                     complete_details = {
                         **restore_details,
-                        "tokens_after": self.session.estimate_tokens(),
+                        **sizes_after,
                         "entries_removed": compaction_result.entries_removed,
                         "summary_text": compaction_result.summary or "",
                         "summary_tokens": getattr(compaction_result, "summary_tokens", 0),

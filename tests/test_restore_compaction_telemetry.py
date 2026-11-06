@@ -107,3 +107,35 @@ async def test_a_failed_restore_compaction_writes_its_telemetry(monkeypatch, tmp
         ("compaction_start", "restore", "pressure"),
         ("compaction_failed", "restore", "pressure"),
     ]
+
+
+async def test_a_restore_compaction_carries_its_window_and_pressure(monkeypatch, tmp_path, rows):
+    """The chat's compacted card reads context_tokens_before and
+    context_tokens_after, and the dashboard reads the window and the pressure
+    before and after, as Runner._compaction_event_details sets them on every
+    runtime compaction. The restore events carried only tokens_before and
+    tokens_after, so the card showed no size change and the rows no
+    pressure."""
+    result = CompactionResult(success=True, summary="We built the parser.", tokens_before=400_000,
+                              tokens_after=5_000, entries_removed=40)
+    sess, _logged = _restoring_session(monkeypatch, tmp_path, result)
+    # The window less the reply's reserve, as the runner reads it.
+    window = 200_000 - AgentConfig().max_tokens_per_turn
+
+    with patch("bridge.freyja_bridge.emit") as emitted:
+        assert await sess.try_restore_transcript()
+
+    [event] = [c.args[0] for c in emitted.call_args_list
+               if c.args[0].get("subtype") == "compaction_complete"]
+    details = event["details"]
+    before, after = details["tokens_before"], details["tokens_after"]
+    assert before > after > 0
+    assert (details.get("context_tokens_before"), details.get("context_tokens_after")) == (before, after)
+    assert details.get("effective_window") == window
+    assert details.get("pressure_pct_before") == round(before / window * 100, 1)
+    assert details.get("pressure_pct_after") == round(after / window * 100, 1)
+    start, complete = [r for r in rows if r["type"] == "compaction_event"]
+    assert (start["effective_window"], start["pressure_pct_before"]) == (
+        window, details["pressure_pct_before"])
+    assert (complete["effective_window"], complete["pressure_pct_before"], complete["pressure_pct_after"]) == (
+        window, details["pressure_pct_before"], details["pressure_pct_after"])
