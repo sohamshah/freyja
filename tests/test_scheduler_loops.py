@@ -327,15 +327,19 @@ async def test_a_success_between_failures_keeps_the_job(monkeypatch) -> None:
 
 
 class _ColdSession:
-    def __init__(self, session_id, *, model_id, reasoning_level, **_kw) -> None:
+    def __init__(self, session_id, *, model_id, reasoning_level, coordination_strategy, **_kw) -> None:
         self.id = session_id
         self.model_id = model_id
         self.reasoning_level = reasoning_level
+        self.coordination_strategy = coordination_strategy
         self.gateway_source = None
         self.restore_notice = None
 
     async def try_restore_transcript(self) -> bool:
         return True
+
+    def _save_transcript(self) -> None:
+        pass
 
 
 def _persist(tmp_path, monkeypatch, sid: str, metadata: dict) -> None:

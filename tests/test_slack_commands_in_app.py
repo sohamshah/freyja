@@ -416,6 +416,64 @@ async def test_slash_mode_during_a_running_turn_says_the_mode_waits_for_the_turn
     assert "`kanban`" in text and "turn" in text
 
 
+# ── saved when made ──────────────────────────────────────────────────
+
+
+def _saved() -> dict:
+    return tp.load_transcript(SLACK)["metadata"]
+
+
+async def _after_a_restart(tmp_path):
+    """The thread as a gateway started again loads it."""
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    return await state.ensure_session(SLACK)
+
+
+async def test_a_mode_picked_in_the_app_is_kept_over_a_gateway_restart_before_the_next_turn(gateway, tmp_path):
+    # Saved only when the thread's next turn ended, the change was lost
+    # when the gateway restarted first.
+    daemon, state, _events = gateway
+    _thread_saved("bus")
+    await state.ensure_session(SLACK)
+    await daemon._on_set_coordination_strategy(
+        {"type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "goal"},
+    )
+    assert _saved()["coordination_strategy"] == "goal"
+    assert (await _after_a_restart(tmp_path)).coordination_strategy == "goal"
+
+
+async def test_a_model_picked_in_the_app_is_saved_when_it_is_made(gateway):
+    daemon, state, _events = gateway
+    _thread_saved("bus")
+    await state.ensure_session(SLACK)
+    await daemon._on_set_model({"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5"})
+    assert _saved()["model_id"] == "claude-opus-5-5"
+
+
+async def test_a_change_to_a_thread_not_loaded_since_the_gateway_started_is_saved(gateway):
+    daemon, _state, _events = gateway
+    _thread_saved("bus")
+    await daemon._on_set_model({"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5"})
+    assert _saved()["model_id"] == "claude-opus-5-5"
+    # The mode it was saved with stays.
+    assert _saved()["coordination_strategy"] == "bus"
+
+
+async def test_a_change_held_for_a_running_turn_is_saved_when_the_turn_ends(gateway):
+    daemon, state, _events = gateway
+    _thread_saved("bus")
+    thread = await state.ensure_session(SLACK)
+    turn = asyncio.get_running_loop().create_future()
+    thread.pending_task = turn
+    await daemon._on_set_model({"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5"})
+    await daemon._on_set_coordination_strategy(
+        {"type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "goal"},
+    )
+    turn.set_result(None)
+    await fb._drain_after_turn(thread)
+    assert (_saved()["model_id"], _saved()["coordination_strategy"]) == ("claude-opus-5-5", "goal")
+
+
 # ── goal ─────────────────────────────────────────────────────────────
 
 

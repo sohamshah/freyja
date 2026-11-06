@@ -13240,7 +13240,10 @@ class _BridgeState:
                     existing.reset()
                     # Re-restore from disk — the transcript was just wiped
                     # by reset() but the file still has the prior state.
-                    await existing.try_restore_transcript()
+                    if await existing.try_restore_transcript():
+                        # Saved with the change now. Saved only when the
+                        # next turn ended, it was lost to a restart first.
+                        existing._save_transcript()  # noqa: SLF001
                 else:
                     await existing._restore_persisted_transcript_if_empty()  # noqa: SLF001
             finally:
@@ -13302,9 +13305,15 @@ class _BridgeState:
         # Attempt transcript restoration from disk for persisted sessions.
         s.restore_notice = restore_notice
         try:
-            await s.try_restore_transcript()
+            restored = await s.try_restore_transcript()
         finally:
             s.restore_notice = None
+        if restored and saved and (
+            saved.get("model_id"), saved.get("reasoning_level"), saved.get("coordination_strategy")
+        ) != (s.model_id, s.reasoning_level, s.coordination_strategy):
+            # Loaded for a change (a thread the gateway has not run since
+            # it started): saved with it now, as a loaded session's is.
+            s._save_transcript()  # noqa: SLF001
         return s
 
     def get(self, session_id: str | None) -> _BridgeSession | None:
@@ -14050,7 +14059,9 @@ async def _apply_pending_config(sess: "_BridgeSession") -> None:
         if not (model_changed or strategy_changed):
             return
         sess.reset()
-        await sess.try_restore_transcript()
+        if await sess.try_restore_transcript():
+            # Saved with the change now, not when the next turn ends.
+            sess._save_transcript()  # noqa: SLF001
         log(
             "info",
             f"applied deferred config on session={sess.id}: "

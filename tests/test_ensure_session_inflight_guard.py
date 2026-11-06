@@ -40,7 +40,7 @@ class _DoneTask:
 def _make_existing(pending_task) -> SimpleNamespace:
     """A _BridgeSession-shaped stub. reset/try_restore flip flags so the test
     can assert whether the destructive path was taken."""
-    flags = {"reset": False, "restore": False, "restore_if_empty": False}
+    flags = {"reset": False, "restore": False, "restore_if_empty": False, "save": False}
 
     async def _try_restore() -> bool:
         flags["restore"] = True
@@ -65,6 +65,7 @@ def _make_existing(pending_task) -> SimpleNamespace:
         reset=lambda: flags.__setitem__("reset", True),
         try_restore_transcript=_try_restore,
         _restore_persisted_transcript_if_empty=_restore_if_empty,
+        _save_transcript=lambda: flags.__setitem__("save", True),
     )
     existing._flags = flags  # type: ignore[attr-defined]
     return existing
@@ -136,6 +137,8 @@ def test_no_inflight_turn_still_resets_on_real_change():
     assert existing.model_id == "claude-sonnet-4-6"  # change applied
     assert existing._flags["reset"] is True  # destructive path taken
     assert existing._flags["restore"] is True
+    # Saved with the new model at once, not at the next turn's end.
+    assert existing._flags["save"] is True
     assert state.active_session_id == existing.id
 
 
