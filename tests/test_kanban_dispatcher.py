@@ -1200,3 +1200,40 @@ async def test_force_dispatch_sends_a_review_card_to_the_judge_with_autopilot_of
         card: "a judge is already on it",
         empty: "it has no worker session and no artifacts to review",
     }
+
+
+@pytest.mark.asyncio
+async def test_a_full_board_still_judges_and_reclaims() -> None:
+    """The tick returned once KANBAN_MAX_PARALLEL workers ran, before the
+    review lane and the stale sweep, though neither takes a worker slot.
+    On a full board no card was judged and no stuck card was reclaimed.
+    Both now run; only the worker lanes wait for a free slot."""
+    import time as _time
+
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    review = (await _review_card(board, tool, worker=True)).id
+    stuck = (await board.create(title="stuck", assignee="code")).id
+    await board.update(stuck, actor="worker", status="running", worker_session_id="sub_s")
+    board._tasks[stuck].updated_at = _time.time() - (_BridgeSession.KANBAN_RECLAIM_SECONDS + 60)
+    await board.create(title="next", assignee="code")
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    session.tool_registry._tools["kanban"] = tool
+    session.subagent_registry.records = [
+        _StubRecord(is_running=True, kanban_task_id=f"phantom_{i}")
+        for i in range(_BridgeSession.KANBAN_MAX_PARALLEL)
+    ]
+    judged: list[str] = []
+
+    async def _judge(card: Any, *, sub_tool: Any) -> None:
+        judged.append(card.id)
+
+    session._run_kanban_judge_for_card = _judge
+
+    await session._kanban_tick(source="test")
+    await asyncio.sleep(0)
+
+    assert judged == [review]
+    assert (await board.get(stuck)).status == "crashed"
+    assert sub_tool.calls == []

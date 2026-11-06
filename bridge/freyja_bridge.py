@@ -9479,10 +9479,10 @@ class _BridgeSession:
         live = self._kanban_live_cards()
         self._kanban_dispatched = self._kanban_dispatched & live
 
+        # Only the worker lanes take a slot. The review lane and the stale
+        # sweep run on a full board too.
         running_count = len(live)
         capacity = max(0, self.KANBAN_MAX_PARALLEL - running_count)
-        if capacity == 0:
-            return
 
         cards = await self.kanban_board.list()
 
