@@ -160,6 +160,21 @@ async def test_a_transcript_cut_since_the_last_call_is_measured_afresh():
     assert compactor.calls == 0
 
 
+async def test_the_outlook_after_a_cut_reads_what_the_next_turn_will():
+    # The Slack notice reads context_outlook before the turn. After a cut it
+    # kept the last call's 76% and announced a compaction the turn never ran.
+    runner, _ = _runner([_end(38_000)])
+    session = Session.create(system_prompt="t")
+    await runner.run(session, "first task")
+    assert runner.context_outlook(session).will_compact
+    session.transcript._entries = []  # noqa: SLF001
+
+    outlook = runner.context_outlook(session)
+
+    assert not outlook.will_compact
+    assert outlook.used_tokens == session.estimate_tokens()
+
+
 async def test_the_turn_after_a_manual_compaction_starts_from_the_size_it_left(monkeypatch, tmp_path):
     # A manual compaction runs between turns and sets the measure to the
     # size it left. The next turn saw a rewritten transcript and zeroed it,

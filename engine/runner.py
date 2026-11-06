@@ -3319,7 +3319,16 @@ class AsyncAgentRunner:
         prompt under the threshold first. ``prompt_cached`` means the last
         prompt is still in the provider's cache and would be sent unchanged,
         so the reply starts fast whatever the size."""
-        used = int(self._current_context_tokens(session))
+        if (
+            self.turn_active
+            or self._continues_sent_prompt(session)
+            or self._continues_compacted(session)
+        ):
+            used = int(self._current_context_tokens(session))
+        else:
+            # The next turn drops a measure the transcript no longer starts
+            # with (an edit, a delete; see run()) and reads the tokenizer.
+            used = int(session.estimate_tokens())
         context_window = int(getattr(self.provider, "context_window", 0) or 0)
         effective = (
             max(1, context_window - self.config.max_tokens_per_turn)

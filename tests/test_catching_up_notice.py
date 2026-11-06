@@ -234,6 +234,9 @@ def test_context_outlook_follows_the_runner_measure():
     runner = AsyncAgentRunner(_Provider())
     session = Session.create(system_prompt="t")
     effective = 1_000_000 - runner.config.max_tokens_per_turn
+    # The measure stands for the transcript as it is, as after a compaction
+    # between turns. A transcript cut since is measured afresh.
+    runner.mark_context_compacted(session, 0)
     # The DM thread of 2026-10-27: a 458k prompt in a 1M window.
     runner.usage.last_input = 2_000
     runner.usage.last_cache_read = 456_000
