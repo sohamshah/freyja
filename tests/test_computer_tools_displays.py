@@ -13,6 +13,8 @@ import asyncio
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from bridge.tools import computer_tools as ct
 
 
@@ -69,18 +71,42 @@ class _Desk:
         raise RuntimeError(f"capture proxy 404: display {kw['display_id']} is not connected")
 
 
-def _tool(monkeypatch, cls, default_display_id=None):
+class _Hands(_Desk):
+    """_Desk that writes down the input a tool asks for. Nothing is sent."""
+
+    def __init__(self):
+        self.sent = []
+
+    def click(self, x, y, **kw):
+        self.sent.append(("click", x, y))
+
+    def move_mouse(self, x, y):
+        self.sent.append(("move_mouse", x, y))
+
+    def scroll(self, dx, dy, *, x=None, y=None):
+        self.sent.append(("scroll", x, y))
+
+
+def _tool(monkeypatch, cls, default_display_id=None, *, native=_Desk, framed=True):
+    """`framed` means a frame was already taken, so the spec has its dims."""
+
     async def no_frame(spec, native, **kw):
         return None
 
+    async def no_highlight(spec, ms=0):
+        return True
+
     monkeypatch.setattr(ct, "_require_screen_recording", lambda call_id, tool: None)
-    monkeypatch.setattr(ct, "_import_native", lambda: _Desk)
+    monkeypatch.setattr(ct, "_require_accessibility", lambda call_id, tool: None)
+    monkeypatch.setattr(ct, "_await_highlight_or_cancel", no_highlight)
+    monkeypatch.setattr(ct, "_import_native", lambda: native)
     monkeypatch.setattr(ct, "_emit_frame", no_frame)
     spec = ct.ComputerToolSpec(
         session_id="t", emit_event=lambda e: None, cancel_event=asyncio.Event(),
         default_display_id=default_display_id,
     )
-    spec.native_dims, spec.api_dims = (1920, 1080), (1280, 720)
+    if framed:
+        spec.native_dims, spec.api_dims = (1920, 1080), (1280, 720)
     return cls(spec)
 
 
@@ -115,3 +141,54 @@ async def test_inspect_region_of_a_display_that_is_not_connected(monkeypatch):
     res = await tool.execute("c1", {"x1": 0, "y1": 0, "x2": 10, "y2": 10, "display_id": 99})
     assert res.is_error
     assert res.content.startswith("inspect_region: display 99 is not connected")
+
+
+GONE_PIN = (
+    ": this session is pinned to display 7, which is not connected (it may have been "
+    "unplugged, or the id is from an old list). Connected displays: 1 (primary), 2. "
+    "Take a screenshot with one of those ids as display_id first; coordinates then "
+    "refer to that screenshot."
+)
+
+
+@pytest.mark.parametrize(
+    ("cls", "name", "args"),
+    [
+        (ct.ClickTool, "click", {"x": 640, "y": 360}),
+        (ct.MoveMouseTool, "move_mouse", {"x": 640, "y": 360}),
+        (ct.ScrollTool, "scroll", {"x": 640, "y": 360, "dy": 3}),
+        (ct.ListWindowsTool, "list_windows", {}),
+        (ct.FindElementTool, "find_element", {"pid": 1, "label": "OK"}),
+        (ct.ReadAxTreeTool, "read_ax_tree", {"pid": 1}),
+        (ct.CursorPositionTool, "cursor_position", {}),
+        (ct.InspectRegionTool, "inspect_region", {"x1": 0, "y1": 0, "x2": 10, "y2": 10}),
+    ],
+)
+async def test_a_pinned_display_that_is_gone_is_not_swapped_for_the_main_one(monkeypatch, cls, name, args):
+    # No frame yet, so the tool sizes the coordinate space from the pinned
+    # display. The main display's size and corner would put the click on
+    # the wrong screen.
+    hands = _Hands()
+    tool = _tool(monkeypatch, cls, default_display_id=7, native=hands, framed=False)
+    res = await tool.execute("c1", {**args, "settle_ms": 0})
+    assert res.is_error
+    assert res.content == name + GONE_PIN
+    assert hands.sent == []
+    assert tool._spec.native_dims is None
+
+
+async def test_a_pinned_display_with_no_frame_yet_maps_onto_itself(monkeypatch):
+    monkeypatch.setattr(ct, "display_geometry", lambda: {2: ct.DisplayGeometry(-2560, 0, 2560, 1440, False)})
+    hands = _Hands()
+    tool = _tool(monkeypatch, ct.ClickTool, default_display_id=2, native=hands, framed=False)
+    res = await tool.execute("c1", {"x": 640, "y": 360, "settle_ms": 0})
+    assert not res.is_error
+    assert hands.sent == [("click", -1280, 720)]
+
+
+async def test_scroll_at_the_cursor_needs_no_display(monkeypatch):
+    hands = _Hands()
+    tool = _tool(monkeypatch, ct.ScrollTool, default_display_id=7, native=hands, framed=False)
+    res = await tool.execute("c1", {"dy": 3, "settle_ms": 0})
+    assert not res.is_error
+    assert hands.sent == [("scroll", None, None)]

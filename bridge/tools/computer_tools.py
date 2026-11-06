@@ -618,7 +618,7 @@ def _compute_api_dims(native_w: int, native_h: int) -> tuple[int, int]:
     return api_w, api_h
 
 
-async def _ensure_dims(spec: ComputerToolSpec, native: Any) -> None:
+async def _ensure_dims(spec: ComputerToolSpec, native: Any) -> str | None:
     """Populate `spec.native_dims` and `spec.api_dims` if missing.
 
     Called at the top of every coordinate-handling tool so translation
@@ -627,28 +627,44 @@ async def _ensure_dims(spec: ComputerToolSpec, native: Any) -> None:
     are already set — the most recent `_emit_frame` call is the source
     of truth, so we only fall back to `list_displays` when no frame has
     been emitted yet.
+
+    Returns the reason, and leaves the dims unset, when the session is
+    pinned to a display that is not connected. The primary display's size
+    and corner would map every coordinate onto the wrong screen, so the
+    caller fails with that reason, as a capture of that display does.
+    None otherwise.
     """
     if spec.native_dims is not None and spec.api_dims is not None:
-        return
+        return None
     try:
         displays = await asyncio.to_thread(native.list_displays)
     except Exception:  # noqa: BLE001
-        return
+        return None
     if not displays:
-        return
-    target = None
+        return None
     if spec.default_display_id is not None:
         target = next(
             (d for d in displays if d.id == spec.default_display_id), None
         )
-    if target is None:
+        if target is None:
+            return _display_gone_text(
+                spec.default_display_id,
+                displays,
+                pinned=True,
+                hint=(
+                    "Take a screenshot with one of those ids as display_id first; "
+                    "coordinates then refer to that screenshot."
+                ),
+            )
+    else:
         target = next((d for d in displays if d.is_primary), displays[0])
-    if target is not None and target.width > 0 and target.height > 0:
+    if target.width > 0 and target.height > 0:
         spec.native_dims = (int(target.width), int(target.height))
         spec.api_dims = _compute_api_dims(
             int(target.width), int(target.height)
         )
         spec.native_origin = (0, 0) if target.is_primary else _display_origin(target.id)
+    return None
 
 
 def _api_to_native(spec: ComputerToolSpec, x: float, y: float) -> tuple[int, int]:
@@ -783,12 +799,6 @@ async def _missing_display_result(
         return None
     if not displays or any(d.id == display_id for d in displays):
         return None
-    connected = ", ".join(f"{d.id} (primary)" if d.is_primary else str(d.id) for d in displays)
-    where = (
-        f"this session is pinned to display {display_id}, which is not connected"
-        if pinned
-        else f"display {display_id} is not connected"
-    )
     hint = (
         "Pass one of those ids as display_id."
         if pinned
@@ -796,11 +806,23 @@ async def _missing_display_result(
     )
     return ToolResult(
         call_id=call_id,
-        content=(
-            f"{tool}: {where} (it may have been unplugged, or the id is from an old list). "
-            f"Connected displays: {connected}. {hint}"
-        ),
+        content=f"{tool}: {_display_gone_text(display_id, displays, pinned=pinned, hint=hint)}",
         is_error=True,
+    )
+
+
+def _display_gone_text(display_id: int, displays: list[Any], *, pinned: bool, hint: str) -> str:
+    """Why a display cannot be used: it is not connected. Names the ids
+    that are. `pinned` means the id is the session's default display."""
+    connected = ", ".join(f"{d.id} (primary)" if d.is_primary else str(d.id) for d in displays)
+    where = (
+        f"this session is pinned to display {display_id}, which is not connected"
+        if pinned
+        else f"display {display_id} is not connected"
+    )
+    return (
+        f"{where} (it may have been unplugged, or the id is from an old list). "
+        f"Connected displays: {connected}. {hint}"
     )
 
 
@@ -1218,7 +1240,9 @@ see real application windows.
             return ToolResult(
                 call_id=call_id, content=f"Error: {exc}", is_error=True
             )
-        await _ensure_dims(self._spec, native)
+        gone = await _ensure_dims(self._spec, native)
+        if gone is not None:
+            return ToolResult(call_id=call_id, content=f"list_windows: {gone}", is_error=True)
         include_helpers = bool(arguments.get("include_helpers", False))
         windows = await asyncio.to_thread(
             native.list_windows, include_helpers=include_helpers
@@ -1438,7 +1462,9 @@ screenshot for grounding) sees the post-click state.
                 call_id=call_id, content=f"Error: {exc}", is_error=True
             )
 
-        await _ensure_dims(self._spec, native)
+        gone = await _ensure_dims(self._spec, native)
+        if gone is not None:
+            return ToolResult(call_id=call_id, content=f"click: {gone}", is_error=True)
         api_x = int(arguments.get("x", 0))
         api_y = int(arguments.get("y", 0))
         x, y = _api_to_native(self._spec, api_x, api_y)
@@ -1560,7 +1586,9 @@ drawn since no click is involved.
                 call_id=call_id, content=f"Error: {exc}", is_error=True
             )
 
-        await _ensure_dims(self._spec, native)
+        gone = await _ensure_dims(self._spec, native)
+        if gone is not None:
+            return ToolResult(call_id=call_id, content=f"move_mouse: {gone}", is_error=True)
         api_x = int(arguments.get("x", 0))
         api_y = int(arguments.get("y", 0))
         x, y = _api_to_native(self._spec, api_x, api_y)
@@ -2019,7 +2047,7 @@ screen). A typical scroll-a-page-down is `dy=8`.
                 call_id=call_id, content=f"Error: {exc}", is_error=True
             )
 
-        await _ensure_dims(self._spec, native)
+        gone = await _ensure_dims(self._spec, native)
         dx = int(arguments.get("dx", 0))
         dy = int(arguments.get("dy", 0))
         raw_x = arguments.get("x")
@@ -2029,6 +2057,9 @@ screen). A typical scroll-a-page-down is `dy=8`.
         x: int | None
         y: int | None
         if raw_x is not None and raw_y is not None:
+            # Scrolling at the cursor needs no display; at a point it does.
+            if gone is not None:
+                return ToolResult(call_id=call_id, content=f"scroll: {gone}", is_error=True)
             api_x = int(raw_x)
             api_y = int(raw_y)
             x, y = _api_to_native(self._spec, api_x, api_y)
@@ -2189,7 +2220,9 @@ one and costs less.
                 call_id=call_id, content=f"Error: {exc}", is_error=True
             )
 
-        await _ensure_dims(self._spec, native)
+        gone = await _ensure_dims(self._spec, native)
+        if gone is not None:
+            return ToolResult(call_id=call_id, content=f"inspect_region: {gone}", is_error=True)
         api_x1 = int(arguments.get("x1", 0))
         api_y1 = int(arguments.get("y1", 0))
         api_x2 = int(arguments.get("x2", 0))
@@ -2372,7 +2405,9 @@ Pass `pid` from `list_windows` or `get_frontmost_window`.
                 call_id=call_id, content=f"Error: {exc}", is_error=True
             )
 
-        await _ensure_dims(self._spec, native)
+        gone = await _ensure_dims(self._spec, native)
+        if gone is not None:
+            return ToolResult(call_id=call_id, content=f"read_ax_tree: {gone}", is_error=True)
         pid = int(arguments.get("pid", 0))
         max_depth = int(arguments.get("max_depth", 8))
         if pid <= 0:
@@ -2495,7 +2530,9 @@ Example: `find_element(pid=123, role="AXButton", label="Submit")`
                 call_id=call_id, content=f"Error: {exc}", is_error=True
             )
 
-        await _ensure_dims(self._spec, native)
+        gone = await _ensure_dims(self._spec, native)
+        if gone is not None:
+            return ToolResult(call_id=call_id, content=f"find_element: {gone}", is_error=True)
         pid = int(arguments.get("pid", 0))
         role = arguments.get("role")
         label = arguments.get("label")
@@ -2578,7 +2615,9 @@ Useful as a quick sanity check that the native layer is alive.
             return ToolResult(
                 call_id=call_id, content=f"Error: {exc}", is_error=True
             )
-        await _ensure_dims(self._spec, native)
+        gone = await _ensure_dims(self._spec, native)
+        if gone is not None:
+            return ToolResult(call_id=call_id, content=f"cursor_position: {gone}", is_error=True)
         try:
             native_x, native_y = await asyncio.to_thread(native.cursor_position)
         except Exception as exc:  # noqa: BLE001
