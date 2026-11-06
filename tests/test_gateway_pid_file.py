@@ -153,3 +153,33 @@ def test_a_gateway_started_with_replace_takes_the_lock_once_the_old_one_is_gone(
         if other.returncode is None:
             other.kill()
         reaper.join(timeout=10)
+
+
+async def test_a_gateway_refused_the_lock_exits_so_launchd_does_not_start_it_again(monkeypatch):
+    """launchd starts the gateway again on any exit but 0 (KeepAlive
+    SuccessfulExit=false, no more often than every 10 s). One refused the
+    lock while another gateway held it exited 1, so it was started again,
+    and refused again, for as long as the other one ran."""
+    import subprocess
+    import sys
+
+    from bridge.gateway import run
+    from bridge.gateway.setup.launchd import build_plist
+
+    assert build_plist(program_args=["freyja"])["KeepAlive"] == {"SuccessfulExit": False}
+
+    def _no_daemon(*_a, **_kw):
+        raise AssertionError("a refused gateway started")
+
+    monkeypatch.setattr(run, "GatewayDaemon", _no_daemon)
+    other = subprocess.Popen(
+        [sys.executable, "-c", "import sys; from bridge.gateway import pid; print(pid.acquire_lock(), flush=True); sys.stdin.read()"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert other.stdout.readline().strip() == "True"
+        assert await run._async_main(replace=False) == 0
+        assert not gp.holds_lock()
+    finally:
+        other.stdin.close()
+        other.wait(timeout=10)

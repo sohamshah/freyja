@@ -3593,7 +3593,10 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop, daemon: GatewayDae
 
 async def _async_main(*, replace: bool) -> int:
     if not acquire_lock(replace=replace):
-        return 1
+        # Another gateway runs. 0, because launchd starts the gateway again
+        # on any other exit (KeepAlive SuccessfulExit=false), and this one
+        # was refused again every 10 s for as long as the other one ran.
+        return 0
 
     _setup_logging()
     _load_env_into_os_environ()
