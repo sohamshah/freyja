@@ -123,13 +123,27 @@ async def test_every_kanban_command_for_a_slack_session_goes_to_the_gateway(app,
     assert sent == {**cmd, "sessionId": SLACK}
 
 
-async def test_a_kanban_command_is_refused_when_no_gateway_runs(app, monkeypatch):
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        {"type": "kanban_autopilot", "enabled": True},
+        {"type": "kanban_operator_force_dispatch", "cardId": "card_001"},
+    ],
+)
+async def test_a_kanban_command_is_refused_for_its_session_when_no_gateway_runs(app, monkeypatch, cmd):
+    # The app waits for the gateway's answer to /autopilot on a Slack
+    # session. The refusal was an error that named no session, so the wait
+    # stayed, and a later autopilot event for the thread answered it with
+    # a toast nobody asked for. Refused as the gateway refuses a command
+    # for a thread it does not have, the app's wait ends.
     state, events = app
     _gateway_running(monkeypatch, None)
-    await fb._handle_command(state, {"type": "kanban_operator_force_dispatch", "sessionId": SLACK, "cardId": "card_001"})
+    await fb._handle_command(state, {**cmd, "sessionId": SLACK})
     assert state.sessions == {} and _forwarded() == []
-    (err,) = [e for e in events if e["type"] == "error"]
-    assert "Slack gateway" in err["message"]
+    assert not [e for e in events if e["type"] == "error"]
+    (refused,) = [e for e in events if e.get("subtype") == "control_command_skipped"]
+    assert refused["sessionId"] == SLACK and "Slack gateway" in refused["message"]
+    assert refused["details"]["command"] == cmd["type"] and refused["details"]["chatVisible"]
 
 
 def _gateway_with(monkeypatch, sess):

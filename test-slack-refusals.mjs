@@ -192,6 +192,24 @@ await check('/autopilot on a Slack session in kanban mode says on when the gatew
   assert.equal(H().toast, null)
 })
 
+await check('/autopilot on a Slack session that no gateway can answer leaves no wait behind', async () => {
+  openSlack()
+  H().runSlashCommand('/autopilot', 'on')
+  // The app's bridge refuses it for the thread, as the gateway refuses a
+  // command for a thread it does not have.
+  H().handleEvent({
+    type: 'system_event', sessionId: SLACK, subtype: 'control_command_skipped',
+    message: "Not done: this session's kanban board is in the Slack gateway, which is not running.",
+    details: { command: 'kanban_autopilot', chatVisible: true },
+  })
+  assert.ok(H().messages.some((m) => m.parts.some((p) => p.systemSubtype === 'control_command_skipped')))
+  // An autopilot event for the thread later, when the gateway is back,
+  // answers no command.
+  autopilotAnswer(SLACK, 'kanban_autopilot_enabled', 'Kanban auto-dispatch restored')
+  await microtasks()
+  assert.equal(H().toast, null)
+})
+
 await check('/autopilot on a desktop session still says on at once', async () => {
   useHarness.setState({ activeSessionId: 'session-desktop', sessions: [row('session-desktop')], toast: null })
   H().runSlashCommand('/autopilot', 'on')

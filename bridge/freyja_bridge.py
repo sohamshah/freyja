@@ -1574,8 +1574,8 @@ def _route_command_to_gateway(
     a Slack session the gateway holds; ``down`` is the error when no
     gateway runs. With ``refused``, a refusal is the session's system
     event of that subtype, as the gateway's own refusal is, with the
-    command's request id, so the app can take back what it showed for
-    that command."""
+    command and its request id, so the app can take back what it showed
+    for that command, or stop waiting for its answer."""
     if not _gateway_holds(sid):
         return False
     from bridge.gateway.control_channel import append_command
@@ -1591,7 +1591,11 @@ def _route_command_to_gateway(
                 "sessionId": sid,
                 "subtype": refused,
                 "message": message,
-                "details": {"chatVisible": True, "requestId": cmd.get("requestId")},
+                "details": {
+                    "chatVisible": True,
+                    "command": cmd.get("type"),
+                    "requestId": cmd.get("requestId"),
+                },
             }
         )
 
@@ -14996,11 +15000,14 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         return
 
     if ctype in _KANBAN_COMMANDS and session_id and _route_command_to_gateway(
-        session_id, cmd, _KANBAN_GATEWAY_DOWN
+        session_id, cmd, _KANBAN_GATEWAY_DOWN, refused="control_command_skipped"
     ):
         # A Slack session's board is the gateway's. Run on a copy here, a
         # card went into the journal the gateway's board writes, under an
         # id that board gave out again, and a dispatch started workers here.
+        # Refused as the gateway refuses a command for a thread it does not
+        # have: an error named no session, so the app went on waiting for
+        # the gateway's answer to /autopilot.
         return
 
     if ctype == "kanban_autopilot":
