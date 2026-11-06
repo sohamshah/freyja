@@ -198,3 +198,60 @@ async def test_a_copy_in_the_scheduler_daemon_saves_nothing_over_the_gateways_fi
     sess._save_transcript()
 
     assert [e["id"] for e in tp.load_transcript(SLACK)["transcript"]["entries"]] == ["g1"]
+
+
+def _thread_saved(strategy: str) -> None:
+    """The gateway's saved transcript of the thread, in ``strategy``."""
+    from engine.session import Session
+
+    session = Session.create(system_prompt="t")
+    session.add_user_message("plan the release")
+    session.add_assistant_message("on it")
+    data = session.serialize_transcript()
+    data.setdefault("metadata", {}).update(
+        model_id="claude-sonnet-5-5", reasoning_level="auto", coordination_strategy=strategy,
+    )
+    tp.save_transcript(SLACK, data)
+
+
+@pytest.mark.parametrize(("job_strategy", "loaded_as"), [(None, "kanban"), ("goal", "goal")])
+async def test_a_fire_loads_a_thread_in_its_own_mode_unless_the_job_sets_one(
+    monkeypatch, tmp_path, job_strategy, loaded_as,
+):
+    # The job passed its own mode, bus when none was set, so a kanban
+    # thread the gateway had not loaded came back as bus, without its board.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
+    monkeypatch.setattr(fb, "emit", lambda _event: None)
+    _thread_saved("kanban")
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    job = _slack_thread_job()
+    if job_strategy is not None:
+        job.coordination_strategy = job_strategy
+
+    sess, _sid, _owns = await runtime._resolve_execution_session(SchedulerService(state), job)
+    try:
+        assert sess.coordination_strategy == loaded_as
+        assert (sess.kanban_board is not None) == (loaded_as == "kanban")
+    finally:
+        sess._stop_kanban_dispatcher()
+
+
+async def test_a_job_made_without_a_mode_has_none(monkeypatch):
+    from bridge.tools.schedule_tool import ScheduleTool
+
+    service = SchedulerService(SimpleNamespace())
+    monkeypatch.setattr(service, "emit_event", lambda **_kw: None)
+    tool = ScheduleTool(service=service, current_session_id=SLACK)
+
+    result = await tool.execute(
+        "call_1", {"action": "create", "name": "deploys", "when": "every 2h", "prompt": "check",
+                   "execution": "here", "sinks": ["noop"]},
+    )
+
+    assert not result.is_error, result.content
+    (job,) = await service.list_jobs()
+    assert job.coordination_strategy is None
+    # A job saved before mode was optional reads back as saved.
+    assert JobRecord.from_dict({**job.to_dict(), "coordination_strategy": "bus"}).coordination_strategy == "bus"
+    assert JobRecord.from_dict({k: v for k, v in job.to_dict().items() if k != "coordination_strategy"}).coordination_strategy is None

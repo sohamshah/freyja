@@ -458,7 +458,10 @@ class JobRecord:
     execution: ExecutionSpec = field(default_factory=NewSession)
     permission_snapshot: str = "low"   # tier string ("yolo" | "low" | "medium" | "high")
     model_id: str | None = None
-    coordination_strategy: str = "bus"
+    # The mode an existing session the job fires into is loaded in. None
+    # (not set) loads it in the mode it was saved in: a default of bus
+    # brought a kanban thread back as bus, without its board.
+    coordination_strategy: str | None = None
     skills_to_load: list[str] = field(default_factory=list)
     budget: BudgetSpec | None = None
 
@@ -553,7 +556,7 @@ class JobRecord:
             execution=execution_from_dict(d.get("execution") or {}),
             permission_snapshot=d.get("permission_snapshot", "low"),
             model_id=d.get("model_id"),
-            coordination_strategy=d.get("coordination_strategy", "bus"),
+            coordination_strategy=d.get("coordination_strategy"),
             skills_to_load=list(d.get("skills_to_load") or []),
             budget=BudgetSpec.from_dict(d["budget"]) if d.get("budget") else None,
             artifact=d.get("artifact"),

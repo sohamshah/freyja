@@ -172,7 +172,7 @@ class ScheduleTool:
                 self._service.state, "permission_tier", "low",
             ),
             model_id=args.get("model_id"),
-            coordination_strategy=args.get("coordination_strategy", "bus"),
+            coordination_strategy=args.get("coordination_strategy"),
             skills_to_load=list(args.get("skills_to_load") or []),
             budget=budget,
             artifact=artifact,
