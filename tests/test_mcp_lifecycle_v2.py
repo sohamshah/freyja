@@ -462,6 +462,43 @@ async def test_stop_bounds_the_wait_for_a_supervisor_that_ignores_cancel(monkeyp
     await asyncio.wait_for(task, 5)
 
 
+async def test_stop_passes_on_a_cancel_aimed_at_itself_after_cleanup(monkeypatch):
+    """A caller's timeout that lands while stop() waits on the cancelled
+    supervisor reaches the caller as a timeout; stop() only swallows the
+    supervisor's own cancel, and it still cleans up."""
+    monkeypatch.setattr(connection_mod, "STOP_GRACE_S", 0.05)
+    monkeypatch.setattr(connection_mod, "STOP_CANCEL_WAIT_S", 2.0)
+    conn = _conn()
+
+    async def stubborn() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await asyncio.sleep(1.5)  # ignores the cancel for a while
+
+    task = asyncio.create_task(stubborn())
+    conn._task = task  # noqa: SLF001
+    await asyncio.sleep(0)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(conn.stop(), 0.3)
+    assert time.monotonic() - started < 1.0
+    assert conn._task is None  # noqa: SLF001
+    assert conn.state is State.DISABLED
+    await asyncio.wait_for(task, 5)
+
+
+async def test_stop_swallows_the_cancel_of_the_supervisor_it_cancelled(monkeypatch):
+    monkeypatch.setattr(connection_mod, "STOP_GRACE_S", 0.05)
+    conn = _conn()
+    task = asyncio.create_task(asyncio.sleep(3600))
+    conn._task = task  # noqa: SLF001
+    await asyncio.sleep(0)
+    await asyncio.wait_for(conn.stop(), 5)
+    assert task.cancelled()
+    assert conn.state is State.DISABLED
+
+
 async def test_suspect_connection_probes_before_reuse_success_and_failure():
     conn = _conn()
     healthy = FakeSession()

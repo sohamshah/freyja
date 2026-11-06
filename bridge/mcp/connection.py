@@ -710,6 +710,9 @@ class McpConnection:
         task = self._task
         if task is None:
             return
+        current = asyncio.current_task()
+        cancels_before = current.cancelling() if current is not None else 0
+        own_cancel: asyncio.CancelledError | None = None
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=STOP_GRACE_S)
         except (asyncio.TimeoutError, TimeoutError):
@@ -724,6 +727,12 @@ class McpConnection:
                         "HTTP session may outlive the connection",
                         self.spec.name, STOP_CANCEL_WAIT_S,
                     )
+            except asyncio.CancelledError as exc:
+                # The supervisor ending on its cancel lands here too. A
+                # cancel aimed at stop() itself (a caller's timeout or
+                # shutdown) goes on to the caller after the cleanup below.
+                if current is not None and current.cancelling() > cancels_before:
+                    own_cancel = exc
             except BaseException:  # noqa: BLE001
                 pass
         except Exception:  # noqa: BLE001
@@ -734,6 +743,8 @@ class McpConnection:
         self._remove_pid_file()
         if self.state not in (State.FAILED, State.NEEDS_AUTH):
             self._set_state(State.DISABLED, reason="stopped")
+        if own_cancel is not None:
+            raise own_cancel
 
     def request_reconnect(self, reason: str = "reconnect requested") -> None:
         """Ask the supervisor to tear down the current transport and walk
