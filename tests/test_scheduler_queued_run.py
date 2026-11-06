@@ -58,3 +58,38 @@ async def test_a_run_queued_behind_the_turn_that_started_it_has_a_known_status(m
     assert len(sess.queued_messages) == 1
     assert load_run(job.id, run.run_id).status == run.status == "queued"
     assert run.status in get_args(RunStatus)
+
+
+async def test_a_queued_run_writes_its_end_to_the_events_log_and_tells_the_app(monkeypatch):
+    # Every other run that ends does both: this one was saved "queued" and
+    # its claim was the last the events log and the dashboard heard of it.
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.persistence import read_recent_events
+    from bridge.scheduler.runtime import fire_job
+
+    sess = SimpleNamespace(
+        tool_registry=ToolRegistry(),
+        pending_task=None,
+        session=SimpleNamespace(transcript=TranscriptManager()),
+        _save_transcript=lambda: None,
+    )
+    monkeypatch.setattr(fb, "_schedule_or_queue_turn", lambda *_a, **_kw: False)
+    job = JobRecord(id="sched_digest", name="digest", prompt="digest",
+                    schedule=IntervalSchedule(seconds=3600),
+                    execution=ExistingSession(session_id="s1"))
+    save_job(job)
+    service = _Service({"s1": sess})
+    told: list[dict] = []
+    service.emit_event = lambda **kw: told.append(kw)
+
+    async def run_now_from_a_tool_call():
+        sess.pending_task = asyncio.current_task()
+        return await fire_job(service, job)
+
+    run = await asyncio.ensure_future(run_now_from_a_tool_call())
+
+    assert [(e["subtype"], e["details"]["runId"]) for e in told] == [
+        ("scheduler_run_claimed", run.run_id), ("scheduler_run_queued", run.run_id),
+    ]
+    logged = [e for e in read_recent_events() if e.get("run_id") == run.run_id]
+    assert [e["type"] for e in logged] == ["scheduler_run_claimed", "scheduler_run_queued"]

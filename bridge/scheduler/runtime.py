@@ -266,6 +266,19 @@ async def fire_job(
             run.finished_at = time.time()
             run.duration_seconds = run.finished_at - run.started_at
             save_run(run)
+            # Its end, as every run's: without it, the claim was the last
+            # the events log and the dashboard heard of it.
+            append_event({
+                "type": "scheduler_run_queued",
+                "job_id": job.id,
+                "run_id": run.run_id,
+                "duration_seconds": run.duration_seconds,
+            })
+            service.emit_event(
+                subtype="scheduler_run_queued",
+                message=f"Scheduled job '{job.name}' {run.status}",
+                details={"jobId": job.id, "runId": run.run_id, "duration": run.duration_seconds},
+            )
             return run
         if pending is not None:
             # Poll the run JSON for cancel_requested while we wait. A
