@@ -13151,6 +13151,10 @@ class _BridgeState:
         # on its sessions stream output to the owning Slack thread.
         # See _install_talk_wake_hook / _BridgeSession.wake_for_inbox.
         self.talk_wake_hook_factory: Any = None
+        # Optional async callable(session, text), registered by the gateway
+        # daemon: posts a one-line notice in a session's Slack thread
+        # outside a turn. See _apply_pending_config.
+        self.thread_notice: Any = None
         # Galdr voice service (bridge/voice). Set by _main after the
         # scheduler boots; None in contexts that never speak (tests,
         # headless gateway) — voice_* handlers guard on it.
@@ -14180,6 +14184,14 @@ async def _apply_pending_config(sess: "_BridgeSession") -> None:
             if strategy_uses_kanban(sess.coordination_strategy) and not sess.auto_dispatch_enabled:
                 sess.set_auto_dispatch_enabled(True)
             _emit_strategy_changed(sess.id, sess.coordination_strategy)
+        # A Slack thread hears of it too: /model and /mode said the change
+        # waits for the turn, and only the app had an event when it came.
+        notice = getattr(getattr(sess, "state", None), "thread_notice", None)
+        if notice is not None:
+            made = [f"model to `{sess.model_id}` (reasoning {sess.reasoning_level})"] if model_changed else []
+            if strategy_changed:
+                made.append(f"coordination strategy to `{sess.coordination_strategy}`")
+            await notice(sess, f"Switched {' and '.join(made)} now that the turn has finished.")
     except Exception as exc:  # noqa: BLE001
         log("error", f"applying deferred config failed (session={sess.id}): {exc}")
 

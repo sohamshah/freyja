@@ -481,6 +481,37 @@ async def test_slash_mode_kanban_turns_autopilot_on_as_the_apps_mode_menu_does(g
     assert changed["sessionId"] == SLACK and changed["details"]["coordinationStrategy"] == "kanban"
 
 
+async def test_a_held_change_is_posted_in_the_thread_when_the_turn_ends(gateway):
+    # The thread was told the change waits for the turn, and only the app
+    # heard when it was made.
+    daemon, state, _events = gateway
+    posted: list[tuple] = []
+
+    class _Slack:
+        name = "slack"
+
+        async def send(self, chat_id, text, **kw):
+            posted.append((chat_id, kw.get("thread_id"), kw.get("team_id"), text))
+
+    daemon.adapters = [_Slack()]
+    state.thread_notice = daemon._post_thread_notice  # as GatewayDaemon.start() does
+    _thread_saved("bus")
+    thread = await state.ensure_session(SLACK)
+    turn = asyncio.get_running_loop().create_future()
+    thread.pending_task = turn
+    await daemon._on_set_model({"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5"})
+    await daemon._on_set_coordination_strategy(
+        {"type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "kanban"},
+    )
+    assert posted == []
+
+    turn.set_result(None)
+    await fb._drain_after_turn(thread)
+    (post,) = posted
+    assert post[:3] == ("C1", "1.0", "T1")
+    assert "`claude-opus-5-5`" in post[3] and "`kanban`" in post[3]
+
+
 # ── saved when made, and kept over a restart ─────────────────────────
 
 

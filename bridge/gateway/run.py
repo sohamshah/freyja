@@ -1193,6 +1193,29 @@ class GatewayDaemon:
             logger.warning("catching-up notice send raised", exc_info=True)
             return False
 
+    async def _post_thread_notice(self, session: Any, text: str) -> None:
+        """Post a one-line notice in a session's Slack thread outside a
+        turn (the bridge's ``thread_notice``), as the catching-up line is
+        posted before one. Best-effort: nothing is posted for a session
+        with no Slack thread or adapter."""
+        from bridge.gateway.session_router import source_from_session_key
+
+        source = getattr(session, "gateway_source", None) or source_from_session_key(session.id)
+        adapter = self._adapter_for_platform(source.platform) if source is not None else None
+        if adapter is None:
+            return
+        try:
+            result = await adapter.send(  # type: ignore[attr-defined]
+                source.chat_id,
+                f"_{text}_",
+                thread_id=source.thread_id,
+                team_id=source.workspace_id or None,
+            )
+            if not getattr(result, "ok", True):
+                logger.warning("thread notice send returned not-ok: %s", getattr(result, "error", "?"))
+        except Exception:  # noqa: BLE001
+            logger.warning("thread notice send raised", exc_info=True)
+
     async def _fetch_prior_context(
         self,
         message: IncomingMessage,
@@ -2834,6 +2857,9 @@ class GatewayDaemon:
         # including for sessions cold-loaded by a cross-process
         # talk_deliver (see freyja_bridge._install_talk_wake_hook).
         self.state.talk_wake_hook_factory = self._talk_wake_hook_factory
+        # A model or mode change held for a running turn is posted in its
+        # thread when the turn ends and the change is made.
+        self.state.thread_notice = self._post_thread_notice
         # The scheduler's Slack sink posts through self.adapters.
         self.state.gateway_runner = self
 
