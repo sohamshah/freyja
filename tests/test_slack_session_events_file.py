@@ -66,3 +66,17 @@ def test_the_app_still_writes_its_own_sessions_events_file(mirror, monkeypatch):
     _emit_load_events("session-abc")
 
     assert _written("session-abc") == ["skill_updated", "system_event"]
+
+
+def test_the_app_writes_nothing_to_a_slack_sub_agents_events_file(mirror, monkeypatch):
+    # The gateway runs a Slack thread's sub-agents and writes their files;
+    # the sub-agent's saved sidecar names its parent.
+    import bridge.transcript_persistence as tp
+
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: False)
+    sub = "sub_19f0slackev_1"
+    tp.save_subagent_state(sub, {"sessionId": sub, "parentSessionId": SLACK})
+
+    _emit_load_events(sub)
+
+    assert _written(sub) == []

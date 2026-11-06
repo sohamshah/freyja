@@ -408,3 +408,102 @@ async def test_deleting_a_desktop_session_still_removes_its_transcript(app_bridg
     await fb._handle_command(state, {"type": "delete_session", "sessionId": "session-1"})
 
     assert tp.load_transcript("session-1") is None
+
+
+# ── a Slack thread's sub-agents are the gateway's too ────────────────
+
+# The gateway runs a Slack thread's sub-agents and saves their files, as
+# for the thread. The app knows one by its saved files, which name its
+# parent.
+SLACK_SUB = "sub_19f0slack_1"
+
+
+def _gateway_sub_agent_saved(sub: str = SLACK_SUB, parent: str = SLACK) -> None:
+    transcript = {
+        "version": 1, "session_id": sub, "metadata": {"parent_session_id": parent},
+        "transcript": {"entries": [{"id": "g1"}], "head_id": "g1"},
+    }
+    tp.save_transcript(sub, transcript)
+    tp.save_subagent_state(sub, {
+        "sessionId": sub, "parentSessionId": parent, "agentType": "general",
+        "model": "claude-sonnet-5-5", "task": "t", "label": "worker", "transcript": transcript,
+    })
+
+
+def _app_root_that_could_host(state) -> list[str]:
+    """A root session the app has loaded, whose sub_agent tool would
+    resume a sub-agent here. Records each one it resumes."""
+    resumed: list[str] = []
+
+    async def resume_archived(sidecar, **_kw):
+        resumed.append(sidecar["sessionId"])
+        return sidecar["sessionId"]
+
+    tool = SimpleNamespace(resume_archived=resume_archived)
+    state.sessions["session-1"] = SimpleNamespace(
+        id="session-1", tool_registry=SimpleNamespace(_tools={"sub_agent": tool}),
+    )
+    return resumed
+
+
+async def test_a_message_typed_for_a_slack_sub_agent_goes_to_the_gateway(app_bridge, monkeypatch):
+    # Resumed here, it ran under the app's root as a copy, and saved its
+    # transcript and sidecar over the gateway's.
+    state, _events, built = app_bridge
+    _gateway_running(monkeypatch, os.getpid() + 1)
+    _gateway_sub_agent_saved()
+    resumed = _app_root_that_could_host(state)
+
+    await fb._handle_command(
+        state, {"type": "send_message", "sessionId": SLACK_SUB, "content": "also check X", "clientId": "m5"},
+    )
+
+    assert resumed == [] and built == []
+    (cmd,) = _forwarded()
+    assert (cmd["type"], cmd["to"], cmd["message"]["content"]) == ("talk_deliver", SLACK_SUB, "also check X")
+
+
+async def test_a_message_for_a_slack_sub_agent_waits_in_its_inbox_file_while_no_gateway_runs(app_bridge, monkeypatch):
+    state, _events, _built = app_bridge
+    _gateway_running(monkeypatch, None)
+    _gateway_sub_agent_saved()
+    resumed = _app_root_that_could_host(state)
+
+    await fb._handle_command(state, {"type": "send_message", "sessionId": SLACK_SUB, "content": "also check X"})
+
+    assert resumed == [] and _forwarded() == []
+    assert [m["content"] for m in tp.load_inbox_state(SLACK_SUB)["unread"]] == ["also check X"]
+
+
+async def test_a_copy_of_a_slack_sub_agent_saves_nothing_over_its_files(app_bridge, tmp_path):
+    # compact, set_model, goal_control and the like build a root session
+    # on the id they are given, here a Slack thread's sub-agent.
+    from engine.session import Session
+
+    _gateway_sub_agent_saved()
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    copy = fb._BridgeSession(
+        SLACK_SUB, workspace=str(tmp_path), model_id="claude-sonnet-5-5",
+        reasoning_level="auto", coordination_strategy="bus", state=state,
+    )
+    copy.session = Session.create(system_prompt="t")
+    copy.session.add_user_message("from the app")
+
+    copy._save_transcript()
+    assert [e["id"] for e in tp.load_transcript(SLACK_SUB)["transcript"]["entries"]] == ["g1"]
+
+
+def test_a_sub_agent_under_a_slack_sub_agent_is_the_gateways(app_bridge):
+    _gateway_sub_agent_saved()
+    _gateway_sub_agent_saved("sub_19f0slack_2", parent=SLACK_SUB)
+    _gateway_sub_agent_saved("sub_19f0desk_1", parent="session-1")
+
+    assert fb._gateway_holds("sub_19f0slack_2")
+    assert not fb._gateway_holds("sub_19f0desk_1")
+
+
+def test_the_gateway_holds_none_of_its_own_sub_agents(app_bridge, monkeypatch):
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
+    _gateway_sub_agent_saved()
+
+    assert not fb._gateway_holds(SLACK_SUB)

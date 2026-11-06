@@ -1752,6 +1752,28 @@ async def _wake_archived_subagent(
     except Exception:
         return False
 
+    # A Slack thread's sub-agent runs in the gateway, which saves its files.
+    # Resumed here, it ran as a copy under whichever root this process had
+    # loaded, and saved over them. The gateway gets the message; while none
+    # runs, the inbox sidecar keeps it for the sub-agent's next run there.
+    if _gateway_holds(session_id):
+        from bridge.gateway.pid import get_running_pid
+        from bridge.tools.talk_tool import queue_to_inbox_sidecar
+
+        if get_running_pid() is not None:
+            from bridge.gateway.control_channel import append_command
+
+            try:
+                append_command(
+                    {"type": "talk_deliver", "to": session_id, "message": msg.to_dict(), "origin_pid": os.getpid()}
+                )
+                log("info", f"_wake_archived_subagent: {session_id} runs in the gateway — handed it the message")
+                return True
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"_wake_archived_subagent: handing {session_id}'s message to the gateway failed: {exc}")
+        queue_to_inbox_sidecar(session_id, msg)
+        return False
+
     # Already running again (an earlier message re-woke it): its live
     # inbox is the only thing it reads. resume_archived would return
     # early and leave this message in the sidecar unread.
@@ -13312,11 +13334,43 @@ _KANBAN_COMMANDS = frozenset(
 
 
 def _gateway_holds(session_id: str) -> bool:
-    """A Slack (gateway) session this process does not run. Its thread runs
-    on the gateway's copy, which saves over the same transcript file: an
-    edit, rerun, delete or pin made on a copy here would be written over
-    the gateway's newer history, then dropped at the gateway's next save."""
-    return _is_gateway_session_id(session_id) and not _process_owns_gateway()
+    """A Slack (gateway) session this process does not run, or a sub-agent
+    under one. Its thread runs on the gateway's copy, which saves over the
+    same transcript file: an edit, rerun, delete or pin made on a copy here
+    would be written over the gateway's newer history, then dropped at the
+    gateway's next save. The gateway runs the thread's sub-agents too, and
+    saves their files the same way."""
+    if not (_is_gateway_session_id(session_id) or session_id.startswith("sub_")):
+        return False
+    return not _process_owns_gateway() and _is_gateway_session_id(_root_session_id(session_id))
+
+
+# A sub-agent's parent, as its saved files name it. A parent never changes,
+# and the files that name it hold the sub-agent's whole transcript, so each
+# is read once.
+_SUBAGENT_PARENTS: dict[str, str] = {}
+
+
+def _root_session_id(session_id: str) -> str:
+    """The root session ``session_id`` runs under: up through each
+    sub-agent's parent, as its sidecar or transcript names it. A sub-agent
+    with neither saved yet (a first run still going) is its own root."""
+    from bridge.transcript_persistence import load_transcript
+
+    seen: set[str] = set()
+    while session_id.startswith("sub_") and session_id not in seen:
+        seen.add(session_id)
+        parent = _SUBAGENT_PARENTS.get(session_id)
+        if parent is None:
+            parent = str((_resolve_archived_subagent(session_id) or {}).get("parentSessionId") or "")
+            if not parent:
+                meta = (load_transcript(session_id) or {}).get("metadata")
+                parent = str(meta.get("parent_session_id") or "") if isinstance(meta, dict) else ""
+            if not parent:
+                break
+            _SUBAGENT_PARENTS[session_id] = parent
+        session_id = parent
+    return session_id
 
 
 def _refuse_rewind(session_id: str, cmd: dict[str, Any], reason: str | None = None) -> None:
