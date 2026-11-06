@@ -120,6 +120,9 @@ export interface PersistedSession {
    *  present on resume, the bridge tries session/load(id) before
    *  falling back to a fresh session/new + history replay. */
   harnessSessionId?: string
+  /** Set by listSessions on a sub-agent saved before its parent's last
+   *  reset (markBeforeParentReset); the renderer hides it. Never saved. */
+  beforeParentReset?: boolean
   /** The full SessionSlice as a JSON-safe object. */
   slice: unknown
 }
@@ -461,7 +464,52 @@ export function listSessions(): PersistedSessionMeta[] {
   // attaches to that id.
   rows = [...rows, ...mirrorGatewaySessions(new Set(rows.map((r) => r.id)))]
 
-  return sortSessions(dedupeSessions(withoutHiddenSessions(rows)))
+  return sortSessions(dedupeSessions(markBeforeParentReset(withoutHiddenSessions(rows))))
+}
+
+/** Sub-agents saved at or before their parent's last reset (Slack's
+ *  /reset, or new_session under a loaded id) belong to the conversation
+ *  the reset set aside: the bridge no longer counts them as the fresh
+ *  one's children (transcript_persistence.predates_reset), but the sidebar
+ *  nested them under it by parentSessionId. Marked, so the renderer hides
+ *  them; every file stays. The reset's time is the stamp in the names the
+ *  bridge gives the parent's transcript and inbox, or its marker
+ *  (reset_at); a sub-agent's save is the last write of its sidecar or
+ *  transcript. */
+function markBeforeParentReset(rows: PersistedSessionMeta[]): PersistedSessionMeta[] {
+  if (!rows.some((row) => row.parentSessionId)) return rows
+  const stamps = new Map<string, number>()
+  let files: string[] = []
+  try {
+    files = fs.readdirSync(SESSIONS_DIR)
+  } catch {
+    return rows
+  }
+  for (const f of files) {
+    const at = f.lastIndexOf('.reset-')
+    const stamp = f.slice(at + '.reset-'.length)
+    if (at < 0 || !/^\d+$/.test(stamp)) continue
+    const head = f.slice(0, at)
+    stamps.set(head, Math.max(stamps.get(head) ?? 0, Number(stamp)))
+  }
+  if (stamps.size === 0) return rows
+  return rows.map((row) => {
+    if (!row.parentSessionId) return row
+    const stem = sanitizeId(row.parentSessionId)
+    const reset = Math.max(
+      ...[`${stem}.transcript.json`, `${stem}.inbox.json`, stem].map((head) => stamps.get(head) ?? 0),
+    )
+    if (!reset) return row
+    let saved = 0
+    for (const suffix of ['.subagent.json', '.transcript.json']) {
+      try {
+        saved = Math.max(saved, fs.statSync(resolveSessionPath(row.id, suffix)).mtimeMs)
+      } catch {
+        // Not saved under this name.
+      }
+    }
+    return saved > 0 && saved <= reset ? { ...row, beforeParentReset: true } : row
+  })
 }
 
 const HIDDEN_SESSIONS_FILE = '_hidden.json'

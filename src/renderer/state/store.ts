@@ -6011,9 +6011,19 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           completedAt: fresh.completedAt ?? existing.completedAt,
         }
       })
-      const merged: SessionSnapshot[] = [...mergedExisting]
+      // A sub-agent saved before its parent's conversation was reset
+      // (Slack's /reset, new_session) belongs to the conversation set
+      // aside, not to the one now under the parent's id: main marks it,
+      // and it is hidden here (the one on screen once it is left). Its
+      // files stay.
+      const setAside = new Set<string>(
+        res.sessions.filter((s: any) => s.beforeParentReset).map((s: any) => s.id),
+      )
+      const merged: SessionSnapshot[] = mergedExisting.filter(
+        (s) => !setAside.has(s.id) || s.id === prev.activeSessionId,
+      )
       for (const s of persistedSnapshots) {
-        if (!existingIds.has(s.id)) merged.push(s)
+        if (!existingIds.has(s.id) && !setAside.has(s.id)) merged.push(s)
       }
       // Sort by updatedAt desc, but keep the active session at the top.
       const active = merged.find((s) => s.id === prev.activeSessionId)
