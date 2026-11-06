@@ -1078,7 +1078,7 @@ class AgentRunner:
         """Handle context pressure using REAL token count from API response."""
         context_window = self.provider.context_window
         used_tokens = self.usage.effective_context_tokens()
-        usage_fraction = used_tokens / context_window
+        usage_fraction = used_tokens / max(1, context_window - self.config.max_tokens_per_turn)
 
         if usage_fraction > self.config.compaction_threshold:
             pruned = session.transcript.prune_old_tool_results(keep_recent=KEEP_RECENT_TOOL_RESULTS)

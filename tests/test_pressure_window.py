@@ -89,3 +89,28 @@ async def test_halving_that_brings_the_context_under_70_percent_does_not_compact
 
     assert _types(events, "context_pruning")
     assert not _types(events, "compaction_start")
+
+
+def test_the_sync_runner_reads_pressure_against_the_usable_window():
+    # The old synchronous AgentRunner checks pressure after each call. 40k is
+    # 80% of the 50k usable but 40% of the raw 100k window.
+    from engine.providers import APIUsage, ProviderResponse
+    from engine.runner import AgentRunner
+
+    class _SyncProvider(_Provider):
+        def complete(self, **_kw):
+            return ProviderResponse(content="done", stop_reason="end_turn", usage=APIUsage(input_tokens=40_000))
+
+    compacted = []
+
+    class _CountingCompactor(_Compactor):
+        def compact(self, transcript, provider, **kw):
+            compacted.append(True)
+            return super().compact(transcript, provider, **kw)
+
+    runner = AgentRunner(_SyncProvider(), config=AgentConfig(max_tokens_per_turn=50_000),
+                         compaction_strategy=_CountingCompactor())
+
+    runner.run(Session.create(system_prompt="t"), "a task")
+
+    assert compacted == [True]
