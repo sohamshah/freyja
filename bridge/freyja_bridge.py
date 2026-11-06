@@ -4969,6 +4969,11 @@ class _BridgeSession:
         # Set by the emergency stop: agents' messages wake nothing, and
         # wait unread, until the operator sends something.
         self._agent_wakes_held = False
+        # Deleted with its files, or replaced by a new session with its id
+        # (delete_session, new_session): it and its sub-agents save no file
+        # again. The turn and the children the close stopped saved as they
+        # ended, into the files the delete removed or the new session's.
+        self._discarded = False
         # What the next turn should be told about a turn the operator
         # stopped (set on cancel, consumed by the next run_turn).
         self._stop_note: str | None = None
@@ -5426,6 +5431,7 @@ class _BridgeSession:
             # Background children report back through the inbox: a memo
             # that slides into the running turn or wakes an idle session.
             subagent_on_child_terminal=self._on_child_terminal,
+            subagent_parent_discarded=lambda: self._discarded,
             permission_handler=self.permission_handler,
             include_computer=self.state.computer_enabled,
             computer_session_id=self.id,
@@ -7124,8 +7130,9 @@ class _BridgeSession:
         return True
 
     def _save_transcript(self) -> None:
-        """Persist the engine transcript to disk (fire-and-forget)."""
-        if self.session is None or self._held_elsewhere:
+        """Persist the engine transcript to disk (fire-and-forget). A
+        discarded session (_discarded) saves nothing."""
+        if self.session is None or self._held_elsewhere or getattr(self, "_discarded", False):
             return
         try:
             from bridge.transcript_persistence import save_transcript
@@ -16415,6 +16422,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         # Drop any existing session with the same id so it really starts fresh.
         if session_id in state.sessions:
             state.sessions[session_id]._background_closed = True
+            state.sessions[session_id]._discarded = True
             _force_cancel_session(state.sessions[session_id])
             # H3: drain the outcome watcher before the session is GC'd.
             # Without this any in-flight classifier task tracks a dead
@@ -16999,6 +17007,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             existing = state.sessions.get(sid)
             if existing is not None:
                 existing._background_closed = True
+                existing._discarded = not keep_files
                 pending = getattr(existing, "pending_task", None)
                 if pending is not None and not pending.done():
                     try:

@@ -313,6 +313,10 @@ class SubAgentSpec:
     # into an inbox memo on the parent session and wakes the parent if
     # it is idle. Sync or async; errors are logged, never raised.
     on_child_terminal: Callable[[SubAgentRecord], Awaitable[None] | None] | None = None
+    # Live read of whether the parent session was deleted with its files,
+    # or replaced by a new session with its id. A child then saves no
+    # transcript or sidecar: one the delete stopped saved both again.
+    parent_discarded: Callable[[], bool] | None = None
 
 
 class SubAgentTool:
@@ -2371,7 +2375,10 @@ Parameters:
         is not enough for a future LLM turn. Saving the engine transcript here
         lets `switch_session` / `send_message` restore the child conversation
         and continue it without changing the parent-visible terminal state.
+        Nothing is saved once the parent is discarded (deleted or replaced).
         """
+        if self._spec.parent_discarded is not None and self._spec.parent_discarded():
+            return
         try:
             try:
                 from bridge.freyja_bridge import _backfill_orphan_tool_results

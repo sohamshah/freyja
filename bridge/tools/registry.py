@@ -134,6 +134,9 @@ def build_desktop_registry(
     # Called when a model-spawned sub-agent reaches a terminal state; the
     # bridge turns it into an inbox memo on the parent (and wakes it).
     subagent_on_child_terminal: Any | None = None,
+    # Live read of whether the session was deleted or replaced; its
+    # sub-agents then save nothing.
+    subagent_parent_discarded: Any | None = None,
     talk_router: TalkRouter | None = None,
     talk_caller_session_id: str = "",
     talk_caller_label: str = "",
@@ -417,6 +420,7 @@ def build_desktop_registry(
             parent_gateway_source_getter=subagent_gateway_source_getter,
             tool_allowlist_getter=subagent_tool_allowlist_getter,
             on_child_terminal=subagent_on_child_terminal,
+            parent_discarded=subagent_parent_discarded,
         )
         tools.append(SubAgentTool(sub_spec))
         tools.append(SubAgentsTool(sub_registry))

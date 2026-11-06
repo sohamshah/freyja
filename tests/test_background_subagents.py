@@ -1143,6 +1143,127 @@ async def test_children_stopped_with_a_closed_session_write_nothing_to_its_inbox
     assert not tp._inbox_path("root-1").exists()
 
 
+def _live_session(tmp_path):
+    from engine.session import Session
+
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    sess = fb._BridgeSession(
+        "root-1", workspace=str(tmp_path), model_id="claude-sonnet-5-5",
+        reasoning_level="auto", coordination_strategy="bus", state=state,
+    )
+    sess.session = Session.create(system_prompt="t")
+    state.sessions["root-1"] = sess
+    fresh = SimpleNamespace(reasoning_level="auto", coordination_strategy="bus", runtime="native")
+
+    async def ensure_session(_sid, **_kw):
+        return fresh
+
+    state.ensure_session = ensure_session
+    return state, sess
+
+
+@pytest.mark.parametrize("ctype", ["delete_session", "new_session"])
+async def test_a_turn_stopped_with_a_closed_session_does_not_save_its_transcript_again(ctype, tmp_path):
+    # The cancelled turn saved its transcript as it unwound: back into the
+    # file the delete had removed, or over the file of the new session
+    # that took the id.
+    import bridge.transcript_persistence as tp
+
+    state, sess = _live_session(tmp_path)
+    asked = asyncio.Event()
+
+    async def _initialize():
+        return None
+
+    class _Runner:
+        async def run(self, session, message, stream=True):
+            session.add_user_message(message)
+            asked.set()
+            await asyncio.Event().wait()
+
+    sess.initialize = _initialize
+    sess.runner = _Runner()
+    sess._save_transcript()  # its file, from an earlier turn
+    sess.pending_task = asyncio.create_task(sess.run_turn("look into it"))
+    await asyncio.wait_for(asked.wait(), 1)
+
+    await fb._handle_command(state, {"type": ctype, "sessionId": "root-1"})
+    with pytest.raises(asyncio.CancelledError):
+        await sess.pending_task
+
+    path = tp._transcript_path("root-1")
+    if ctype == "delete_session":
+        assert not path.exists()
+    else:
+        assert "look into it" not in path.read_text()
+
+
+async def test_a_turn_stopped_by_a_shutdown_still_saves_its_transcript(tmp_path):
+    # A shutdown closes each session to background notices too, but the
+    # session lives on: the turn it stopped is saved as it unwinds.
+    import bridge.transcript_persistence as tp
+
+    state, sess = _live_session(tmp_path)
+    asked = asyncio.Event()
+
+    async def _initialize():
+        return None
+
+    class _Runner:
+        async def run(self, session, message, stream=True):
+            session.add_user_message(message)
+            asked.set()
+            await asyncio.Event().wait()
+
+    sess.initialize = _initialize
+    sess.runner = _Runner()
+    sess.pending_task = asyncio.create_task(sess.run_turn("look into it"))
+    await asyncio.wait_for(asked.wait(), 1)
+
+    with pytest.raises(SystemExit):
+        await fb._handle_command(state, {"type": "shutdown"})
+    with pytest.raises(asyncio.CancelledError):
+        await sess.pending_task
+
+    assert "look into it" in tp._transcript_path("root-1").read_text()
+
+
+async def test_a_child_stopped_with_a_deleted_session_saves_no_transcript_or_sidecar(monkeypatch, tmp_path):
+    # The delete removed the child's transcript with its parent's, and
+    # the child, stopped by it, saved its transcript and its sidecar
+    # again as it ended.
+    import bridge.transcript_persistence as tp
+    import engine.runner as runner_module
+
+    class _Runner:
+        current_iteration = 0
+
+        def __init__(self, **_kw):
+            pass
+
+        def request_interrupt(self):
+            return False
+
+        async def run(self, *_a, **_kw):
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(runner_module, "AsyncAgentRunner", _Runner)
+    state, sess = _live_session(tmp_path)
+    await sess.initialize()
+    tool = sess.tool_registry.get("sub_agent")
+    child = tool._spec.registry.register(id="sub_c1", label="digger", task="dig", mode="background")
+    run = asyncio.create_task(tool._run_child(child))
+    await asyncio.sleep(0.05)
+
+    await fb._handle_command(
+        state, {"type": "delete_session", "sessionId": "root-1", "cascadeSessionIds": ["sub_c1"]},
+    )
+    assert await asyncio.wait_for(run, 2) == "(sub-agent cancelled)"
+
+    assert not tp._transcript_path("sub_c1").exists()
+    assert not tp._subagent_path("sub_c1").exists()
+
+
 # ─── what the renderer settles its sub-agent records against ──────────
 
 
