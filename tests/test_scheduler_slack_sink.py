@@ -11,6 +11,7 @@ with "no Slack adapter available".
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from types import ModuleType, SimpleNamespace
@@ -186,3 +187,40 @@ async def test_the_desktop_bridge_posts_through_a_send_only_adapter(monkeypatch,
     assert adapter.config == {"bot_token": "xoxb-from-gateway-env"}
     assert len(adapter.sent) == 2
     assert not os.environ.get("SLACK_BOT_TOKEN")
+
+
+class _AuthClient(_WebClient):
+    def __init__(self, token: str) -> None:
+        super().__init__("T1", [])
+
+    async def auth_test(self):
+        return {"ok": True, "team_id": "T1", "user_id": "UBOT", "team": "t", "user": "freyja"}
+
+
+async def test_a_send_only_adapter_leaves_the_listener_s_thread_bindings_alone(monkeypatch):
+    # slack-bindings.json belongs to the listening gateway, which reads it
+    # to know the threads it answers in. A send-only adapter (scheduler
+    # daemon, desktop bridge) loaded it at start and, after each post,
+    # wrote its own stale copy back, so threads the gateway joined since
+    # were gone when the gateway next restarted.
+    import bridge.gateway.platforms.slack as slack_platform
+    from bridge.gateway.slack_bindings import ThreadBindings
+
+    monkeypatch.setattr(slack_platform, "AsyncApp", lambda **_kw: object())
+    monkeypatch.setattr(slack_platform, "AsyncWebClient", _AuthClient)
+    sender = slack_platform.SlackAdapter(config={"bot_token": "xoxb-1"})
+
+    async def _no_inbound(_message) -> None:
+        return None
+
+    assert await sender.connect(_no_inbound, listen=False)
+    listener = ThreadBindings(flush_delay=0)
+    listener.add_thread("1793000000.000300")
+    listener.save()
+
+    sender.bindings.flush_delay = 0
+    result = await sender.send("C1", "the digest")
+    assert result.ok
+    await asyncio.sleep(0.05)
+
+    assert ThreadBindings().has_thread("1793000000.000300")

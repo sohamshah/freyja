@@ -54,6 +54,9 @@ class ThreadBindings:
         self.bot_message_ts: dict[str, float] = {}
         self.code_channels: dict[str, dict[str, Any]] = {}
         self.session_titles: dict[str, str] = {}   # "<channel>|<thread_ts>" → title
+        # False in a send-only adapter: the file is the listener's, and a
+        # copy loaded at start and written back erases what it bound since.
+        self.persist = True
         self._dirty = False
         self._flush_handle: asyncio.TimerHandle | None = None
         self.load()
@@ -97,6 +100,8 @@ class ThreadBindings:
 
     def _touch(self) -> None:
         self._trim()
+        if not self.persist:
+            return
         self._dirty = True
         try:
             loop = asyncio.get_running_loop()

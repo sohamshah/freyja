@@ -494,6 +494,7 @@ class SlackAdapter:
                 )
 
             if not listen:
+                self.bindings.persist = False
                 self._running = True
                 logger.info(
                     "[slack] send-only (%d workspace(s)) — no Socket Mode; "
