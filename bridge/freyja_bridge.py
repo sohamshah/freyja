@@ -13679,6 +13679,9 @@ class _BridgeState:
         # ~/.freyja/mcp.json exists; None means zero MCP servers and the
         # registry build path behaves exactly as before.
         self.mcp_manager: Any = None
+        # Session id → the gateway's /reset putting that thread's model and
+        # mode back off the loop (keep_settings). ensure_session waits for it.
+        self.settings_due: dict[str, asyncio.Future] = {}
 
     async def ensure_session(
         self,
@@ -13700,6 +13703,12 @@ class _BridgeState:
         # as "no change" on a session that already runs the replacement.
         if model_id:
             model_id = _live_model_id(model_id, where=f"ensure_session {session_id}")
+
+        # A thread's message taken in while its /reset puts the thread's
+        # model and mode back found no file, and started on the defaults.
+        due = getattr(self, "settings_due", {}).get(session_id)
+        if due is not None:
+            await asyncio.wait({due})
 
         existing = self.sessions.get(session_id)
         if existing is not None:

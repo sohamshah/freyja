@@ -2263,8 +2263,17 @@ class GatewayDaemon:
         aside = set_transcript_aside(session_key)
         if aside is not None:
             # Off the loop: a long DM's file held every thread up while it
-            # was parsed for the thread's model and mode.
-            aside = await asyncio.to_thread(keep_settings, session_key, aside)
+            # was parsed for the thread's model and mode. A message taken
+            # in meanwhile waits for them (ensure_session).
+            due = getattr(self.state, "settings_due", {})
+            kept = due[session_key] = asyncio.ensure_future(
+                asyncio.to_thread(keep_settings, session_key, aside)
+            )
+            try:
+                aside = await kept
+            finally:
+                if due.get(session_key) is kept:
+                    del due[session_key]
         if aside is not None:
             logger.info("[gateway] /reset: %s's conversation set aside at %s", session_key, aside.name)
 

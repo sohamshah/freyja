@@ -247,3 +247,31 @@ async def test_the_settings_kept_off_the_loop_go_over_no_conversation_saved_mean
     assert tp.keep_settings(KEY, aside) == aside
 
     assert tp.load_transcript(KEY)["transcript"]["entries"] == [{"id": "n1"}]
+
+
+async def test_a_message_while_reset_reads_the_settings_starts_on_them(monkeypatch, tmp_path):
+    # The thread's next message came in while /reset read its model and
+    # mode off the loop: it found no file, and its session started on the
+    # gateway's default model and mode.
+    import threading
+
+    state, _sess = await _thread(monkeypatch, tmp_path)
+    reading, read = threading.Event(), threading.Event()
+    keep_settings = tp.keep_settings
+
+    def _slow_keep_settings(key, aside):
+        reading.set()
+        read.wait(5)
+        return keep_settings(key, aside)
+
+    monkeypatch.setattr(tp, "keep_settings", _slow_keep_settings)
+    reset = asyncio.create_task(_gateway(state)._reset_session(KEY))  # /reset
+    await asyncio.to_thread(reading.wait, 5)
+    message = asyncio.create_task(state.ensure_session(KEY))  # the thread's next message
+    await asyncio.sleep(0.05)
+    read.set()
+    await reset
+    fresh = await message
+
+    assert "old" not in _texts(fresh)
+    assert (fresh.model_id, fresh.coordination_strategy) == ("claude-sonnet-5-5", "goal")
