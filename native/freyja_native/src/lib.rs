@@ -22,10 +22,18 @@
 //!   read_ax_tree(window_id)         -> JSON string
 //!   read_window_text(pid, ...)      -> JSON string (reader mode)
 //!   find_ax_element(role, label)    -> Option<Bounds>
+//!
+//! Every binding that calls macOS releases the GIL while it waits
+//! (`py.allow_threads`). Python arguments become Rust values before the
+//! call and the Python result is built after it, so nothing inside touches
+//! a Python object. A capture, a WindowServer query, an app activation or
+//! a long `type_text` that blocks then stalls only the thread that made the
+//! call, not the bridge's event loop and every other thread with it.
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
+use std::sync::Mutex;
 
 mod ax;
 mod capture;
@@ -51,7 +59,9 @@ fn capture_screen(
     quality: u8,
 ) -> PyResult<Py<PyBytes>> {
     let fmt = capture::ImageFormat::from_str_with_quality(format, quality);
-    let bytes = capture::capture_display(display_id, max_dim, fmt).map_err(err)?;
+    let bytes = py
+        .allow_threads(|| capture::capture_display(display_id, max_dim, fmt))
+        .map_err(err)?;
     Ok(PyBytes::new_bound(py, &bytes).unbind())
 }
 
@@ -65,13 +75,15 @@ fn capture_window(
     quality: u8,
 ) -> PyResult<Py<PyBytes>> {
     let fmt = capture::ImageFormat::from_str_with_quality(format, quality);
-    let bytes = capture::capture_window(window_id, max_dim, fmt).map_err(err)?;
+    let bytes = py
+        .allow_threads(|| capture::capture_window(window_id, max_dim, fmt))
+        .map_err(err)?;
     Ok(PyBytes::new_bound(py, &bytes).unbind())
 }
 
 #[pyfunction]
 fn list_displays(py: Python<'_>) -> PyResult<Py<PyList>> {
-    let displays = capture::list_displays().map_err(err)?;
+    let displays = py.allow_threads(capture::list_displays).map_err(err)?;
     let list = PyList::empty_bound(py);
     for d in displays {
         let dict = PyDict::new_bound(py);
@@ -87,60 +99,85 @@ fn list_displays(py: Python<'_>) -> PyResult<Py<PyList>> {
 
 // ─── Input injection ────────────────────────────────────────────────────
 
+/// Held by every input call. While the GIL was held, one input call could
+/// not start before the one in progress ended, so the keys of two
+/// `type_text` calls from two threads never mixed. Without the GIL this
+/// lock keeps that order.
+static INPUT: Mutex<()> = Mutex::new(());
+
+/// Run an input call with the GIL released and the input lock held.
+fn send_input<T: Send>(py: Python<'_>, f: impl FnOnce() -> T + Send) -> T {
+    py.allow_threads(|| {
+        // A panic in an earlier call poisons the lock. It guards no data, so
+        // it is taken anyway.
+        let _held = INPUT.lock().unwrap_or_else(|e| e.into_inner());
+        f()
+    })
+}
+
 #[pyfunction]
 #[pyo3(signature = (x, y, button="left", double=false, modifiers=None))]
 fn click(
+    py: Python<'_>,
     x: i32,
     y: i32,
     button: &str,
     double: bool,
     modifiers: Option<Vec<String>>,
 ) -> PyResult<()> {
-    input::click(x, y, button, double, modifiers.unwrap_or_default()).map_err(err)
+    let button = button.to_owned();
+    let modifiers = modifiers.unwrap_or_default();
+    send_input(py, || input::click(x, y, &button, double, modifiers)).map_err(err)
 }
 
 #[pyfunction]
-fn move_mouse(x: i32, y: i32) -> PyResult<()> {
-    input::move_mouse(x, y).map_err(err)
+fn move_mouse(py: Python<'_>, x: i32, y: i32) -> PyResult<()> {
+    send_input(py, || input::move_mouse(x, y)).map_err(err)
 }
 
 #[pyfunction]
-fn type_text(text: &str) -> PyResult<()> {
-    input::type_text(text).map_err(err)
+fn type_text(py: Python<'_>, text: &str) -> PyResult<()> {
+    let text = text.to_owned();
+    send_input(py, || input::type_text(&text)).map_err(err)
 }
 
 #[pyfunction]
 #[pyo3(signature = (key, modifiers=None))]
-fn press_key(key: &str, modifiers: Option<Vec<String>>) -> PyResult<()> {
-    input::press_key(key, modifiers.unwrap_or_default()).map_err(err)
+fn press_key(py: Python<'_>, key: &str, modifiers: Option<Vec<String>>) -> PyResult<()> {
+    let key = key.to_owned();
+    let modifiers = modifiers.unwrap_or_default();
+    send_input(py, || input::press_key(&key, modifiers)).map_err(err)
 }
 
 #[pyfunction]
-fn key_down(key: &str) -> PyResult<()> {
-    input::key_down(key).map_err(err)
+fn key_down(py: Python<'_>, key: &str) -> PyResult<()> {
+    let key = key.to_owned();
+    send_input(py, || input::key_down(&key)).map_err(err)
 }
 
 #[pyfunction]
-fn key_up(key: &str) -> PyResult<()> {
-    input::key_up(key).map_err(err)
+fn key_up(py: Python<'_>, key: &str) -> PyResult<()> {
+    let key = key.to_owned();
+    send_input(py, || input::key_up(&key)).map_err(err)
 }
 
 #[pyfunction]
 #[pyo3(signature = (dx, dy, x=None, y=None))]
-fn scroll(dx: i32, dy: i32, x: Option<i32>, y: Option<i32>) -> PyResult<()> {
-    input::scroll(dx, dy, x, y).map_err(err)
+fn scroll(py: Python<'_>, dx: i32, dy: i32, x: Option<i32>, y: Option<i32>) -> PyResult<()> {
+    send_input(py, || input::scroll(dx, dy, x, y)).map_err(err)
 }
 
+// A read, so it does not wait for the input lock.
 #[pyfunction]
-fn cursor_position() -> PyResult<(i32, i32)> {
-    input::cursor_position().map_err(err)
+fn cursor_position(py: Python<'_>) -> PyResult<(i32, i32)> {
+    py.allow_threads(input::cursor_position).map_err(err)
 }
 
 // ─── Windows ────────────────────────────────────────────────────────────
 
 #[pyfunction]
 fn list_windows(py: Python<'_>) -> PyResult<Py<PyList>> {
-    let infos = windows::list_windows().map_err(err)?;
+    let infos = py.allow_threads(windows::list_windows).map_err(err)?;
     let list = PyList::empty_bound(py);
     for w in infos {
         let dict = PyDict::new_bound(py);
@@ -159,7 +196,7 @@ fn list_windows(py: Python<'_>) -> PyResult<Py<PyList>> {
 
 #[pyfunction]
 fn get_frontmost_window(py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
-    let Some(w) = windows::get_frontmost_window().map_err(err)? else {
+    let Some(w) = py.allow_threads(windows::get_frontmost_window).map_err(err)? else {
         return Ok(None);
     };
     let dict = PyDict::new_bound(py);
@@ -182,8 +219,9 @@ fn focus_window(py: Python<'_>, window_id: u32) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn focus_app(bundle_id: &str) -> PyResult<()> {
-    windows::focus_app(bundle_id).map_err(err)
+fn focus_app(py: Python<'_>, bundle_id: &str) -> PyResult<()> {
+    let bundle_id = bundle_id.to_owned();
+    py.allow_threads(|| windows::focus_app(&bundle_id)).map_err(err)
 }
 
 // ─── Accessibility tree ─────────────────────────────────────────────────
@@ -233,7 +271,8 @@ fn read_window_text(
         .map_err(err)
 }
 
-/// Stop every running `read_window_text` at its next node.
+/// Stop every running `read_window_text` at its next node. Only sets a flag,
+/// so it keeps the GIL.
 #[pyfunction]
 fn cancel_window_reads() {
     reader::cancel_reads();
@@ -279,24 +318,26 @@ fn find_ax_element(
         .map_err(err)
 }
 
+// The permission checks ask the system's privacy service (tccd), and the
+// Python wrapper runs one before every input call and every capture.
 #[pyfunction]
-fn check_accessibility_permission() -> PyResult<bool> {
-    Ok(ax::check_accessibility_permission())
+fn check_accessibility_permission(py: Python<'_>) -> PyResult<bool> {
+    Ok(py.allow_threads(ax::check_accessibility_permission))
 }
 
 #[pyfunction]
-fn prompt_accessibility_permission() -> PyResult<bool> {
-    Ok(ax::prompt_accessibility_permission())
+fn prompt_accessibility_permission(py: Python<'_>) -> PyResult<bool> {
+    Ok(py.allow_threads(ax::prompt_accessibility_permission))
 }
 
 #[pyfunction]
-fn check_screen_recording_permission() -> PyResult<bool> {
-    Ok(capture::check_screen_recording_permission())
+fn check_screen_recording_permission(py: Python<'_>) -> PyResult<bool> {
+    Ok(py.allow_threads(capture::check_screen_recording_permission))
 }
 
 #[pyfunction]
-fn prompt_screen_recording_permission() -> PyResult<bool> {
-    Ok(capture::prompt_screen_recording_permission())
+fn prompt_screen_recording_permission(py: Python<'_>) -> PyResult<bool> {
+    Ok(py.allow_threads(capture::prompt_screen_recording_permission))
 }
 
 /// Entry point — exposes every Python-visible function.
