@@ -217,9 +217,9 @@ const { renderToStaticMarkup } = await import('react-dom/server')
 const { KanbanBridgeView } = await import('./src/renderer/components/views/KanbanBridgeView.tsx')
 
 const tile = (id, status, parents = [], metadata = {}) => ({ id, title: `title ${id}`, status, parents, metadata, events: [], comments: [] })
-const boardHtml = (cards) => renderToStaticMarkup(createElement(KanbanBridgeView, {
+const boardHtml = (cards, autoDispatchEnabled = false) => renderToStaticMarkup(createElement(KanbanBridgeView, {
   sessionId: 's', objective: 'o', cards, agents: [], telemetryEvents: [], contextPct: 0, cost: 0,
-  autoDispatchEnabled: false, onAttach() {}, onOpenDispatcherBrief() {},
+  autoDispatchEnabled, onAttach() {}, onOpenDispatcherBrief() {},
 }))
 const pipIn = (html, id) => {
   const at = html.indexOf(`title ${id}<`)
@@ -264,6 +264,29 @@ check('a crashed or timed-out tile the dispatcher holds on a pending parent says
   assert.deepEqual(pip('card_003'), { title: 'Worker ended as: timed out. Waits on card_001', label: 'waiting' })
   assert.equal(pip('card_004').label, 'crashed')
   assert.equal(pip('card_005').label, 'failed')
+})
+
+// One the dispatcher does not hold goes back to a worker on the next tick
+// with autopilot on. With autopilot off nothing sends it, so it waits for
+// the operator.
+check('a crashed or timed-out tile says autopilot retries it, or that it waits for you with autopilot off', () => {
+  const cards = [tile('card_002', 'crashed'), tile('card_003', 'timed_out')]
+  const on = boardHtml(cards, true)
+  const off = boardHtml(cards, false)
+  assert.deepEqual(pipIn(on, 'card_002'), {
+    title: 'Worker ended as: crashed. Autopilot retries it on a new worker.', label: 'crashed',
+  })
+  assert.deepEqual(pipIn(on, 'card_003'), {
+    title: 'Worker ended as: timed out. Autopilot retries it on a new worker.', label: 'timed out',
+  })
+  assert.deepEqual(pipIn(off, 'card_002'), {
+    title: 'Worker ended as: crashed. Autopilot is off, so it waits for you to unblock and dispatch it.',
+    label: 'crashed',
+  })
+  assert.equal(
+    pipIn(off, 'card_003').title,
+    'Worker ended as: timed out. Autopilot is off, so it waits for you to unblock and dispatch it.',
+  )
 })
 
 if (failures) {

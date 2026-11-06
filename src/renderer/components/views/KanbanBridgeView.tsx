@@ -807,6 +807,7 @@ function BoardColumnSection({
                 verdicts={verdictsByCard.get(c.id) ?? []}
                 staleEvent={staleByCard.get(c.id)}
                 waitingOn={waitingByCard.get(c.id)}
+                autoDispatchEnabled={autoDispatchEnabled}
                 onOpen={() => onOpenCard(c.id)}
                 onOpenAgent={onOpenAgent}
               />
@@ -949,6 +950,7 @@ function TicketCard({
   verdicts,
   staleEvent,
   waitingOn,
+  autoDispatchEnabled,
   onOpen,
   onOpenAgent,
 }: {
@@ -958,6 +960,7 @@ function TicketCard({
   verdicts: JudgeHistoryEntry[]
   staleEvent: { firstStaleAt: number; ageSeconds: number } | undefined
   waitingOn: string[] | undefined
+  autoDispatchEnabled: boolean
   onOpen: () => void
   onOpenAgent: (sessionId: string) => void
 }) {
@@ -1077,6 +1080,7 @@ function TicketCard({
               status={card.status}
               workerTerminalState={card.workerTerminalState}
               waitingOn={waitingOn}
+              autoDispatchEnabled={autoDispatchEnabled}
             />
           </div>
         </div>
@@ -1198,11 +1202,13 @@ function StatusPip({
   status,
   workerTerminalState,
   waitingOn,
+  autoDispatchEnabled,
 }: {
   column: ColumnKey
   status?: string
   workerTerminalState?: string
   waitingOn?: string[]
+  autoDispatchEnabled: boolean
 }) {
   const meta = STATUS_PIP_META[column]
   // Two sources of "what really happened":
@@ -1229,7 +1235,9 @@ function StatusPip({
   //   · Waiting → the dispatcher holds the card on a parent that can
   //     still finish, so it says "waiting" and names those parents. A
   //     crashed or timed-out card it holds says so too, since it goes
-  //     back to a worker once they finish.
+  //     back to a worker once they finish. One it does not hold goes back
+  //     on the next tick with autopilot on, and waits for the operator
+  //     with it off.
   //   · Other columns → use the column label.
   const terminalLabel = terminalStatusLabel(status)
   const waiting = !!waitingOn?.length
@@ -1244,7 +1252,12 @@ function StatusPip({
   let titleText: string = meta.label
   if (isTerminalFailure && terminalLabel) {
     label = terminalLabel
-    titleText = `Worker ended as: ${terminalLabel}. Card is in blocked until you intervene.`
+    const next = !UNBLOCKABLE_STATUSES.has((status ?? '').toLowerCase())
+      ? 'Card is in blocked until you intervene.'
+      : autoDispatchEnabled
+        ? 'Autopilot retries it on a new worker.'
+        : 'Autopilot is off, so it waits for you to unblock and dispatch it.'
+    titleText = `Worker ended as: ${terminalLabel}. ${next}`
   } else if (waiting && waitingOn) {
     label = 'waiting'
     titleText = `${terminalLabel ? `Worker ended as: ${terminalLabel}. ` : ''}Waits on ${waitingOn.join(', ')}`
@@ -2127,6 +2140,7 @@ function CardFocusView({
               column={column}
               status={card.status}
               workerTerminalState={card.workerTerminalState}
+              autoDispatchEnabled={autoDispatchEnabled}
             />
             <CardIdBadge id={card.id} />
             {isOperatorCard ? <OperatorChip /> : null}
