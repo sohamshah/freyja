@@ -3285,7 +3285,12 @@ class GatewayDaemon:
                             "The kanban change was not made: the gateway has no "
                             "Slack thread with this session's board."
                         ),
-                        "details": {"command": cmd.get("type"), "chatVisible": True},
+                        # The dashboard takes back this autopilot toggle.
+                        "details": {
+                            "command": cmd.get("type"),
+                            "chatVisible": True,
+                            "requestId": cmd.get("requestId"),
+                        },
                     }
                 )
             return

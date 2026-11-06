@@ -138,12 +138,14 @@ async def test_a_kanban_command_is_refused_for_its_session_when_no_gateway_runs(
     # for a thread it does not have, the app's wait ends.
     state, events = app
     _gateway_running(monkeypatch, None)
-    await fb._handle_command(state, {**cmd, "sessionId": SLACK})
+    await fb._handle_command(state, {**cmd, "sessionId": SLACK, "requestId": "change_1"})
     assert state.sessions == {} and _forwarded() == []
     assert not [e for e in events if e["type"] == "error"]
     (refused,) = [e for e in events if e.get("subtype") == "control_command_skipped"]
     assert refused["sessionId"] == SLACK and "Slack gateway" in refused["message"]
     assert refused["details"]["command"] == cmd["type"] and refused["details"]["chatVisible"]
+    # The dashboard's toggle takes back this change.
+    assert refused["details"]["requestId"] == "change_1"
 
 
 def _gateway_with(monkeypatch, sess):
@@ -196,6 +198,17 @@ async def test_the_gateway_says_so_when_it_has_no_such_thread(app, monkeypatch):
     await daemon._on_kanban_command({"type": "kanban_operator_create", "sessionId": SLACK, "title": "t"})
     (note,) = [e for e in events if e.get("subtype") == "control_command_skipped"]
     assert note["sessionId"] == SLACK and note["details"]["chatVisible"]
+
+
+async def test_the_gateways_refusal_of_an_autopilot_toggle_names_it(app, monkeypatch):
+    # The dashboard showed the toggle at once and takes back this change.
+    _state, events = app
+    daemon = _gateway_with(monkeypatch, None)
+    await daemon._on_kanban_command(
+        {"type": "kanban_autopilot", "sessionId": SLACK, "enabled": True, "requestId": "change_1"},
+    )
+    (note,) = [e for e in events if e.get("subtype") == "control_command_skipped"]
+    assert note["details"]["command"] == "kanban_autopilot" and note["details"]["requestId"] == "change_1"
 
 
 # ── model ────────────────────────────────────────────────────────────

@@ -210,6 +210,45 @@ await check('/autopilot on a Slack session that no gateway can answer leaves no 
   assert.equal(H().toast, null)
 })
 
+// The dashboard's toggle shows its change at once; the app's bridge with
+// no gateway, or a gateway without the thread, refuses it by request id.
+const autopilotRefusal = (cmd) =>
+  H().handleEvent({
+    type: 'system_event', sessionId: cmd.sessionId, subtype: 'control_command_skipped', message: 'Not done.',
+    details: { command: 'kanban_autopilot', chatVisible: true, requestId: cmd.requestId },
+  })
+
+await check('an autopilot toggle the gateway refused is taken back off the dashboard', async () => {
+  openSlack()
+  useHarness.setState({ autoDispatchEnabled: false })
+  await H().setKanbanAutopilot(SLACK, true)
+  assert.equal(H().autoDispatchEnabled, true)
+  autopilotRefusal(lastSent('kanban_autopilot'))
+  assert.equal(H().autoDispatchEnabled, false)
+})
+
+await check('a refusal of the second of two quick autopilot toggles shows the first', async () => {
+  openSlack()
+  useHarness.setState({ autoDispatchEnabled: false })
+  await H().setKanbanAutopilot(SLACK, true)
+  const first = lastSent('kanban_autopilot')
+  await H().setKanbanAutopilot(SLACK, false)
+  autopilotRefusal(lastSent('kanban_autopilot'))
+  assert.equal(H().autoDispatchEnabled, true)
+  autopilotRefusal(first)
+  assert.equal(H().autoDispatchEnabled, false)
+})
+
+await check('a refusal of /autopilot leaves an earlier toggle on the dashboard', async () => {
+  openSlack()
+  useHarness.setState({ autoDispatchEnabled: false })
+  await H().setKanbanAutopilot(SLACK, true)
+  // /autopilot showed nothing at once, and its refusal names no change.
+  H().runSlashCommand('/autopilot', 'off')
+  autopilotRefusal(lastSent('kanban_autopilot'))
+  assert.equal(H().autoDispatchEnabled, true)
+})
+
 await check('/autopilot on a desktop session still says on at once', async () => {
   useHarness.setState({ activeSessionId: 'session-desktop', sessions: [row('session-desktop')], toast: null })
   H().runSlashCommand('/autopilot', 'on')

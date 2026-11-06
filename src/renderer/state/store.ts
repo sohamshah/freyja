@@ -884,15 +884,17 @@ const pendingRewinds = new Map<
   { requestId: string; at: number; removed: Message[]; edited?: { id: string; text: string } }
 >()
 
-/** The model and mode changes the app showed for a session at once, by
- *  session, oldest first, each with its request id and what the session
- *  had before it. For a Slack session the gateway, or the app's bridge
- *  when no gateway runs, can refuse a change (`model_change_refused`,
- *  `coordination_strategy_refused`, with the command's request id), and
- *  the refusal puts back what the session had before it. */
+/** The model, mode and autopilot changes the app showed for a session at
+ *  once, by session, oldest first, each with its request id and what the
+ *  session had before it. For a Slack session the gateway, or the app's
+ *  bridge when no gateway runs, can refuse a change (`model_change_refused`,
+ *  `coordination_strategy_refused`, `control_command_skipped` for
+ *  `kanban_autopilot`, with the command's request id), and the refusal
+ *  puts back what the session had before it. */
 type ShownChange<T> = { requestId: string; before: T }
 const modelChanges = new Map<string, ShownChange<{ model: string; reasoningLevel: string }>[]>()
 const modeChanges = new Map<string, ShownChange<CoordinationStrategy>[]>()
+const autopilotChanges = new Map<string, ShownChange<boolean>[]>()
 
 function showChange<T>(changes: Map<string, ShownChange<T>[]>, sessionId: string, before: T): string {
   const requestId = nextId('change')
@@ -922,24 +924,38 @@ function takeBackChange<T>(
   return refused.before
 }
 
-/** Show the model or mode `sessionId` had before the change the bridge
- *  refused, on its row and on its slice, active or archived. */
+/** Show the model, mode or autopilot `sessionId` had before the change
+ *  the bridge refused, on its slice, active or archived, and the model or
+ *  mode on its row too. */
 function undoRefusedChange<S extends HarnessState>(
   state: S,
   sessionId: string,
   subtype: string,
-  requestId: unknown,
+  details: Record<string, unknown> | undefined,
 ): S {
+  const requestId = details?.requestId
   let patch: Partial<SessionSlice> | undefined
+  let onRow = true
   if (subtype === 'model_change_refused') {
     patch = takeBackChange(modelChanges, sessionId, requestId)
   } else if (subtype === 'coordination_strategy_refused') {
     const mode = takeBackChange(modeChanges, sessionId, requestId)
     if (mode) patch = { coordinationStrategy: mode }
+  } else if (
+    subtype === 'control_command_skipped' &&
+    details?.command === 'kanban_autopilot' &&
+    // `/autopilot` showed nothing at once, and its refusal names no change.
+    typeof requestId === 'string'
+  ) {
+    const on = takeBackChange(autopilotChanges, sessionId, requestId)
+    if (on !== undefined) patch = { autoDispatchEnabled: on }
+    onRow = false
   }
   if (!patch) return state
-  queueMicrotask(() => schedulePersistSession(sessionId))
-  const sessions = state.sessions.map((s) => (s.id === sessionId ? { ...s, ...patch } : s))
+  if (onRow) queueMicrotask(() => schedulePersistSession(sessionId))
+  const sessions = onRow
+    ? state.sessions.map((s) => (s.id === sessionId ? { ...s, ...patch } : s))
+    : state.sessions
   const usageFor = (usage: SessionSlice['usage']) =>
     patch.model ? { usage: { ...usage, contextWindow: contextWindowFor(patch.model) } } : {}
   if (sessionId === state.activeSessionId) {
@@ -4590,7 +4606,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       // bridge or the gateway refused: show what the session had before.
       // The refusal goes on to the session's chat below.
       if (ev.type === 'system_event' && ev.sessionId) {
-        prev = undoRefusedChange(prev, ev.sessionId, ev.subtype, ev.details?.requestId)
+        prev = undoRefusedChange(prev, ev.sessionId, ev.subtype, ev.details)
         answerAutopilot(ev.sessionId, ev.subtype, ev.message, ev.details)
         answerForceDispatch(ev.sessionId, ev.subtype, ev.message, ev.details)
       }
@@ -4936,6 +4952,14 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     // short-circuit emitted no event → toggle never moved). The bridge
     // now always emits a reconcile event, so any divergence between
     // optimism and bridge truth corrects within one IPC round-trip.
+    // A refusal (`control_command_skipped`, with this request id) takes
+    // the change back.
+    const current = useHarness.getState()
+    const before =
+      sessionId === current.activeSessionId
+        ? current.autoDispatchEnabled
+        : current.sessionArchive?.[sessionId]?.autoDispatchEnabled
+    const requestId = before === undefined ? undefined : showChange(autopilotChanges, sessionId, before)
     set((prev) => {
       if (sessionId === prev.activeSessionId) {
         return { autoDispatchEnabled: enabled }
@@ -4955,6 +4979,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       type: 'kanban_autopilot',
       sessionId,
       enabled,
+      requestId,
     })
   },
 
