@@ -4981,25 +4981,7 @@ class _BridgeSession:
             # tagged as compaction overhead in the dashboard. The
             # runtime + manual paths wire this directly; the agent
             # path goes through the tool's _dispatch → compactor.compact.
-            summarize_context_on_summarizer_llm_call=(
-                lambda payload: self._on_llm_call({
-                    "provider": payload.get("provider", "unknown"),
-                    "model": payload.get("model", "unknown"),
-                    "duration_ms": payload.get("duration_ms", 0),
-                    "streaming": False,
-                    "input_tokens": payload.get("input_tokens", 0),
-                    "output_tokens": payload.get("output_tokens", 0),
-                    "cache_read_tokens": payload.get("cache_read_tokens", 0),
-                    "cache_write_tokens": payload.get("cache_write_tokens", 0),
-                    "reasoning_tokens": payload.get("reasoning_tokens", 0),
-                    "stop_reason": "end_turn",
-                    "tool_calls": 0,
-                    "thinking_blocks": 0,
-                    "error": None,
-                    "call_kind": payload.get("call_kind", "summarizer"),
-                    "iterative": payload.get("iterative", False),
-                })
-            ),
+            summarize_context_on_summarizer_llm_call=self._on_summarizer_llm_call,
         )
         # Register the model-callable schedule tool. Both desktop and
         # Slack sessions get this — the creator surface is derived at
@@ -5673,6 +5655,7 @@ class _BridgeSession:
                     compaction_result = await run_off_loop(
                         compactor.compact,
                         self.session.transcript, self.provider,
+                        on_summarizer_call=self._on_summarizer_llm_call,
                         ground_truth=self._ledger_ground_truth(),
                         on_working_memory_upserts=self._apply_wm_upserts,
                     )
@@ -11534,6 +11517,28 @@ class _BridgeSession:
             log("info", " · ".join(parts))
         except Exception as exc:  # noqa: BLE001
             log("error", f"on_llm_call error: {exc}")
+
+    def _on_summarizer_llm_call(self, payload: dict[str, Any]) -> None:
+        """A compaction's summary or working-memory call (the compactor's
+        ``on_summarizer_call`` payload), reported as one of the session's
+        model calls, tagged by its call_kind."""
+        self._on_llm_call({
+            "provider": payload.get("provider", "unknown"),
+            "model": payload.get("model", "unknown"),
+            "duration_ms": payload.get("duration_ms", 0),
+            "streaming": False,
+            "input_tokens": payload.get("input_tokens", 0),
+            "output_tokens": payload.get("output_tokens", 0),
+            "cache_read_tokens": payload.get("cache_read_tokens", 0),
+            "cache_write_tokens": payload.get("cache_write_tokens", 0),
+            "reasoning_tokens": payload.get("reasoning_tokens", 0),
+            "stop_reason": "end_turn",
+            "tool_calls": 0,
+            "thinking_blocks": 0,
+            "error": None,
+            "call_kind": payload.get("call_kind", "summarizer"),
+            "iterative": payload.get("iterative", False),
+        })
 
     def _on_tool_metric(self, payload: dict[str, Any]) -> None:
         """Persist a ``tool_call_metric`` JSONL row per tool execution.
