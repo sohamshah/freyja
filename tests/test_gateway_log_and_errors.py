@@ -68,27 +68,52 @@ def test_reporting_a_failure_cannot_raise(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_consumer_posts_the_failure_and_closes_the_stream():
-    """No turn_complete follows a failure, so the consumer has to post the notice itself and seal the open stream; otherwise the card stays spinning and the bot simply stops answering."""
-    adapter = StreamingFakeAdapter()
+async def test_a_failed_turn_closes_its_message_and_posts_the_failure(monkeypatch, tmp_path):
+    """No turn_complete follows a failure, so the consumer has to seal the open stream and post the notice itself. It dropped turn_failed with the events it ignores, so through emit() the notice never posted and the reply stayed open until the next turn."""
+    import bridge.freyja_bridge as fb
+    from bridge.gateway.run import _attach_turn_consumer
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "_SESSION_EVENT_DIR", tmp_path / "sessions")
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("session-slack")
+
+    async def run_turn(_content, _attachments=None, **_kw):
+        fb.emit({"type": "turn_start", "sessionId": sess.id})
+        fb.emit({"type": "text_delta", "sessionId": sess.id, "text": "Looking into it."})
+        raise RuntimeError("GEMINI_API_KEY is not set")
+
+    sess.run_turn = run_turn
+    calls: list[str] = []
+
+    class _Slack(StreamingFakeAdapter):
+        async def send(self, chat_id, content, **kw):
+            calls.append("note")
+            return await super().send(chat_id, content, **kw)
+
+        async def stop_stream(self, chat_id, ts, **kw):
+            calls.append("reply sealed")
+            return await super().stop_stream(chat_id, ts, **kw)
+
+    adapter = _Slack()
     source = MessageSource(
         platform="slack", workspace_id="T1", chat_id="C1", chat_type="channel",
         user_id="U1", message_id="1.1", thread_id="1.1",
     )
-    consumer = SlackStreamConsumer(
-        adapter, source, session_key="freyja:slack:T1:channel:C1:1.1", verbosity="all",
+    consumer = SlackStreamConsumer(adapter, source, session_key=sess.id, verbosity="all")
+    fb._schedule_or_queue_turn(
+        sess, "hi", on_turn_start=lambda: _attach_turn_consumer(sess, sess.id, consumer),
     )
-    await consumer._handle_event_async({"type": "thinking_delta", "thinking": "hmm"})
-    assert adapter.streams_started == 1
-    await consumer._handle_event_async({
-        "type": "turn_failed", "message": "GEMINI_API_KEY is not set",
-        "hint": " Put it in ~/.freyja/.env.", "model": "gemini-3.8-flash",
-    })
+    await sess.pending_task
+    await consumer.wait_until_handled()
+
     assert consumer.finalized
-    assert adapter.streams_stopped == ["stream-ts"]
+    assert calls == ["reply sealed", "note"]
+    assert adapter.streamed == ["Looking into it."]
     notice = adapter.sent[0]
     assert "That turn failed" in notice and "GEMINI_API_KEY is not set" in notice
-    assert "gemini-3.8-flash" in notice and "~/.freyja/.env" in notice
+    assert "kimi-k3-fast" in notice and "~/.freyja/.env" in notice
+    fb.unregister_session_listener(sess.id, consumer.on_event)
 
 
 # ── log rotation ─────────────────────────────────────────────────────

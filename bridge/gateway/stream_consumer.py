@@ -548,6 +548,7 @@ class SlackStreamConsumer:
             "thinking_delta",
             "turn_start",
             "turn_complete",
+            "turn_failed",
             "tool_use_start",
             "tool_input_end",
             "tool_result",
@@ -698,7 +699,7 @@ class SlackStreamConsumer:
             await self._handle_turn_failed(event)
 
     async def _handle_turn_failed(self, event: dict) -> None:
-        """Tell the operator the turn died, then close the stream.
+        """Close the stream, then tell the operator the turn died.
 
         Without this the failure is invisible: the bridge logs it and
         emits a session-scoped event, but nothing reaches Slack, so the
@@ -706,6 +707,14 @@ class SlackStreamConsumer:
         key the daemon lacks fails this way on EVERY message, which
         reads as the gateway being down rather than as one bad setting.
         """
+        # Always finalize: the stream card is open and no turn_complete
+        # is coming, so without this it stays spinning until the stale
+        # consumer teardown notices on the NEXT message. First, so the
+        # note goes under what the turn said before it died.
+        try:
+            await self.finalize()
+        except Exception:  # noqa: BLE001
+            logger.debug("finalize after turn failure failed", exc_info=True)
         detail = str(event.get("message") or "").strip() or "unknown error"
         hint = str(event.get("hint") or "")
         model = event.get("model")
@@ -719,13 +728,6 @@ class SlackStreamConsumer:
             )
         except Exception:  # noqa: BLE001
             logger.warning("[slack] could not post turn failure", exc_info=True)
-        # Always finalize: the stream card is open and no turn_complete
-        # is coming, so without this it stays spinning until the stale
-        # consumer teardown notices on the NEXT message.
-        try:
-            await self.finalize()
-        except Exception:  # noqa: BLE001
-            logger.debug("finalize after turn failure failed", exc_info=True)
 
     # ── stream lifecycle ──
 
