@@ -954,3 +954,33 @@ async def test_force_dispatch_gives_a_triage_card_the_specifier_the_tick_would(m
     ticked = [(call["agent_type"], call["label"]) for call in sub_tool.calls]
 
     assert forced == ticked == [("specifier", f"specifier {card}")]
+
+
+@pytest.mark.asyncio
+async def test_force_dispatch_sends_a_card_again_once_its_worker_is_gone(monkeypatch) -> None:
+    """Only the tick refreshed the set of dispatched cards from the
+    sub-agent registry, and no tick runs with autopilot off. A card force
+    dispatched once and back in ready after its worker left could not be
+    force dispatched again, and the bridge said nothing."""
+    board = SessionKanbanBoard()
+    card = (await board.create(title="card", assignee="code")).id
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    session.auto_dispatch_enabled = False
+
+    await _force_dispatch(monkeypatch, session, card)
+    # The worker runs: a second press is refused, and says why.
+    session.subagent_registry.records = [_StubRecord(is_running=True, kanban_task_id=card)]
+    sent = await _force_dispatch(monkeypatch, session, card)
+    [refused] = [e for e in sent if e.get("subtype") == "kanban_operator_force_dispatch_failed"]
+    assert "already" in refused["message"]
+    # It blocks and leaves; the card goes back to ready.
+    await board.update(card, actor="worker", status="running", worker_session_id="sub_w")
+    await board.update(card, actor="worker", status="blocked")
+    session.subagent_registry.records = [_StubRecord(is_running=False, kanban_task_id=card)]
+    await board.update(card, actor="parent", status="ready")
+
+    sent = await _force_dispatch(monkeypatch, session, card)
+
+    assert [call["kanban_task_id"] for call in sub_tool.calls] == [card, card]
+    assert [e["subtype"] for e in sent if e["type"] == "system_event"] == ["kanban_dispatched"]

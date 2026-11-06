@@ -15286,20 +15286,24 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 f"{task.status!r} is not dispatchable",
             )
             return
-        if task.id in sess._kanban_dispatched:  # noqa: SLF001
-            log("debug", f"kanban_operator_force_dispatch: {card_id} already dispatched")
-            return
-        # The tick's gates: a triage card waits until every parent is done
-        # (only `unblock` takes it past a failed or missing one), any other
-        # card while a parent can still finish, and every card while
-        # KANBAN_MAX_PARALLEL workers run.
+        # Only the tick dropped a card from the dispatched set once its
+        # worker left, and no tick runs with autopilot off, so a card sent
+        # once could never be sent again. Refresh the set as the tick does.
+        live = sess._kanban_live_cards()  # noqa: SLF001
+        sess._kanban_dispatched = sess._kanban_dispatched & live  # noqa: SLF001
+        # The tick's gates: a card waits while its worker runs, a triage
+        # card until every parent is done (only `unblock` takes it past a
+        # failed or missing one), any other card while a parent can still
+        # finish, and every card while KANBAN_MAX_PARALLEL workers run.
         pending = sess.kanban_board._pending_parents(task)  # noqa: SLF001
         note = ""
-        if pending:
+        if task.id in live:
+            note = "a worker is already on it"
+        elif pending:
             note = f"it waits on {', '.join(pending)}"
         elif task.status == "triage" and not sess.kanban_board._parents_done(task):  # noqa: SLF001
             note = "a parent failed, was cancelled or is missing; unblock it first"
-        elif len(sess._kanban_live_cards()) >= sess.KANBAN_MAX_PARALLEL:  # noqa: SLF001
+        elif len(live) >= sess.KANBAN_MAX_PARALLEL:
             note = f"{sess.KANBAN_MAX_PARALLEL} workers are already running"
         if note:
             log("info", f"kanban_operator_force_dispatch refused for {card_id}: {note}")
