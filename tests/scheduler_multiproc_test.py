@@ -213,7 +213,9 @@ def test_update_under_flock_no_lost_update(monkeypatch) -> None:
     """Two processes update disjoint fields of the same job. Both
     fields should land on disk; neither should clobber the other.
 
-    The flock + reload-under-lock pattern serializes the writes.
+    The flock + reload-under-lock pattern serializes the writes. By
+    design ``update_job`` fails fast while a peer holds the job's lock
+    ("retry shortly"), so each child retries, as callers are told to.
     """
     home = _make_home()
     try:
@@ -246,14 +248,23 @@ async def main():
     # don't start() — no tick needed
     # update only the prompt field so the two children patch DIFFERENT fields
     # (renamed-a sets prompt; renamed-b sets description)
-    try:
-        if "{new_name}" == "renamed-a":
-            await svc.update_job("up1", JobPatch(prompt="from-a"))
-        else:
-            await svc.update_job("up1", JobPatch(description="from-b"))
-        print("OK")
-    except Exception as e:
-        print("ERR", e)
+    for attempt in range(100):
+        try:
+            if "{new_name}" == "renamed-a":
+                await svc.update_job("up1", JobPatch(prompt="from-a"))
+            else:
+                await svc.update_job("up1", JobPatch(description="from-b"))
+            print("OK")
+            return
+        except RuntimeError as e:
+            if "locked by a peer" not in str(e):
+                print("ERR", e)
+                return
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            print("ERR", e)
+            return
+    print("ERR still locked after 100 attempts")
 asyncio.run(main())
 ''')
         procs = [_spawn_async(home, s) for s in scripts]
@@ -264,9 +275,9 @@ asyncio.run(main())
             except subprocess.TimeoutExpired:
                 p.kill()
             outs.append((p.stdout.read() if p.stdout else "", p.stderr.read() if p.stderr else ""))
-        # If both children couldn't acquire the flock simultaneously,
-        # one might surface an error — but the per-job lock holds only
-        # for the brief read-patch-write window, so both should succeed.
+        # The per-job lock holds only for the brief read-patch-write
+        # window, so a child that met it locked gets it on a retry.
+        assert all("OK" in out.splitlines() for out, _err in outs), outs
         loaded = load_job("up1")
         assert loaded is not None
         # Both fields should be present.
