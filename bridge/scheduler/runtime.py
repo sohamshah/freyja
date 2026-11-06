@@ -1161,9 +1161,10 @@ class _RunCost:
     loop's continuations). A run's cost was how much the session's total
     grew while it ran, so a fire into the operator's session was billed
     the turns of the messages the operator sent while it waited. The
-    calls of the sub-agents of its session that started while it ran are
-    its cost too: they report under their own session ids, so neither of
-    its budgets saw them.
+    calls of the sub-agents its turns started are its cost too: they
+    report under their own session ids, so neither of its budgets saw
+    them. Counted for every sub-agent of its session that started while it
+    ran, it was billed those of the operator's turns that ran in its wait.
 
     The call that takes the run over its ``budget``'s cost or token cap
     stops it. Checked only when the run ended, a run over its budget had
@@ -1196,7 +1197,9 @@ class _RunCost:
         self.cache_read_tokens = 0
         self._run_id = run_id
         self._budget = budget
-        self._started = time.time()
+        # When each of the run's turns ran: its start, and its end (None
+        # while it runs). A sub-agent that started in one is the run's.
+        self._spans: list[list[float | None]] = []
         # emit() also runs on worker threads (compaction's calls).
         self._loop = asyncio.get_running_loop()
         self._turns: set[str] = set()
@@ -1253,9 +1256,12 @@ class _RunCost:
         kind = event.get("type")
         ours = event.get("runId") == self._run_id
         if kind == "turn_start":
+            # A turn starts only once the one before it has ended.
+            self._end_span()
             self._last_turn_ours = ours or bool(self._last_turn_ours and event.get("automatic"))
             if self._last_turn_ours:
                 self._turns.add(event.get("turnId"))
+                self._spans.append([time.time(), None])
                 # Its reply is what it adds. A turn that failed before its
                 # prompt reached the transcript has none: the last reply
                 # there was the turn's before it, delivered as the run's.
@@ -1267,9 +1273,11 @@ class _RunCost:
             # on as a finished run, took the stopped turn's partial answer
             # for its output and delivered it. Stopped here, from the turn's
             # task, the run sees its stop before it sees its turn end.
+            self._end_span()
             self.stopped = True
             stop_run_now(self._run_id)
         elif kind == "turn_complete" and event.get("turnId") in self._turns:
+            self._end_span()
             self.reply = _extract_last_assistant_text(self._sess, self._entries_before)
             if not event.get("success", True):
                 # Read as it ends: a turn queued behind it runs in the run's
@@ -1296,7 +1304,7 @@ class _RunCost:
         elif (
             (kind == "llm_call_metric" and event.get("turnId") in self._turns)
             or (kind == "subagent_llm_call"
-                and float(event.get("subagentStartedAt") or 0.0) >= self._started)
+                and self._started_in_its_turn(float(event.get("subagentStartedAt") or 0.0)))
         ):
             self.cost += float(event.get("costUsd") or 0.0)
             self.input_tokens += int(event.get("inputTokens") or 0)
@@ -1304,6 +1312,13 @@ class _RunCost:
             self.cache_read_tokens += int(event.get("cacheReadTokens") or 0)
             if self._over_budget():
                 self._loop.call_soon_threadsafe(stop_run_now, self._run_id, "budget_exceeded")
+
+    def _end_span(self) -> None:
+        if self._spans and self._spans[-1][1] is None:
+            self._spans[-1][1] = time.time()
+
+    def _started_in_its_turn(self, at: float) -> bool:
+        return any(start <= at and (end is None or at < end) for start, end in self._spans)
 
     def _over_budget(self) -> bool:
         b = self._budget

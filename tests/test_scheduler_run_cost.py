@@ -255,6 +255,40 @@ async def test_a_sub_agent_started_before_the_run_is_not_its_cost(
     assert run.cost_usd == pytest.approx(0.20)
 
 
+async def test_a_sub_agent_the_operators_turn_starts_while_the_run_waits_is_not_its_cost(
+    operator_session, tmp_path, monkeypatch,
+):
+    # A run counted the calls of every sub-agent of its session that started
+    # after it did: the operator's turn, which ran in the run's wait, handed
+    # its work to one, and the run was billed for it.
+    import time
+
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.costs = {"write the digest": 20, "how is the build": 100}
+    record, on_llm_call = await _sub_agent_of("s1", tmp_path, monkeypatch)
+    runner = sess.runner
+
+    class _Spawns:
+        usage = runner.usage
+
+        async def run(self, session, message, stream=True):
+            if "how is the build" in _text(message):
+                record.start_time = time.time()
+                on_llm_call({"model": "claude-sonnet-5-5", "input_tokens": 1000, "output_tokens": 30})
+            return await runner.run(session, message, stream=stream)
+
+    sess.runner = _Spawns()
+    sess.during_fire = lambda: fb._schedule_or_queue_turn(sess, "how is the build?")
+
+    run = await fire_job(_Service({"s1": sess}), _job())
+
+    assert sess.cumulative_cost == pytest.approx(1.20)
+    assert run.cost_usd == pytest.approx(0.20)
+
+
 async def test_a_sub_agents_call_that_takes_the_run_over_its_budget_stops_it(
     operator_session, tmp_path, monkeypatch,
 ):
