@@ -2827,7 +2827,12 @@ class GatewayDaemon:
     _LOG_ROTATE_INTERVAL_SEC = 300
 
     async def _rotate_logs_periodically(self) -> None:
-        """Copytruncate gateway.log / gateway.err when they get large."""
+        """Copytruncate gateway.log / gateway.err when they get large,
+        every line kept: no line a log handler or emit() writes falls
+        between the copy and the emptying. The handlers' locks first: one
+        that writes through emit() takes emit()'s lock while it holds its
+        own."""
+        from bridge.freyja_bridge import _EMIT_LOCK
         from bridge.gateway.pid import (
             gateway_err_path,
             gateway_log_path,
@@ -2837,13 +2842,18 @@ class GatewayDaemon:
         while True:
             try:
                 await asyncio.sleep(self._LOG_ROTATE_INTERVAL_SEC)
+                locks = (
+                    *(h.lock for h in logging.getLogger().handlers if h.lock is not None),
+                    _EMIT_LOCK,
+                )
                 for path in (gateway_log_path(), gateway_err_path()):
                     # to_thread: reading and truncating a multi-hundred-MB
                     # file must not block the event loop mid-turn.
-                    rotated = await asyncio.to_thread(rotate_log_if_large, path)
+                    rotated = await asyncio.to_thread(rotate_log_if_large, path, locks=locks)
                     if rotated:
                         logger.info(
-                            "rotated %s (kept tail in %s.1)", path.name, path.name
+                            "rotated %s: the old log is %s.1, older ones are gzipped",
+                            path.name, path.name,
                         )
             except asyncio.CancelledError:
                 raise

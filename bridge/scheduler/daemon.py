@@ -36,8 +36,6 @@ Public surface:
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import gzip
 import json
 import logging
 import os
@@ -95,7 +93,7 @@ def daemon_log_path() -> Path:
 
 # Cap for daemon.log. The launcher shim appends the daemon's stdout and
 # stderr to it: every event of the scheduler sessions it runs, and its log
-# lines. Nothing rotated it. The size of the tail gateway.log.1 keeps.
+# lines. Nothing rotated it.
 DAEMON_LOG_MAX_BYTES = 8 * 1024 * 1024
 # How often the daemon looks at its size, as the gateway does gateway.log's.
 _DAEMON_LOG_ROTATE_SECONDS = 300
@@ -110,49 +108,17 @@ def rotate_daemon_log_if_large(
     """Rotate daemon.log once it holds more than ``max_bytes``, as the
     gateway rotates gateway.log (bridge.gateway.pid.rotate_log_if_large):
     the shim opened it for appending and holds it while the daemon lives,
-    so it is copied and emptied in place, never moved.
-
-    No line is dropped, where the gateway keeps its last 8 MB: the whole
-    log is copied to ``daemon.log.1``, and the ``.1`` it replaces is first
-    gzipped to ``daemon.log.<when it ended>.gz``. Each byte of the log is at
-    the same offset in ``.1``, so main's tail of the log
-    (schedulerDaemonLogTail.ts) reads on in ``.1`` from where it was, then
-    from the start of the log. ``.1`` is replaced before the log is
-    emptied: a tail that finds the log shorter than ``.1`` finds ``.1``
-    whole.
+    so it is copied and emptied in place, never moved. The whole log goes
+    to ``daemon.log.1``, each byte at the offset it had, so main's tail of
+    the log (schedulerDaemonLogTail.ts) reads on there; the ``.1`` it
+    replaces is gzipped first.
 
     ``locks`` are taken in order and held from the copy until the log is
     emptied: those of this process's writers to it, so no line they write
     falls between the two. Returns True if it rotated."""
-    path = path or daemon_log_path()
-    try:
-        if not path.exists() or path.stat().st_size <= max_bytes:
-            return False
-        segment = path.with_name(f"{path.name}.1")
-        if segment.exists():
-            ended = time.strftime("%Y%m%d-%H%M%S", time.localtime(segment.stat().st_mtime))
-            kept = path.with_name(f"{path.name}.{ended}.gz")
-            n = 1
-            while kept.exists():
-                n += 1
-                kept = path.with_name(f"{path.name}.{ended}-{n}.gz")
-            partial = kept.with_name(f"{kept.name}.tmp")
-            with segment.open("rb") as src, gzip.open(partial, "wb") as dst:
-                shutil.copyfileobj(src, dst)
-            os.replace(partial, kept)
-        copy = segment.with_name(f"{segment.name}.tmp")
-        with contextlib.ExitStack() as held:
-            for lock in locks:
-                held.enter_context(lock)
-            with path.open("rb") as src, copy.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
-            os.replace(copy, segment)
-            os.truncate(path, 0)
-        return True
-    except Exception as exc:  # noqa: BLE001
-        # Log hygiene must never take the daemon down.
-        logger.warning("daemon.log not rotated: %s", exc)
-        return False
+    from bridge.gateway.pid import rotate_log_if_large
+
+    return rotate_log_if_large(path or daemon_log_path(), max_bytes=max_bytes, locks=locks)
 
 
 async def rotate_daemon_log_periodically(*locks: Any) -> None:

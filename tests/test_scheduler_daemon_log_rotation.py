@@ -2,8 +2,8 @@
 
 The launcher shim appends the daemon's stdout and stderr to daemon.log:
 every event of the scheduler sessions it runs, and its log lines. Nothing
-rotated it. The gateway copies its own log's last 8 MB to gateway.log.1 and
-empties the log, dropping the rest and the .1 before: the user's rule is to
+rotated it. The gateway copied its own log's last 8 MB to gateway.log.1 and
+emptied the log, dropping the rest and the .1 before: the user's rule is to
 compress old logs, never delete them.
 """
 

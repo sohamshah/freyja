@@ -5,6 +5,7 @@ Both pin lessons from one incident: a Slack thread pinned to a Gemini model on a
 
 from __future__ import annotations
 
+import gzip
 import os
 from types import SimpleNamespace
 
@@ -182,7 +183,7 @@ def test_large_log_is_truncated_in_place_under_an_open_appending_descriptor(tmp_
     inode_before = log.stat().st_ino
     fd = os.open(log, os.O_WRONLY | os.O_APPEND)
     try:
-        assert rotate_log_if_large(log, max_bytes=1024, keep_bytes=512) is True
+        assert rotate_log_if_large(log, max_bytes=1024) is True
         assert log.exists() and log.stat().st_size == 0
         os.write(fd, b"fresh\n")
     finally:
@@ -194,17 +195,70 @@ def test_large_log_is_truncated_in_place_under_an_open_appending_descriptor(tmp_
     assert log.read_bytes() == b"fresh\n"
 
 
-def test_rotation_preserves_a_readable_tail(tmp_path):
+def test_a_large_log_is_copied_whole_to_its_segment(tmp_path):
+    """Each byte at the offset it had in the log, so the app's tail reads on there. The last 8 MB alone dropped the rest."""
     log = tmp_path / "gateway.log"
-    lines = [f"event-{i}\n".encode() for i in range(5000)]
-    log.write_bytes(b"".join(lines))
+    log.write_bytes(b"".join(f"event-{i}\n".encode() for i in range(5000)))
+    before = log.read_bytes()
 
-    assert rotate_log_if_large(log, max_bytes=1024, keep_bytes=4096) is True
+    assert rotate_log_if_large(log, max_bytes=1024) is True
 
-    archive = tmp_path / "gateway.log.1"
-    kept = archive.read_bytes()
-    assert kept, "the tail is the only diagnosable part after truncation"
-    # Must start on a line boundary, not mid-record.
-    assert kept.startswith(b"event-")
-    # And must be the END of the log, which is the part worth keeping.
-    assert kept.rstrip().endswith(b"event-4999")
+    assert (tmp_path / "gateway.log.1").read_bytes() == before
+
+
+def test_older_segments_are_gzipped_and_no_line_is_dropped(tmp_path):
+    """The user's rule: old logs are compressed, never deleted. Each rotation wrote over gateway.log.1."""
+    log = tmp_path / "gateway.log"
+    written = b""
+    for round_ in range(3):
+        lines = b"".join(f"round {round_} event-{i}\n".encode() for i in range(200))
+        written += lines
+        with log.open("ab") as f:
+            f.write(lines)
+        assert rotate_log_if_large(log, max_bytes=1024) is True
+    with log.open("ab") as f:
+        f.write(b"after\n")
+
+    old = sorted(tmp_path.glob("gateway.log.*.gz"), key=lambda p: p.stat().st_mtime_ns)
+    assert len(old) == 2
+    kept = b"".join(
+        [gzip.decompress(p.read_bytes()) for p in old]
+        + [(tmp_path / "gateway.log.1").read_bytes(), log.read_bytes()]
+    )
+    assert kept == written + b"after\n"
+
+
+async def test_the_gateway_rotates_its_logs_under_its_writers_locks(monkeypatch):
+    """No line the gateway's log handlers or emit() write falls between the copy and the emptying."""
+    import asyncio
+    import logging
+
+    import bridge.freyja_bridge as fb
+    import bridge.gateway.pid as pid
+    from bridge.gateway.run import GatewayDaemon
+
+    rotated: list[tuple] = []
+
+    def rotate(path, *, locks=()):
+        rotated.append((path.name, tuple(locks)))
+        if len(rotated) == 2:
+            raise asyncio.CancelledError
+        return False
+
+    handler = logging.StreamHandler()
+    root = logging.getLogger()
+    root.addHandler(handler)
+    monkeypatch.setattr(pid, "rotate_log_if_large", rotate)
+    gateway = GatewayDaemon()
+    gateway._LOG_ROTATE_INTERVAL_SEC = 0
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await gateway._rotate_logs_periodically()
+    finally:
+        root.removeHandler(handler)
+
+    assert [name for name, _ in rotated] == ["gateway.log", "gateway.err"]
+    for _, locks in rotated:
+        # The log handlers' locks, then emit()'s.
+        assert locks[-1] is fb._EMIT_LOCK
+        assert handler.lock in locks

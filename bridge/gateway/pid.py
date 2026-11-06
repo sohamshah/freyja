@@ -23,13 +23,16 @@ the default non-zero (which would trigger ``KeepAlive``).
 
 from __future__ import annotations
 
+import contextlib
 import errno
+import gzip
 import logging
 import os
+import shutil
 import signal
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -74,15 +77,13 @@ def gateway_err_path() -> Path:
 # tool_input_delta alone was ~34% of lines in a 560 MB sample — so
 # without a cap the file grows without bound.
 GATEWAY_LOG_MAX_BYTES = 64 * 1024 * 1024
-# How much of the tail to preserve into the `.1` archive on rotation.
-GATEWAY_LOG_KEEP_BYTES = 8 * 1024 * 1024
 
 
 def rotate_log_if_large(
     path: Path,
     *,
     max_bytes: int = GATEWAY_LOG_MAX_BYTES,
-    keep_bytes: int = GATEWAY_LOG_KEEP_BYTES,
+    locks: Iterable[Any] = (),
 ) -> bool:
     """Copytruncate ``path`` when it exceeds ``max_bytes``.
 
@@ -94,25 +95,46 @@ def rotate_log_if_large(
     so the next write lands at the new end of file rather than leaving
     a sparse hole.
 
-    The last ``keep_bytes`` are copied to ``<name>.1`` first, so a crash
-    right before rotation is still diagnosable. Returns True if it
-    rotated.
+    No line is dropped: the whole log is copied to ``<name>.1``, and the
+    ``.1`` it replaces is first gzipped to ``<name>.<when it ended>.gz``.
+    Only the last 8 MB went to ``.1``, over the one before: the rest was
+    lost. Each byte of the log is at the same offset in ``.1``, so a tail of
+    the log (gatewayLogTail.ts) reads on in ``.1`` from where it was, then
+    from the start of the log. ``.1`` is replaced before the log is
+    emptied: a tail that finds the log shorter than ``.1`` finds ``.1``
+    whole.
+
+    ``locks`` are taken in order and held from the copy until the log is
+    emptied: those of this process's writers to it, so no line they write
+    falls between the two. Returns True if it rotated.
     """
     try:
         if not path.exists() or path.stat().st_size <= max_bytes:
             return False
-        archive = path.with_suffix(path.suffix + ".1")
-        with path.open("rb") as src:
-            size = path.stat().st_size
-            src.seek(max(0, size - keep_bytes))
-            # Drop a partial first line so the archive starts clean.
-            src.readline()
-            tail = src.read()
-        archive.write_bytes(tail)
-        os.truncate(path, 0)
+        segment = path.with_name(f"{path.name}.1")
+        if segment.exists():
+            ended = time.strftime("%Y%m%d-%H%M%S", time.localtime(segment.stat().st_mtime))
+            kept = path.with_name(f"{path.name}.{ended}.gz")
+            n = 1
+            while kept.exists():
+                n += 1
+                kept = path.with_name(f"{path.name}.{ended}-{n}.gz")
+            partial = kept.with_name(f"{kept.name}.tmp")
+            with segment.open("rb") as src, gzip.open(partial, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            os.replace(partial, kept)
+        copy = segment.with_name(f"{segment.name}.tmp")
+        with contextlib.ExitStack() as held:
+            for lock in locks:
+                held.enter_context(lock)
+            with path.open("rb") as src, copy.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+            os.replace(copy, segment)
+            os.truncate(path, 0)
         return True
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         # Log hygiene must never take the daemon down.
+        logger.warning("%s not rotated: %s", path.name, exc)
         return False
 
 
