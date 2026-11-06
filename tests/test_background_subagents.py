@@ -566,6 +566,31 @@ async def test_a_stop_of_a_queued_turn_still_runs_the_turns_queued_behind_it(mon
     assert ran == [("first", 0), ("second", 0), ("third", 0), ("fourth", 0), ("fifth", 0)]
 
 
+async def test_a_stop_before_a_turn_task_runs_still_runs_the_turns_queued_behind_it(monkeypatch, tmp_path):
+    """A stop that cancels a just-dispatched turn task before its first step
+    ran none of it, and so none of its drain: the turns queued behind it
+    waited for the next message."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "emit", lambda _e: None)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("session-desktop")
+    ran: list[tuple[str, int]] = []
+
+    async def run_turn(content, _attachments=None, **_kw):
+        ran.append((content, asyncio.current_task().cancelling()))
+
+    sess.run_turn = run_turn
+    for text in ("first", "second", "third"):
+        fb._schedule_or_queue_turn(sess, text)
+    fb._force_cancel_session(sess, scope="turn")  # The app's Stop, at once.
+    for _ in range(200):
+        if len(ran) == 2:
+            break
+        await asyncio.sleep(0)
+    assert ran == [("second", 0), ("third", 0)]
+    assert sess.queued_messages == []
+
+
 async def test_the_emergency_stop_drops_the_turns_queued_behind_the_running_one(monkeypatch, tmp_path):
     """The emergency stop stops everything. It cancelled the running turn
     only, and the drain then ran every turn queued behind it. The chat says

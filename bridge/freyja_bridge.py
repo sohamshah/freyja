@@ -15488,9 +15488,24 @@ def _schedule_or_queue_turn(
         # prompt it was ended failed, with no turn, not cancelled.
         if task.cancelled():
             _tell_turn_stopped(sess, run_id)
+            _drain_after_stop_before_first_step(sess, task)
 
     sess.pending_task.add_done_callback(_stopped_before_it_ran)
     return True
+
+
+def _drain_after_stop_before_first_step(sess: "_BridgeSession", task: asyncio.Task) -> None:
+    """``task``, the session's turn task, was stopped before its first step,
+    so it ran none of its drain either: the turns queued behind it waited
+    for the next message. The drain runs now, as after a stopped turn,
+    unless a turn took the session meanwhile. Stopped before its own first
+    step, it runs again."""
+    if not task.cancelled() or sess.pending_task is not task:
+        return
+    sess.pending_task = asyncio.create_task(
+        _drain_after_turn(sess, cancelled=True), name=f"turn-{sess.id}",
+    )
+    sess.pending_task.add_done_callback(lambda t: _drain_after_stop_before_first_step(sess, t))
 
 
 # A voice EXCHANGE session id is exactly "voice-" + 12 hex (uuid4 slice);
