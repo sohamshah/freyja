@@ -50,6 +50,8 @@ def _msg(content: str) -> InboxMessage:
 def test_a_message_too_long_for_the_control_channel_is_refused(monkeypatch, where, target, archived, owner_is_me):
     me = os.getpid()
     monkeypatch.setattr(tt, "_gateway_owner_pid", lambda: me if owner_is_me else me + 1)
+    # The gateway sends to the app's bridge only while it runs.
+    monkeypatch.setattr(tt, "_desktop_bridge_runs", lambda: True)
     path = commands_path() if where == "gateway" else desktop_commands_path()
 
     status = _router().forward_cross_process(

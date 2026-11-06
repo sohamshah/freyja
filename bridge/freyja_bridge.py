@@ -2269,6 +2269,26 @@ async def _hold_desktop_lock() -> None:
         await asyncio.sleep(1.0)
 
 
+def _take_desktop_lock(state: Any) -> None:
+    """Take the app's bridge's lock, or wait for it in the background (a
+    bridge the app restarted waits for the old one to let go). Once it
+    holds it, other processes send it their commands for desktop sessions,
+    so a first start reads the desktop control channel from here, not from
+    where the file ends when its reader starts."""
+    from bridge.gateway.control_channel import (
+        desktop_commands_offset_path,
+        desktop_commands_path,
+        start_reading_at_end_if_new,
+    )
+    from bridge.gateway.pid import hold_desktop_lock
+
+    start_reading_at_end_if_new(desktop_commands_path(), desktop_commands_offset_path())
+    if not hold_desktop_lock():
+        state._desktop_lock_task = asyncio.create_task(  # noqa: SLF001
+            _hold_desktop_lock(), name="desktop-lock",
+        )
+
+
 async def _main() -> None:
     boot_session_id = f"desktop-{int(time.time() * 1000):x}"
     workspace = str(Path(os.environ.get("FREYJA_WORKSPACE", os.getcwd())).expanduser().resolve())
@@ -2341,16 +2361,11 @@ async def _main() -> None:
     )
 
     state = _BridgeState(workspace=workspace, default_model=default_model)
-    # This process owns desktop sessions. The scheduler daemon hands it
-    # its talks for them while it runs (TalkRouter._send_to_desktop)
-    # instead of loading a copy. Taken before any session loads; a bridge
-    # the app restarted waits for the old one to let go.
-    from bridge.gateway.pid import hold_desktop_lock
-
-    if not hold_desktop_lock():
-        state._desktop_lock_task = asyncio.create_task(  # noqa: SLF001
-            _hold_desktop_lock(), name="desktop-lock",
-        )
+    # This process owns desktop sessions. The scheduler daemon and the
+    # gateway hand it their talks for them while it runs
+    # (TalkRouter._send_to_desktop) instead of loading a copy. Taken
+    # before any session loads.
+    _take_desktop_lock(state)
     # External MCP servers (~/.freyja/mcp.json). A missing/empty catalog is
     # a silent no-op: no manager task, no behavior change.
     try:

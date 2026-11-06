@@ -413,7 +413,9 @@ class TalkRouter:
                 return self._send_to_desktop(target_id, msg)
 
         # Non-gateway recipient. If we're the gateway daemon and can't
-        # serve it live, it lives in the desktop bridge — forward there.
+        # serve it live, it lives in the desktop bridge — send it there
+        # while the app runs, else to its inbox file. Queued for an app
+        # that was not running, the app's next start loaded and woke it.
         # Archived sub-agents route by their parent's shape.
         if archived_state is not None and not live_local:
             parent_id = str(archived_state.get("parentSessionId") or "")
@@ -421,11 +423,15 @@ class TalkRouter:
             if parent_is_gateway and not am_owner and owner is not None:
                 return self._forward_to_daemon(target_id, msg, owner)
             if not parent_is_gateway and am_owner:
-                return self._forward_to_desktop(target_id, msg)
+                return self._send_to_desktop(target_id, msg)
             return None  # local re-wake is the right call
 
         if am_owner and not live_local:
-            return self._forward_to_desktop(target_id, msg)
+            if not (_desktop_bridge_runs() or _session_exists_on_disk(target_id)):
+                # No app and no saved session: no such session. The talk
+                # tool says so instead of writing an inbox file for it.
+                return None
+            return self._send_to_desktop(target_id, msg)
         return None
 
     def _forward_to_daemon(

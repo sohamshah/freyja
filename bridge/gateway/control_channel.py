@@ -85,6 +85,21 @@ def append_command(cmd: dict[str, Any], *, path: Path | None = None) -> None:
         fp.write(line + "\n")
 
 
+def start_reading_at_end_if_new(commands_file: Path, offset_file: Path) -> None:
+    """Where a reader with no offset file yet starts: the end of
+    ``commands_file`` now. The app's bridge calls it before it takes the
+    lock that tells other processes to send to it; its reader starts much
+    later, and skipped to the end of the file then, past what they sent."""
+    if offset_file.exists():
+        return
+    commands_file.parent.mkdir(parents=True, exist_ok=True)
+    commands_file.touch(exist_ok=True)
+    try:
+        offset_file.write_text(str(commands_file.stat().st_size))
+    except OSError:
+        pass
+
+
 # The reader takes at most this much per read and dispatches whole lines
 # only, so a longer line is skipped unread (see ControlChannelReader._drain).
 MAX_LINE_BYTES = 1024 * 1024
@@ -148,22 +163,15 @@ class ControlChannelReader:
         except OSError:
             pass
         # Restore persisted offset (or jump to current EOF on first run
-        # so we don't replay history from a long-lived control file).
+        # so we don't replay history from a long-lived control file:
+        # nothing written before the reader's process was alive can
+        # possibly be answerable).
         offset_path = self._offset_file
-        if offset_path.exists():
-            try:
-                self._offset = int(offset_path.read_text().strip() or "0")
-            except (ValueError, OSError):
-                self._offset = 0
-        else:
-            # First-ever start: skip whatever historical lines exist
-            # (the desktop is the only writer; nothing it wrote before
-            # the daemon was alive can possibly be answerable).
-            self._offset = path.stat().st_size
-            try:
-                offset_path.write_text(str(self._offset))
-            except OSError:
-                pass
+        start_reading_at_end_if_new(path, offset_path)
+        try:
+            self._offset = int(offset_path.read_text().strip() or "0")
+        except (ValueError, OSError):
+            self._offset = 0
         self._stop_event.clear()
         self._task = asyncio.create_task(self._run_loop(), name="control-channel")
         logger.info(

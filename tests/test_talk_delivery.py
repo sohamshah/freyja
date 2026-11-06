@@ -619,6 +619,118 @@ async def test_a_talk_from_the_scheduler_daemon_to_a_desktop_session_goes_to_the
     assert (cmd["type"], cmd["to"], cmd["message"]["content"]) == ("talk_deliver", sid, "the report is ready")
 
 
+def _gateway(monkeypatch, tmp_path) -> tuple[TalkTool, list[str]]:
+    """A talk tool in the gateway, which holds the gateway lock. Records
+    every session it would load."""
+    from bridge import freyja_bridge as fb
+    from bridge import transcript_persistence as tp
+
+    monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
+    monkeypatch.setattr(tt, "_holds_gateway_lock", lambda: True)
+    built: list[str] = []
+
+    async def ensure_session(session_id, **_kw):
+        built.append(session_id)
+        raise AssertionError(f"the gateway loaded a copy of {session_id}")
+
+    state = SimpleNamespace(
+        sessions={}, active_session_id=None, ensure_session=ensure_session, talk_wake_hook_factory=None,
+    )
+    router = TalkRouter(
+        bridge_state=state, get_running_sessions=dict,
+        resolve_archived_sub=fb._resolve_archived_subagent,
+        wake_archived_sub=lambda sid, _msg: built.append(sid),
+    )
+    return TalkTool(router, _ctx()), built
+
+
+@pytest.mark.parametrize("sid", ["session-closed5", "sub_19f0desk_5"])
+async def test_a_talk_from_the_gateway_to_a_desktop_session_waits_in_its_inbox_file_while_no_app_runs(
+    monkeypatch, tmp_path, sid
+):
+    """The gateway queued it on the app's control channel whatever the app
+    did. The app replayed it on its next start, which loaded and woke the
+    session, or dropped it on its first start; and the sender waited out
+    its whole reply timeout."""
+    from bridge import transcript_persistence as tp
+    from bridge.gateway.control_channel import desktop_commands_path
+
+    tool, built = _gateway(monkeypatch, tmp_path)
+    _closed_desktop_session(tmp_path, sid)
+
+    result = await tool.execute("c1", {"to": sid, "content": "the deploy is done", "wait_for_reply": True})
+
+    assert built == []
+    assert not desktop_commands_path().exists() or desktop_commands_path().read_text() == ""
+    assert [u["content"] for u in tp.load_inbox_state(sid)["unread"]] == ["the deploy is done"]
+    assert "not waiting for a reply" in result.content
+
+
+async def test_a_talk_from_the_gateway_to_a_desktop_session_goes_to_the_app_while_it_runs(monkeypatch, tmp_path):
+    import fcntl
+
+    from bridge import transcript_persistence as tp
+    from bridge.gateway import pid as gp
+    from bridge.gateway.control_channel import desktop_commands_path
+
+    tool, built = _gateway(monkeypatch, tmp_path)
+    sid = "session-closed6"
+    _closed_desktop_session(tmp_path, sid)
+    with gp.desktop_lock_path().open("a") as app:  # the app's bridge, in its own process
+        fcntl.flock(app.fileno(), fcntl.LOCK_EX)
+        await tool.execute("c1", {"to": sid, "content": "the deploy is done"})
+
+    assert built == [] and tp.load_inbox_state(sid) is None
+    (line,) = desktop_commands_path().read_text().splitlines()
+    assert json.loads(line)["to"] == sid
+
+
+async def test_a_talk_from_the_gateway_to_no_saved_session_is_unresolved_while_no_app_runs(monkeypatch, tmp_path):
+    from bridge import transcript_persistence as tp
+
+    tool, _built = _gateway(monkeypatch, tmp_path)
+
+    result = await tool.execute("c1", {"to": "session-typo", "content": "hi"})
+
+    assert "unresolved" in result.content and tp.load_inbox_state("session-typo") is None
+
+
+async def test_the_apps_first_start_reads_the_commands_sent_once_it_holds_its_lock(monkeypatch):
+    """With no offset file yet, the reader skipped to the end of the file
+    when it started. Other processes send to the app as soon as it holds
+    its lock, which it takes long before its reader starts."""
+    from bridge import freyja_bridge as fb
+    from bridge.gateway import pid as gp
+    from bridge.gateway.control_channel import append_command, desktop_commands_path
+
+    monkeypatch.setattr(gp, "_desktop_lock", None)
+    append_command({"type": "talk_deliver", "to": "session-old", "message": {}}, path=desktop_commands_path())
+    delivered: list[str] = []
+
+    async def _deliver(_state, cmd):
+        delivered.append(cmd["to"])
+
+    monkeypatch.setattr(fb, "_handle_talk_deliver_command", _deliver)
+    state = SimpleNamespace()
+    fb._take_desktop_lock(state)
+    reader = None
+    try:
+        assert tt._desktop_bridge_runs()
+        append_command({"type": "talk_deliver", "to": "session-7", "message": {}}, path=desktop_commands_path())
+        reader = await fb._start_desktop_control_reader(state)
+        for _ in range(40):
+            if delivered:
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        if reader is not None:
+            await reader.stop()
+        gp._desktop_lock.close()
+
+    assert delivered == ["session-7"]
+
+
 async def test_the_apps_bridge_delivers_a_talk_to_its_own_closed_session_itself(monkeypatch, tmp_path):
     from bridge.gateway import pid as gp
 
