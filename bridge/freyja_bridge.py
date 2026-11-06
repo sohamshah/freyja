@@ -6726,6 +6726,15 @@ class _BridgeSession:
             for msg in list(self.inbox.unread):
                 if msg.from_session == bg.id and (msg.meta or {}).get("monitorEvent"):
                     self.inbox.remove(msg.id)
+            if self._held_elsewhere:
+                # A copy sent its events to the session's inbox file
+                # (_on_monitor_event): those still unread go too.
+                from bridge.transcript_persistence import drop_from_inbox_file
+
+                drop_from_inbox_file(
+                    self.id,
+                    lambda u: u.get("fromSession") == bg.id and (u.get("meta") or {}).get("monitorEvent"),
+                )
             await self._note_stopped_by_operator(
                 bg.summary or "shell command", bg.id, "monitor" if monitor else "command",
             )

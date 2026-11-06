@@ -432,6 +432,38 @@ async def test_a_stop_in_the_app_on_a_job_session_copy_tells_the_session_through
     assert sess.inbox.unread == []
 
 
+async def test_a_stop_in_the_app_on_a_job_session_copy_clears_its_monitors_events_from_the_inbox_file(
+    app_bridge, tmp_path
+):
+    # The stop dropped the stopped monitor's events waiting in the copy's
+    # inbox, which a copy never fills: the copy sent each to the session's
+    # inbox file, and there they stayed, for the owner's next turn.
+    import time
+
+    from bridge.tools.background_shell import BackgroundCommand
+
+    _owner_saved()
+    sess = _copy(tmp_path, owns_tick=False)
+    sess.state.sessions[SCHED] = sess
+    stopped, spared = (
+        BackgroundCommand(
+            id=f"bg_{name}", command="tail -f log", summary=name, pid=1, output_path=str(tmp_path / "bg.log"),
+            started_at=time.time(), backgrounded_at=time.time(), reason="cut_in", kind="monitor",
+        )
+        for name in ("deploy watch", "build watch")
+    )
+    await sess._on_monitor_event(stopped, "deploy 1 of 3 done")
+    await sess._on_monitor_event(spared, "build green")
+
+    stopped.cancel_origin, stopped.state = "operator", "stopped"
+    await sess._on_background_exit(stopped)
+
+    queued = _inbox_file()
+    assert not any("deploy 1 of 3 done" in m for m in queued)
+    assert any("build green" in m for m in queued)
+    assert any(m.startswith("[background work stopped by the operator]") for m in queued)
+
+
 async def test_a_stops_notice_folded_after_the_owner_took_it_in_replaces_the_one_it_took(
     app_bridge, monkeypatch, tmp_path
 ):

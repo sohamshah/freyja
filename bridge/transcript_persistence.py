@@ -240,6 +240,21 @@ def fold_into_inbox_file(
         _write_inbox(session_id, data)
 
 
+def drop_from_inbox_file(session_id: str, drop: Callable[[dict[str, Any]], bool]) -> int:
+    """Remove the unread messages ``drop`` picks from a session's inbox
+    sidecar, under the inbox lock. Returns how many went."""
+    with _inbox_lock():
+        data = _read_inbox(session_id)
+        if not isinstance(data, dict):
+            return 0
+        unread = [u for u in data.get("unread") or [] if isinstance(u, dict)]
+        kept = [u for u in unread if not drop(u)]
+        if len(kept) < len(unread):
+            data["unread"] = kept
+            _write_inbox(session_id, data)
+        return len(unread) - len(kept)
+
+
 def _write_inbox(session_id: str, data: dict[str, Any]) -> None:
     dest = _inbox_path(session_id)
     tmp = dest.with_suffix(".tmp")
