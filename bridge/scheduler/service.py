@@ -45,7 +45,7 @@ import os
 import re
 import time
 from collections import Counter, deque
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, Iterator
 
 from bridge.scheduler.models import (
     CLEARABLE_FIELDS,
@@ -321,8 +321,8 @@ class SchedulerService:
         LaunchAgent, stop() to a peer). That run's saves are the job's."""
         return self._is_owner or self._sessions_in_runs[session_id] > 0
 
-    @contextlib.asynccontextmanager
-    async def _runs_here(self, job: JobRecord) -> AsyncIterator[None]:
+    @contextlib.contextmanager
+    def _runs_here(self, job: JobRecord) -> Iterator[None]:
         """Count the scheduler session a run of ``job`` loads as this
         process's while the run goes on (holds_session)."""
         session = _scheduler_session_of(job)
@@ -904,8 +904,9 @@ class SchedulerService:
         task_name = asyncio.current_task().get_name()
         started = time.time()
         try:
-            async with self._runs_here(job), self._concurrency:
-                await self._fire_under_lock(job, slot, attempt)
+            with self._runs_here(job):
+                async with self._concurrency:
+                    await self._fire_under_lock(job, slot, attempt)
         except Exception as exc:  # noqa: BLE001
             logger.exception("fire crashed (job=%s): %s", job.id, exc)
             await self._finish_crashed_run(job, started, exc, scheduled=True)
@@ -1739,23 +1740,32 @@ class SchedulerService:
 
     async def _run_now(self, job: JobRecord, lock: FileLock, **kw: Any) -> RunRecord:
         """Run ``job`` now under its run ``lock``, and release it once the
-        run has ended."""
+        run has ended. Until then its session counts as this process's
+        (_runs_here) and it holds a run slot. Both were let go as fire_job
+        returned, while a run whose prompt is queued behind the turn that
+        started it still waited: a tick handed away meanwhile dropped its
+        session's saves here, and another run took its slot."""
         from bridge.scheduler.runtime import release_when_run_ends
 
         started = time.time()
         run = None
+        held = contextlib.ExitStack()
         try:
-            async with self._runs_here(job), self._concurrency:
+            with held:
+                held.enter_context(self._runs_here(job))
+                await self._concurrency.acquire()
+                held.callback(self._concurrency.release)
                 from bridge.scheduler.runtime import fire_job
                 # Re-read inside the lock for freshness.
                 fresh = load_job(job.id) or job
                 run = await fire_job(self, fresh, **kw)
+                release_when_run_ends(held.pop_all().close, run)
                 return run
         except Exception as exc:
             await self._finish_crashed_run(job, started, exc)
             raise
         finally:
-            release_when_run_ends(lock, run)
+            release_when_run_ends(lock.release, run)
 
     async def get_runs(self, job_id: str, *, limit: int = 50) -> list[RunRecord]:
         return load_runs_for_job(job_id, limit=limit)

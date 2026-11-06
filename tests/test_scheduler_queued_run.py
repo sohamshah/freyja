@@ -265,3 +265,39 @@ async def test_a_queued_runs_prompt_is_queued_before_run_now_answers():
     assert queued_as_answered == [1]
     assert started == []
     assert ["write the digest" in entry[0] for entry in sess.queued_messages] == [True]
+
+
+async def test_a_queued_run_holds_its_session_and_a_run_slot_until_it_ends(monkeypatch):
+    # Both were let go as run_now answered. A process whose tick went
+    # elsewhere meanwhile no longer held the job's session, so the waiting
+    # run's saves were dropped, and the slot let another run start in its
+    # place.
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.service import SchedulerService
+
+    sess = _stub_session()
+    monkeypatch.setattr(fb, "_schedule_or_queue_turn", lambda *_a, **_kw: False)
+    sid = "scheduler:sched_digest"
+    service = SchedulerService(SimpleNamespace(sessions={sid: sess}, permission_tier="low"),
+                               max_concurrent_runs=1)
+    monkeypatch.setattr(service, "emit_event", lambda **_kw: None)
+    service._is_owner = True  # It runs the tick, so it runs the job's session.
+    job = JobRecord(id="sched_digest", name="digest", prompt="digest",
+                    schedule=IntervalSchedule(seconds=3600),
+                    execution=ExistingSession(session_id=sid))
+    save_job(job)
+
+    async def calling_turn():
+        sess.pending_task = asyncio.current_task()
+        return await service.run_job_now(job.id)  # Its tool call.
+
+    run = await asyncio.ensure_future(calling_turn())
+    service._is_owner = False  # The tick goes to a LaunchAgent while the run waits.
+
+    assert run.status == "queued"
+    assert service.holds_session(sid)
+    assert service._concurrency.locked()
+    await _ended(job.id, run.run_id)
+    await asyncio.sleep(0)
+    assert not service.holds_session(sid)
+    assert not service._concurrency.locked()
