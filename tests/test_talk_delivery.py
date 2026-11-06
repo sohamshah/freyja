@@ -731,6 +731,61 @@ async def test_the_apps_first_start_reads_the_commands_sent_once_it_holds_its_lo
     assert delivered == ["session-7"]
 
 
+async def test_a_restarted_apps_bridge_reads_the_commands_only_once_the_old_one_let_go(monkeypatch):
+    """The new bridge started its reader while the old one still held the
+    lock, and both read the same file from the same offset file: a talk
+    was delivered twice. Waiting must skip nothing: what came while the
+    old one held the lock and had not read is read after."""
+    import fcntl
+
+    from bridge import freyja_bridge as fb
+    from bridge.gateway import pid as gp
+    from bridge.gateway.control_channel import (
+        append_command,
+        desktop_commands_offset_path,
+        desktop_commands_path,
+    )
+
+    monkeypatch.setattr(gp, "_desktop_lock", None)
+    append_command({"type": "talk_deliver", "to": "session-read", "message": {}}, path=desktop_commands_path())
+    # The old bridge read that one, and saved its offset.
+    desktop_commands_offset_path().write_text(str(desktop_commands_path().stat().st_size))
+    delivered: list[str] = []
+
+    async def _deliver(_state, cmd):
+        delivered.append(cmd["to"])
+
+    monkeypatch.setattr(fb, "_handle_talk_deliver_command", _deliver)
+    state = SimpleNamespace()
+    old = gp.desktop_lock_path().open("a")  # the old bridge, in its own process
+    fcntl.flock(old.fileno(), fcntl.LOCK_EX)
+    reader = None
+    try:
+        fb._take_desktop_lock(state)
+        reader = await fb._start_desktop_control_reader(state)
+        append_command({"type": "talk_deliver", "to": "session-8", "message": {}}, path=desktop_commands_path())
+        await asyncio.sleep(0.6)
+        assert delivered == []  # the old one may still read it
+
+        old.close()  # the old bridge exits
+        for _ in range(60):
+            if delivered:
+                break
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.3)
+    finally:
+        old.close()
+        if reader is not None:
+            await reader.stop()
+        task = getattr(state, "_desktop_reader_start_task", None)
+        if task is not None:
+            task.cancel()
+        if gp._desktop_lock is not None:
+            gp._desktop_lock.close()
+
+    assert delivered == ["session-8"]
+
+
 async def test_the_apps_bridge_delivers_a_talk_to_its_own_closed_session_itself(monkeypatch, tmp_path):
     from bridge.gateway import pid as gp
 

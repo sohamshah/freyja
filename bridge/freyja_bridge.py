@@ -1761,7 +1761,13 @@ async def _handle_artifact_note_command(
 async def _start_desktop_control_reader(state: "_BridgeState") -> Any | None:
     """Tail ``control/desktop-commands.jsonl`` (daemon → desktop
     direction) so gateway-side agents can talk() to desktop sessions.
-    Reverse of the daemon's reader on ``commands.jsonl``."""
+    Reverse of the daemon's reader on ``commands.jsonl``.
+
+    It reads only once this bridge holds the desktop lock. A bridge the
+    app restarted waits for the old one to let go (_take_desktop_lock),
+    and until it exits the old one reads the same file from the same
+    offset file: both read, and a talk ran twice. Nothing is skipped: the
+    reader starts from the offset the old one saved."""
     try:
         from bridge.gateway.control_channel import (
             ControlChannelReader,
@@ -1785,6 +1791,20 @@ async def _start_desktop_control_reader(state: "_BridgeState") -> Any | None:
             "scheduler_fire",
             lambda cmd: _handle_scheduler_fire_command(state, cmd),
         )
+        lock_task = getattr(state, "_desktop_lock_task", None)
+        if lock_task is not None and not lock_task.done():
+
+            async def _start_once_locked() -> None:
+                await lock_task
+                try:
+                    await reader.start()
+                except Exception as exc:  # noqa: BLE001
+                    log("warn", f"desktop control reader failed to start: {exc}")
+
+            state._desktop_reader_start_task = asyncio.create_task(  # noqa: SLF001
+                _start_once_locked(), name="desktop-control-reader",
+            )
+            return reader
         await reader.start()
         return reader
     except Exception as exc:  # noqa: BLE001
