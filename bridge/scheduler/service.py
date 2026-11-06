@@ -321,6 +321,27 @@ class SchedulerService:
                 if not self.holds_session(session):
                     self._stop_writing_events_held_elsewhere()
 
+    def _turn_on_a_job_session(self) -> bool:
+        """True while a scheduler session loaded here has a turn going that
+        no run here holds (a talk wake, a memo wake). Such a turn holds no
+        run lock: with the tick handed over under it, the new owner could
+        run the job on its own copy meanwhile, and the turn's saves were
+        dropped (holds_session). Stopping it at the handover, with its
+        input put back in the inbox, would run its tools again there."""
+        from bridge.scheduler.runtime import scheduler_session_id
+
+        prefix = scheduler_session_id("")
+        for sid, sess in list((getattr(self.state, "sessions", None) or {}).items()):
+            pending = getattr(sess, "pending_task", None)
+            if (
+                sid.startswith(prefix)
+                and not self._sessions_in_runs[sid]
+                and pending is not None
+                and not pending.done()
+            ):
+                return True
+        return False
+
     @staticmethod
     def _stop_writing_events_held_elsewhere() -> None:
         """Close this process's events files of the job sessions it no
@@ -406,7 +427,9 @@ class SchedulerService:
         process, CRUD-only until then, takes the tick within 15 s. Held
         on, the lock stayed here until the app quit, and runs this
         process starts die with the app. Runs in flight here keep their
-        run locks, so the new owner does not fire them again."""
+        run locks, so the new owner does not fire them again. A turn on a
+        job's session that is not a run of it holds the lock here until it
+        ends (_turn_on_a_job_session)."""
         while not self._stopped and self._is_owner:
             await asyncio.sleep(_OWNER_RETRY_SECONDS)
             if self._stopped or not self._is_owner or self._owner_lock is None:
@@ -414,6 +437,8 @@ class SchedulerService:
             if not always_on_scheduler_installed():
                 continue
             if not await asyncio.to_thread(always_on_scheduler_running):
+                continue
+            if self._turn_on_a_job_session():
                 continue
             self._is_owner = False
             self._owner_lock.release()

@@ -275,6 +275,71 @@ async def test_a_run_that_goes_on_after_the_app_handed_the_tick_away_still_saves
     assert _saved_entries() == saved
 
 
+def _app_owns_the_tick(service, monkeypatch) -> None:
+    """``service``, the app's, owns the tick, and a LaunchAgent that runs a
+    scheduler is installed and running: the app hands the tick to it."""
+    import bridge.scheduler.service as service_mod
+    from bridge.scheduler.persistence import FileLock, owner_lock_path
+
+    service._owner_lock = FileLock(owner_lock_path())
+    assert service._owner_lock.acquire()
+    service._is_owner = True
+    monkeypatch.setattr(service_mod, "_OWNER_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(service_mod, "always_on_scheduler_installed", lambda: True)
+    monkeypatch.setattr(service_mod, "always_on_scheduler_running", lambda: True)
+
+
+async def test_the_app_hands_the_tick_over_once_a_turn_on_a_job_session_that_is_not_a_run_ends(
+    app_bridge, monkeypatch, tmp_path
+):
+    # A talk woke the job's session in the app, which owned the tick. The
+    # turn holds no run lock: handed over under it, the LaunchAgent could
+    # run the job on its own copy meanwhile, and the turn's saves were
+    # dropped.
+    import asyncio
+
+    _owner_saved()
+    sess = _copy(tmp_path, owns_tick=True)
+    state = sess.state
+    state.sessions[SCHED] = sess
+    service = state.scheduler
+    _app_owns_the_tick(service, monkeypatch)
+    turn_ends = asyncio.Event()
+
+    async def talk_wake():
+        await turn_ends.wait()
+        sess._save_transcript()
+
+    sess.pending_task = asyncio.create_task(talk_wake())
+    hand_over = asyncio.create_task(service._hand_over_to_launch_agent())
+    await asyncio.sleep(0.1)
+    assert service._is_owner and not hand_over.done()
+
+    turn_ends.set()
+    await asyncio.wait_for(hand_over, 1)
+    assert not service._is_owner
+    assert _saved_entries() != ["o1"]
+
+
+async def test_a_run_of_the_job_going_on_in_the_app_does_not_hold_the_tick(app_bridge, monkeypatch, tmp_path):
+    # Its run lock keeps the new owner from firing the job again, and its
+    # saves stay the job's (holds_session).
+    import asyncio
+
+    sess = _copy(tmp_path, owns_tick=True)
+    state = sess.state
+    state.sessions[SCHED] = sess
+    service = state.scheduler
+    _app_owns_the_tick(service, monkeypatch)
+    service._sessions_in_runs[SCHED] += 1
+    sess.pending_task = asyncio.create_task(asyncio.Event().wait())
+
+    await asyncio.wait_for(service._hand_over_to_launch_agent(), 1)
+
+    assert not service._is_owner
+    sess.pending_task.cancel()
+
+
 async def _take_the_tick(service, monkeypatch) -> None:
     """``service`` starts while a peer owns the tick, and takes it when the
     peer exits (the scheduler daemon restarts, and the gateway takes over)."""
