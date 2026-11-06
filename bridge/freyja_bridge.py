@@ -8546,7 +8546,7 @@ class _BridgeSession:
     KANBAN_TICK_COALESCE_MS = 2_000
     KANBAN_MAX_PARALLEL = 3
     # Hard cap on review<->rework cycles before a card moves to blocked
-    # and surfaces to the operator. The 5th failed verdict skips the
+    # and surfaces to the operator. The 3rd failed verdict skips the
     # worker rewake and routes straight to blocked. Mirrored in
     # sub_agent_tool.py's `_mark_kanban_terminal` to short-circuit
     # review-entry past the cap as a defense in depth.

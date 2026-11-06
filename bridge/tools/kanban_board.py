@@ -91,7 +91,7 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "review": {
         # Judge verdict pass → sealed done.
         "done",
-        # Verdict fail + iter<5 → worker rewoken, card back in flight.
+        # Verdict fail + iter<3 → worker rewoken, card back in flight.
         "running",
         # Rework-from-scratch path: judge verdict says the approach
         # itself was wrong (not just the execution), so the card goes
@@ -101,7 +101,7 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         # — there's no way to surface "this needs to be redone from
         # scratch" without the operator manually moving the card.
         "ready",
-        # 5th failed verdict → blocked, operator territory.
+        # 3rd failed verdict → blocked, operator territory.
         "blocked",
         # Escape hatch.
         "cancelled",
