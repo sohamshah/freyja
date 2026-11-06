@@ -146,6 +146,22 @@ await check('a triage card the bridge would unblock has an Unblock button that s
   assert.equal(await unblockable('card_011'), false)
 })
 
+// Only the tick's review lane judges a card, and no tick runs with
+// autopilot off; the card view offered nothing for a card in review.
+await check('a card in review has Judge now, which toasts when the judge starts', async () => {
+  useHarness.setState({ activeSessionId: SESSION, toast: null })
+  const { root, button } = await openCard([tile('card_002', 'review')], 'card_002')
+  button('Judge now').click()
+  await settle()
+  assert.deepEqual(sent.at(-1), { type: 'kanban_operator_force_dispatch', sessionId: SESSION, cardId: 'card_002' })
+  assert.equal(H().toast, null)
+  answer('kanban_review_started', 'Judge reviewing card_002 (iter 1/5)', { cardId: 'card_002', reviewIteration: 1, sticky: false })
+  await settle()
+  assert.equal(H().toast?.message, 'Judging card_002')
+  assert.equal(H().toast?.tone, 'info')
+  root.unmount()
+})
+
 // Cancel, Unblock and Reassign said they were done as soon as they were
 // pressed, and the bridge's refusals reached only the activity feed.
 const pressed = [

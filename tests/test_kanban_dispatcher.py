@@ -1151,3 +1151,52 @@ async def test_a_card_command_the_bridge_cannot_carry_out_says_why(
     assert refused["details"]["cardId"] == card_id
     assert reason in refused["details"]["reason"]
     assert reason in refused["message"]
+
+
+@pytest.mark.asyncio
+async def test_force_dispatch_sends_a_review_card_to_the_judge_with_autopilot_off(monkeypatch) -> None:
+    """Only the tick's review lane runs the judge, and no tick runs with
+    autopilot off, so a card in review waited for a judge that never
+    came, and force dispatch refused it. Force dispatch now starts the
+    judge the review lane would, outside the worker cap as there, and
+    refuses while a judge is on the card or when there is nothing to
+    review."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    card = (await _review_card(board, tool, worker=True)).id
+    empty = (await _review_card(board, tool, worker=False)).id
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    session.auto_dispatch_enabled = False
+    session.subagent_registry.records = [
+        _StubRecord(is_running=True, kanban_task_id=f"phantom_{i}")
+        for i in range(_BridgeSession.KANBAN_MAX_PARALLEL)
+    ]
+    judged: list[str] = []
+
+    async def _judge(card: Any, *, sub_tool: Any) -> None:
+        judged.append(card.id)
+
+    session._run_kanban_judge_for_card = _judge
+
+    sent = await _force_dispatch(monkeypatch, session, card)
+    await asyncio.sleep(0)
+
+    assert judged == [card]
+    assert sub_tool.calls == []
+    # The judge says it started (kanban_review_started) or crashed.
+    assert [e for e in sent if e["type"] == "system_event"] == []
+    assert card in session._kanban_judge_pending
+
+    refusals = {}
+    for card_id in (card, empty):
+        sent = await _force_dispatch(monkeypatch, session, card_id)
+        [refused] = [e for e in sent if e["type"] == "system_event"]
+        assert refused["subtype"] == "kanban_operator_force_dispatch_failed"
+        refusals[card_id] = refused["details"]["reason"]
+    await asyncio.sleep(0)
+    assert judged == [card]
+    assert refusals == {
+        card: "a judge is already on it",
+        empty: "it has no worker session and no artifacts to review",
+    }

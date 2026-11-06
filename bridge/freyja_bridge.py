@@ -15463,7 +15463,10 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         # would build for this card and call `_dispatch_kanban_card`
         # directly. Capacity, blocked-by parents, and assignee
         # defaulting still apply — the operator override is on
-        # cadence + toggle, not on safety gates.
+        # cadence + toggle, not on safety gates. A card in review goes
+        # to the judge, as in the tick's review lane: only that lane
+        # judges, and it runs only inside the tick, so with autopilot
+        # off this is the one way a card in review gets a verdict.
         if not session_id:
             return
         card_id = str(cmd.get("cardId") or "").strip()
@@ -15486,19 +15489,27 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         # while a parent can still finish, and every card while
         # KANBAN_MAX_PARALLEL workers run. Each refusal says why, or the
         # app waits on an answer that never comes.
+        # The review lane's gates: one judge per card, outside the worker
+        # cap, and none for a card with nothing to review (the tick parks
+        # that one in blocked).
         pending = sess.kanban_board._pending_parents(task) if task is not None else []  # noqa: SLF001
+        judging = task is not None and task.status == "review"
         note = ""
         if task is None:
             note = "it is not on the board"
-        elif task.status not in ("ready", "triage", "done_unverified"):
+        elif task.status not in ("ready", "triage", "done_unverified", "review"):
             note = f"it is {task.status.replace('_', ' ')}"
-        elif task.id in live:
+        elif judging and task.id in sess._kanban_judge_pending:  # noqa: SLF001
+            note = "a judge is already on it"
+        elif judging and not task.worker_session_id and not (task.artifacts or []):
+            note = "it has no worker session and no artifacts to review"
+        elif not judging and task.id in live:
             note = "a worker is already on it"
         elif pending:
             note = f"it waits on {', '.join(pending)}"
         elif task.status == "triage" and not sess.kanban_board._parents_done(task):  # noqa: SLF001
             note = "a parent failed, was cancelled or is missing; unblock it first"
-        elif len(live) >= sess.KANBAN_MAX_PARALLEL:
+        elif not judging and len(live) >= sess.KANBAN_MAX_PARALLEL:
             note = f"{sess.KANBAN_MAX_PARALLEL} workers are already running"
         elif sub_tool is None:
             note = "this session has no sub_agent tool"
@@ -15508,6 +15519,15 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "kanban_operator_force_dispatch_failed",
                 f"Could not dispatch {card_id}: {note}",
                 details={"cardId": card_id, "reason": note},
+            )
+            return
+        if judging:
+            # The judge sends kanban_review_started, then its verdict or
+            # kanban_judge_failed.
+            sess._kanban_judge_pending.add(task.id)  # noqa: SLF001
+            asyncio.create_task(
+                sess._run_kanban_judge_for_card(task, sub_tool=sub_tool),  # noqa: SLF001
+                name=f"kanban-judge-{task.id}",
             )
             return
         if task.status == "done_unverified":

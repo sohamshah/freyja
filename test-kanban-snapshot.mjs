@@ -217,8 +217,8 @@ const { renderToStaticMarkup } = await import('react-dom/server')
 const { KanbanBridgeView } = await import('./src/renderer/components/views/KanbanBridgeView.tsx')
 
 const tile = (id, status, parents = [], metadata = {}) => ({ id, title: `title ${id}`, status, parents, metadata, events: [], comments: [] })
-const boardHtml = (cards, autoDispatchEnabled = false) => renderToStaticMarkup(createElement(KanbanBridgeView, {
-  sessionId: 's', objective: 'o', cards, agents: [], telemetryEvents: [], contextPct: 0, cost: 0,
+const boardHtml = (cards, autoDispatchEnabled = false, telemetryEvents = []) => renderToStaticMarkup(createElement(KanbanBridgeView, {
+  sessionId: 's', objective: 'o', cards, agents: [], telemetryEvents, contextPct: 0, cost: 0,
   autoDispatchEnabled, onAttach() {}, onOpenDispatcherBrief() {},
 }))
 const pipIn = (html, id) => {
@@ -287,6 +287,30 @@ check('a crashed or timed-out tile says autopilot retries it, or that it waits f
     pipIn(off, 'card_003').title,
     'Worker ended as: timed out. Autopilot is off, so it waits for you to unblock and dispatch it.',
   )
+})
+
+// Only the tick's review lane judges a card, and no tick runs with
+// autopilot off, so a card in review waits for the operator's Judge now.
+check('a tile in review says it waits for a judge with autopilot off', () => {
+  const cards = [{ ...tile('card_002', 'review'), workerTerminalState: 'done' }, tile('card_003', 'done_unverified')]
+  const off = boardHtml(cards, false)
+  assert.deepEqual(pipIn(off, 'card_002'), {
+    title: 'in review · worker exited done. Autopilot is off, so no judge runs until you press Judge now.',
+    label: 'in review · waits for judge',
+  })
+  // A legacy done_unverified card goes to a verifier, not the judge.
+  assert.equal(pipIn(off, 'card_003').label, 'in review')
+  assert.deepEqual(pipIn(boardHtml(cards, true), 'card_002'), {
+    title: 'in review · worker exited done — awaiting judge verdict.',
+    label: 'in review · worker done',
+  })
+  // Once Judge now started one, it no longer waits, until the judge
+  // crashes.
+  const judgeEvent = (subtype, at) => ({ subtype, message: '', at, details: { cardId: 'card_002' }, sessionId: 's', sessionTitle: 's' })
+  const started = [judgeEvent('kanban_review_started', 1)]
+  assert.equal(pipIn(boardHtml(cards, false, started), 'card_002').label, 'in review · worker done')
+  const crashed = [...started, judgeEvent('kanban_judge_failed', 2)]
+  assert.equal(pipIn(boardHtml(cards, false, crashed), 'card_002').label, 'in review · waits for judge')
 })
 
 if (failures) {

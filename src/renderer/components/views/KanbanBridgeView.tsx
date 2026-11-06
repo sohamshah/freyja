@@ -170,6 +170,19 @@ export function KanbanBridgeView({
     return m
   }, [telemetryEvents])
 
+  // Cards a judge is on: their last judge event is kanban_review_started,
+  // and a verdict or kanban_judge_failed ends it. With autopilot off only
+  // the operator's Judge now starts one.
+  const judgedCards = useMemo(() => {
+    const last = new Map<string, string>()
+    for (const ev of telemetryEvents) {
+      if (!['kanban_review_started', 'kanban_judge_verdict', 'kanban_judge_failed'].includes(ev.subtype)) continue
+      const cardId = (ev.details as Record<string, unknown> | undefined)?.cardId
+      if (typeof cardId === 'string' && cardId) last.set(cardId, ev.subtype)
+    }
+    return new Set([...last].filter(([, subtype]) => subtype === 'kanban_review_started').map(([cardId]) => cardId))
+  }, [telemetryEvents])
+
   const openCard = openCardId ? cards.find((c) => c.id === openCardId) ?? null : null
   const cardJudgeHistory = openCard ? verdictsByCard.get(openCard.id) ?? [] : []
 
@@ -204,6 +217,7 @@ export function KanbanBridgeView({
           card={openCard}
           allCards={cards}
           judgeHistory={cardJudgeHistory}
+          judging={judgedCards.has(openCard.id)}
           stations={stations}
           sessionId={sessionId}
           autoDispatchEnabled={autoDispatchEnabled}
@@ -221,6 +235,7 @@ export function KanbanBridgeView({
               stations={stations}
               verdictsByCard={verdictsByCard}
               staleByCard={staleByCard}
+              judgedCards={judgedCards}
               addOpen={addOpen}
               addColumn={addColumn}
               autoDispatchEnabled={autoDispatchEnabled}
@@ -260,7 +275,8 @@ export function KanbanBridgeView({
 // running, `unblock` only when the card is blocked or in one of the
 // terminal failure statuses (bucketed there by K-1), or a triage card
 // the bridge's `unblock` releases past a failed parent, `force dispatch`
-// only when there's something to dispatch, `reassign` available
+// only when there's something to dispatch (`judge now` on a card in
+// review), `reassign` available
 // whenever the card isn't already done. Confirmation prompts gate the
 // destructive actions because the IPC effects are immediate.
 function CardOperatorActions({
@@ -289,6 +305,10 @@ function CardOperatorActions({
   const isRunning = status === 'running' || status === 'in_progress' || status === 'in-progress'
   const isDone = status === 'done' || status === 'sealed' || status === 'completed' || status === 'complete'
   const isReadyish = status === 'ready' || status === 'triage' || status === 'done_unverified'
+  // Only the tick's review lane judges a card, so with autopilot off a
+  // card in review waits for this; the bridge starts the judge the lane
+  // would.
+  const isReview = status === 'review'
 
   const showCancel = isRunning
   // Only retry-eligible statuses can move back to READY — absorbing
@@ -300,7 +320,7 @@ function CardOperatorActions({
   // Force-dispatch is most useful when autopilot is off, but we keep
   // it visible whenever the card is dispatchable so the operator can
   // skip the queue cadence even with autopilot on.
-  const showForceDispatch = isReadyish && card.metadata?.role !== 'mission_root'
+  const showForceDispatch = (isReadyish || isReview) && card.metadata?.role !== 'mission_root'
   const showReassign = !isDone
 
   // Nothing to do — render nothing rather than an empty divider.
@@ -315,7 +335,7 @@ function CardOperatorActions({
             void onForceDispatch()
           }}
         >
-          {autoDispatchEnabled ? 'Dispatch now' : 'Force dispatch'}
+          {isReview ? 'Judge now' : autoDispatchEnabled ? 'Dispatch now' : 'Force dispatch'}
         </DrawerAction>
       ) : null}
       {showUnblock ? (
@@ -626,6 +646,7 @@ function TaskBoard({
   stations,
   verdictsByCard,
   staleByCard,
+  judgedCards,
   addOpen,
   addColumn,
   autoDispatchEnabled,
@@ -641,6 +662,7 @@ function TaskBoard({
   stations: Station[]
   verdictsByCard: Map<string, JudgeHistoryEntry[]>
   staleByCard: Map<string, { firstStaleAt: number; ageSeconds: number }>
+  judgedCards: Set<string>
   addOpen: boolean
   addColumn: ColumnKey
   autoDispatchEnabled: boolean
@@ -701,6 +723,7 @@ function TaskBoard({
             verdictsByCard={verdictsByCard}
             staleByCard={staleByCard}
             waitingByCard={waitingByCard}
+            judgedCards={judgedCards}
             isAddingHere={addOpen && addColumn === col.key}
             autoDispatchEnabled={autoDispatchEnabled}
             tickInfo={tickInfo}
@@ -724,6 +747,7 @@ function BoardColumnSection({
   verdictsByCard,
   staleByCard,
   waitingByCard,
+  judgedCards,
   isAddingHere,
   autoDispatchEnabled,
   tickInfo,
@@ -740,6 +764,7 @@ function BoardColumnSection({
   verdictsByCard: Map<string, JudgeHistoryEntry[]>
   staleByCard: Map<string, { firstStaleAt: number; ageSeconds: number }>
   waitingByCard: Map<string, string[]>
+  judgedCards: Set<string>
   isAddingHere: boolean
   autoDispatchEnabled: boolean
   tickInfo: TickInfo | null
@@ -807,6 +832,7 @@ function BoardColumnSection({
                 verdicts={verdictsByCard.get(c.id) ?? []}
                 staleEvent={staleByCard.get(c.id)}
                 waitingOn={waitingByCard.get(c.id)}
+                judging={judgedCards.has(c.id)}
                 autoDispatchEnabled={autoDispatchEnabled}
                 onOpen={() => onOpenCard(c.id)}
                 onOpenAgent={onOpenAgent}
@@ -950,6 +976,7 @@ function TicketCard({
   verdicts,
   staleEvent,
   waitingOn,
+  judging,
   autoDispatchEnabled,
   onOpen,
   onOpenAgent,
@@ -960,6 +987,7 @@ function TicketCard({
   verdicts: JudgeHistoryEntry[]
   staleEvent: { firstStaleAt: number; ageSeconds: number } | undefined
   waitingOn: string[] | undefined
+  judging: boolean
   autoDispatchEnabled: boolean
   onOpen: () => void
   onOpenAgent: (sessionId: string) => void
@@ -1080,6 +1108,7 @@ function TicketCard({
               status={card.status}
               workerTerminalState={card.workerTerminalState}
               waitingOn={waitingOn}
+              judging={judging}
               autoDispatchEnabled={autoDispatchEnabled}
             />
           </div>
@@ -1202,12 +1231,14 @@ function StatusPip({
   status,
   workerTerminalState,
   waitingOn,
+  judging,
   autoDispatchEnabled,
 }: {
   column: ColumnKey
   status?: string
   workerTerminalState?: string
   waitingOn?: string[]
+  judging: boolean
   autoDispatchEnabled: boolean
 }) {
   const meta = STATUS_PIP_META[column]
@@ -1238,16 +1269,22 @@ function StatusPip({
   //     back to a worker once they finish. One it does not hold goes back
   //     on the next tick with autopilot on, and waits for the operator
   //     with it off.
+  //   · Waiting for a judge → only the tick's review lane judges a
+  //     card, so with autopilot off a card in review waits, with no
+  //     judge on it, until the operator presses Judge now. Nothing
+  //     works on it, so it takes the held card's style.
   //   · Other columns → use the column label.
   const terminalLabel = terminalStatusLabel(status)
   const waiting = !!waitingOn?.length
   const isTerminalFailure = !!terminalLabel && !waiting
+  const judgeWaits =
+    !waiting && !judging && !autoDispatchEnabled && (status ?? '').toLowerCase() === 'review'
   const cls = isTerminalFailure
     ? 'text-danger bg-danger/[0.10] border border-danger/[0.34]'
-    : waiting
+    : waiting || judgeWaits
       ? 'text-fg-2 bg-white/[0.04] border border-white/[0.10]'
       : meta.cls
-  const dotCls = isTerminalFailure ? 'bg-danger animate-pulse-soft' : waiting ? 'bg-fg-3' : meta.dotCls
+  const dotCls = isTerminalFailure ? 'bg-danger animate-pulse-soft' : waiting || judgeWaits ? 'bg-fg-3' : meta.dotCls
   let label = meta.label
   let titleText: string = meta.label
   if (isTerminalFailure && terminalLabel) {
@@ -1261,6 +1298,9 @@ function StatusPip({
   } else if (waiting && waitingOn) {
     label = 'waiting'
     titleText = `${terminalLabel ? `Worker ended as: ${terminalLabel}. ` : ''}Waits on ${waitingOn.join(', ')}`
+  } else if (judgeWaits) {
+    label = `${meta.label} · waits for judge`
+    titleText = `${meta.label}${workerTerminalState ? ` · worker exited ${workerTerminalState}` : ''}. Autopilot is off, so no judge runs until you press Judge now.`
   } else if (column === 'review' && workerTerminalState) {
     label = `${meta.label} · worker ${workerTerminalState}`
     titleText = `${meta.label} · worker exited ${workerTerminalState} — awaiting judge verdict.`
@@ -2079,6 +2119,7 @@ function CardFocusView({
   card,
   allCards,
   judgeHistory,
+  judging,
   stations,
   sessionId,
   autoDispatchEnabled,
@@ -2089,6 +2130,7 @@ function CardFocusView({
   card: KanbanCardView
   allCards: KanbanCardView[]
   judgeHistory: JudgeHistoryEntry[]
+  judging: boolean
   stations: Station[]
   sessionId: string
   autoDispatchEnabled: boolean
@@ -2140,6 +2182,7 @@ function CardFocusView({
               column={column}
               status={card.status}
               workerTerminalState={card.workerTerminalState}
+              judging={judging}
               autoDispatchEnabled={autoDispatchEnabled}
             />
             <CardIdBadge id={card.id} />
