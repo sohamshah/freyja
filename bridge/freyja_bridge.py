@@ -4985,6 +4985,10 @@ class _BridgeSession:
         # second worker for the same card while the first is still
         # running.
         self._kanban_dispatched: set[str] = set()
+        # Card id → (spawn failures in a row, time of the next try), for
+        # the cards the tick backs off (KANBAN_DISPATCH_BACKOFF_SECONDS).
+        # A spawn that starts drops its card.
+        self._kanban_dispatch_backoff: dict[str, tuple[int, float]] = {}
         # Cards with an in-flight judge orchestrator task. Distinct
         # from `_kanban_dispatched` (workers) so a card that finishes
         # one judge pass and lands back in review (rework path) can
@@ -5908,6 +5912,7 @@ class _BridgeSession:
             self._kanban_dispatcher_task.cancel()
         self._kanban_dispatcher_task = None
         self._kanban_dispatched = set()
+        self._kanban_dispatch_backoff = {}
         if prev_auto_dispatch:
             try:
                 self._emit_kanban_event(
@@ -9165,6 +9170,12 @@ class _BridgeSession:
     # mean the two paths racing, not actual scheduled work.
     KANBAN_TICK_COALESCE_MS = 2_000
     KANBAN_MAX_PARALLEL = 3
+    # A card whose spawn sub_agent refuses (no model for its agent type,
+    # the sub-agent cap) waits this long before the tick tries it again,
+    # twice as long after each failure in a row, up to the cap. It takes
+    # no worker slot while it waits.
+    KANBAN_DISPATCH_BACKOFF_SECONDS = 30.0
+    KANBAN_DISPATCH_BACKOFF_MAX_SECONDS = 600.0
     # Hard cap on review<->rework cycles before a card moves to blocked
     # and surfaces to the operator. The 3rd failed verdict skips the
     # worker rewake and routes straight to blocked. sub_agent_tool.py's
@@ -9566,6 +9577,9 @@ class _BridgeSession:
                 break
             if card.id in self._kanban_dispatched or card.id in live:
                 continue
+            backoff = self._kanban_dispatch_backoff.get(card.id)
+            if backoff is not None and time.time() < backoff[1]:
+                continue
             # link() records a new parent on a card a worker has picked up
             # without moving it, and review can send a card back to ready.
             # Such a card waits in its lane while a parent can still finish
@@ -9643,18 +9657,27 @@ class _BridgeSession:
             card = plan["card"]
             reason = await self._dispatch_kanban_card(plan, sub_tool=sub_tool, source=source)
             if reason:
-                # The card stays where it was, and the next tick tries it
-                # again.
+                # The card stays where it was, and a tick tries it again
+                # once its backoff is over.
+                failures = self._kanban_dispatch_backoff.get(card.id, (0, 0.0))[0] + 1
+                wait = min(
+                    self.KANBAN_DISPATCH_BACKOFF_SECONDS * 2 ** (failures - 1),
+                    self.KANBAN_DISPATCH_BACKOFF_MAX_SECONDS,
+                )
+                self._kanban_dispatch_backoff[card.id] = (failures, time.time() + wait)
+                # No tick runs with autopilot off: + Add Task's tick sent it.
+                next_try = f". Next try in {int(wait)}s" if self.auto_dispatch_enabled else ""
                 log("warn", f"kanban dispatch for {card.id} failed: {reason}")
                 self._emit_kanban_event(
                     "kanban_dispatch_failed",
-                    f"Could not dispatch {plan['agent_type']} on {card.id}: {reason}",
+                    f"Could not dispatch {plan['agent_type']} on {card.id}: {reason}{next_try}",
                     details={
                         "cardId": card.id,
                         "agentType": plan["agent_type"],
                         "lane": plan["lane"],
                         "source": source,
                         "reason": reason,
+                        "retryInSeconds": int(wait),
                     },
                 )
                 continue
@@ -9788,6 +9811,7 @@ class _BridgeSession:
             return str(exc) or type(exc).__name__
         if getattr(result, "is_error", False):
             return str(result.content).removeprefix("Error: ")
+        self._kanban_dispatch_backoff.pop(card.id, None)
         self._emit_kanban_event(
             "kanban_dispatched",
             f"Auto-dispatched {agent_type} on {card.id}",

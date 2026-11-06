@@ -63,6 +63,7 @@ def _make_session(*, board: SessionKanbanBoard, sub_tool: _StubSubAgentTool) -> 
     session.subagent_registry = _StubSubagentRegistry()
     session.queued_messages = []
     session._kanban_dispatched = set()
+    session._kanban_dispatch_backoff = {}
     session._kanban_judge_pending = set()
     session._kanban_dispatcher_task = None
     # Tick-coalesce bookkeeping (added with the double-fire guard). __init__
@@ -1266,3 +1267,69 @@ async def test_add_task_sends_only_the_new_card(monkeypatch, autopilot: bool) ->
     [new] = [t.id for t in await board.list() if t.title == "mine"]
     assert [call["kanban_task_id"] for call in sub_tool.calls] == [new]
     assert judged == []
+
+
+@pytest.mark.asyncio
+async def test_a_card_whose_spawn_keeps_failing_backs_off_and_takes_no_slot(monkeypatch) -> None:
+    """A card whose spawn sub_agent refused went out again on every tick:
+    each tick sent kanban_dispatch_failed and gave the card a worker slot,
+    so the card behind it never went out. It now waits before each new
+    try, twice as long each time up to a cap, and takes no slot while it
+    waits. A spawn that starts ends the backoff."""
+    from bridge import freyja_bridge
+    from bridge.tools.base import ToolResult
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(freyja_bridge.time, "time", lambda: now[0])
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(freyja_bridge, "emit", sent.append)
+    board = SessionKanbanBoard()
+    failing = (await board.create(title="failing", assignee="code")).id
+    behind = (await board.create(title="behind", assignee="general")).id
+    sub_tool = _StubSubAgentTool()
+    spawns_fail = [True]
+    succeed = sub_tool.execute
+
+    async def _execute(call_id: str, arguments: dict[str, Any], *, notify_parent: bool = True) -> Any:
+        if arguments["kanban_task_id"] == failing and spawns_fail[0]:
+            sub_tool.calls.append(arguments)
+            return ToolResult(call_id=call_id, content="Error: no available model for `code`", is_error=True)
+        return await succeed(call_id, arguments, notify_parent=notify_parent)
+
+    sub_tool.execute = _execute
+    session = _make_session(board=board, sub_tool=sub_tool)
+    # One free worker slot.
+    session.subagent_registry.records = [
+        _StubRecord(is_running=True, kanban_task_id=f"phantom_{i}")
+        for i in range(_BridgeSession.KANBAN_MAX_PARALLEL - 1)
+    ]
+
+    async def _tick() -> tuple[list[str], list[dict[str, Any]]]:
+        sub_tool.calls.clear()
+        sent.clear()
+        await session._kanban_tick(source="test", force=True)
+        failed = [e["details"] for e in sent if e.get("subtype") == "kanban_dispatch_failed"]
+        return [call["kanban_task_id"] for call in sub_tool.calls], failed
+
+    tried, [failed] = await _tick()
+    assert tried == [failing]
+    [message] = [e["message"] for e in sent if e.get("subtype") == "kanban_dispatch_failed"]
+    assert message.endswith("no available model for `code`. Next try in 30s")
+    # The card that failed takes no slot while it waits.
+    assert await _tick() == ([behind], [])
+    await board.update(behind, actor="worker", status="running", worker_session_id="sub_b")
+
+    waits = [failed["retryInSeconds"]]
+    for _ in range(6):
+        now[0] += waits[-1] - 1
+        assert await _tick() == ([], [])
+        now[0] += 1
+        tried, [failed] = await _tick()
+        assert tried == [failing]
+        waits.append(failed["retryInSeconds"])
+    assert waits == [30, 60, 120, 240, 480, 600, 600]
+
+    spawns_fail[0] = False
+    now[0] += 600
+    assert await _tick() == ([failing], [])
+    assert failing not in session._kanban_dispatch_backoff
