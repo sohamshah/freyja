@@ -192,3 +192,124 @@ async def test_scroll_at_the_cursor_needs_no_display(monkeypatch):
     res = await tool.execute("c1", {"dy": 3, "settle_ms": 0})
     assert not res.is_error
     assert hands.sent == [("scroll", None, None)]
+
+
+class _Monitors(_Hands):
+    """Displays 1 (primary) and 2 (left of it) that a test can unplug, move or
+    resize. A capture returns a stand-in frame of the display's preview size
+    and notes which display it was asked for. Nothing is captured or sent."""
+
+    def __init__(self, *, only_primary=False):
+        super().__init__()
+        self.displays = {d.id: d for d in _Desk.list_displays() if d.is_primary or not only_primary}
+        self.geometry = {
+            1: ct.DisplayGeometry(0, 0, 3024, 1964, True),
+            2: ct.DisplayGeometry(-2560, 0, 2560, 1440, False),
+        }
+        if only_primary:
+            del self.geometry[2]
+        self.shots = []
+        self.cursor = (0, 0)
+
+    def list_displays(self):
+        return list(self.displays.values())
+
+    def screenshot(self, *, display_id=None, window_id=None, max_dim=None, format="jpeg", quality=75):
+        self.shots.append(display_id)
+        d = self.displays.get(1 if display_id is None else display_id)
+        if d is None:
+            raise RuntimeError(f"capture proxy 404: display {display_id} is not connected")
+        w, h = ct._compute_api_dims(d.width, d.height)
+        return SimpleNamespace(png=b"frame", width=w, height=h, format="jpeg", mime_type="image/jpeg")
+
+    def cursor_position(self):
+        return self.cursor
+
+    def move_mouse(self, x, y):
+        super().move_mouse(x, y)
+        self.cursor = (x, y)
+
+    def type_text(self, text):
+        self.sent.append(("type_text", text))
+
+    def press_key(self, key, modifiers=None):
+        self.sent.append(("press_key", key))
+
+    def key_up(self, key):
+        self.sent.append(("key_up", key))
+
+    def focus_app(self, bundle_id):
+        self.sent.append(("focus_app", bundle_id))
+
+    @staticmethod
+    def list_windows(include_helpers=False):
+        return []
+
+
+def _session(monkeypatch, screens, default_display_id=None):
+    """Every atomic tool on one spec, over `screens`. Frames are not written
+    to disk and the display layout is the fake's."""
+
+    async def no_highlight(spec, ms=0):
+        return True
+
+    monkeypatch.setattr(ct, "_require_screen_recording", lambda call_id, tool: None)
+    monkeypatch.setattr(ct, "_require_accessibility", lambda call_id, tool: None)
+    monkeypatch.setattr(ct, "_await_highlight_or_cancel", no_highlight)
+    monkeypatch.setattr(ct, "_import_native", lambda: screens)
+    monkeypatch.setattr(ct, "_FRAME_DUMP_ENABLED", False)
+    monkeypatch.setattr(ct, "display_geometry", lambda: dict(screens.geometry))
+    spec = ct.ComputerToolSpec(
+        session_id="t", emit_event=lambda e: None, cancel_event=asyncio.Event(),
+        default_display_id=default_display_id,
+    )
+    return {t.definition.name: t for t in ct.build_computer_tools(spec)}, spec
+
+
+def _text(res):
+    return res.content if isinstance(res.content, str) else res.content[0].text
+
+
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        ("click", {"x": 640, "y": 360}),
+        ("scroll", {"x": 640, "y": 360, "dy": 3}),
+        ("type_text", {"text": "hi"}),
+        ("press_key", {"key": "return"}),
+        ("key_up", {"key": "cmd"}),
+        ("focus_window", {"bundle_id": "com.apple.finder"}),
+    ],
+)
+@pytest.mark.parametrize("pinned", [None, 1])
+async def test_the_screenshot_after_an_action_is_of_the_display_last_looked_at(monkeypatch, name, args, pinned):
+    # The model looked at display 2, so its coordinates are display 2's. The
+    # screenshot after the action must show display 2 too, and say so, or the
+    # model reads the main display as the place it just acted on.
+    screens = _Monitors()
+    tools, spec = _session(monkeypatch, screens, default_display_id=pinned)
+    await tools["screenshot"].execute("c1", {"display_id": 2})
+    res = await tools[name].execute("c2", {**args, "settle_ms": 0})
+    assert not res.is_error
+    assert screens.shots == [2, 2]
+    assert (spec.api_dims, spec.native_origin) == ((1280, 720), (-2560, 0))
+    assert _text(res).endswith(" The screenshot is of display 2 (1280x720); your next x,y refer to it.")
+
+
+async def test_clicks_after_looking_at_another_display_stay_on_it(monkeypatch):
+    screens = _Monitors()
+    tools, _ = _session(monkeypatch, screens)
+    await tools["screenshot"].execute("c1", {"display_id": 2})
+    for call in ("c2", "c3"):
+        await tools["click"].execute(call, {"x": 640, "y": 360, "settle_ms": 0})
+    assert screens.sent == [("click", -1280, 720), ("click", -1280, 720)]
+
+
+async def test_one_display_keeps_the_plain_action_summary(monkeypatch):
+    screens = _Monitors(only_primary=True)
+    tools, _ = _session(monkeypatch, screens)
+    await tools["screenshot"].execute("c1", {})
+    res = await tools["click"].execute("c2", {"x": 640, "y": 360, "settle_ms": 0})
+    assert _text(res) == "Clicked at (640, 360) with left."
+    assert screens.shots == [None, 1]
+

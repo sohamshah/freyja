@@ -159,6 +159,11 @@ class ComputerToolSpec:
     # display 2 is local to display 2, so api → native adds this origin
     # and native → api subtracts it. (0, 0) for the primary display.
     native_origin: tuple[int, int] = (0, 0)
+    # The display the three fields above describe: the one the last
+    # full-display frame showed, or the one `_ensure_dims` sized them from.
+    # The screenshot after an action is of this display, so the model keeps
+    # seeing the screen its coordinates belong to. None until resolved.
+    frame_display_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -265,6 +270,11 @@ class EmittedFrame:
     byte_len: int
     data: bytes
     mime_type: str
+    # The display captured (None for a window capture), and how many
+    # displays were connected, so a result can name the display when
+    # there is more than one.
+    display_id: int | None = None
+    display_count: int = 0
 
 
 async def _emit_frame(
@@ -308,9 +318,12 @@ async def _emit_frame(
     # on whatever full-display frame was most recently emitted.
     native_w, native_h = 0, 0
     origin = (0, 0)
+    target_id: int | None = None
+    display_count = 0
     if window_id is None:
         try:
             displays = await asyncio.to_thread(native.list_displays)
+            display_count = len(displays)
             target = None
             if effective_display is not None:
                 target = next((d for d in displays if d.id == effective_display), None)
@@ -318,6 +331,7 @@ async def _emit_frame(
                 target = next((d for d in displays if d.is_primary), displays[0])
             if target is not None:
                 native_w, native_h = target.width, target.height
+                target_id = int(target.id)
                 if not target.is_primary:
                     origin = _display_origin(target.id)
         except Exception:  # noqa: BLE001
@@ -347,6 +361,7 @@ async def _emit_frame(
         spec.native_dims = (int(native_w), int(native_h))
         spec.api_dims = (int(frame.width), int(frame.height))
         spec.native_origin = origin
+        spec.frame_display_id = target_id
 
     # Composite the cursor onto the frame. macOS screen capture APIs
     # omit the cursor overlay by default, so without this the model
@@ -425,7 +440,23 @@ async def _emit_frame(
         byte_len=len(png_bytes),
         data=png_bytes,
         mime_type=frame.mime_type,
+        display_id=target_id if native_w > 0 else None,
+        display_count=display_count,
     )
+
+
+async def _post_action_frame(
+    spec: ComputerToolSpec, native: Any, reason: str
+) -> EmittedFrame | None:
+    """The screenshot after an action, of the display the model last looked
+    at (the one its coordinates belong to). Without a display_id the capture
+    takes the session's default display, which is the main one in a session
+    that is not pinned: after `screenshot(display_id=2)` and a click on
+    display 2, the model got a picture of display 1 and the coordinate space
+    moved there with it. A space that was cleared (dims None) names no
+    display, and the default one is taken as before."""
+    shown = spec.frame_display_id if spec.native_dims is not None else None
+    return await _emit_frame(spec, native, display_id=shown, reason=reason)
 
 
 async def _await_highlight_or_cancel(
@@ -473,6 +504,11 @@ def _result_with_frame(
     if frame is None:
         return ToolResult(
             call_id=call_id, content=summary, is_error=is_error
+        )
+    if frame.display_id is not None and frame.display_count > 1:
+        summary += (
+            f" The screenshot is of display {frame.display_id} "
+            f"({frame.width}x{frame.height}); your next x,y refer to it."
         )
     return ToolResult(
         call_id=call_id,
@@ -664,6 +700,7 @@ async def _ensure_dims(spec: ComputerToolSpec, native: Any) -> str | None:
             int(target.width), int(target.height)
         )
         spec.native_origin = (0, 0) if target.is_primary else _display_origin(target.id)
+        spec.frame_display_id = int(target.id)
     return None
 
 
@@ -1146,7 +1183,8 @@ Each display's position is its top-left corner in the global layout: the
 primary display is at (0,0) and the others sit at offsets (negative y =
 above it, negative x = left of it). After `screenshot(display_id=N)`,
 coordinates you pass to click/scroll/move_mouse are pixels in THAT
-screenshot; the tools translate them onto display N.
+screenshot; the tools translate them onto display N, and the screenshot
+each action returns is of display N too.
 """,
             parameters={"type": "object", "properties": {}},
         )
@@ -1369,9 +1407,7 @@ action depending on the policy.
 
         # Give the OS a beat to switch, then capture the new state.
         await asyncio.sleep(settle_ms / 1000.0)
-        frame = await _emit_frame(
-            self._spec, native, reason="focus_window"
-        )
+        frame = await _post_action_frame(self._spec, native, "focus_window")
         await _fire(
             self._spec.emit_event,
             {
@@ -1523,7 +1559,7 @@ screenshot for grounding) sees the post-click state.
             )
 
         await asyncio.sleep(settle_ms / 1000.0)
-        frame = await _emit_frame(self._spec, native, reason="post_click")
+        frame = await _post_action_frame(self._spec, native, "post_click")
         await _fire(
             self._spec.emit_event,
             {
@@ -1706,7 +1742,7 @@ see what landed in the field.
                 call_id=call_id, content=f"type_text failed: {exc}", is_error=True
             )
         await asyncio.sleep(settle_ms / 1000.0)
-        frame = await _emit_frame(self._spec, native, reason="post_type")
+        frame = await _post_action_frame(self._spec, native, "post_type")
         await _fire(
             self._spec.emit_event,
             {
@@ -1813,7 +1849,7 @@ tab in most apps, `press_key("escape")` dismisses dialogs.
                 call_id=call_id, content=f"press_key failed: {exc}", is_error=True
             )
         await asyncio.sleep(settle_ms / 1000.0)
-        frame = await _emit_frame(self._spec, native, reason="post_press_key")
+        frame = await _post_action_frame(self._spec, native, "post_press_key")
         await _fire(
             self._spec.emit_event,
             {
@@ -1994,7 +2030,7 @@ for the canonical ⌘Tab app switcher example.
         # Optional post-release frame so the model sees the effect
         # (e.g. the app switcher closing and the chosen app activating).
         await asyncio.sleep(settle_ms / 1000.0)
-        frame = await _emit_frame(self._spec, native, reason="post_key_up")
+        frame = await _post_action_frame(self._spec, native, "post_key_up")
         return _result_with_frame(call_id, f"Released {key}.", frame)
 
 
@@ -2075,7 +2111,7 @@ screen). A typical scroll-a-page-down is `dy=8`.
                 call_id=call_id, content=f"scroll failed: {exc}", is_error=True
             )
         await asyncio.sleep(settle_ms / 1000.0)
-        frame = await _emit_frame(self._spec, native, reason="post_scroll")
+        frame = await _post_action_frame(self._spec, native, "post_scroll")
         summary = (
             f"Scrolled dx={dx} dy={dy}"
             + (f" at ({api_x},{api_y})" if api_x is not None else "")
