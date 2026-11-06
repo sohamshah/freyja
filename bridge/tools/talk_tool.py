@@ -77,6 +77,16 @@ def _send_talk_deliver(target_id: str, msg: InboxMessage, path: Path | None = No
     append_command(cmd, path=path)
 
 
+def _holds_gateway_lock() -> bool:
+    """True in the gateway daemon, whatever its PID file says now."""
+    try:
+        from bridge.gateway.pid import holds_lock
+
+        return holds_lock()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _session_exists_on_disk(session_id: str) -> bool:
     """True when a persisted transcript or inbox sidecar exists for the
     session — i.e. it has actually run somewhere and can be resumed."""
@@ -323,7 +333,7 @@ class TalkRouter:
           · Everything else resolvable locally is local.
         """
         owner = _gateway_owner_pid()
-        am_owner = owner is not None and owner == os.getpid()
+        am_owner = _holds_gateway_lock() or (owner is not None and owner == os.getpid())
 
         if _is_gateway_session_id(target_id):
             if am_owner:

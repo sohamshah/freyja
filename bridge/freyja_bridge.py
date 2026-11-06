@@ -1604,11 +1604,12 @@ def _stop_is_stale(sess: Any, cmd: dict[str, Any], kind: str) -> bool:
 
 def _process_owns_gateway() -> bool:
     """True when THIS process holds the gateway PID lock — i.e. it is
-    the authoritative host for ``freyja:<platform>:…`` sessions."""
+    the authoritative host for ``freyja:<platform>:…`` sessions. The
+    process that took the lock knows it whatever the PID file says."""
     try:
-        from bridge.gateway.pid import get_running_pid
+        from bridge.gateway.pid import get_running_pid, holds_lock
 
-        return get_running_pid() == os.getpid()
+        return holds_lock() or get_running_pid() == os.getpid()
     except Exception:  # noqa: BLE001
         return False
 

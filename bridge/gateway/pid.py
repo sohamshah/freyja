@@ -119,7 +119,11 @@ def _process_alive(pid: int) -> bool:
 
 
 def get_running_pid() -> int | None:
-    """Return the PID of a running gateway, or None if none."""
+    """Return the PID of a running gateway, or None if none. A reader
+    leaves a dead gateway's PID file in place: a gateway taking over
+    writes its own PID over it right after the reader read the old one,
+    and a reader that deleted the file then took the new gateway's away.
+    acquire_lock writes over a dead PID anyway."""
     path = pid_path()
     if not path.exists():
         return None
@@ -131,13 +135,20 @@ def get_running_pid() -> int | None:
     except (OSError, ValueError):
         return None
     if not _process_alive(pid):
-        # Stale; clean up so future acquire calls don't see it.
-        try:
-            path.unlink()
-        except OSError:
-            pass
         return None
     return pid
+
+
+# The process that took the lock in acquire_lock, until release_lock.
+_lock_holder: int | None = None
+
+
+def holds_lock() -> bool:
+    """True in the process that took the gateway lock and has not released
+    it, whatever the PID file says now. Asked of the file, a gateway whose
+    file was gone treated its own Slack sessions as copies and saved
+    nothing."""
+    return _lock_holder == os.getpid()
 
 
 def write_pid(pid: int) -> None:
@@ -224,6 +235,7 @@ def acquire_lock(*, replace: bool = False) -> bool:
     won't restart it. We wait up to 10s for it to actually exit, then
     write our own PID.
     """
+    global _lock_holder
     existing = get_running_pid()
     if existing is not None and existing != os.getpid():
         if not replace:
@@ -243,11 +255,14 @@ def acquire_lock(*, replace: bool = False) -> bool:
             terminate_pid(existing, force=True, wait_seconds=2.0)
 
     write_pid(os.getpid())
+    _lock_holder = os.getpid()
     return True
 
 
 def release_lock() -> None:
     """Clear the PID file if we own it."""
+    global _lock_holder
+    _lock_holder = None
     existing = get_running_pid()
     if existing == os.getpid():
         clear_pid()
