@@ -80,11 +80,14 @@ interface KanbanCardView {
   completedAt?: number
   // Move F — populated by the bridge's circuit-breaker accounting.
   consecutiveFailures?: number
-  // Opt-in verification (Move C). When true, the worker's `complete`
-  // routes the card to `done_unverified` so the verifier picks it up.
+  // Hint that the card's definition_of_done is concretely checkable
+  // (Move C). Informational since Move R: `complete` sends every card
+  // to `review` whatever the flag, and only a passing judge verdict
+  // seals it. update/comment/heartbeat cannot set review or done states.
   requiresVerification?: boolean
   // Move R — default-on judge-review pipeline. `reviewIteration`
-  // counts rework cycles (worker → review → judge fail → worker).
+  // counts entries to review, one per judge review (worker → review →
+  // judge fail → worker); the third failed verdict blocks the card.
   // Sticky session ids for the worker and judge stay pinned across
   // cycles so continuity is preserved. `workerTerminalState` records
   // what state the worker exited at (done / failed / cancelled /
