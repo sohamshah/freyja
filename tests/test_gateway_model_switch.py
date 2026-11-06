@@ -136,6 +136,29 @@ async def test_a_model_picked_in_the_app_during_a_running_turn_is_reported_as_wa
     assert applied["details"]["model"] == "glm-5.3-fireworks"
 
 
+async def test_a_retired_model_picked_in_the_app_during_a_running_turn_is_reported_as_waiting(monkeypatch, tmp_path):
+    """ensure_session parks the replacement of a retired id; set_model compared what was parked with the retired id, and said the change was made."""
+    import bridge.freyja_bridge as fb
+    from engine.providers import RETIRED_MODEL_REPLACEMENTS
+
+    assert RETIRED_MODEL_REPLACEMENTS["glm-5.2"] == "glm-5.3-fireworks"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    events: list[dict] = []
+    monkeypatch.setattr(fb, "emit", events.append)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("session-desktop")
+    sess.pending_task = asyncio.get_running_loop().create_future()
+
+    await fb._handle_command(
+        state, {"type": "set_model", "sessionId": "session-desktop", "model": "glm-5.2", "reasoningLevel": "max"},
+    )
+    assert sess.model_id == "kimi-k3-fast"
+    assert sess.pending_config["model_id"] == "glm-5.3-fireworks"
+    (held,) = [e for e in events if e.get("subtype") == "model_changed"]
+    assert held["message"] == "model will change to glm-5.3-fireworks (max) when the running turn ends"
+    assert held["details"] == {"model": "glm-5.3-fireworks", "reasoningLevel": "max"}
+
+
 # ── 3. validation ────────────────────────────────────────────────────
 
 def test_the_command_help_examples_are_real_models():

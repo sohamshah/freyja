@@ -15097,7 +15097,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             # A turn is running: ensure_session parked the change, and
             # _apply_pending_config makes it (config_applied) when the turn
             # ends. Reported as made, it named the reasoning level of the
-            # model the turn runs on.
+            # model the turn runs on. A retired id is parked as the model
+            # that stands in for it, which is the one named here.
+            from engine.providers import resolve_retired_model
+
+            new_model = resolve_retired_model(new_model)
             held = (getattr(sess, "pending_config", None) or {}).get("model_id") == new_model
             effective_reasoning = (
                 _normalize_reasoning_level(new_model, reasoning_level or "auto")
