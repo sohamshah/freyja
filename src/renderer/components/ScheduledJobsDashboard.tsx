@@ -222,7 +222,7 @@ export function ScheduledJobsDashboard() {
                         : 'bg-white/[0.02] text-fg-2 hover:bg-white/[0.05] hover:text-fg-0'
                     }`}
                   >
-                    {f}
+                    {runStatusLabel(f)}
                   </button>
                 ))}
               </div>
@@ -232,7 +232,7 @@ export function ScheduledJobsDashboard() {
                     {baseRunCount === 0
                       ? (focusedJob ? 'this schedule has no runs yet — try “run now” above'
                                     : 'no schedules have fired yet')
-                      : `no ${runFilter} runs — ${baseRunCount} other${baseRunCount === 1 ? '' : 's'} hidden by the filter`}
+                      : `no ${runStatusLabel(runFilter)} runs — ${baseRunCount} other${baseRunCount === 1 ? '' : 's'} hidden by the filter`}
                   </div>
                 ) : (
                   filteredRuns.map((r) => (

@@ -150,6 +150,28 @@ await check('a timeline day of only cancelled, expired or not started runs has a
   assert.ok(!grey(empty), `the day before is ${empty.className}`)
 })
 
+// The chips said "succeeded" and "running" over rows that say "completed"
+// and "in flight", and so did the feed when a chip hid every run.
+await check('the feed\'s filter chips name the statuses as its rows do', () => {
+  const words = [...host.querySelectorAll('button')].map((b) => b.textContent)
+  for (const word of ['all', 'completed', 'failed', 'in flight']) {
+    assert.ok(words.includes(word), `a "${word}" chip`)
+  }
+  for (const word of ['succeeded', 'running']) {
+    assert.ok(!words.includes(word), `no "${word}" chip`)
+  }
+})
+
+await check('a chip that hides every run names its status as the rows do', async () => {
+  const chip = [...host.querySelectorAll('button')].find((b) => b.textContent === 'in flight')
+  chip.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+  await sleep(20)
+  assert.ok(host.textContent.includes('no in flight runs — 3 others hidden by the filter'), host.textContent)
+  const all = [...host.querySelectorAll('button')].find((b) => b.textContent === 'all')
+  all.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+  await sleep(20)
+})
+
 await check('a schedule\'s last run is named as its drawer names it', async () => {
   flushSync(() => useSchedulerStore.getState().selectJob('sched_digest'))
   await sleep(20)
