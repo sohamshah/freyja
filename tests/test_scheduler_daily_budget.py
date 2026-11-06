@@ -4,6 +4,9 @@ much today.
 The schedule tool offers budget.max_cost_usd_per_day, and BudgetSpec
 saved it, but nothing read it: a job capped at $0.60 a day ran every
 slot whatever it had spent.
+
+Held by it, a cron or interval job was claimed and skipped, with a log
+line, at every slot for the rest of the day.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ import pytest
 from bridge.scheduler.models import (
     BudgetSpec,
     CreatorRef,
+    CronSchedule,
     DeliveryReport,
     DesktopSinkSpec,
     ExistingSession,
@@ -118,8 +122,34 @@ async def test_a_job_that_spent_its_daily_budget_skips_its_slot(service):
 
     assert [r.run_id for r in load_runs_for_job(job.id)] == ["run_spent_2", "run_spent_1"]
     assert (saved.enabled, saved.status) == (True, "active")
-    assert saved.next_fire_at > time.time() + 3000  # its next slot
+    assert saved.next_fire_at >= START_OF_TOMORROW
     assert service.posted == []
+
+
+async def test_an_interval_job_that_spent_its_daily_budget_waits_for_its_first_slot_tomorrow(service):
+    job = _job("abort_run")
+    job.last_fire_at = time.time() - 600
+    save_job(job)
+    _spent(job, 0.70, at=time.time() - 600)
+
+    saved = await _when_due(service, job)
+
+    # Its slots go on every hour from its last run.
+    hours = -(-(START_OF_TOMORROW - job.last_fire_at) // 3600)
+    assert saved.next_fire_at == pytest.approx(job.last_fire_at + hours * 3600, abs=1e-3)
+    assert (saved.enabled, saved.status) == (True, "active")
+
+
+async def test_a_cron_job_that_spent_its_daily_budget_waits_for_its_first_slot_tomorrow(service):
+    job = _job("abort_run")
+    job.schedule = CronSchedule(expression="*/15 * * * *")
+    save_job(job)
+    _spent(job, 0.70, at=time.time() - 600)
+
+    saved = await _when_due(service, job)
+
+    assert saved.next_fire_at == START_OF_TOMORROW
+    assert (saved.enabled, saved.status) == (True, "active")
 
 
 async def test_a_job_under_its_daily_budget_runs(service):
