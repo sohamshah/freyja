@@ -7086,7 +7086,13 @@ class _BridgeSession:
         follow-ups become its user message; otherwise a synthetic wake
         prompt whose only job is to carry the drain. Returns a short
         human-readable status for the sender's tool result.
+
+        A session deleted, or replaced by a new one with its id, is not
+        woken: what still held it (a scheduled run's nudge in
+        wait_until_quiescent) ran a turn on it.
         """
+        if getattr(self, "_background_closed", False):
+            return "recipient session was closed — nothing woke it"
         if self.inbox is None or not self.inbox.has_unread():
             return "no unread messages"
         pending = self.pending_task

@@ -4,13 +4,20 @@ Deleting a session cancelled its running turn, but the turn task then
 drained the session's queue as after any stop, and ran each queued turn
 on the deleted session. A new session made with the id of a loaded one
 did the same with the old one's queue.
+
+An agent's message woke a deleted or replaced session that something
+still held (wake_for_inbox), such as a scheduled run's nudge
+(wait_until_quiescent), and a turn ran on it.
 """
 
 from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 import bridge.freyja_bridge as fb
+from bridge.inbox import InboxMessage, new_message_id
 
 
 async def _until(done) -> None:
@@ -126,3 +133,28 @@ async def test_a_run_whose_queued_prompt_went_with_its_deleted_session_is_cancel
     assert delivered == []
     assert run.status == "cancelled"
     assert "deleted" in run.error
+
+
+@pytest.mark.parametrize("closing", ["delete_session", "new_session"])
+async def test_a_closed_session_is_not_woken(monkeypatch, tmp_path, closing):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "emit", lambda _e: None)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("session-desktop")
+    ran: list[str] = []
+
+    async def run_turn(content, _attachments=None, **_kw):
+        ran.append(content)
+
+    sess.run_turn = run_turn
+    await fb._handle_command(state, {"type": closing, "sessionId": sess.id})
+    sess.inbox.push(InboxMessage(
+        id=new_message_id(), from_session="sub_x", from_label="worker",
+        from_role="agent", content="tests pass",
+    ))
+    status = sess.wake_for_inbox()
+    await asyncio.sleep(0.05)
+
+    assert ran == []
+    assert sess.pending_task is None
+    assert "closed" in status
