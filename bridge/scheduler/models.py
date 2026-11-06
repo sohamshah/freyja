@@ -464,7 +464,8 @@ class JobRecord:
     # The gateway platform ("slack") whose tool filter the session that
     # made the job ran under, or None. The job's runs keep that filter
     # (runtime.job_tool_filter), and it runs only where they can
-    # (service._check_tool_filter).
+    # (service._check_tool_filter). A job made from Slack that records
+    # none takes the Slack filter while it is on (runtime.tool_filter_of).
     tool_filter: str | None = None
     model_id: str | None = None
     # The mode an existing session the job fires into is loaded in. None

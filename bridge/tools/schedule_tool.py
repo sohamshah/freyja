@@ -226,7 +226,7 @@ class ScheduleTool:
             current = str(job.permission_snapshot or "").strip().lower()
             if _TIER_RANK.get(tier, len(_TIER_RANK)) > _TIER_RANK.get(current, _TIER_RANK["low"]):
                 raise ValueError(
-                    f"with the {job.tool_filter.title()} tool filter on, a job's "
+                    f"with the {self._tool_filter_getter().title()} tool filter on, a job's "
                     f"permission tier can be lowered but not raised above "
                     f"{job.permission_snapshot!r}"
                 )
@@ -428,7 +428,9 @@ class ScheduleTool:
         job = await self._service.get_job(job_id)
         if job is None:
             raise KeyError(job_id)
-        if job.tool_filter != tool_filter:
+        from bridge.scheduler.runtime import tool_filter_of
+
+        if tool_filter_of(job) != tool_filter:
             raise ValueError(
                 f"with the {tool_filter.title()} tool filter on, schedule changes "
                 f"and runs only jobs made under it, and job {job_id} was not"

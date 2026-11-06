@@ -63,7 +63,21 @@ def job_tool_filter(session_id: str) -> str | None:
     from bridge.scheduler.persistence import load_job
 
     job = load_job(session_id[len(_SCHED_SESSION_PREFIX):].removesuffix(".ephemeral"))
-    return job.tool_filter if job is not None else None
+    return tool_filter_of(job) if job is not None else None
+
+
+def tool_filter_of(job: JobRecord) -> str | None:
+    """The gateway tool filter ``job``'s runs keep: ``JobRecord.tool_filter``,
+    or for a job made from Slack that records none, the Slack filter while it
+    is on. A job made before jobs recorded their filter does not say whether
+    the filter was on then, so each one made from Slack is taken to have been
+    made under it. With the filter off nothing changes: a Slack session has
+    every tool then too."""
+    if job.tool_filter or job.creator.surface != "slack":
+        return job.tool_filter
+    from bridge.gateway.capabilities import gateway_filter_enabled
+
+    return "slack" if gateway_filter_enabled("slack") else None
 
 
 async def fire_job(
@@ -568,6 +582,11 @@ async def _resolve_execution_session(
     """
     state = service.state
     spec = job.execution
+    from bridge.scheduler.service import _check_tool_filter
+
+    # A job made before jobs recorded their tool filter was not checked
+    # when it was made.
+    _check_tool_filter(job)
 
     if isinstance(spec, ExistingSession):
         if not spec.session_id:

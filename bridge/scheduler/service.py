@@ -1894,9 +1894,11 @@ def _check_tool_filter(job: JobRecord) -> None:
     the filter does not reach. Its own sessions take the filter from the
     job (runtime.job_tool_filter), and the session it was made in has it
     already. Any other session, such as a desktop chat, has every tool."""
-    if not job.tool_filter:
+    from bridge.scheduler.runtime import scheduler_session_id, tool_filter_of
+
+    tool_filter = tool_filter_of(job)
+    if not tool_filter:
         return
-    from bridge.scheduler.runtime import scheduler_session_id
 
     spec = job.execution
     if isinstance(spec, PersistentJobSession):
@@ -1907,7 +1909,7 @@ def _check_tool_filter(job: JobRecord) -> None:
         reached = True
     if not reached:
         raise ValueError(
-            f"this job was made with the {job.tool_filter.title()} tool filter "
+            f"this job was made with the {tool_filter.title()} tool filter "
             "on, so it runs only in a new session, its own job session or the "
             "session it was made in"
         )
