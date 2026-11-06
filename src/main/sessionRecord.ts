@@ -22,6 +22,13 @@ import type { ModelCall, ModelResult, ModelView } from '../shared/sessionExport'
  *    raw log has that cut text.
  *
  * Exports join the two, so no result is cut.
+ *
+ * Until 2026-11-06 a restored session stopped writing its raw log, and a
+ * sub-agent wrote none. ``scripts/backfill_raw_messages.py`` writes the
+ * messages a log is missing, from the transcript and compaction snapshots,
+ * to ``raw_messages.recovered.jsonl`` beside it. Each row there says
+ * ``recovered`` and whether its text is ``whole``; exports read them among
+ * the live rows, by time, and a live row always wins.
  */
 
 /** Make a session id safe to use as a directory name. Matches the bridge. */
@@ -200,22 +207,44 @@ export interface RawRecord extends ModelView {
   }>
 }
 
+function rowTs(row: unknown): number {
+  const ts = (row as { ts?: unknown } | null)?.ts
+  return typeof ts === 'number' ? ts : 0
+}
+
 /** Index a session's raw transcript. It keeps each call's arguments and the
  *  text of each result, not the rows, so an image-heavy log costs no more
  *  memory. A cut result's saved file is read when the result is asked for. */
 export function readRawRecord(id: string): RawRecord {
   const rawPaths = rawLogPathsFor(id)
+  const recoveredPaths = sessionLogPathsFor(id, 'raw_messages.recovered.jsonl')
   const rows = function* () {
-    for (const rawPath of rawPaths) yield* jsonlRows(rawPath)
+    // The recovered rows are a transcript's worth at most: read whole, sorted,
+    // and put in among the live rows by time.
+    const recovered = recoveredPaths.flatMap((p) => readJsonl(p)).sort((a, b) => rowTs(a) - rowTs(b))
+    let next = 0
+    for (const rawPath of rawPaths) {
+      for (const row of jsonlRows(rawPath)) {
+        while (next < recovered.length && rowTs(recovered[next]) < rowTs(row)) yield recovered[next++]
+        yield row
+      }
+    }
+    while (next < recovered.length) yield recovered[next++]
   }
   const calls = new Map<string, ModelCall>()
   const resultTexts = new Map<string, string[]>()
-  for (const row of rows() as Iterable<{ message?: Record<string, unknown> } | null>) {
+  // Results read from a live row, and recovered results with only their
+  // compacted text.
+  const liveResults = new Set<string>()
+  const partial = new Set<string>()
+  for (const row of rows() as Iterable<{ message?: Record<string, unknown>; recovered?: unknown; whole?: unknown } | null>) {
     const message = row?.message
     if (!message) continue
+    const recovered = row?.recovered === true
     if (Array.isArray(message.tool_calls)) {
       for (const call of message.tool_calls as Array<Record<string, unknown>>) {
         if (!call || typeof call.id !== 'string' || typeof call.name !== 'string') continue
+        if (recovered && calls.has(call.id)) continue
         const args = call.arguments
         calls.set(call.id, {
           name: call.name,
@@ -227,18 +256,23 @@ export function readRawRecord(id: string): RawRecord {
       }
     }
     if (message.role === 'tool_result' && typeof message.tool_call_id === 'string') {
+      const callId = message.tool_call_id
+      if (recovered && liveResults.has(callId)) continue
       const content = message.content
       if (typeof content === 'string') {
-        resultTexts.set(message.tool_call_id, [content])
+        resultTexts.set(callId, [content])
       } else if (Array.isArray(content)) {
         resultTexts.set(
-          message.tool_call_id,
+          callId,
           content
             .filter((b): b is { type: string; text: string } =>
               !!b && b.type === 'text' && typeof b.text === 'string')
             .map((b) => b.text),
         )
       }
+      if (!recovered) liveResults.add(callId)
+      if (recovered && row?.whole === false) partial.add(callId)
+      else partial.delete(callId)
     }
   }
   return {
@@ -246,7 +280,11 @@ export function readRawRecord(id: string): RawRecord {
     results: {
       get(callId: string) {
         const texts = resultTexts.get(callId)
-        return texts ? modelResult(texts) : undefined
+        if (!texts) return undefined
+        const result = modelResult(texts)
+        // Halved or condensed before it was recovered, with nothing to
+        // restore it from: only the compacted text is left.
+        return partial.has(callId) ? { ...result, source: 'transcript-truncated', complete: false } : result
       },
     },
     rows,

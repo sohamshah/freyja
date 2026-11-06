@@ -638,6 +638,66 @@ await check('a root session does not read a sub-agent\'s log', () => {
   assert.equal(record.readRawRecord(sid).results.get('s-read'), undefined)
 })
 
+console.log('\nrows the backfill recovered')
+// scripts/backfill_raw_messages.py writes the messages a raw log is missing
+// beside it, marked recovered. An export reads them among the live rows.
+const recId = 'session-recovered'
+const recDir = path.join(home, '.freyja', 'projects', recId)
+fs.mkdirSync(recDir, { recursive: true })
+fs.writeFileSync(path.join(recDir, 'raw_messages.jsonl'), [
+  { ts: 1, session_id: recId, turn_id: 't1', message: { role: 'user', content: 'before the restart' } },
+  { ts: 2, session_id: recId, turn_id: 't1', message: asst([{ id: 'r-live', name: 'bash', arguments: { command: 'ls' } }]) },
+  { ts: 3, session_id: recId, turn_id: 't1', message: res('r-live', 'live output') },
+  { ts: 30, session_id: recId, turn_id: 't9', message: { role: 'user', content: 'after the fix' } },
+].map((r) => JSON.stringify(r)).join('\n') + '\n')
+const recRow = (ts, message, whole = true) => ({
+  ts, session_id: recId, turn_id: null, message, recovered: true,
+  recovered_from: `sessions/${recId}.transcript.json`, whole,
+})
+const HALVED = 'head\n\n[Content truncated - 9,000 total chars, middle removed. Request specific sections if needed.]\n\ntail'
+fs.writeFileSync(path.join(recDir, 'raw_messages.recovered.jsonl'), [
+  recRow(10, asst([{ id: 'r-rec', name: 'bash', arguments: { command: 'cat big' } }, { id: 'r-half', name: 'bash', arguments: {} }])),
+  recRow(11, res('r-rec', 'recovered whole output')),
+  recRow(12, res('r-half', HALVED), false),
+  // A recovered row never stands over a live one.
+  recRow(13, res('r-live', 'not this')),
+].map((r) => JSON.stringify(r)).join('\n') + '\n')
+fs.writeFileSync(path.join(sessionsDir, `${recId}.json`), JSON.stringify({
+  version: 1, id: recId, title: 'recovered', model: 'm', workspace: '~/', createdAt: 1, updatedAt: 2,
+  messageCount: 1, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0,
+  slice: {
+    messages: [{ id: 'm1', role: 'assistant', parts: [{ type: 'tool_call', toolCallId: 'r-rec' }, { type: 'tool_call', toolCallId: 'r-half' }] }],
+    toolCalls: {
+      'r-rec': record2({ id: 'r-rec', name: 'bash', arguments: { command: 'cat big' }, result: 'recovered whole output' }),
+      'r-half': record2({ id: 'r-half', name: 'bash', arguments: {}, result: 'head' }),
+    },
+    toolCallOrder: ['r-rec', 'r-half'], subagents: {}, usage: {}, systemEvents: [],
+  },
+}))
+await check('its raw record has the recovered results, and a live result wins', () => {
+  const r = record.readRawRecord(recId)
+  assert.deepEqual(r.calls.get('r-rec'), { name: 'bash', arguments: { command: 'cat big' } })
+  assert.deepEqual(r.results.get('r-rec'), { text: 'recovered whole output', source: 'transcript', complete: true })
+  assert.equal(r.results.get('r-live').text, 'live output')
+})
+await check('a recovered result that only has its compacted text is not whole', () => {
+  const half = record.readRawRecord(recId).results.get('r-half')
+  assert.deepEqual([half.text, half.source, half.complete], [HALVED, 'transcript-truncated', false])
+})
+await check('its rows are in time order, and the recovered ones say so', () => {
+  const rows = [...record.readRawRecord(recId).rows()]
+  assert.deepEqual(rows.map((r) => r.ts), [1, 2, 3, 10, 11, 12, 13, 30])
+  assert.deepEqual(rows.map((r) => r.recovered === true), [false, false, false, true, true, true, true, false])
+})
+await check('its export has them', async () => {
+  const r = await persistence.exportSessionToFile(recId, path.join(home, 'rec-out.json'))
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const tcs = readJson(r.jsonPath).slice.toolCalls
+  assert.deepEqual([tcs['r-rec'].resultSource, tcs['r-rec'].resultComplete], ['transcript', true])
+  assert.deepEqual([tcs['r-half'].resultSource, tcs['r-half'].resultComplete], ['transcript-truncated', false])
+  assert.equal(readJson(r.bundlePath).raw_transcript.length, 8)
+})
+
 console.log('\nthe download button')
 await check('it saves the live session first, then asks main to write the file', async () => {
   const calls = []
