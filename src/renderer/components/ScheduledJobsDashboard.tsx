@@ -832,14 +832,18 @@ function ScheduleDetail(props: {
 
   const dirty = computeDirty(form, job)
 
-  const act = async (verb: string, fn: () => Promise<unknown>) => {
+  /** True when the bridge did `fn`; else its reason is shown. */
+  const act = async (verb: string, fn: () => Promise<unknown>): Promise<boolean> => {
     setBusy(verb)
     setError(null)
     try {
-      setError(actionError(await fn()))
+      const error = actionError(await fn())
+      setError(error)
       schedulerApi.listJobs().catch(() => {})
+      return error === null
     } catch (e) {
       setError((e as Error).message)
+      return false
     } finally { setBusy(null) }
   }
 
@@ -933,8 +937,8 @@ function ScheduleDetail(props: {
           <CardButton
             onClick={async () => {
               if (!window.confirm(`Delete schedule “${job.name}”? Past runs are kept.`)) return
-              await act('remove', () => schedulerApi.removeJob(job.id))
-              props.onBack()
+              // Refused, the view stays so its reason shows.
+              if (await act('remove', () => schedulerApi.removeJob(job.id))) props.onBack()
             }}
             disabled={busy !== null}
             label="delete"

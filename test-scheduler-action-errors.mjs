@@ -2,7 +2,8 @@
 // and detail buttons awaited the bridge's answer and dropped it, so a
 // refused resume (a job that ran all its max fires) did nothing visible.
 // The Morning room's resume of the stopped briefer dropped it too, and so
-// did the card's delete.
+// did the card's delete. The detail view's delete went back to the list
+// even when refused, so its reason was set in a view no longer shown.
 // Run from the repo root:
 //   npx tsx test-scheduler-action-errors.mjs
 
@@ -117,6 +118,18 @@ await check('a refused delete on a schedule card says why', async () => {
   await sleep(20)
   clickButton(host, 'delete')
   await sleep(20)
+  assert.ok(host.textContent.includes('is locked by a peer; retry shortly'), 'the bridge’s reason is shown')
+  unmount()
+})
+
+await check('a refused delete in a schedule’s detail view says why and stays on it', async () => {
+  useSchedulerStore.setState({ jobs: [job], selectedJobId: job.id })
+  window.confirm = () => true
+  const { host, unmount } = mount()
+  await sleep(20)
+  clickButton(host, 'delete')
+  await sleep(20)
+  assert.equal(useSchedulerStore.getState().selectedJobId, job.id, 'still on the detail view')
   assert.ok(host.textContent.includes('is locked by a peer; retry shortly'), 'the bridge’s reason is shown')
   unmount()
 })
