@@ -123,6 +123,18 @@ await check("a reply is shown from the bridge's turn_start stamp, past its user 
   ev({ type: 'turn_complete', turnId: 'turn-1', success: true })
 })
 
+const pinnedIds = (messages) => messages.filter((m) => m.pinned).map((m) => m.id)
+
+await check("a pin event marks the message in its own session, not the one on screen", async () => {
+  reset()
+  useHarness.setState({ sessionArchive: { other: { messages: chat() } } })
+  useHarness.getState().handleEvent({ type: 'entry_pin_changed', sessionId: 'other', messageOrdinal: 1, pinned: true })
+  assert.deepEqual(pinnedIds(useHarness.getState().messages), [])
+  assert.deepEqual(pinnedIds(useHarness.getState().sessionArchive.other.messages), ['a1'])
+  ev({ type: 'entry_pin_changed', messageOrdinal: 1, pinned: true })
+  assert.deepEqual(pinnedIds(useHarness.getState().messages), ['a1'])
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

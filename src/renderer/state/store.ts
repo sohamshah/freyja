@@ -3449,15 +3449,22 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         const ordinal = (ev as any).messageOrdinal as number
         const pinned = Boolean((ev as any).pinned)
         if (typeof ordinal !== 'number' || ordinal < 0) return prev
-        const userAssistant = prev.messages
-        if (ordinal >= userAssistant.length) return prev
+        // The session the pin is in, which need not be the one on screen
+        // (an agent in the background pins through summarize_context).
+        const sid: string = (ev as any).sessionId || prev.activeSessionId
+        const active = sid === prev.activeSessionId
+        const archived = active ? undefined : prev.sessionArchive[sid]
+        const messages = active ? prev.messages : archived?.messages
+        if (!messages) return prev
+        // Counted as messageOrdinalById counts them.
+        const userAssistant = messages.filter((m) => m.role === 'user' || m.role === 'assistant')
         const targetId = userAssistant[ordinal]?.id
         if (!targetId) return prev
+        const marked = messages.map((m) => (m.id === targetId ? { ...m, pinned } : m))
+        if (active) return { ...prev, messages: marked }
         return {
           ...prev,
-          messages: prev.messages.map((m) =>
-            m.id === targetId ? { ...m, pinned } : m,
-          ),
+          sessionArchive: { ...prev.sessionArchive, [sid]: { ...archived!, messages: marked } },
         }
       }
       if (ev.type === 'skill_retrieved' || ev.type === 'skill_loaded' || ev.type === 'skill_pruned') {
