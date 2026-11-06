@@ -3,8 +3,10 @@
 When a session is created by an inbound platform message (vs the
 desktop renderer), it runs unattended — the operator can't approve a
 per-tool permission prompt, and the session may run anywhere the
-gateway daemon is hosted. We restrict the tool surface to safe,
-read-mostly capabilities by default.
+gateway daemon is hosted. With ``slack.enable_tool_filter`` on (it is
+off by default) the tool surface is restricted to the list below: file
+reads and writes, web research, sub-agents, skills, memory and
+schedules, with no shell, computer use or browser.
 
 The default set lives here as code. v2 will read it from
 ``~/.freyja/gateway.yaml`` with per-workflow overrides.

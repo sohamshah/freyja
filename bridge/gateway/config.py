@@ -61,8 +61,8 @@ class SlackConfig:
     enforce_workspace_allowlist: bool = True
     mention_required_in_channels: bool = True
     reply_in_thread: bool = True
-    # When true: gateway sessions get a restricted tool surface
-    # (read-mostly — no bash, computer-use, browser, etc.). Default
+    # When true: gateway sessions get only SLACK_TOOL_ALLOWLIST
+    # (capabilities.py — no bash, computer-use, browser, etc.). Default
     # False: the operator is presumed to be the only user of their
     # own install, so the agent gets the full toolset over Slack
     # too. Flip to True in shared workspaces where other people DM

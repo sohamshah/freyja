@@ -181,7 +181,7 @@ What Freyja has that the Slack gateway can plug into:
 - **Streaming infrastructure** — `AsyncAgentRunner` emits `text_delta`, `thinking_delta`, `tool_use_start` stream events. The gateway adapter just needs to consume these and translate to Slack `chat.update` calls.
 - **Sub-agents, judge, calibrator, memory, skills** — all reusable from any session, regardless of the input source.
 - **Coordination strategies** (`bus`, `goal`, `kanban`, `isolated`) — also session-scoped; each Slack session gets to pick one.
-- **Permission tiers** (`bridge/freyja_bridge.py:1121`) — coarse but functional; we'll use `medium` as the Slack default.
+- **Permission tiers** (`_parse_auto_approve` in `bridge/freyja_bridge.py`) — coarse but functional. A Slack session runs at `yolo`, so nothing prompts; `FREYJA_GATEWAY_PERMISSION_AUTO` in the gateway's environment sets another tier (see Step 6 in section 5).
 - **Tool registry** — `bridge/tools/registry.py`; supports tool include/exclude per session.
 
 What Freyja DOESN'T have:
@@ -648,7 +648,7 @@ slack:
   enforce_workspace_allowlist: true  # kept so old files load; false no longer opens anything
   mention_required_in_channels: true
   reply_in_thread: true
-  enable_tool_filter: false        # true gives Slack sessions a read-mostly tool set
+  enable_tool_filter: false        # true limits Slack sessions to SLACK_TOOL_ALLOWLIST
 ```
 
 Everyone on the allowlist gets the same full toolset as the operator (shell, file writes, computer use) unless `enable_tool_filter` is on. So list explicit user ids. `"*"` opens a workspace to every member, and the wizard warns when you choose it. It never lets in a Slack Connect user from another workspace: the gateway checks the author's own team when Slack gives it, and in a channel shared with another organization where Slack does not, only listed ids pass. An empty list lets nobody in, and a workspace that is not in the map is denied. `allowed_user_ids` is a map from workspace id to a list, not a flat list. A flat list names no workspace, so the gateway still starts but lets nobody in, and its log says how to write the setting.
@@ -695,11 +695,11 @@ Everyone on the allowlist gets the same full toolset as the operator (shell, fil
 
 `KeepAlive.SuccessfulExit=false` means: restart unless the process exited cleanly (exit code 0). Matches Hermes's `Restart=on-failure` systemd semantics.
 
-### 7.4 Capability set (v1, declarative)
+### 7.4 Capability set
 
-The full capability model from `ALWAYS-ON-PLATFORM.md` is deferred. For Slack v1, we use the existing `tool_include` / `tool_exclude` mechanism on the session's tool registry. The `gateway.yaml` `defaults.tool_exclude` list is applied to every Slack session at session creation time. Operator can override per-session via `/perms` slash command.
+The full capability model from `ALWAYS-ON-PLATFORM.md` is deferred. Slack has one switch, `slack.enable_tool_filter` in `gateway.yaml`, and it is off by default. When it is on, `_BridgeSession.initialize` (`bridge/freyja_bridge.py`) keeps the tools in `SLACK_TOOL_ALLOWLIST` (`bridge/gateway/capabilities.py`) plus `send_attachment`, `slack_widget` and `code_channel`, and unregisters every other tool when it builds a Slack session. `gateway.yaml` has no per-tool include or exclude list, and there is no per-session override.
 
-The `/perms` command opens a Slack message with the current allowlist + denylist + a "request changes via the desktop app" link. Granular per-session perms editing happens in the renderer; over Slack you can only see and accept presets.
+`/perms` (or `/freyja perms`) only shows the surface, in a reply that only the sender sees. With the filter off, it says that every desktop tool is available and how to turn the filter on. With the filter on, it lists the allowed tools and says what the list covers. It changes nothing. To change the surface, edit `gateway.yaml`: the change applies to Slack sessions built after it, and a gateway restart rebuilds the open ones.
 
 ## 8. Showcase considerations
 
