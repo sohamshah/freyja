@@ -47,6 +47,7 @@ from collections import deque
 from typing import TYPE_CHECKING, Any
 
 from bridge.scheduler.models import (
+    CLEARABLE_FIELDS,
     BudgetSpec,
     CreatorRef,
     DesktopSinkSpec,
@@ -1065,8 +1066,9 @@ class SchedulerService:
                 val = getattr(patch, field_name)
                 if val is not None:
                     setattr(job, field_name, val)
-            if patch.clear_max_fires:
-                job.max_fires = None
+            for field_name in CLEARABLE_FIELDS:
+                if getattr(patch, f"clear_{field_name}"):
+                    setattr(job, field_name, None)
             # A cap lowered to the fires the job ran stops it now, as the
             # end of the run that reaches the cap does. Nothing checks
             # max_fires when a run is claimed: left active, it fired again.

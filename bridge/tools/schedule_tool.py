@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from bridge.scheduler.models import (
+    CLEARABLE_FIELDS,
     BudgetSpec,
     CronSchedule,
     IntervalSchedule,
@@ -222,8 +223,9 @@ class ScheduleTool:
         ):
             if k in args:
                 setattr(patch, k, args[k])
-        if "max_fires" in args and args["max_fires"] is None:
-            patch.clear_max_fires = True
+        for k in CLEARABLE_FIELDS:
+            if k in args and args[k] is None:
+                setattr(patch, f"clear_{k}", True)
         if "when" in args or "schedule" in args:
             patch.schedule = build_schedule(
                 args.get("when"), args.get("schedule"),
@@ -688,7 +690,8 @@ _PARAMETERS = {
                 "fire-time prompt so the agent always knows where the "
                 "canonical output lives. Agent uses its existing tools "
                 "(file I/O, gh CLI, web_fetch, bash) to read/update it. "
-                "Empty/omit for jobs that don't bind to one thing."
+                "Empty/omit for jobs that don't bind to one thing; with "
+                "action='update', null removes it."
             ),
         },
         "memory": {
@@ -748,7 +751,13 @@ _PARAMETERS = {
                 "dict. Must be a real array — not a JSON-encoded string."
             ),
         },
-        "model_id": {"type": "string"},
+        "model_id": {
+            "type": "string",
+            "description": (
+                "Model for the job's runs; omit for the default. With "
+                "action='update', null removes it."
+            ),
+        },
         "coordination_strategy": {"type": "string"},
         "skills_to_load": {
             "type": "array",
@@ -763,7 +772,8 @@ _PARAMETERS = {
                 "wall_clock_timeout_seconds, on_exceeded: 'abort_run' "
                 "(default; the run is aborted, or skipped for the daily "
                 "cap, and the job goes on) | 'abort_job' (the job stops "
-                "until resumed)."
+                "until resumed). With action='update', null removes the "
+                "budget."
             ),
         },
         "max_fires": {
@@ -785,7 +795,8 @@ _PARAMETERS = {
                 "soon as possible. Use for reminders and digests. "
                 "fire_all: one run per missed time, the latest 10 from "
                 "the last 7 days. Use only when each run matters on its "
-                "own, such as one report per day."
+                "own, such as one report per day. With action='update', "
+                "null goes back to the default."
             ),
         },
         "overlap_policy": {
@@ -800,7 +811,13 @@ _PARAMETERS = {
                 "newest run's result matters."
             ),
         },
-        "timeout_seconds": {"type": "integer"},
+        "timeout_seconds": {
+            "type": "integer",
+            "description": (
+                "Stop a run after this many seconds. With "
+                "action='update', null removes it."
+            ),
+        },
         "tags": {"type": "array", "items": {"type": "string"}},
         "limit": {"type": "integer"},
         "user_id": {"type": "string"},

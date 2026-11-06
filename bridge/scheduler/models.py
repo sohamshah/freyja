@@ -703,8 +703,20 @@ class JobPatch:
     timeout_seconds: int | None = None
     retry_policy: RetryPolicy | None = None
     tags: list[str] | None = None
-    # True clears max_fires (no cap), which a None there cannot say.
+    # True clears the field (no cap, no budget, the default policy...),
+    # which a None there cannot say.
     clear_max_fires: bool = False
+    clear_budget: bool = False
+    clear_artifact: bool = False
+    clear_timeout_seconds: bool = False
+    clear_model_id: bool = False
+    clear_misfire_policy: bool = False
+
+
+# The fields a JobPatch sets to None with its clear_<field> flag.
+CLEARABLE_FIELDS = (
+    "max_fires", "budget", "artifact", "timeout_seconds", "model_id", "misfire_policy",
+)
 
 
 @dataclass

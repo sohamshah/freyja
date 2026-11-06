@@ -16596,7 +16596,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         # timeout/misfire/overlap/tags directly. Anything absent on the
         # payload is left unchanged.
         try:
-            from bridge.scheduler.models import JobPatch
+            from bridge.scheduler.models import CLEARABLE_FIELDS, BudgetSpec, JobPatch
             from bridge.scheduler.persistence import load_job as _load_job
             from bridge.scheduler.service import (
                 build_creator_ref, build_execution, build_schedule, build_sinks,
@@ -16608,17 +16608,19 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             if "description" in payload: patch.description = payload.get("description")
             if "prompt" in payload: patch.prompt = payload.get("prompt")
             if "enabled" in payload: patch.enabled = bool(payload.get("enabled"))
-            if "max_fires" in payload:
-                # The dashboard sends null for an emptied field.
-                v = payload.get("max_fires")
-                if v is None:
-                    patch.clear_max_fires = True
-                else:
-                    patch.max_fires = int(v)
-            if "timeout_seconds" in payload:
-                v = payload.get("timeout_seconds")
-                patch.timeout_seconds = int(v) if v is not None else None
+            # The dashboard sends null for an emptied field.
+            for name in CLEARABLE_FIELDS:
+                if name in payload and payload[name] is None:
+                    setattr(patch, f"clear_{name}", True)
+            if payload.get("max_fires") is not None:
+                patch.max_fires = int(payload["max_fires"])
+            if payload.get("timeout_seconds") is not None:
+                patch.timeout_seconds = int(payload["timeout_seconds"])
             if "misfire_policy" in payload: patch.misfire_policy = payload.get("misfire_policy")
+            if isinstance(payload.get("budget"), dict):
+                patch.budget = BudgetSpec.from_dict(payload["budget"])
+            if payload.get("artifact") is not None:
+                patch.artifact = str(payload["artifact"]).strip()
             if "overlap_policy" in payload: patch.overlap_policy = payload.get("overlap_policy")
             if "tags" in payload:
                 tags = payload.get("tags") or []
