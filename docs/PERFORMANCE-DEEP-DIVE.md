@@ -251,20 +251,19 @@ Recommended fix:
 
 Relevant code:
 
-- `src/main/inputProxy.ts:98-142` shells out to a new Python process via `execFileSync` for every input action.
-- `src/main/inputProxy.ts:180` runs that synchronous subprocess inside the HTTP request handler.
+- `src/main/inputProxy.ts` (`InputWorker`) runs every input action in one long-lived Python worker, in order and one at a time. Before commit 665b63c it started a new Python process with `execFileSync` for each action, inside the HTTP request handler.
 - `src/main/captureProxy.ts:66-78` requests native display-sized thumbnails from `desktopCapturer`.
 - `src/main/captureProxy.ts:99-120` then resizes and encodes the image.
 - `bridge/tools/computer_tools.py:191-337` captures, cursor-composites, optionally dumps to disk, base64-encodes, and emits every frame.
 - `bridge/tools/computer_tools.py:55-61` enables frame dumping by default unless `FREYJA_FRAME_DUMP` is explicitly false.
 - `bridge/tools/computer_tools.py:1232-1237`, `1345`, `1526`, `1633`, and `1892` capture a fresh screenshot after mutating actions.
 
-The most suspicious single I/O issue is `execFileSync` per input action. Starting Python for every click/key/scroll is expensive and blocks Electron main while the request is handled. During computer-use loops, that can directly cause clicks, typing, and app UI responsiveness to lag.
+The most suspicious single I/O issue was `execFileSync` per input action. Starting Python for every click, key or scroll blocked Electron main, and with it every window and IPC, while the request was handled. Against a stub `freyja_native`, a move took 20 ms and blocked main for 21 ms. Commit 665b63c fixed this. One worker reads the actions as JSON lines on stdin and answers each one. With the same stub, a move now takes about 0.5 ms median, and main lags at most 1.3 ms.
 
 Recommended fix:
 
-- Replace per-action `execFileSync` with a persistent helper process or direct native module call.
-- Queue input actions through one worker so Electron main never blocks on process startup.
+- Done in 665b63c: one persistent Python worker replaces the per-action `execFileSync`.
+- Done in 665b63c: the worker takes input actions in order, one at a time, and Electron main does not wait on process startup.
 - Capture scaled thumbnails at source when `max_dim` is known instead of requesting full native pixel size and resizing afterward.
 - Keep frame dumping semantics if they are useful, but make debug writes asynchronous and outside the capture/action latency path.
 - Add non-dropping screenshot backpressure: persist every frame to the media store, but decouple media ingestion from React rendering so the renderer can catch up without losing frame history.
@@ -335,7 +334,7 @@ These are not the first fires to put out, but they should be virtualized/windowe
    - Skip search DOM scans when no query is active.
 
 5. Remove blocking input/capture work from Electron main.
-   - Replace per-action Python process startup with a persistent helper or native path.
+   - Done in 665b63c: input runs in one persistent Python worker, not a new process per action.
    - Make debug frame writes asynchronous.
 
 ### P1: Structural Fixes
@@ -356,9 +355,9 @@ These are not the first fires to put out, but they should be virtualized/windowe
    - Compact JSON.
    - Dedicated index for session metadata.
 
-4. Replace input proxy subprocess-per-action.
-   - Persistent worker or native binding.
-   - Main process should not block while injecting input.
+4. Replace input proxy subprocess-per-action. Done in 665b63c.
+   - One persistent Python worker runs every action.
+   - The main process does not block while it injects input. It lags at most 1.3 ms during a move.
 
 5. Add non-dropping backpressure between ingestion and rendering.
    - Accept all bridge events.
@@ -390,7 +389,7 @@ It will not fix:
 
 - base64 frames being copied through stdout, IPC, state, and JSON
 - remaining persistence work such as debounce/app-quit flushing and future worker serialization
-- Electron main blocking on `execFileSync` input actions
+- Electron main blocking on `execFileSync` input actions (fixed since, in 665b63c)
 - computer screenshots being captured/encoded/dumped too aggressively
 - the full intended model/tool/sub-agent fanout still creating high event and media volume
 
@@ -427,7 +426,7 @@ Implemented in the idle-main-page patch set:
 
 Remaining high-confidence next patch:
 
-1. Replace per-action `execFileSync` input injection with a persistent helper or direct native call.
+1. Replace per-action `execFileSync` input injection with a persistent helper or direct native call. Done in 665b63c with one persistent Python worker.
 
 2. Add conversation virtualization/pagination for very long sessions.
 
