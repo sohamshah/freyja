@@ -459,7 +459,7 @@ async def test_a_sub_agent_running_in_the_app_under_a_job_session_still_gets_its
 async def test_deleting_a_scheduled_jobs_session_in_the_app_keeps_the_owners_files(app_bridge, tmp_path):
     # The tick owner has the session loaded, and may be running the job on
     # it. The app only stops showing it.
-    state, _events, built = app_bridge
+    state, events, built = app_bridge
     _owner_saved()
     _owner_saved(SCHED_SUB, parent=SCHED)
     tp.save_inbox_state(SCHED, {"sessionId": SCHED, "unread": [], "delivered": []})
@@ -471,16 +471,21 @@ async def test_deleting_a_scheduled_jobs_session_in_the_app_keeps_the_owners_fil
     assert tp.load_transcript(SCHED) is not None and tp.load_transcript(SCHED_SUB) is not None
     assert _saved_entries() == ["o1"] and _saved_entries(SCHED_SUB) == ["o1"]
     assert tp.load_inbox_state(SCHED) is not None and tp.load_subagent_state(SCHED_SUB) is not None
+    # The app's toast said "Session deleted".
+    (answer,) = [e for e in events if e["type"] == "session_deleted"]
+    assert answer == {"type": "session_deleted", "deletedSessionId": SCHED, "filesKept": True}
 
 
 async def test_the_tick_owner_still_deletes_its_job_sessions(app_bridge):
-    state, _events, _built = app_bridge
+    state, events, _built = app_bridge
     state.scheduler._is_owner = True
     _owner_saved()
 
     await fb._handle_command(state, {"type": "delete_session", "sessionId": SCHED})
 
     assert tp.load_transcript(SCHED) is None
+    (answer,) = [e for e in events if e["type"] == "session_deleted"]
+    assert answer["filesKept"] is False
 
 
 # ── run now ──────────────────────────────────────────────────────────

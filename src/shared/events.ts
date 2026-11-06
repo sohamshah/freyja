@@ -1597,6 +1597,14 @@ export type BridgeEvent = Received & (
       createdFiles?: string[]
     } & SessionId)
   | {
+      // Bridge answers a delete_session. `filesKept`: another process runs
+      // the session (a scheduled job's tick owner, the gateway), so the
+      // bridge only dropped its own copy and every file stays.
+      type: 'session_deleted'
+      deletedSessionId: string
+      filesKept: boolean
+    }
+  | {
       // Bridge confirms a branch operation. `idRemap` maps every old
       // session id (parent + each cloned subagent) to its new id; the
       // renderer applies the same remap to its in-memory snapshots.

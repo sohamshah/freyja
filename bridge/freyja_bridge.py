@@ -16709,6 +16709,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             cascade_note = f" (+{len(cascade_ids)} subagent{plural})"
         else:
             cascade_note = ""
+        # The app's toast says whether the session was deleted or only
+        # hidden. No sessionId: an event for it reopens its events file.
+        emit({"type": "session_deleted", "deletedSessionId": session_id, "filesKept": keep_files})
         if keep_files:
             log("info", f"hid {session_id}{cascade_note} in the app — another process runs it, and its files stay")
             return

@@ -1109,6 +1109,30 @@ export function isInSlackThread(sessions: SessionSnapshot[], sessionId: string):
   return false
 }
 
+/** A scheduled job's session, or a sub-agent under one. The process that
+ *  owns the scheduler's tick runs and saves those, which may be the app's
+ *  bridge or another. */
+function isInScheduledJob(sessions: SessionSnapshot[], sessionId: string): boolean {
+  const byId = new Map(sessions.map((s) => [s.id, s]))
+  let id: string | undefined = sessionId
+  for (let depth = 0; id && depth < 32; depth += 1) {
+    if (id.startsWith('scheduler:')) return true
+    id = byId.get(id)?.parentSessionId
+  }
+  return false
+}
+
+/** Deletes of a scheduled job's session waiting for the bridge to say
+ *  whether it deleted the files or kept them (`session_deleted`), with how
+ *  many sub-agents went with each. */
+const pendingJobDeletes = new Map<string, number>()
+
+function deletedToast(subagents: number): string {
+  if (subagents === 0) return 'Session deleted'
+  const noun = subagents === 1 ? 'subagent' : 'subagents'
+  return `Session deleted — ${subagents} ${noun} also removed`
+}
+
 /** True when the bridge may refuse a message typed for `sessionId`
  *  (`send_refused`): a Slack session's, or a sub-agent's under one, goes to
  *  the gateway; a sub-agent's may have nothing saved to resume; a scheduled
@@ -3645,6 +3669,18 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           ...prev,
           memories: { ...prev.memories, [ev.memory.id]: ev.memory },
         }
+      }
+      // A scheduled job's session the app deleted: the bridge kept its
+      // files when another process owns the tick and runs the job on them.
+      if (ev.type === 'session_deleted') {
+        const subagents = pendingJobDeletes.get(ev.deletedSessionId)
+        if (subagents === undefined) return prev
+        pendingJobDeletes.delete(ev.deletedSessionId)
+        const message = ev.filesKept
+          ? 'Hidden from the app. The scheduled job keeps its session.'
+          : deletedToast(subagents)
+        queueMicrotask(() => useHarness.getState().showToast(message, 'info'))
+        return prev
       }
       // The bridge did not act on an edit, rerun or delete: put back the
       // chat the command cut, so it shows what the agent still has. An
@@ -6222,6 +6258,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     // the app only stops showing it and its sub-agents, and every file
     // stays. Deleting it here removed the gateway's transcript.
     const inSlack = isInSlackThread(state.sessions, sessionId)
+    // A scheduled job's session keeps its files while another process owns
+    // the scheduler's tick: only the bridge knows, and says so.
+    const inJob = isInScheduledJob(state.sessions, sessionId)
 
     // Remove from store: sessions list, archive, any panes pointing at
     // a removed id. Frame caches get released for each archived slice.
@@ -6265,26 +6304,25 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     if (api?.sessionDelete) {
       await Promise.all(allIds.map((id) => api.sessionDelete(id).catch(() => {})))
     }
+    let answered = false
     if (api?.sendCommand) {
-      await api
+      if (inJob) pendingJobDeletes.set(sessionId, descendants.length)
+      const sent = await api
         .sendCommand({
           type: 'delete_session',
           sessionId,
           cascadeSessionIds: descendants,
         })
-        .catch(() => {})
+        .then((res: { ok?: boolean } | undefined) => res?.ok !== false)
+        .catch(() => false)
+      answered = inJob && sent
+      if (!answered) pendingJobDeletes.delete(sessionId)
     }
     await useHarness.getState().persistSessionIndex().catch(() => {})
 
-    if (descendants.length === 0) {
-      state.showToast('Session deleted', 'info')
-    } else {
-      const noun = descendants.length === 1 ? 'subagent' : 'subagents'
-      state.showToast(
-        `Session deleted — ${descendants.length} ${noun} also removed`,
-        'info',
-      )
-    }
+    // The bridge's answer shows the toast (`session_deleted`).
+    if (answered) return
+    state.showToast(deletedToast(descendants.length), 'info')
   },
 
   async downloadSession(sessionId) {
