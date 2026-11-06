@@ -77,7 +77,8 @@ class _Gateway:
         lines = path.read_text().splitlines() if path.exists() else []
         for line in lines[self.read:]:
             cmd = json.loads(line)
-            self.handed_at.append(time.monotonic())
+            # On the owner's clock, which a test may move itself.
+            self.handed_at.append(service_mod.time.monotonic())
             await self.service.fire_handed_over(cmd["job_id"], cmd["scheduled_for"], cmd["attempt"])
         self.read = len(lines)
         await asyncio.gather(*self.service._in_flight_runs.values())
@@ -106,17 +107,26 @@ async def test_a_fire_the_gateway_keeps_refusing_is_handed_again_less_often(
     owner, fired, monkeypatch, caplog,
 ):
     # The gateway does not run the thread's session: it refuses every fire.
+    # The owner's real waits, on a clock the test moves a second each tick:
+    # timed by the wall clock, a slow tick on a busy machine shortened the
+    # gap seen to the next one, and the test failed now and then.
+    monkeypatch.setattr(service_mod, "_REFUSED_RETRY_FIRST_SECONDS", 1.0)
+    monkeypatch.setattr(service_mod, "_REFUSED_RETRY_MAX_SECONDS", 60.0)
+    clock = SimpleNamespace(now=1000.0)
+    monkeypatch.setattr(service_mod, "time", SimpleNamespace(time=time.time, monotonic=lambda: clock.now))
     gateway = _Gateway(monkeypatch)
     job = _hourly()
 
     with caplog.at_level(logging.INFO, logger="freyja.scheduler.service"):
-        await _ticks(owner, gateway, job, 1.0)
+        for _ in range(200):
+            await owner._try_claim_and_fire(job.id)
+            await gateway.read_commands()
+            clock.now += 1
 
-    # At the next tick, then 0.05, 0.1 and 0.2 s on, and every 0.2 s after.
+    # At the next tick, then 1, 2, 4 ... 32 s on, and every 60 s after.
     handed = gateway.handed_at
-    assert 4 <= len(handed) <= 10, len(handed)
     gaps = [b - a for a, b in zip(handed, handed[1:])]
-    assert gaps[1] >= 0.05 and gaps[2] >= 0.1 and all(g >= 0.2 for g in gaps[3:]), gaps
+    assert gaps == [1, 1, 2, 4, 8, 16, 32, 60, 60], gaps
     assert fired == []
     # One log line per step, not per tick.
     again = [r for r in caplog.records if "came back" in r.getMessage()]
