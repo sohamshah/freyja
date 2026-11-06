@@ -14896,6 +14896,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             refused="model_change_refused",
         ):
             return
+        held = False
         if session_id:
             sess = await state.ensure_session(
                 session_id,
@@ -14903,7 +14904,16 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 reasoning_level=reasoning_level,
                 coordination_strategy=cmd.get("coordinationStrategy"),
             )
-            effective_reasoning = sess.reasoning_level
+            # A turn is running: ensure_session parked the change, and
+            # _apply_pending_config makes it (config_applied) when the turn
+            # ends. Reported as made, it named the reasoning level of the
+            # model the turn runs on.
+            held = (getattr(sess, "pending_config", None) or {}).get("model_id") == new_model
+            effective_reasoning = (
+                _normalize_reasoning_level(new_model, reasoning_level or "auto")
+                if held
+                else sess.reasoning_level
+            )
         else:
             state.default_model = new_model
             sess = None
@@ -14918,7 +14928,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "type": "system_event",
                 "sessionId": session_id,
                 "subtype": "model_changed",
-                "message": f"model changed to {new_model} ({effective_reasoning})",
+                "message": (
+                    f"model will change to {new_model} ({effective_reasoning}) when the running turn ends"
+                    if held
+                    else f"model changed to {new_model} ({effective_reasoning})"
+                ),
                 "details": {"model": new_model, "reasoningLevel": effective_reasoning},
             }
         )

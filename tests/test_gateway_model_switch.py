@@ -108,6 +108,34 @@ def test_apply_never_raises_into_the_turn_loop():
     asyncio.run(_apply_pending_config(sess))  # must not propagate
 
 
+async def test_a_model_picked_in_the_app_during_a_running_turn_is_reported_as_waiting(monkeypatch, tmp_path):
+    """The app's own sessions: set_model said "model changed to X" with the reasoning level of the model the turn still ran on, as /model once did in Slack."""
+    import bridge.freyja_bridge as fb
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    events: list[dict] = []
+    monkeypatch.setattr(fb, "emit", events.append)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("session-desktop")
+    turn = asyncio.get_running_loop().create_future()
+    sess.pending_task = turn
+
+    await fb._handle_command(
+        state, {"type": "set_model", "sessionId": "session-desktop", "model": "glm-5.3-fireworks", "reasoningLevel": "max"},
+    )
+    assert sess.model_id == "kimi-k3-fast"
+    (held,) = [e for e in events if e.get("subtype") == "model_changed"]
+    assert held["message"] == "model will change to glm-5.3-fireworks (max) when the running turn ends"
+    assert held["details"] == {"model": "glm-5.3-fireworks", "reasoningLevel": "max"}
+
+    events.clear()
+    turn.set_result(None)
+    await fb._drain_after_turn(sess)
+    assert (sess.model_id, sess.reasoning_level) == ("glm-5.3-fireworks", "max")
+    (applied,) = [e for e in events if e.get("subtype") == "config_applied"]
+    assert applied["details"]["model"] == "glm-5.3-fireworks"
+
+
 # ── 3. validation ────────────────────────────────────────────────────
 
 def test_the_command_help_examples_are_real_models():
