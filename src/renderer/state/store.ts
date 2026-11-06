@@ -1018,8 +1018,10 @@ const KANBAN_CARD_ANSWERS: Record<
     source: 'operator_force',
     toast: (cardId) => `Force-dispatched ${cardId}`,
   },
-  // A card in review goes to the judge.
+  // A card in review goes to the judge. The bridge says so once the judge
+  // runs; a judge that does not start sends kanban_judge_failed alone.
   kanban_review_started: { command: 'kanban_operator_force_dispatch', toast: (cardId) => `Judging ${cardId}` },
+  kanban_judge_failed: { command: 'kanban_operator_force_dispatch' },
   kanban_operator_force_dispatch_failed: { command: 'kanban_operator_force_dispatch' },
   kanban_operator_reassigned: {
     command: 'kanban_operator_reassign',

@@ -763,6 +763,7 @@ Parameters:
         model_override: str | None = None,
         fork_context: dict[str, Any] | None = None,
         transcript_snapshot: dict[str, Any] | None = None,
+        on_started: Callable[[SubAgentRecord], None] | None = None,
     ) -> tuple[SubAgentRecord, str | None, Exception | None]:
         """Spawn a sub-agent from internal bridge code (not via a model
         tool call). Same machinery as `execute()` — same record, same
@@ -782,6 +783,12 @@ Parameters:
         verdict providers per card (opus/gpt-5.5/gemini). If the
         override isn't available (missing API key, not in registry),
         falls back to the agent_type's normal resolution.
+
+        ``on_started`` is called with the record once the child is spawned
+        and about to run, past the checks that refuse a spawn (no model,
+        the sub-agent cap). A foreground spawn returns only when the child
+        is done, so this is where its caller can say it started (the
+        kanban judge's ``kanban_review_started``).
 
         Returns (record, response_text, error_or_None). One of
         (response_text, error) is set; the record is always populated
@@ -955,6 +962,11 @@ Parameters:
             pass
 
         # ---- run ----
+        if on_started is not None:
+            try:
+                on_started(record)
+            except Exception:  # noqa: BLE001
+                logger.exception("on_started failed for %s", sub_id)
         if mode != "foreground":
             asyncio.create_task(self._run_background(record), name=f"prog-{sub_id}")
             return record, None, None

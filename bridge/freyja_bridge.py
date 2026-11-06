@@ -9973,18 +9973,22 @@ class _BridgeSession:
                     worker_transcript_path=worker_transcript_path,
                 )
 
-            self._emit_kanban_event(
-                "kanban_review_started",
-                f"Judge {'reviewing' if not sticky else 're-reviewing'} {card.id} (iter {card.review_iteration}/{self.KANBAN_MAX_REVIEW_ITERATIONS})",
-                details={
-                    "cardId": card.id,
-                    "reviewIteration": card.review_iteration,
-                    "sticky": sticky,
-                    "judgeSessionId": card.judge_session_id or None,
-                    "workerSessionId": card.worker_session_id or None,
-                    "workerTerminalState": terminal_state,
-                },
-            )
+            def _review_started(judge_session_id: str) -> None:
+                # Sent once the judge runs, as kanban_dispatched is for a
+                # worker: a judge that never starts sends only
+                # kanban_judge_failed.
+                self._emit_kanban_event(
+                    "kanban_review_started",
+                    f"Judge {'reviewing' if not sticky else 're-reviewing'} {card.id} (iter {card.review_iteration}/{self.KANBAN_MAX_REVIEW_ITERATIONS})",
+                    details={
+                        "cardId": card.id,
+                        "reviewIteration": card.review_iteration,
+                        "sticky": sticky,
+                        "judgeSessionId": judge_session_id,
+                        "workerSessionId": card.worker_session_id or None,
+                        "workerTerminalState": terminal_state,
+                    },
+                )
 
             judge_record: Any | None = None
 
@@ -10008,6 +10012,7 @@ class _BridgeSession:
                     task=prompt,
                     max_iterations_override=_DEEP_JUDGE_SAFETY_NET_ITERATIONS,
                     model_override=judge_model,
+                    on_started=lambda record: _review_started(record.id),
                 )
                 if error is not None:
                     raise error
@@ -10035,6 +10040,7 @@ class _BridgeSession:
                     raise RuntimeError(
                         f"failed to wake judge {card.judge_session_id} for {card.id}"
                     )
+                _review_started(card.judge_session_id)
                 # Wait for the resumed judge to finish. registry.wait
                 # is a threading.Event.wait → wrap in to_thread so the
                 # asyncio loop isn't blocked.

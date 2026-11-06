@@ -1333,3 +1333,92 @@ async def test_a_card_whose_spawn_keeps_failing_backs_off_and_takes_no_slot(monk
     now[0] += 600
     assert await _tick() == ([failing], [])
     assert failing not in session._kanban_dispatch_backoff
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sticky", [False, True])
+@pytest.mark.parametrize("starts", [False, True])
+async def test_review_started_goes_out_once_the_judge_runs(
+    monkeypatch, sticky: bool, starts: bool,
+) -> None:
+    """kanban_review_started went out before the judge's spawn, so a judge
+    that never started (no model for judge-deep, the sub-agent cap, a
+    sticky judge that would not wake) showed "Judging", then "judge
+    crashed". It now goes out once the judge runs; a judge that does not
+    start sends only kanban_judge_failed."""
+    import types
+
+    from bridge import freyja_bridge
+    from bridge.tools import agent_types
+    from bridge.tools import sub_agent_tool as sat
+    from bridge.tools.agent_types import ModelResolution
+    from bridge.tools.base import ToolRegistry
+    from bridge.tools.goal_loop import GoalVerdict
+    from bridge.tools.sub_agent_registry import SubAgentRegistry, SubAgentState
+
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(freyja_bridge, "emit", sent.append)
+    subtypes = lambda: [e["subtype"] for e in sent if e.get("type") == "system_event"]  # noqa: E731
+    seen_when_running: list[list[str]] = []
+
+    async def _run_child(self: Any, record: Any) -> str:
+        seen_when_running.append(subtypes())
+        self._spec.registry.mark_done(record.id, "looked", SubAgentState.DONE)
+        return "looked"
+
+    monkeypatch.setattr(agent_types, "_model_available", lambda *a: (False, "no key"))
+    monkeypatch.setattr(
+        sat,
+        "resolve_model_choice",
+        lambda agent_type, parent_model: ModelResolution(
+            model="fake-model",
+            policy="test",
+            candidates=("fake-model",),
+            unavailable=() if starts else (("fake-model", "no key"),),
+            available=starts,
+        ),
+    )
+    monkeypatch.setattr(sat.SubAgentTool, "_run_child", _run_child)
+
+    async def _emit(_event: Any) -> None:
+        return None
+
+    judge_tool = sat.SubAgentTool(
+        sat.SubAgentSpec(
+            parent_workspace="/tmp",
+            parent_model="parent-model",
+            build_provider=lambda *a, **k: None,
+            parent_registry=ToolRegistry(),
+            registry=SubAgentRegistry(),
+            emit_event=_emit,
+            parent_session_id="test-session",
+        )
+    )
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    card = await _review_card(board, tool, worker=True)
+    if sticky:
+        card = await board.update(card.id, actor="kanban-dispatcher", judge_session_id="sub_judge")
+    session = _make_session(board=board, sub_tool=_StubSubAgentTool())
+
+    async def _wake(*args: Any, **kwargs: Any) -> bool:
+        seen_when_running.append(subtypes())
+        return starts
+
+    async def _verdict(*args: Any) -> Any:
+        return GoalVerdict(done=True, reason="r")
+
+    session._wake_subagent_with_task = _wake
+    session.subagent_registry.wait = lambda sid: types.SimpleNamespace(id=sid, result="looked")
+    session._synthesize_judge_verdict = _verdict
+    sent.clear()
+
+    await session._run_kanban_judge_for_card(card, sub_tool=judge_tool)
+
+    if not starts:
+        assert subtypes() == ["kanban_judge_failed"]
+        return
+    assert subtypes().index("kanban_review_started") < subtypes().index("kanban_judge_verdict")
+    # A fresh judge says so while it runs; a sticky one once it is woken.
+    [seen] = seen_when_running
+    assert ("kanban_review_started" in seen) is not sticky

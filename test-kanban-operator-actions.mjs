@@ -162,6 +162,33 @@ await check('a card in review has Judge now, which toasts when the judge starts'
   root.unmount()
 })
 
+// The bridge sends kanban_review_started only once the judge runs, so a
+// judge that does not start (no model for judge-deep, the sub-agent cap)
+// answers the press with kanban_judge_failed alone.
+await check('a Judge now whose judge does not start toasts why', async () => {
+  useHarness.setState({ activeSessionId: SESSION, toast: null })
+  const { root, button } = await openCard([tile('card_002', 'review')], 'card_002')
+  button('Judge now').click()
+  await settle()
+  const message = 'Judge crashed for card_002: Too many active sub-agents (8/8)'
+  answer('kanban_judge_failed', message, { cardId: 'card_002', error: 'Too many active sub-agents (8/8)' })
+  await settle()
+  assert.equal(H().toast?.message, message)
+  assert.equal(H().toast?.tone, 'warn')
+  // A judge that started and then crashed answered with the start.
+  useHarness.setState({ toast: null })
+  button('Judge now').click()
+  await settle()
+  answer('kanban_review_started', 'Judge reviewing card_002 (iter 1/3)', { cardId: 'card_002', reviewIteration: 1, sticky: false })
+  await settle()
+  assert.equal(H().toast?.message, 'Judging card_002')
+  useHarness.setState({ toast: null })
+  answer('kanban_judge_failed', message, { cardId: 'card_002' })
+  await settle()
+  assert.equal(H().toast, null)
+  root.unmount()
+})
+
 // Cancel, Unblock and Reassign said they were done as soon as they were
 // pressed, and the bridge's refusals reached only the activity feed.
 const pressed = [
