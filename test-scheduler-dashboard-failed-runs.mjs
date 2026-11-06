@@ -59,7 +59,8 @@ async function check(name, fn) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-for (const status of ['interrupted', 'budget_exceeded']) {
+// Each status and the words the feed names it by.
+for (const [status, label] of [['interrupted', 'interrupted'], ['budget_exceeded', 'over budget']]) {
   useSchedulerStore.setState({
     jobs: [{
       id: 'sched_digest', name: 'digest', enabled: true, status: 'active',
@@ -82,7 +83,7 @@ for (const status of ['interrupted', 'budget_exceeded']) {
     await sleep(20)
     const rows = [...host.querySelectorAll('button')].filter((b) => b.textContent.includes('digest'))
       .map((b) => b.querySelector('span.uppercase')?.textContent).filter(Boolean)
-    assert.deepEqual(rows, [status])
+    assert.deepEqual(rows, [label])
   })
 
   await check(`the timeline colors a day with a run that ended ${status} as failed`, () => {

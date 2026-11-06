@@ -1,7 +1,7 @@
 import React, { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { collectDescendantSessionIds, isInSlackThread, useHarness } from '../state/store'
-import { useSchedulerStore } from '../state/scheduler-store'
+import { runStatusLabel, useSchedulerStore } from '../state/scheduler-store'
 import type {
   CoordinationStrategy,
   MemoryRecord,
@@ -794,7 +794,7 @@ export function Sidebar() {
                 onClick={() => {
                   void switchSession(sid)
                 }}
-                title={`${run.job_name} · fire ${run.fire_number} · ${run.status}`}
+                title={`${run.job_name} · fire ${run.fire_number} · ${runStatusLabel(run.status)}`}
                 className="group relative flex w-full items-start gap-2 rounded-md px-2 py-[7px] text-left text-[12px] text-fg-1 hover:bg-white/[0.04]"
               >
                 <span className="mt-[3px] flex h-3 w-[18px] items-center justify-center">
@@ -810,7 +810,7 @@ export function Sidebar() {
                   <div className="font-mono text-[9px] text-fg-3">
                     {/* started_at is epoch SECONDS (bridge sets it via
                         time.time()); relativeTime wants ms. */}
-                    {run.status} · {relativeTime(run.started_at * 1000)}
+                    {runStatusLabel(run.status)} · {relativeTime(run.started_at * 1000)}
                   </div>
                 </div>
                 <span className="self-center font-mono text-[9px] text-fg-3 opacity-0 group-hover:opacity-100">

@@ -4,7 +4,10 @@
 // could not start (not_started) had no color: the run feed showed their
 // word in the default white, and the run's drawer showed every status,
 // failed ones too, in the pulsing accent of a run in flight, with
-// interrupted, expired and not_started as their raw names.
+// interrupted, expired and not_started as their raw names. The feed and a
+// schedule's "last run" still showed the raw names (TIMED_OUT,
+// NOT_STARTED), and a timeline day of only cancelled, expired or not
+// started runs looked like a day with no run.
 // Run from the repo root:
 //   npx tsx test-scheduler-run-status-look.mjs
 
@@ -61,17 +64,18 @@ const expected = {
 }
 
 const now = Date.now() / 1000
+const runOf = (status, startedAt, i) => ({
+  run_id: `run_${status}`, job_id: 'sched_digest', job_name: 'digest', status,
+  started_at: startedAt, finished_at: startedAt + 5, duration_seconds: 5,
+  fire_number: i + 1, iteration: 0, output_text: `[${status}]`, delivery_reports: [],
+})
 useSchedulerStore.setState({
   jobs: [{
     id: 'sched_digest', name: 'digest', enabled: true, status: 'active',
     schedule: { kind: 'interval', seconds: 3600 }, fire_count: 1, prompt: 'digest',
     execution: { kind: 'new' }, sinks: [], next_fire_at: now + 1800,
   }],
-  recentRuns: Object.keys(expected).map((status, i) => ({
-    run_id: `run_${status}`, job_id: 'sched_digest', job_name: 'digest', status,
-    started_at: now - 60 * (i + 1), finished_at: now - 60 * (i + 1) + 5, duration_seconds: 5,
-    fire_number: i + 1, iteration: 0, output_text: '', delivery_reports: [],
-  })),
+  recentRuns: Object.keys(expected).map((status, i) => runOf(status, now - 60 * (i + 1), i)),
   runsByJob: {},
   selectedJobId: null,
   selectedRunId: null,
@@ -97,12 +101,16 @@ await sleep(20)
 
 function rowOf(status) {
   const row = [...host.querySelectorAll('button')]
-    .find((b) => b.querySelector('span.uppercase')?.textContent === status)
+    .find((b) => b.querySelector('span.italic')?.textContent === `[${status}]`)
   assert.ok(row, `a row for the ${status} run`)
   return row
 }
 
 for (const [status, look] of Object.entries(expected)) {
+  await check(`the feed names the ${status} run "${look.label}", as its drawer does`, () => {
+    assert.equal(rowOf(status).querySelector('span.uppercase').textContent, look.label)
+  })
+
   await check(`the feed shows the ${status} run in ${look.feed}`, () => {
     const row = rowOf(status)
     const word = row.querySelector('span.uppercase')
@@ -124,6 +132,31 @@ for (const [status, look] of Object.entries(expected)) {
     await sleep(20)
   })
 }
+
+// Yesterday held only runs that never ran or were cancelled.
+const today = new Date()
+today.setHours(0, 0, 0, 0)
+const yesterday = today.getTime() / 1000 - 3600
+const notRun = ['not_started', 'cancelled', 'expired'].map((status, i) => runOf(status, yesterday - 60 * i, i))
+flushSync(() => useSchedulerStore.setState({ recentRuns: notRun }))
+await sleep(20)
+
+await check('a timeline day of only cancelled, expired or not started runs has a grey mark', () => {
+  const day = host.querySelector('[title="1d ago — 3 run(s)"]')
+  const empty = host.querySelector('[title="2d ago — 0 run(s)"]')
+  assert.ok(day && empty, 'the timeline shows yesterday and the day before')
+  const grey = (cell) => [...cell.classList].some((c) => c.startsWith('bg-fg-3'))
+  assert.ok(grey(day), `yesterday is ${day.className}`)
+  assert.ok(!grey(empty), `the day before is ${empty.className}`)
+})
+
+await check('a schedule\'s last run is named as its drawer names it', async () => {
+  flushSync(() => useSchedulerStore.getState().selectJob('sched_digest'))
+  await sleep(20)
+  const last = [...host.querySelectorAll('span')].find((s) => s.textContent.startsWith('last run '))
+  assert.ok(last, 'the schedule shows its last run')
+  assert.equal(last.querySelector('span').textContent, 'not started')
+})
 
 root.unmount()
 host.remove()

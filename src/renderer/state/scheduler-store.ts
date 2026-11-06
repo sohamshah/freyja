@@ -62,6 +62,28 @@ export interface SchedulerRun {
   [extra: string]: unknown
 }
 
+// A run's status in words, wherever a run is shown: the dashboard's run
+// feed, a schedule's last run, the run's drawer and the sidebar.
+const RUN_STATUS_LABELS: Record<string, string> = {
+  claimed: 'starting',
+  running: 'in flight',
+  delivering: 'delivering',
+  succeeded: 'completed',
+  partial_failure: 'partial delivery failure',
+  failed: 'failed',
+  cancelled: 'cancelled',
+  timed_out: 'timed out',
+  budget_exceeded: 'over budget',
+  queued: 'queued',
+  interrupted: 'interrupted',
+  expired: 'expired',
+  not_started: 'not started',
+}
+
+export function runStatusLabel(status: string): string {
+  return RUN_STATUS_LABELS[status] ?? status.replace(/_/g, ' ')
+}
+
 export interface SchedulerMetrics {
   total_jobs: number
   enabled_jobs: number

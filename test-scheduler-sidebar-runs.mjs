@@ -2,7 +2,8 @@
 // dashboard does. It gave every run that was not failed or going on the
 // green "ok" dot: a cancelled run, one cut off by a crash or a restart
 // (interrupted), and one whose delivery partly failed looked like runs
-// that succeeded.
+// that succeeded. Each row also named its run's status by its raw name
+// (not_started, timed_out), where the dashboard says "not started".
 // Run from the repo root:
 //   npx tsx test-scheduler-sidebar-runs.mjs
 
@@ -83,16 +84,31 @@ const head = [...host.querySelectorAll('button')].find((b) => b.textContent.incl
 head.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
 await sleep(20)
 
-function dotOf(status) {
-  const row = [...host.querySelectorAll('button')].find((b) => b.title.endsWith(` · ${status}`))
+function rowOf(status) {
+  const row = [...host.querySelectorAll('button')].find((b) => b.title.startsWith(`digest ${status} · `))
   assert.ok(row, `a row for the ${status} run`)
-  const dot = row.querySelector('.fold-dot')
+  return row
+}
+
+function dotOf(status) {
+  const dot = rowOf(status).querySelector('.fold-dot')
   return [...dot.classList].find((c) => /^bg-/.test(c))
 }
 
 for (const [status, dot] of Object.entries(expected)) {
   await check(`the ${status} run has the dashboard's ${dot} dot`, () => {
     assert.equal(dotOf(status), dot)
+  })
+}
+
+// The words the dashboard's run feed and drawer use.
+const labels = { timed_out: 'timed out', not_started: 'not started', succeeded: 'completed', claimed: 'starting' }
+for (const [status, label] of Object.entries(labels)) {
+  await check(`the ${status} run is named "${label}", as on the dashboard`, () => {
+    const row = rowOf(status)
+    assert.ok(row.title.endsWith(` · ${label}`), `its title is ${row.title}`)
+    const line = row.querySelector('.font-mono.text-fg-3:not(.shrink-0)')
+    assert.ok(line.textContent.startsWith(`${label} · `), `its line is ${line.textContent}`)
   })
 }
 

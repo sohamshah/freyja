@@ -22,6 +22,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  runStatusLabel,
   schedulerApi,
   useSchedulerStore,
   type DaemonStatus,
@@ -651,23 +652,6 @@ function runStatusTextClass(status: string): string {
   return RUN_TONE_TEXT[runStatusTone(status)]
 }
 
-// A run's status in words, for its drawer.
-const RUN_STATUS_LABELS: Record<string, string> = {
-  claimed: 'starting',
-  running: 'in flight',
-  delivering: 'delivering',
-  succeeded: 'completed',
-  partial_failure: 'partial delivery failure',
-  failed: 'failed',
-  cancelled: 'cancelled',
-  timed_out: 'timed out',
-  budget_exceeded: 'over budget',
-  queued: 'queued',
-  interrupted: 'interrupted',
-  expired: 'expired',
-  not_started: 'not started',
-}
-
 // ─── 14-day timeline strip ───────────────────────────────────────────
 
 function TimelineStrip(props: {
@@ -701,12 +685,15 @@ function TimelineStrip(props: {
     <div className="flex h-7 flex-1 items-stretch gap-[3px]" title="14-day fire history">
       {cells.map((c, i) => {
         const worst = worstStatus(c.runs)
+        // A day of runs that were cancelled or never ran is grey, not
+        // the blank of a day with no run.
         const color =
           worst === 'failed' ? 'bg-danger/70'
             : worst === 'partial_failure' ? 'bg-warn/70'
               : worst === 'succeeded' ? 'bg-ok/60'
                 : worst === 'running' ? 'bg-accent/70'
-                  : 'bg-white/[0.04]'
+                  : c.runs.length > 0 ? 'bg-fg-3/70'
+                    : 'bg-white/[0.04]'
         return (
           <div
             key={i}
@@ -951,7 +938,7 @@ function ScheduleDetail(props: {
             {lastRun && (
               <>
                 <span className="text-fg-3">·</span>
-                <span>last run <span className={runStatusTextClass(lastRun.status)}>{lastRun.status}</span></span>
+                <span>last run <span className={runStatusTextClass(lastRun.status)}>{runStatusLabel(lastRun.status)}</span></span>
               </>
             )}
           </div>
@@ -1332,8 +1319,8 @@ function RunRow(props: {
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${RUN_TONE_DOT[runStatusTone(r.status)]}${
           r.status === 'running' ? ' animate-pulse-soft' : ''
         }`} />
-        <span className={`uppercase tracking-[0.10em] ${runStatusTextClass(r.status)}`}>
-          {r.status}
+        <span className={`shrink-0 uppercase tracking-[0.10em] ${runStatusTextClass(r.status)}`}>
+          {runStatusLabel(r.status)}
         </span>
         {props.showJobName && (
           <span className="max-w-[160px] truncate text-fg-1">{r.job_name}</span>
@@ -1397,7 +1384,7 @@ function RunDetailDrawer(props: {
       onClose={props.onClose}
       width={560}
       title={job?.name || run.job_name || 'Scheduled run'}
-      statusLabel={RUN_STATUS_LABELS[run.status] ?? run.status.replace(/_/g, ' ')}
+      statusLabel={runStatusLabel(run.status)}
       statusTone={runStatusTone(run.status)}
       statusPulse={run.status === 'running'}
       footer={
