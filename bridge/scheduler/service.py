@@ -176,6 +176,13 @@ _FAILURE_WINDOW_RUNS = (
 # retried without counting.
 _RUNS_WAIT_AT_MOST_SECONDS = 30 * 60
 
+# A run whose process exited before it ended (a crash, a quit app, a
+# restart) is still "claimed", "running" or "delivering" on disk. Every
+# scheduler start looks for such runs among each job's latest this many:
+# runs of a job never overlap, so one cut off is among the newest.
+_INTERRUPTED_RUNS_WINDOW = 10
+_UNFINISHED_RUN_STATUSES = frozenset({"claimed", "running", "delivering"})
+
 # Run errors that pass by themselves, beyond those the engine already
 # classifies: a provider's 5xx, and a host the network could not reach
 # (a sink posting to Slack while offline).
@@ -298,6 +305,8 @@ class SchedulerService:
         self._stopped = False
         self._always_on = always_on
         ensure_dirs()
+        # Before the boot below reads the jobs such runs used up.
+        _settle_interrupted_runs()
         # Try to claim ownership of the tick loop. If a peer (daemon
         # or another desktop bridge) already holds it, we still
         # service CRUD — disk + per-job flocks keep us safe — but we
@@ -376,7 +385,8 @@ class SchedulerService:
         # A slot missed while no process ticked is left due when the
         # job's misfire policy catches up, so the tick fires it; under
         # "skip" the recompute moves past it. A slot that waited for the
-        # Mac was not missed and stays due, as does a resumed one-shot's.
+        # Mac was not missed and stays due, as does a one-shot's that was
+        # resumed or whose run was cut off.
         boot_count = 0
         now = time.time()
         for job in load_all_jobs():
@@ -1602,8 +1612,8 @@ def _catches_up(job: JobRecord, now: float) -> bool:
 
 def _waits_for_the_mac(job: JobRecord, now: float) -> bool:
     """True when ``job`` is due on a slot that came due while a scheduler
-    ran and waited for the Mac, or that a resumed one-shot runs late
-    (``waiting_slot``), so it was not missed."""
+    ran and waited for the Mac, or that a one-shot runs late, resumed or
+    after its run was cut off (``waiting_slot``), so it was not missed."""
     return (
         job.enabled
         and job.status == "active"
@@ -1886,6 +1896,55 @@ def _due_again(job: JobRecord, slot: float | None, attempt: int) -> bool:
     job.next_fire_at = slot if slot is not None else time.time()
     job.retry_attempt = attempt
     return True
+
+
+def _settle_interrupted_runs() -> None:
+    """Mark interrupted each run whose process exited before it ended: its
+    record said "running" for good. A run still going, in any process,
+    holds its job's run lock and is left alone. A one-shot that the claim
+    for such a run used up, and that has not run since its time, is due at
+    its time again, so it runs once, late: left used up, it never ran."""
+    now = time.time()
+    settled = False
+    for job in load_all_jobs():
+        with FileLock(job_lock_path(job.id)) as got, FileLock(job_run_lock_path(job.id)) as free:
+            if not got or not free:
+                # Being edited, or a run of it goes on; the next start looks.
+                continue
+            cut = [
+                r for r in load_runs_for_job(job.id, limit=_INTERRUPTED_RUNS_WINDOW)
+                if r.finished_at is None and r.status in _UNFINISHED_RUN_STATUSES
+            ]
+            for run in cut:
+                was = run.status
+                run.status = "interrupted"
+                run.finished_at = now
+                run.error = f"cut off while {was}: the process that ran it exited, or the run crashed"
+                save_run(run)
+                logger.warning("job %s: run %s was cut off while %s", job.id, run.run_id, was)
+                append_event({
+                    "type": "scheduler_run_interrupted",
+                    "job_id": job.id,
+                    "run_id": run.run_id,
+                    "status": was,
+                })
+            fresh = load_job(job.id) if cut else None
+            if fresh is None or not _one_shot_used_up(fresh):
+                continue
+            slot = compute_next_fire(fresh.schedule, now=0)
+            if slot is None or any(
+                r.status in ("succeeded", "partial_failure")
+                for r in load_runs_started_since(job.id, slot)
+            ):
+                continue
+            _due_again(fresh, slot, cut[0].attempt)
+            # Not missed: under skip, the boot would move past it.
+            fresh.waiting_slot = slot
+            save_job(fresh)
+            settled = True
+            logger.info("job %s (%s): its run was cut off; due again", job.id, job.name)
+    if settled:
+        touch_wake()
 
 
 def _missed_one_shot_slot(job: JobRecord) -> float | None:
