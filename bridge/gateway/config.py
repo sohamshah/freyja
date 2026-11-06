@@ -110,15 +110,19 @@ class GatewayConfig:
     slack: SlackConfig = field(default_factory=SlackConfig)
 
     @classmethod
-    def load(cls) -> "GatewayConfig":
+    def load(cls, *, strict: bool = False) -> "GatewayConfig":
         """Read ``~/.freyja/gateway.yaml``; return defaults on missing
-        / parse error."""
+        / parse error. ``strict`` raises on a file that cannot be read or
+        parsed instead, for a caller whose safe value is not the default
+        (gateway_filter_enabled)."""
         path = config_path()
         if not path.exists():
             return cls()
         try:
             raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         except Exception as exc:  # noqa: BLE001
+            if strict:
+                raise
             logger.warning("could not parse %s: %s — using defaults", path, exc)
             return cls()
         defaults = raw.get("defaults") or {}

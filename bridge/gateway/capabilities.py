@@ -14,7 +14,10 @@ The default set lives here as code. v2 will read it from
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 # Tools the gateway-routed agent is allowed to call. Everything else
@@ -128,17 +131,24 @@ def gateway_filter_enabled(platform: Any) -> bool:
 
     Read once per session init (no long-running cache). If the
     operator edits gateway.yaml, the change takes effect at the
-    next session creation.
+    next session creation. A gateway.yaml that cannot be read or
+    parsed turns the filter on, and the log says so.
     """
     if platform is None:
         return False
+    from bridge.gateway.config import GatewayConfig, config_path
     try:
-        from bridge.gateway.config import GatewayConfig
-        cfg = GatewayConfig.load()
-    except Exception:  # noqa: BLE001
-        # Config malformed / missing — fail open (no filter) rather
-        # than silently strip the agent's tools.
-        return False
+        cfg = GatewayConfig.load(strict=True)
+    except Exception as exc:  # noqa: BLE001
+        # Fail closed. With the filter on the operator still gets replies
+        # and loses some tools until the file is fixed; off, everyone on
+        # the allowlist would get the shell.
+        logger.error(
+            "%s could not be read (%s), so the Slack tool filter is on "
+            "until it is fixed",
+            config_path(), exc,
+        )
+        return True
     platform_name = getattr(platform, "value", None) or str(platform)
     if platform_name == "slack":
         return cfg.slack.enable_tool_filter
