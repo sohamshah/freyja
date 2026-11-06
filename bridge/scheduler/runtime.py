@@ -506,7 +506,11 @@ async def fire_job(
     # ── Job-level bookkeeping ─────────────────────────────────────────
     # On the record as it is now: an edit made while the job ran stays.
     def _record_fire(fresh: JobRecord) -> None:
-        if loop_decision is not None:
+        # A loop paused or stopped while it ran gets no next fire; its
+        # agent's "complete" still ends it.
+        if loop_decision is not None and (
+            loop_decision.kind == "complete" or (fresh.enabled and fresh.status == "active")
+        ):
             _apply_loop_decision(service, fresh, loop_decision)
         if abort_job:
             # No next fire, like every stopped job: the one the claim set

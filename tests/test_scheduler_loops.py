@@ -73,11 +73,13 @@ def _drive_fire(
     cost: float,
     replies: bool = True,
     operator_says: str | None = None,
+    meanwhile=None,
 ):
     """Stand in for the agent turn: it sees the offered tools, makes the
     given loop-tool call, spends ``cost`` and replies. With ``replies``
     off the provider rejects the request, so nothing answers the prompt;
-    ``operator_says`` lands in the session while the fire runs."""
+    ``operator_says`` lands in the session while the fire runs, and
+    ``meanwhile`` is called then."""
     import bridge.freyja_bridge as fb
 
     offered: list[str] = []
@@ -87,6 +89,8 @@ def _drive_fire(
         transcript.append_message(Message(role="user", content=prompt))
         if operator_says is not None:
             transcript.append_message(Message(role="user", content=operator_says))
+        if meanwhile is not None:
+            meanwhile()
         if not replies:
             sess.last_turn_error = "auth: Error code: 401 - Incorrect API key provided"
             return
@@ -206,6 +210,31 @@ async def test_a_loop_whose_tools_were_not_offered_waits_the_maximum_delay(monke
 
     assert offered == [] and run.status == "succeeded"
     assert load_job(job.id).next_fire_at >= time.time() + 590
+
+
+@pytest.mark.parametrize("decides", ["continue", "nothing"])
+async def test_a_loop_paused_while_it_ran_gets_no_next_fire(monkeypatch, decides) -> None:
+    # The run set the delay its agent chose, or the maximum delay, over the
+    # pause: the paused loop showed a next fire it would never run.
+    from bridge.scheduler.runtime import fire_job
+    from bridge.tools.schedule_tool import CONTINUE_LOOP_TOOL
+
+    sess = _session(cost_so_far=0.0)
+    job = _job()
+
+    def pause() -> None:
+        paused = load_job(job.id)
+        paused.enabled, paused.status, paused.next_fire_at = False, "paused", None
+        save_job(paused)
+
+    loop_call = (CONTINUE_LOOP_TOOL, {"delay_seconds": 300}) if decides == "continue" else None
+    _drive_fire(monkeypatch, sess, loop_call=loop_call, cost=0.1, meanwhile=pause)
+
+    await fire_job(_Service({"s1": sess}), job)
+
+    saved = load_job(job.id)
+    assert (saved.enabled, saved.status, saved.next_fire_at) == (False, "paused", None)
+    assert saved.fire_count == 1
 
 
 async def test_a_fire_nothing_answered_leaves_no_prompt_behind(monkeypatch) -> None:
