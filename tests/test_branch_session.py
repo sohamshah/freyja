@@ -1183,6 +1183,57 @@ async def test_fork_from_a_snapshot_keeps_no_records_of_the_summary_it_left_out(
     assert not [p for p in (sessions_dir / "compactions").iterdir() if p.name.startswith(f"{new}-")]
 
 
+@pytest.mark.parametrize(
+    "anchor_ms, kept",
+    [
+        # Before a2: the fork keeps the summary that ran at 150 s.
+        (102_990, ["u1", "a1", "u2"]),
+        # Before a1, which that summary folded in: cut from its snapshot.
+        (ON_A1 * 1000, ["u1"]),
+    ],
+)
+async def test_a_root_fork_has_its_raw_log_and_recovered_rows_up_to_the_anchor(
+    sessions_dir, monkeypatch, anchor_ms, kept
+):
+    """A root session's raw message log and the rows the backfill recovered
+    are in its project dir. Rows are stamped ``ts`` in seconds, a few ms
+    after the engine appended each entry."""
+    import bridge.project_paths as pp
+
+    projects = sessions_dir / "projects"
+    monkeypatch.setattr(pp, "project_output_dir", lambda sid: projects / str(sid))
+    fb, sess, state, events = _live(monkeypatch, AFTER)
+    tp.save_transcript("s", _transcript("s", AFTER))
+    _write_before_snapshot(sessions_dir, "s", 140_000, BEFORE)
+    # The log missed u2 and a2 (a restart); the backfill recovered them.
+    logs = {"raw_messages.jsonl": ["u1", "a1", "u3"], "raw_messages.recovered.jsonl": ["u2", "a2"]}
+    for name, ids in logs.items():
+        _write(
+            projects / "s" / name,
+            "".join(
+                json.dumps({"ts": e["timestamp"] + 0.002, "session_id": "s", "message": e["message"]}) + "\n"
+                for e in BEFORE + AFTER[3:]
+                if e["id"] in ids
+            ),
+        )
+
+    await fb._handle_command(
+        state,
+        {"type": "branch_session", "sessionId": "s", "messageOrdinal": 1, "messageCreatedAt": anchor_ms},
+    )
+    (branched,) = [e for e in events if e["type"] == "session_branched"]
+    new = branched["newSessionId"]
+
+    for name, ids in logs.items():
+        rows = _rows(projects / new / name)
+        assert [r["message"]["content"] for r in rows] == [
+            e["message"]["content"] for e in BEFORE if e["id"] in kept and e["id"] in ids
+        ]
+        assert {r["session_id"] for r in rows} <= {new}
+        # The source keeps every row.
+        assert len(_rows(projects / "s" / name)) == len(ids)
+
+
 # ── follow-ups slid into a running turn ────────────────────────────────
 #
 # The renderer shows the j-th follow-up of an ``inbox_injected`` event

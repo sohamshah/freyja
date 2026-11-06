@@ -1127,6 +1127,10 @@ _PROJECT_JSONL = (
     ("action_ledger.jsonl", ("createdAt",), 1),
     # The bridge's _append_compaction_log stamps ``ts`` in seconds.
     ("compactions.jsonl", ("ts",), 1000),
+    # A root session's raw messages, and the rows
+    # scripts/backfill_raw_messages.py recovered: ``ts`` in seconds too.
+    ("raw_messages.jsonl", ("ts",), 1000),
+    ("raw_messages.recovered.jsonl", ("ts",), 1000),
 )
 _PROJECT_JSON = ("working_memory.json",)
 
@@ -1161,7 +1165,8 @@ def clone_project_dir(
     records_cutoff_ms: float | None = None,
 ) -> bool:
     """Clone a session's project output directory (artifacts, manifest,
-    action ledger, working memory, compaction log) for a fork.
+    action ledger, working memory, compaction log, raw message logs) for a
+    fork.
 
     The tree is copied as-is, then the ledger-style files are rewritten
     with ids remapped and — when ``cutoff_ms`` is given — rows created
