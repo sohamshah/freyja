@@ -106,6 +106,10 @@ DEFAULT_SSE_READ_TIMEOUT_S = 300.0
 DEFAULT_HTTP_READ_TIMEOUT_S = 300.0
 DEFAULT_ELICITATION_TIMEOUT_S = 300.0
 LIST_TOOLS_MAX_PAGES = 50
+# stop(): how long the supervisor gets to unwind on its own, then how long
+# it gets after the cancel before stop() goes on without it.
+STOP_GRACE_S = 10.0
+STOP_CANCEL_WAIT_S = 5.0
 
 # Structural JSON-RPC codes (mirrors mcp.types; kept local so the module
 # stays importable without the SDK for config/unit tests).
@@ -707,11 +711,21 @@ class McpConnection:
         if task is None:
             return
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=10.0)
+            await asyncio.wait_for(asyncio.shield(task), timeout=STOP_GRACE_S)
         except (asyncio.TimeoutError, TimeoutError):
             task.cancel()
-            with contextlib.suppress(BaseException):
-                await task
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=STOP_CANCEL_WAIT_S)
+            except (asyncio.TimeoutError, TimeoutError):
+                if not task.done():
+                    logger.warning(
+                        "mcp '%s': supervisor still running %.1fs after cancel; "
+                        "stop() goes on without it, so its child process or "
+                        "HTTP session may outlive the connection",
+                        self.spec.name, STOP_CANCEL_WAIT_S,
+                    )
+            except BaseException:  # noqa: BLE001
+                pass
         except Exception:  # noqa: BLE001
             pass
         self._task = None

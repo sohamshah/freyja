@@ -23,6 +23,7 @@ import mcp.types as mcp_types
 import pytest
 from mcp.shared.exceptions import MCPError
 
+import bridge.mcp.connection as connection_mod
 from bridge.mcp.config import (
     DEFAULT_MAX_RESULT_CHARS,
     McpCatalog,
@@ -432,6 +433,33 @@ async def test_inflight_calls_fail_fast_and_latch_suspect():
     assert time.monotonic() - started < 1.0
     assert "transport died" in str(info.value) and "simulated transport death" in str(info.value)
     assert conn.suspect_reason and "1 in-flight call" in conn.suspect_reason
+
+
+async def test_stop_bounds_the_wait_for_a_supervisor_that_ignores_cancel(monkeypatch, caplog):
+    """stop() cancels a supervisor that does not unwind in the grace period
+    and then waits a bounded time, so a task that ignores the cancel cannot
+    hang stop() (and bridge shutdown with it)."""
+    monkeypatch.setattr(connection_mod, "STOP_GRACE_S", 0.05)
+    monkeypatch.setattr(connection_mod, "STOP_CANCEL_WAIT_S", 0.2)
+    conn = _conn()
+
+    async def stubborn() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await asyncio.sleep(1.5)  # ignores the cancel for a while
+
+    task = asyncio.create_task(stubborn())
+    conn._task = task  # noqa: SLF001
+    await asyncio.sleep(0)
+    started = time.monotonic()
+    with caplog.at_level("WARNING", logger="bridge.mcp.connection"):
+        await asyncio.wait_for(conn.stop(), 5)
+    assert time.monotonic() - started < 1.0
+    assert not task.done()
+    assert "mcp 'unit': supervisor still running 0.2s after cancel" in caplog.text
+    assert conn.state is State.DISABLED
+    await asyncio.wait_for(task, 5)
 
 
 async def test_suspect_connection_probes_before_reuse_success_and_failure():
