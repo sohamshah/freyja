@@ -217,6 +217,29 @@ def append_inbox_messages(
     return True
 
 
+def fold_into_inbox_file(
+    session_id: str,
+    message: dict[str, Any],
+    fold: Callable[[dict[str, Any]], dict[str, Any] | None],
+) -> None:
+    """Queue ``message`` in a session's inbox sidecar, folded into the
+    first unread message there that ``fold`` folds it into: ``fold``
+    returns the message that takes that one's place, at the end of the
+    queue, or None to leave it be. The read and the write are one hold of
+    the inbox lock, as in append_inbox_messages."""
+    with _inbox_lock():
+        data = _read_inbox(session_id) or {"sessionId": session_id, "unread": [], "delivered": []}
+        unread = [u for u in data.get("unread") or [] if isinstance(u, dict)]
+        for i, queued in enumerate(unread):
+            folded = fold(queued)
+            if folded is not None:
+                del unread[i]
+                message = folded
+                break
+        data["unread"] = [*unread, message]
+        _write_inbox(session_id, data)
+
+
 def _write_inbox(session_id: str, data: dict[str, Any]) -> None:
     dest = _inbox_path(session_id)
     tmp = dest.with_suffix(".tmp")

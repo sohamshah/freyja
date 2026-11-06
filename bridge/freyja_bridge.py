@@ -1351,6 +1351,10 @@ def _take_in_queued_inbox_messages(state: Any) -> None:
         seen[sid] = mtime
         queued = [m for m in map(InboxMessage.from_dict, queued_inbox_messages(sid, inbox.known_ids())) if m]
         for msg in queued:
+            # A stop's notice folded in a copy elsewhere takes the place of
+            # the ones it folded, which this process may have taken in.
+            for old in (msg.meta or {}).get("supersedes") or ():
+                inbox.remove(str(old))
             inbox.push(msg)
         if queued and root is not None:
             log("info", f"inbox watch: {len(queued)} message(s) queued in {sid}'s inbox file")
@@ -6813,9 +6817,12 @@ class _BridgeSession:
         Stopping twelve agents is one decision; twelve memos (each a wake-up
         candidate) would be noise. The notice rides into the next turn —
         it never wakes the session, since the operator just asked for quiet.
-        On a copy of a session another process runs, each notice goes on
-        its own where _push_memo sends a memo: only an inbox here folds
-        them, and the copy's inbox, which is never saved, lost them.
+        On a copy of a session another process runs, the notice goes to
+        the session's inbox file, which the owner reads: the copy's inbox
+        is never saved. It folds there into the stop's notice still unread
+        as a new notice that names the one it replaces ("supersedes"): the
+        owner may have taken that one in, and never reads it again. Each
+        on its own, a stop of many children flooded the file.
         """
         from bridge.inbox import KIND_MEMO, InboxMessage, new_message_id
 
@@ -6851,7 +6858,26 @@ class _BridgeSession:
             },
         )
         if self._held_elsewhere:
-            await self._push_memo(notice)
+            from bridge.transcript_persistence import fold_into_inbox_file
+
+            line = f"\n- {label} ({what}, id {work_id})"
+
+            def _fold(queued: dict[str, Any]) -> dict[str, Any] | None:
+                meta = queued.get("meta") or {}
+                if queued.get("kind") != KIND_MEMO or not meta.get("stoppedBatch"):
+                    return None
+                return {
+                    **notice.to_dict(),
+                    "content": str(queued.get("content") or "") + line,
+                    "meta": {
+                        **meta,
+                        "count": int(meta.get("count", 1)) + 1,
+                        "supersedes": [*(meta.get("supersedes") or []), queued.get("id")],
+                    },
+                }
+
+            fold_into_inbox_file(self.id, notice.to_dict(), _fold)
+            log("info", f"stop notice for {self.id}, which another process runs: in its inbox file")
             return
         self.inbox.push(notice)
 

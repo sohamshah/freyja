@@ -406,8 +406,12 @@ async def test_a_stop_in_the_app_on_a_job_session_copy_tells_the_session_through
     state = sess.state
     state.sessions[SCHED] = sess
     sess.subagent_registry = SubAgentRegistry()
-    child = sess.subagent_registry.register(SCHED_SUB, "worker", "t", "general")
-    child.notify_parent = True
+    children = [
+        sess.subagent_registry.register(f"{SCHED_SUB[:-1]}{n}", f"worker {n}", "t", "general")
+        for n in (1, 2)
+    ]
+    for child in children:
+        child.notify_parent = True
     shell = BackgroundCommand(
         id="bg_bash", command="make", summary="build", pid=1, output_path=str(tmp_path / "bg.log"),
         started_at=time.time(), backgrounded_at=time.time(), reason="cut_in",
@@ -415,15 +419,45 @@ async def test_a_stop_in_the_app_on_a_job_session_copy_tells_the_session_through
     sess.background_commands[shell.id] = shell
 
     await fb._handle_command(state, {"type": "cancel", "sessionId": SCHED})
-    sess.subagent_registry.mark_done(SCHED_SUB, "Cancelled", SubAgentState.CANCELLED)
-    await sess._on_child_terminal(child)
+    for child in children:
+        sess.subagent_registry.mark_done(child.id, "Cancelled", SubAgentState.CANCELLED)
+        await sess._on_child_terminal(child)
     await sess._on_background_exit(shell)
 
-    notices = _inbox_file()
-    assert len(notices) == 2
-    assert all("[background work stopped by the operator]" in n for n in notices)
-    assert "worker (sub-agent" in notices[0] and "build (command" in notices[1]
+    # One notice for the stop, as an inbox here folds them: each piece of
+    # work's own notice flooded the session's file.
+    (notice,) = _inbox_file()
+    assert notice.startswith("[background work stopped by the operator]")
+    assert all(f"{w} (" in notice for w in ("worker 1", "worker 2", "build"))
     assert sess.inbox.unread == []
+
+
+async def test_a_stops_notice_folded_after_the_owner_took_it_in_replaces_the_one_it_took(
+    app_bridge, monkeypatch, tmp_path
+):
+    # Folded in the file, the next stopped child's line was lost: the owner
+    # never reads a message it took in again, and saved its own over it.
+    from bridge.tools.sub_agent_registry import SubAgentRegistry, SubAgentState
+
+    copy = _copy(tmp_path, owns_tick=False)
+    copy.state.sessions[SCHED] = copy
+    copy.subagent_registry = SubAgentRegistry()
+    owner = _copy(tmp_path, owns_tick=True)
+    owner.state.sessions[SCHED] = owner
+    monkeypatch.setattr(owner, "wake_for_inbox", lambda: "woke")
+    children = [copy.subagent_registry.register(f"{SCHED_SUB[:-1]}{n}", f"worker {n}", "t", "general") for n in (1, 2)]
+    for child in children:
+        child.notify_parent = True
+        child.cancel_origin = "operator"
+
+    for child in children:
+        copy.subagent_registry.mark_done(child.id, "Cancelled", SubAgentState.CANCELLED)
+        await copy._on_child_terminal(child)
+        fb._take_in_queued_inbox_messages(owner.state)
+
+    (notice,) = owner.inbox.unread
+    assert "worker 1 (" in notice.content and "worker 2 (" in notice.content
+    assert _inbox_file() == [notice.content]
 
 
 FRESH = "scheduler:sched_19f0.ephemeral"
