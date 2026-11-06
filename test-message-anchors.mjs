@@ -277,6 +277,35 @@ await check("a Slack session's events file with no stamp at all takes the time i
   assert.deepEqual(systemEvents.map((e) => e.at), [written.getTime(), written.getTime()])
 })
 
+await check('a Slack session the app saved gets the cards its kanban journal holds and the slice lacks', async () => {
+  // The app saved this slice before the gateway made card_003, and holds
+  // card_002 only as the kanban tool's list sent it (no history).
+  const sessionsDir = path.join(home, '.freyja', 'sessions')
+  const card = (id, status, events) => ({ id, title: id, status, parents: [], children: [], ...(events ? { events } : {}) })
+  const saved = { card_001: card('card_001', 'review', [{ kind: 'completed' }]), card_002: card('card_002', 'ready') }
+  fs.writeFileSync(
+    path.join(sessionsDir, 'freyja_slack_T1_channel_C2_2.0.json'),
+    JSON.stringify({ version: 1, id: 'freyja:slack:T1:channel:C2:2.0', agentType: 'gateway-slack', slice: { messages: [], kanbanCards: saved } }),
+  )
+  const rows = [
+    { kind: 'create', task: card('card_001', 'running', [{ kind: 'created' }]) },
+    { kind: 'create', task: card('card_002', 'ready', [{ kind: 'created' }]) },
+    { kind: 'update', id: 'card_002', task: card('card_002', 'running', [{ kind: 'created' }, { kind: 'claimed' }]) },
+    { kind: 'create', task: card('card_003', 'ready', [{ kind: 'created' }]) },
+  ]
+  fs.writeFileSync(
+    path.join(sessionsDir, 'freyjaslackT1channelC22.0.kanban.jsonl'),
+    rows.map((row) => JSON.stringify(row)).join('\n') + '\n',
+  )
+  const { loadSession } = await import('./src/main/persistence.ts')
+  const { kanbanCards } = loadSession('freyja:slack:T1:channel:C2:2.0').slice
+  assert.deepEqual(Object.keys(kanbanCards).sort(), ['card_001', 'card_002', 'card_003'])
+  assert.deepEqual(kanbanCards.card_001, saved.card_001, 'a card with history keeps the slice copy')
+  assert.equal(kanbanCards.card_002.status, 'running')
+  assert.deepEqual(kanbanCards.card_002.events, [{ kind: 'created' }, { kind: 'claimed' }])
+  assert.equal(kanbanCards.card_003.status, 'ready')
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

@@ -643,6 +643,7 @@ export function loadSession(id: string): PersistedSession | null {
         ?.usage?.totalCost
       if (typeof sliceCost === 'number') parsed.totalCost = sliceCost
     }
+    if (parsed.agentType === 'gateway-slack') addJournalKanbanCards(id, parsed)
     return parsed
   } catch {
     // Fall back to synthesizing a read-only PersistedSession from the
@@ -1016,6 +1017,20 @@ function kanbanCardsFromJournal(id: string): Record<string, Record<string, unkno
     }
   }
   return cards
+}
+
+/** A gateway session's board lives in the gateway, so a slice the app
+ *  saved never hears of cards made after it. Adds the journal's cards
+ *  the slice lacks, and the journal's copy of a card the slice holds
+ *  without its history (as the kanban tool's `list` sends it). */
+function addJournalKanbanCards(id: string, session: PersistedSession): void {
+  const slice = session.slice as { kanbanCards?: Record<string, Record<string, unknown>> } | null
+  if (!slice || typeof slice !== 'object') return
+  const cards = { ...slice.kanbanCards }
+  for (const [cardId, card] of Object.entries(kanbanCardsFromJournal(id))) {
+    if (!Array.isArray(cards[cardId]?.events)) cards[cardId] = card
+  }
+  slice.kanbanCards = cards
 }
 
 /** One-shot migration: rename session files written with the legacy
