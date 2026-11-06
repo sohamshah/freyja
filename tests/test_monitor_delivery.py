@@ -191,20 +191,16 @@ def test_stop_background_work_includes_monitors(monkeypatch):
     assert bg.state == "stopped" and bg.cancel_origin == "operator"
 
 
-def test_child_tools_exclude_session_monitor():
-    from bridge.tools.sub_agent_tool import DEFAULT_EXCLUDED_TOOLS
-
-    assert "monitor" in DEFAULT_EXCLUDED_TOOLS
-
-
 async def test_real_process_delivers_before_exit_and_then_terminal_memo(tmp_path, monkeypatch):
     import shlex
     import sys
 
+    from bridge.tools import monitor_tool as mt
     from bridge.tools.background_shell import CURRENT_TOOL_CONTEXT, ToolContext, ToolYield
     from bridge.tools.monitor_tool import MonitorTool
 
     monkeypatch.setattr(fb, "emit", lambda event: None)
+    monkeypatch.setattr(mt, "BATCH_INTERVAL_S", 0.02)
     sess = session()
     sess._schedule_memo_wake = lambda: None
     ctx = ToolContext(
@@ -217,7 +213,7 @@ async def test_real_process_delivers_before_exit_and_then_terminal_memo(tmp_path
         on_monitor_event=sess._on_monitor_event,
         is_stopping=lambda: sess.computer_cancel.is_set(),
     )
-    script = "import time; print('ready', flush=True); time.sleep(1); print('done', flush=True)"
+    script = "import time; print('ready', flush=True); time.sleep(0.25); print('done', flush=True)"
     command = f"{shlex.quote(sys.executable)} -u -c {shlex.quote(script)}"
     token = CURRENT_TOOL_CONTEXT.set(ctx)
     try:

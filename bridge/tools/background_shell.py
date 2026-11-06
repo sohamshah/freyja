@@ -46,6 +46,8 @@ from typing import Any, Awaitable, Callable
 SOFT_YIELD_AFTER_S = 15.0
 # How long a stopped command's process group gets between SIGTERM and SIGKILL.
 TERM_GRACE_S = 1.0
+# How often a running command is checked for its time limit or a yield request.
+POLL_S = 0.25
 # The log a tool result shows inline when a command moves to the background.
 TAIL_LINES = 40
 
@@ -211,10 +213,12 @@ class StreamingProcess:
         started: float,
         timeout: float | None,
         should_yield: Callable[[float], str | None] | None,
-        poll_s: float = 0.25,
+        poll_s: float | None = None,
     ) -> str:
         """``"exited"``, ``"timeout"``, or a yield reason. Cancellation stops
         the process group and propagates."""
+        if poll_s is None:
+            poll_s = POLL_S
         try:
             while True:
                 done, _ = await asyncio.wait({self._done}, timeout=poll_s)

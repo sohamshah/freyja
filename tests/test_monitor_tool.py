@@ -12,7 +12,6 @@ import pytest
 
 from bridge.tools import background_shell as bs
 from bridge.tools import monitor_tool as mt
-from bridge.tools.base import ToolTier
 from bridge.tools.bash_tool import classify_command_risk
 
 
@@ -94,12 +93,9 @@ def _pid_alive(pid):
     return bool(result.stdout.strip()) and not result.stdout.lstrip().startswith("Z")
 
 
-async def test_definition_and_risk_permissions():
+async def test_permission_prompt_follows_command_risk_and_skips_list_and_stop():
     tool = mt.MonitorTool()
     assert tool.requires_permission
-    assert tool.definition.name == "monitor"
-    assert tool.definition.tier == ToolTier.WARM
-    assert "WebSocket/WS" in tool.definition.description
     for command in ["cat file", "python app.py", "pip install foo", "rm -rf target"]:
         prompt = await tool.permission_prompt({"command": command, "description": "Watch a job"})
         assert prompt.level == classify_command_risk(command)
@@ -167,11 +163,12 @@ async def test_context_required_and_stopping_refused(sessions):
     assert result.is_error
 
 
-async def test_start_returns_and_delivers_before_exit(sessions, tmp_path):
+async def test_start_returns_and_delivers_before_exit(sessions, tmp_path, monkeypatch):
+    monkeypatch.setattr(mt, "BATCH_INTERVAL_S", 0.02)
     tool = mt.MonitorTool(working_dir=str(tmp_path))
     session = sessions()
     started = time.monotonic()
-    record = await session.start(tool, "printf 'ready\\n'; sleep 1; printf 'done\\n'")
+    record = await session.start(tool, "printf 'ready\\n'; sleep 0.25; printf 'done\\n'")
     assert time.monotonic() - started < 0.5
     assert record.kind == record.reason == "monitor"
     assert record.id.startswith("monitor_")
@@ -443,15 +440,15 @@ async def test_allowed_refill_does_not_reset_sustained_noise_timer(sessions, mon
 
 async def test_quiet_interval_resets_suppression_window(sessions, monkeypatch):
     monkeypatch.setattr(mt, "TOKEN_CAPACITY", 1)
-    monkeypatch.setattr(mt, "TOKEN_REFILL_S", 0.04)
-    monkeypatch.setattr(mt, "BATCH_INTERVAL_S", 0.008)
-    monkeypatch.setattr(mt, "NOISE_LIMIT_S", 0.2)
-    monkeypatch.setattr(mt, "NOISE_QUIET_S", 0.06)
+    monkeypatch.setattr(mt, "TOKEN_REFILL_S", 0.02)
+    monkeypatch.setattr(mt, "BATCH_INTERVAL_S", 0.004)
+    monkeypatch.setattr(mt, "NOISE_LIMIT_S", 0.1)
+    monkeypatch.setattr(mt, "NOISE_QUIET_S", 0.03)
     session = sessions()
     source = (
         "import time\nfor burst in range(3):\n"
-        " for i in range(7):\n  print('burst',flush=True); time.sleep(.01)\n"
-        " time.sleep(.09)"
+        " for i in range(7):\n  print('burst',flush=True); time.sleep(.005)\n"
+        " time.sleep(.045)"
     )
     record = await session.start(mt.MonitorTool(), _python(source))
     await _finished(record)

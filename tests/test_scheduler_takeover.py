@@ -32,7 +32,8 @@ from bridge.scheduler.service import SchedulerService
 
 async def test_a_crud_only_scheduler_takes_over_when_the_owner_exits(tmp_path, monkeypatch):
     monkeypatch.setenv("FREYJA_HOME", str(tmp_path))
-    monkeypatch.setattr(service_mod, "_OWNER_RETRY_SECONDS", 0.05, raising=False)
+    monkeypatch.setattr(service_mod, "_OWNER_RETRY_SECONDS", 0.02)
+    monkeypatch.setattr(service_mod, "_TICK_CAP_SECONDS", 0.02)
     fired: list[str] = []
 
     async def fake_fire(_service, job, **_kw):
@@ -47,7 +48,7 @@ async def test_a_crud_only_scheduler_takes_over_when_the_owner_exits(tmp_path, m
     await service.start()
     assert not service._is_owner
 
-    due = time.time() + 0.3
+    due = time.time() + 0.05
     job = JobRecord(
         id="sched_due",
         name="reminder",
@@ -59,10 +60,9 @@ async def test_a_crud_only_scheduler_takes_over_when_the_owner_exits(tmp_path, m
     save_job(job)
     owner.release()
 
-    for _ in range(60):
-        if fired:
-            break
-        await asyncio.sleep(0.05)
+    deadline = time.monotonic() + 3
+    while not fired and time.monotonic() < deadline:
+        await asyncio.sleep(0.005)
 
     assert service._is_owner
     assert fired == ["sched_due"]
@@ -75,7 +75,7 @@ async def test_a_crud_only_scheduler_takes_over_when_the_owner_exits(tmp_path, m
 
 async def test_stop_ends_the_retry_of_a_crud_only_scheduler(tmp_path, monkeypatch):
     monkeypatch.setenv("FREYJA_HOME", str(tmp_path))
-    monkeypatch.setattr(service_mod, "_OWNER_RETRY_SECONDS", 0.05, raising=False)
+    monkeypatch.setattr(service_mod, "_OWNER_RETRY_SECONDS", 0.01)
     owner = FileLock(owner_lock_path())
     assert owner.acquire()
     service = SchedulerService(SimpleNamespace())
@@ -83,7 +83,7 @@ async def test_stop_ends_the_retry_of_a_crud_only_scheduler(tmp_path, monkeypatc
     await service.stop()
     owner.release()
 
-    await asyncio.sleep(0.2)
+    await asyncio.sleep(0.05)  # several retry periods
 
     assert not service._is_owner
     peer = FileLock(owner_lock_path())

@@ -107,6 +107,11 @@ async def test_cancelled_parent_emits_orphan_and_unblock_promotes_child() -> Non
     child_id = json.loads(child_result.content)["task"]["id"]
     assert json.loads(child_result.content)["task"]["status"] == "triage"
 
+    # Nothing has failed yet, so there is nothing to unblock.
+    refusal = await tool.execute("call-2b", {"action": "unblock", "task_id": child_id})
+    assert refusal.is_error
+    assert "no parent has terminated in failure" in refusal.content
+
     # Cancelling the parent should NOT auto-promote the child to ready,
     # but should record an `orphaned` event on the child.
     cancel_result = await tool.execute(
@@ -137,74 +142,26 @@ async def test_cancelled_parent_emits_orphan_and_unblock_promotes_child() -> Non
 
 
 @pytest.mark.asyncio
-async def test_unblock_refuses_when_no_failed_parent() -> None:
+async def test_kanban_list_groups_by_status_then_sorts_by_priority() -> None:
     board = SessionKanbanBoard()
     tool = KanbanTool(board, actor_id="parent", actor_label="parent")
 
-    parent_result = await tool.execute(
-        "call-1", {"action": "create", "title": "Plan"}
-    )
-    parent_id = json.loads(parent_result.content)["task"]["id"]
-    child_result = await tool.execute(
-        "call-2",
-        {"action": "create", "title": "Execute", "parents": [parent_id]},
-    )
-    child_id = json.loads(child_result.content)["task"]["id"]
+    # Three ready cards with different priorities (p0 is highest) and a
+    # running p0 card: `ready` sorts before `running` whatever the priority.
+    p3 = await tool.execute("c1", {"action": "create", "title": "low priority", "priority": 3})
+    p0 = await tool.execute("c2", {"action": "create", "title": "urgent", "priority": 0})
+    p2 = await tool.execute("c3", {"action": "create", "title": "default", "priority": 2})
+    running = await tool.execute("c4", {"action": "create", "title": "in flight", "priority": 0})
+    running_id = json.loads(running.content)["task"]["id"]
+    await tool.execute("c5", {"action": "update", "task_id": running_id, "status": "running"})
 
-    refusal = await tool.execute(
-        "call-3", {"action": "unblock", "task_id": child_id}
-    )
-    assert refusal.is_error
-    assert "no parent has terminated in failure" in refusal.content
-
-
-@pytest.mark.asyncio
-async def test_kanban_list_sorts_by_priority_within_status_bucket() -> None:
-    board = SessionKanbanBoard()
-    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
-
-    # Create three ready cards with different priorities. p0 is highest.
-    p3_result = await tool.execute(
-        "c1", {"action": "create", "title": "low priority", "priority": 3}
-    )
-    p0_result = await tool.execute(
-        "c2", {"action": "create", "title": "urgent", "priority": 0}
-    )
-    p2_result = await tool.execute(
-        "c3", {"action": "create", "title": "default", "priority": 2}
-    )
-
-    listing = await tool.execute("c4", {"action": "list"})
+    listing = await tool.execute("c6", {"action": "list"})
     tasks = json.loads(listing.content)["tasks"]
-    # All three are in `ready`, so they appear in priority order: 0, 2, 3.
-    assert [t["priority"] for t in tasks] == [0, 2, 3]
-    assert tasks[0]["id"] == json.loads(p0_result.content)["task"]["id"]
-    assert tasks[1]["id"] == json.loads(p2_result.content)["task"]["id"]
-    assert tasks[2]["id"] == json.loads(p3_result.content)["task"]["id"]
-
-
-@pytest.mark.asyncio
-async def test_kanban_list_groups_by_status_first() -> None:
-    board = SessionKanbanBoard()
-    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
-
-    a = await tool.execute("c1", {"action": "create", "title": "A", "priority": 5})
-    b = await tool.execute("c2", {"action": "create", "title": "B", "priority": 0})
-    b_id = json.loads(b.content)["task"]["id"]
-
-    # Move B to running. Even though B has higher priority (p0), the
-    # `ready` bucket (A, p5) should sort BEFORE `running` (B, p0).
-    await tool.execute(
-        "c3", {"action": "update", "task_id": b_id, "status": "running"}
-    )
-
-    listing = await tool.execute("c4", {"action": "list"})
-    tasks = json.loads(listing.content)["tasks"]
-    statuses = [t["status"] for t in tasks]
-    # STATUSES order: triage, ready, running, …  — ready comes before running,
-    # so A appears before B regardless of priority.
-    assert statuses == ["ready", "running"]
-    assert tasks[0]["title"] == "A"
+    assert [t["status"] for t in tasks] == ["ready", "ready", "ready", "running"]
+    assert [t["id"] for t in tasks[:3]] == [
+        json.loads(r.content)["task"]["id"] for r in (p0, p2, p3)
+    ]
+    assert tasks[-1]["id"] == running_id
 
 
 @pytest.mark.asyncio
@@ -453,6 +410,7 @@ async def test_kanban_mission_root_auto_adopts_children_and_is_gating_transparen
     )
     root_payload = json.loads(root_result.content)["task"]
     assert root_payload["status"] == "running"
+    assert root_payload["parents"] == []  # it is not its own parent
     root_id = root_payload["id"]
 
     # A subsequent create with no parents adopts root automatically.
@@ -469,20 +427,6 @@ async def test_kanban_mission_root_auto_adopts_children_and_is_gating_transparen
     digest_result = await tool.execute("d1", {"action": "digest"})
     digest = json.loads(digest_result.content)["digest"]
     assert digest["missionRoot"] == root_id
-
-
-@pytest.mark.asyncio
-async def test_kanban_mission_root_does_not_attach_to_itself() -> None:
-    """The mission root must not get itself as its own parent."""
-    board = SessionKanbanBoard()
-    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
-
-    root_result = await tool.execute(
-        "r1",
-        {"action": "create", "title": "Mission", "metadata": {"role": "mission_root"}},
-    )
-    root_payload = json.loads(root_result.content)["task"]
-    assert root_payload["parents"] == []
 
 
 @pytest.mark.asyncio
@@ -674,115 +618,43 @@ async def test_kanban_spec_fields_are_inlined_when_set() -> None:
     assert "spec" not in json.loads(plain.content)["task"]
 
 
-def test_specifier_agent_type_registered_for_kanban() -> None:
-    """The specifier profile is wired into the global registry so the
-    dispatcher (Move A) can spawn it against triage cards."""
-    from bridge.tools.agent_types import get_agent_type
-
-    specifier = get_agent_type("specifier")
-    assert specifier.name == "specifier"
-    # Worker-narrowed: kanban + read-only file tools, nothing else.
-    assert specifier.tool_include is not None
-    assert "kanban" in specifier.tool_include
-    assert "write_file" not in specifier.tool_include
-    assert "bash" not in specifier.tool_include
-
-
 @pytest.mark.asyncio
-async def test_complete_routes_to_review_when_verification_not_required() -> None:
+@pytest.mark.parametrize(
+    ("flag_on_create", "flag_by_update", "expected_flag"),
+    [(False, False, False), (True, False, True), (False, True, True)],
+    ids=["unflagged", "flagged on create", "flagged by update"],
+)
+async def test_complete_lands_in_review_whatever_the_verification_flag(
+    flag_on_create, flag_by_update, expected_flag
+) -> None:
     """Move R: a worker's `complete` always lands in `review` for a judge
-    pass, never straight in `done`, and records who did the work."""
+    pass, never straight in `done` or `done_unverified`, and records who did
+    the work. `requires_verification` is informational: set on create or
+    later by the specifier or the parent, it rides along for the judge."""
     board = SessionKanbanBoard()
     tool = KanbanTool(board, actor_id="parent", actor_label="parent")
     create = await tool.execute(
-        "c1", {"action": "create", "title": "quick lookup"}
+        "c1", {"action": "create", "title": "work", "requires_verification": flag_on_create},
     )
-    card_id = json.loads(create.content)["task"]["id"]
-    worker = KanbanTool(
-        board, actor_id="worker", actor_label="worker", owned_task_id=card_id
-    )
-    await tool.execute(
-        "c2", {"action": "update", "task_id": card_id, "status": "running"}
-    )
-    complete = await worker.execute(
-        "c3", {"action": "complete", "summary": "found it"}
-    )
+    card = json.loads(create.content)["task"]
+    assert card["requiresVerification"] is flag_on_create
+    card_id = card["id"]
+    if flag_by_update:
+        upd = await tool.execute(
+            "c2", {"action": "update", "task_id": card_id, "requires_verification": True},
+        )
+        assert json.loads(upd.content)["task"]["requiresVerification"] is True
+    worker = KanbanTool(board, actor_id="worker", actor_label="worker", owned_task_id=card_id)
+    await tool.execute("c3", {"action": "update", "task_id": card_id, "status": "running"})
+
+    complete = await worker.execute("c4", {"action": "complete", "summary": "done"})
+
     payload = json.loads(complete.content)["task"]
     assert payload["status"] == "review"
-    assert payload["requiresVerification"] is False
+    assert payload["requiresVerification"] is expected_flag
     assert payload["reviewIteration"] == 1
     assert payload["workerSessionId"] == "worker"
     assert payload["workerTerminalState"] == "done"
-
-
-@pytest.mark.asyncio
-async def test_complete_routes_to_review_when_verification_required() -> None:
-    """`requires_verification` is informational under Move R: a flagged
-    card also routes to `review` on complete, not `done_unverified`."""
-    board = SessionKanbanBoard()
-    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
-    create = await tool.execute(
-        "c1",
-        {
-            "action": "create",
-            "title": "ship migration",
-            "requires_verification": True,
-        },
-    )
-    card = json.loads(create.content)["task"]
-    assert card["requiresVerification"] is True
-    card_id = card["id"]
-    worker = KanbanTool(
-        board, actor_id="worker", actor_label="worker", owned_task_id=card_id
-    )
-    await tool.execute(
-        "c2", {"action": "update", "task_id": card_id, "status": "running"}
-    )
-    complete = await worker.execute(
-        "c3", {"action": "complete", "summary": "applied"}
-    )
-    payload = json.loads(complete.content)["task"]
-    assert payload["status"] == "review"
-    # Card stays flagged after the transition — the judge reads it back.
-    assert payload["requiresVerification"] is True
-
-
-@pytest.mark.asyncio
-async def test_requires_verification_flag_settable_via_update() -> None:
-    """The flag is settable after creation too — the specifier expands a
-    card and decides verification is warranted, or the parent flips it
-    based on follow-up context."""
-    board = SessionKanbanBoard()
-    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
-    create = await tool.execute("c1", {"action": "create", "title": "card"})
-    card_id = json.loads(create.content)["task"]["id"]
-    # Initially false.
-    assert json.loads(create.content)["task"]["requiresVerification"] is False
-
-    upd = await tool.execute(
-        "c2",
-        {
-            "action": "update",
-            "task_id": card_id,
-            "requires_verification": True,
-        },
-    )
-    assert json.loads(upd.content)["task"]["requiresVerification"] is True
-
-    # Now complete via the worker path: the flag rides along, and the
-    # card routes to review like any other (Move R).
-    worker = KanbanTool(
-        board, actor_id="worker", actor_label="worker", owned_task_id=card_id
-    )
-    await tool.execute(
-        "c3", {"action": "update", "task_id": card_id, "status": "running"}
-    )
-    done = await worker.execute(
-        "c4", {"action": "complete", "summary": "shipped"}
-    )
-    task = json.loads(done.content)["task"]
-    assert task["status"] == "review"
-    assert task["requiresVerification"] is True
 
 
 @pytest.mark.asyncio

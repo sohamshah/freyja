@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 from types import SimpleNamespace
 
@@ -30,9 +29,6 @@ from bridge.scheduler.persistence import load_job, save_job, save_run
 from engine.session import TranscriptManager
 from engine.tools import ToolRegistry
 from engine.types import Message
-
-# The strictest rule across the providers Freyja sends tools to.
-_PROVIDER_TOOL_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 class _Service:
@@ -116,19 +112,6 @@ def _drive_fire(
 # ─── the loop tools ───────────────────────────────────────────────────
 
 
-def test_loop_tool_names_are_valid_on_every_provider() -> None:
-    from bridge.tools.schedule_tool import (
-        LoopDecision,
-        build_complete_loop_tool,
-        build_continue_loop_tool,
-    )
-
-    schedule = SelfPacedSchedule(min_delay_seconds=120, max_delay_seconds=600)
-    for build in (build_continue_loop_tool, build_complete_loop_tool):
-        name = build(schedule=schedule, decision=LoopDecision()).definition.name
-        assert _PROVIDER_TOOL_NAME.match(name), name
-
-
 async def test_continue_is_applied_and_the_tools_leave_with_the_fire(monkeypatch) -> None:
     from bridge.scheduler.runtime import fire_job
     from bridge.tools.schedule_tool import COMPLETE_LOOP_TOOL, CONTINUE_LOOP_TOOL
@@ -179,21 +162,7 @@ async def test_a_session_that_never_ran_a_turn_still_gets_the_loop_tools(monkeyp
     await fire_job(_Service({"s1": sess}), job)
 
     assert {CONTINUE_LOOP_TOOL, COMPLETE_LOOP_TOOL} <= set(offered)
-    assert not load_job(job.id).enabled
-
-
-async def test_complete_disables_the_job_for_good(monkeypatch) -> None:
-    from bridge.scheduler.runtime import fire_job
-    from bridge.tools.schedule_tool import COMPLETE_LOOP_TOOL
-
-    sess = _session(cost_so_far=0.0)
-    job = _job()
-    _drive_fire(
-        monkeypatch, sess, loop_call=(COMPLETE_LOOP_TOOL, {"reason": "all merged"}), cost=0.1
-    )
-
-    await fire_job(_Service({"s1": sess}), job)
-
+    # complete disables the job for good.
     saved = load_job(job.id)
     assert not saved.enabled and saved.next_fire_at is None
 

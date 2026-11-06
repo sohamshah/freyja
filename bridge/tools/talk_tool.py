@@ -531,6 +531,11 @@ _OPERATOR_CUT_IN: Any = object()
 # talk tool
 # ============================================================================
 
+# How often a `talk` call waiting for a reply checks whether the operator has
+# something to say; the wait ends at the next check.
+_REPLY_POLL_S = 0.5
+
+
 class TalkTool:
     """Push a message into another agent (or the operator) session's inbox."""
 
@@ -893,7 +898,7 @@ class TalkTool:
                 if remaining <= 0:
                     return None
                 try:
-                    await asyncio.wait_for(event.wait(), timeout=min(0.5, remaining))
+                    await asyncio.wait_for(event.wait(), timeout=min(_REPLY_POLL_S, remaining))
                     return inbox.take_reply(source_msg_id)
                 except asyncio.TimeoutError:
                     ty = tool_ctx.tool_yield if tool_ctx is not None else None

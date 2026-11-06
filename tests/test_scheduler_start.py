@@ -13,8 +13,10 @@ until it restarted.
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 
+import bridge.scheduler.service as service_mod
 from bridge.scheduler.persistence import FileLock, owner_lock_path
 from bridge.scheduler.service import SchedulerService
 
@@ -43,6 +45,7 @@ async def test_start_after_stop_runs_the_tick_loop_again(tmp_path, monkeypatch):
     # stop() set _stopped and start() never cleared it, so a restarted
     # service's tick loop saw it and exited before its first tick.
     monkeypatch.setenv("FREYJA_HOME", str(tmp_path))
+    monkeypatch.setattr(service_mod, "_TICK_CAP_SECONDS", 0.02)
     service = SchedulerService(SimpleNamespace())
     await service.start()
     await service.stop()
@@ -57,7 +60,9 @@ async def test_start_after_stop_runs_the_tick_loop_again(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_tick", counting_tick)
 
     await service.start()
-    await asyncio.sleep(0.1)
+    deadline = time.monotonic() + 3
+    while ticks < 1 and time.monotonic() < deadline:
+        await asyncio.sleep(0.005)
 
     assert service._is_owner
     assert not service._loop_task.done()
