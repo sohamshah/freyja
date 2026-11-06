@@ -779,7 +779,13 @@ export function Sidebar() {
               run.execution_session_id || `scheduler:${run.job_id}.ephemeral`
             const failed = run.status === 'failed' || run.status === 'timed_out' || run.status === 'budget_exceeded'
             const active = run.status === 'running' || run.status === 'delivering'
-            const dotClass = failed ? 'bg-danger' : active ? 'bg-accent' : 'bg-ok'
+            // As the dashboard's run feed: grey for a run cancelled, cut off
+            // (interrupted) or not started yet, never the green of a success.
+            const dotClass = failed ? 'bg-danger'
+              : active ? 'bg-accent'
+              : run.status === 'succeeded' ? 'bg-ok'
+              : run.status === 'partial_failure' ? 'bg-warn'
+              : 'bg-fg-3'
             return (
               <button
                 key={run.run_id}
