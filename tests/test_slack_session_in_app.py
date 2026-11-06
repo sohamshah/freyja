@@ -552,6 +552,9 @@ async def test_a_desktop_sub_agent_with_a_transcript_and_no_sidecar_is_not_built
 
     assert built == [] and state.sessions == {}
     assert any(e.get("type") == "error" for e in events)
+    # The renderer showed it as sent: it takes the bubble back out.
+    (refused,) = [e for e in events if e["type"] == "send_refused"]
+    assert (refused["sessionId"], refused["clientId"]) == (sub, "m8")
 
 
 async def test_a_slack_sub_agents_first_run_pane_builds_no_copy_and_its_messages_go_to_the_gateway(

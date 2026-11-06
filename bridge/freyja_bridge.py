@@ -1436,9 +1436,11 @@ async def _route_operator_message_to_subagent(
             # A Slack thread's sub-agent on its first run: the gateway
             # runs it (_route_operator_message_to_gateway).
             return False
-        emit_error(
+        _refuse_send(
+            sid,
+            client_id,
             f"Sub-agent {sid} has no saved state to resume from, so this "
-            "message could not be delivered."
+            "message could not be delivered.",
         )
         return True
     if followup and client_id:
@@ -1521,9 +1523,10 @@ async def _route_operator_message_to_gateway(
 
 
 def _refuse_send(sid: str, client_id: str | None, reason: str) -> None:
-    """A message typed for a Slack session did not go to the gateway. The
-    renderer showed it as sent (a bubble, or a pending follow-up): tell it
-    to take that back out and return the text to the composer, as a
+    """A message typed into a pane was not delivered: a Slack session's
+    did not go to the gateway, or a sub-agent had nothing saved to resume.
+    The renderer showed it as sent (a bubble, or a pending follow-up): tell
+    it to take that back out and return the text to the composer, as a
     refused edit does (see _refuse_rewind)."""
     emit_error(reason, recoverable=True)
     emit({"type": "send_refused", "sessionId": sid, "clientId": client_id})
