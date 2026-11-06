@@ -4880,10 +4880,13 @@ class _BridgeSession:
         # double-fire if turns land quickly.
         self._auto_rename_attempted: bool = False
         # Card ids that already have a sub-agent in flight from a
-        # previous tick. Cleared as sub-agents finish (via the
-        # subagent_finished event hook). Prevents the dispatcher from
-        # spawning a second worker for the same card while the first is
-        # still running.
+        # previous tick. Nothing clears an id when its sub-agent finishes:
+        # each tick and each force dispatch keep only the cards whose
+        # worker still runs in the sub-agent registry
+        # (`_kanban_live_cards`), and a reclaim, an operator cancel or an
+        # unblock drops its card. Prevents the dispatcher from spawning a
+        # second worker for the same card while the first is still
+        # running.
         self._kanban_dispatched: set[str] = set()
         # Cards with an in-flight judge orchestrator task. Distinct
         # from `_kanban_dispatched` (workers) so a card that finishes
