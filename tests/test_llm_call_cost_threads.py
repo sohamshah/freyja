@@ -24,6 +24,8 @@ import pytest
 def _isolate(monkeypatch, tmp_path):
     import bridge.transcript_persistence as tp
 
+    # A session's project directory (compactions.jsonl) is read from HOME.
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path / "sessions")
     telemetry = ModuleType("bridge.compaction_telemetry")
     telemetry.append_telemetry = lambda *_a, **_k: None

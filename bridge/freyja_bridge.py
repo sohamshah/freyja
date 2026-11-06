@@ -5660,6 +5660,15 @@ class _BridgeSession:
                             await res
                     except Exception as exc:  # noqa: BLE001
                         log("debug", f"restore notice failed: {exc}")
+                # The rows every other compaction writes: compaction_event
+                # telemetry for the dashboard, and compactions.jsonl, with
+                # the summary, for exports.
+                restore_details = {
+                    "trigger": "restore",
+                    "reason": reason,
+                    "tokens_before": estimated,
+                }
+                self._mirror_compaction_event("compaction_start", restore_details)
                 # Block the mid-session WM trigger for the whole window
                 # this compaction is running — its internal Call B and a
                 # session_memory-driven Call B would otherwise race.
@@ -5703,6 +5712,11 @@ class _BridgeSession:
                     # logged and counted as "Compacted on restore".
                     error = str(getattr(compaction_result, "error", None) or "unknown")
                     log("warn", f"restore compaction failed ({reason}): {error}")
+                    failed_details = {
+                        **restore_details,
+                        "tokens_after": self.session.estimate_tokens(),
+                        "error": error,
+                    }
                     emit(
                         {
                             "type": "system_event",
@@ -5712,16 +5726,23 @@ class _BridgeSession:
                                 f"Compaction on restore failed (reason={reason}): "
                                 f"{error}"
                             ),
-                            "details": {
-                                "trigger": reason,
-                                "tokens_before": estimated,
-                                "tokens_after": self.session.estimate_tokens(),
-                                "error": error,
-                            },
+                            "details": failed_details,
                         }
                     )
+                    self._mirror_compaction_event("compaction_failed", failed_details)
                 else:
                     self.session.compaction_count += 1
+                    complete_details = {
+                        **restore_details,
+                        "tokens_after": self.session.estimate_tokens(),
+                        "entries_removed": compaction_result.entries_removed,
+                        "summary_text": compaction_result.summary or "",
+                        "summary_tokens": getattr(compaction_result, "summary_tokens", 0),
+                        "summarizer_input_tokens": getattr(compaction_result, "summarizer_input_tokens", 0),
+                        "summarizer_output_tokens": getattr(compaction_result, "summarizer_output_tokens", 0),
+                        "summarizer_duration_ms": getattr(compaction_result, "summarizer_duration_ms", 0),
+                        "summarizer_cost_usd": getattr(compaction_result, "summarizer_cost_usd", None),
+                    }
                     emit(
                         {
                             "type": "system_event",
@@ -5730,13 +5751,10 @@ class _BridgeSession:
                             "message": (
                                 f"Compacted on restore (reason={reason})"
                             ),
-                            "details": {
-                                "trigger": reason,
-                                "tokens_before": estimated,
-                                "tokens_after": self.session.estimate_tokens(),
-                            },
+                            "details": complete_details,
                         }
                     )
+                    self._mirror_compaction_event("compaction_complete", complete_details)
         except Exception as exc:
             log("warn", f"post-restore compaction failed: {exc}")
 
