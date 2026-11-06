@@ -235,7 +235,11 @@ class SchedulerService:
         # Owner: recompute next_fire_at for every job and persist —
         # the prior process may have crashed mid-update, leaving stale
         # values. We hold each job's flock briefly while we rewrite.
+        # A slot missed while no process ticked is left due when the
+        # job's misfire policy catches up, so the tick fires it; under
+        # "skip" the recompute moves past it.
         boot_count = 0
+        now = time.time()
         for job in load_all_jobs():
             with FileLock(job_lock_path(job.id)) as got:
                 if not got:
@@ -244,7 +248,8 @@ class SchedulerService:
                     # via the normal scan path.
                     continue
                 fresh = load_job(job.id) or job
-                self._recompute_next_fire(fresh, force=True)
+                if not _catches_up(fresh, now):
+                    self._recompute_next_fire(fresh, force=True)
                 save_job(fresh)
                 boot_count += 1
         touch_wake()
@@ -753,6 +758,16 @@ class SchedulerService:
             return
         now = time.time()
         last = job.last_fire_at if after_fire else None
+        # "fire_all" runs every missed slot: step on from the slot being
+        # fired, not from now, so an overdue job stays due until each
+        # missed slot has had its run.
+        if (
+            after_fire
+            and job.misfire_policy == "fire_all"
+            and job.next_fire_at is not None
+            and not isinstance(job.schedule, SelfPacedSchedule)
+        ):
+            now = last = job.next_fire_at
         try:
             job.next_fire_at = compute_next_fire(
                 job.schedule,
@@ -805,6 +820,17 @@ class SchedulerService:
             "message": message,
             "details": details or {},
         })
+
+
+def _catches_up(job: JobRecord, now: float) -> bool:
+    """True when ``job`` missed a slot and its misfire policy runs it."""
+    return (
+        job.misfire_policy in ("fire_once", "fire_all")
+        and job.enabled
+        and job.status == "active"
+        and job.next_fire_at is not None
+        and job.next_fire_at <= now
+    )
 
 
 def _count_jobs_on_disk() -> int:
