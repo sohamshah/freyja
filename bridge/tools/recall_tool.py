@@ -15,10 +15,16 @@ time".
 A sub-agent's archive is ``~/.freyja/sessions/<id>.raw_messages.jsonl``,
 beside its sidecars (as is the archive of a session whose project dir is
 another session's); a session's archive is read from both places.
+
+The messages a log is missing (a restore stopped it before 2026-11-06, and a
+sub-agent had none) are in ``raw_messages.recovered.jsonl`` beside it, which
+``scripts/backfill_raw_messages.py`` writes. recall reads them among the live
+rows, by time, and a live row wins, as exports do (src/main/sessionRecord.ts).
 """
 
 from __future__ import annotations
 
+import heapq
 import json
 import logging
 from pathlib import Path
@@ -55,6 +61,43 @@ def _message_text(message: dict[str, Any] | None) -> str:
             elif isinstance(block, str):
                 parts.append(block)
     return "\n".join(p for p in parts if p)
+
+
+def _ts(row: dict[str, Any]) -> float:
+    ts = row.get("ts")
+    return float(ts) if isinstance(ts, (int, float)) else 0.0
+
+
+def _message_keys(row: dict[str, Any]) -> set[str]:
+    """The tool calls a row's message makes, and the call it answers."""
+    message = row.get("message")
+    if not isinstance(message, dict):
+        return set()
+    keys = {
+        f"call:{call['id']}"
+        for call in message.get("tool_calls") or []
+        if isinstance(call, dict) and isinstance(call.get("id"), str)
+    }
+    if message.get("role") == "tool_result" and isinstance(message.get("tool_call_id"), str):
+        keys.add(f"result:{message['tool_call_id']}")
+    return keys
+
+
+def _recovered_path(log: Path) -> Path:
+    """Where scripts/backfill_raw_messages.py writes the rows ``log`` is missing."""
+    return log.with_name(log.name.removesuffix(".jsonl") + ".recovered.jsonl")
+
+
+def _by_time(
+    logs: list[list[dict[str, Any]]], recovered: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """One timeline: each live log in its own order, and the recovered rows
+    sorted, merged by time; on a tie the live row goes first. A recovered row
+    whose message a live row also has (the same call, or its result) is left
+    out: the live one stands."""
+    live = set().union(*(_message_keys(row) for log in logs for row in log))
+    kept = [row for row in sorted(recovered, key=_ts) if not (_message_keys(row) & live)]
+    return list(heapq.merge(*logs, kept, key=_ts))
 
 
 def _snippet(text: str, query: str) -> str:
@@ -149,15 +192,18 @@ class RecallTool:
         action = str(arguments.get("action") or "search").strip().lower()
         session_id = str(arguments.get("session_id") or "").strip() or None
         limit = int(arguments.get("limit") or _DEFAULT_LIMIT)
-        paths = [p for p in self._archive_paths(session_id) if p.exists()]
+        archives = self._archive_paths(session_id)
+        paths = [p for p in archives if p.exists()]
+        recovered = [p for p in map(_recovered_path, archives) if p.exists()]
         try:
-            rows = [row for p in paths for row in self._load(p)]
+            rows = _by_time(
+                [self._load(p) for p in paths], [row for p in recovered for row in self._load(p)]
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug("recall load failed", exc_info=True)
             return _err(call_id, f"recall failed to read archive: {exc}")
-        if len(paths) > 1:
-            rows.sort(key=lambda row: row.get("ts") or 0)
-        path = ", ".join(str(p) for p in paths) or str(self._archive_paths(session_id)[-1])
+        paths += recovered
+        path = ", ".join(str(p) for p in paths) or str(archives[-1])
 
         if not rows:
             return _ok(call_id, {
@@ -223,9 +269,11 @@ class RecallTool:
             if not line:
                 continue
             try:
-                rows.append(json.loads(line))
+                row = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if isinstance(row, dict):
+                rows.append(row)
         return rows
 
 

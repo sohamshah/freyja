@@ -697,6 +697,19 @@ await check('its export has them', async () => {
   assert.deepEqual([tcs['r-half'].resultSource, tcs['r-half'].resultComplete], ['transcript-truncated', false])
   assert.equal(readJson(r.bundlePath).raw_transcript.length, 8)
 })
+await check('its recall drawer has them in time order, and a live row wins', () => {
+  const all = persistence.readRecall(recId)
+  assert.equal(all.ok, true, JSON.stringify(all))
+  assert.deepEqual(all.rows.map((row) => row.ts), [1000, 2000, 3000, 10000, 11000, 12000, 30000])
+  const found = persistence.readRecall(recId, 'output')
+  assert.deepEqual(found.rows.map((row) => row.text), ['live output', 'recovered whole output'])
+})
+await check('a sub-agent with only recovered rows has them in its recall drawer', () => {
+  const only = 'sub_19e0000000b_2'
+  fs.writeFileSync(path.join(sessionsDir, `${only}.raw_messages.recovered.jsonl`),
+    JSON.stringify(recRow(5, { role: 'user', content: 'the child read it' })) + '\n')
+  assert.deepEqual(persistence.readRecall(only, 'read it').rows.map((row) => row.text), ['the child read it'])
+})
 
 console.log('\nthe download button')
 await check('it saves the live session first, then asks main to write the file', async () => {

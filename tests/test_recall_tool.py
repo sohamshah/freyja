@@ -167,3 +167,68 @@ async def test_a_sub_agents_recall_is_its_own_and_reaches_its_parent_by_id(monke
     assert seen["own"] == ["find the child's needle"]
     assert seen["parent"] == ["the parent's needle"]
     assert 'session_id="parent-1"' in seen["description"]
+
+
+# ─── Rows the backfill recovered ──────────────────────────────────────
+#
+# scripts/backfill_raw_messages.py writes the messages a raw log is missing
+# to raw_messages.recovered.jsonl beside it, marked recovered. recall reads
+# them among the live rows, by time, and a live row wins, as exports do
+# (src/main/sessionRecord.ts).
+
+
+def _jsonl(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row) + "\n")
+
+
+def _call(ts, call_id, **extra):
+    calls = [{"id": call_id, "name": "bash", "arguments": {}}]
+    return {"ts": ts, "turn_id": None, **extra,
+            "message": {"role": "assistant", "content": "", "tool_calls": calls}}
+
+
+def _result(ts, call_id, text, **extra):
+    return {"ts": ts, "turn_id": None, **extra,
+            "message": {"role": "tool_result", "tool_call_id": call_id, "content": text}}
+
+
+def _said(ts, text, role="user", **extra):
+    return {"ts": ts, "turn_id": None, **extra, "message": {"role": role, "content": text}}
+
+
+async def test_recall_reads_the_recovered_rows_in_time_order_and_a_live_row_wins(_home):
+    project = _home / ".freyja" / "projects" / "root-1"
+    _jsonl(project / "raw_messages.jsonl", [
+        _said(1, "before the restart"),
+        _call(2, "live-1"),
+        _result(3, "live-1", "live needle"),
+        _said(30, "after the fix"),
+    ])
+    recovered = {"recovered": True, "whole": True}
+    _jsonl(project / "raw_messages.recovered.jsonl", [
+        _call(10, "rec-1", **recovered),
+        _result(11, "rec-1", "recovered needle", **recovered),
+        # A recovered row never stands over a live one.
+        _result(12, "live-1", "stale needle", **recovered),
+    ])
+    tool = RecallTool(session_id="root-1")
+
+    assert await _search(tool, "needle") == ["live needle", "recovered needle"]
+    payload = json.loads((await tool.execute("c1", {"action": "timeline"})).content)
+    assert payload["turn_count"] == 6
+    assert [r["first_line"] for r in payload["results"]] == [
+        "before the restart", "", "live needle", "", "recovered needle", "after the fix",
+    ]
+
+
+async def test_a_sub_agent_with_only_recovered_rows_is_searched(_home):
+    _jsonl(_home / "sessions" / "sub_r_3.raw_messages.recovered.jsonl", [
+        _said(1, "the child's recovered needle", recovered=True, whole=True),
+    ])
+    tool = RecallTool(session_id="sub_r_3")
+    res = json.loads((await tool.execute("c1", {"action": "search", "query": "needle"})).content)
+    assert [r["snippet"] for r in res["results"]] == ["the child's recovered needle"]
+    assert "sub_r_3.raw_messages.recovered.jsonl" in res["archive"]

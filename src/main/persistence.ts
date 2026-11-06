@@ -8,10 +8,13 @@ import { stripAppshotBlocks } from '../shared/appshot.js'
 import { readCompactionTelemetry } from './telemetryReader.js'
 import {
   LazyObject,
+  mergeByTime,
+  messageKeys,
   rawLogPathsFor,
   readCompactions,
   readJsonl,
   readRawRecord,
+  recoveredRows,
   sanitizeForFsId,
   writeJsonFile,
   writeTextFile,
@@ -1453,7 +1456,8 @@ function recallSnippet(text: string, query: string): string {
  * Read a session's verbatim transcript archive from
  * `~/.freyja/projects/<safeId>/raw_messages.jsonl`, or a sub-agent's from
  * beside its sidecars (the same files the `recall` tool searches), and surface
- * it to the renderer's recall drawer. Each row is
+ * it to the renderer's recall drawer. The rows the backfill recovered are read
+ * among them by time, and a live row wins, as in exports. Each row is
  * flattened to text; when `query` is given, rows are filtered by a
  * case-insensitive substring match, otherwise a recent timeline slice is
  * returned (never blank). Newest-last, capped at ~200 rows.
@@ -1465,15 +1469,16 @@ export function readRecall(
   | { ok: true; rows: Array<{ role: string; turn_id: string | null; ts: number; text: string; snippet: string }> }
   | { ok: false; error: string } {
   try {
-    const logs = rawLogPathsFor(id).filter((p) => fs.existsSync(p))
-    const raw = logs.flatMap((p) => readJsonl(p)) as Array<{
+    const logs = rawLogPathsFor(id).map((p) => readJsonl(p))
+    const live = new Set(logs.flatMap((log) => log.flatMap(messageKeys)))
+    const recovered = recoveredRows(id).filter((row) => !messageKeys(row).some((k) => live.has(k)))
+    // Two logs (a sub-agent once opened as a root has both): one timeline.
+    const raw = [...mergeByTime([...logs, recovered])] as Array<{
       ts: number
       session_id: string
       turn_id: string | null
       message: any
     }>
-    // Two logs (a sub-agent once opened as a root has both): one timeline.
-    if (logs.length > 1) raw.sort((a, b) => (a?.ts ?? 0) - (b?.ts ?? 0))
     const q = (query ?? '').trim()
     const out: Array<{ role: string; turn_id: string | null; ts: number; text: string; snippet: string }> = []
     for (const row of raw) {

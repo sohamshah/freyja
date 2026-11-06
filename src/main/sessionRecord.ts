@@ -212,25 +212,64 @@ function rowTs(row: unknown): number {
   return typeof ts === 'number' ? ts : 0
 }
 
+/** The rows the backfill recovered for a session, by time. They are a
+ *  transcript's worth at most, so they are read whole. */
+export function recoveredRows(id: string): unknown[] {
+  return sessionLogPathsFor(id, 'raw_messages.recovered.jsonl')
+    .flatMap((p) => readJsonl(p))
+    .sort((a, b) => rowTs(a) - rowTs(b))
+}
+
+/** One timeline from rows that are each in their own order: the row with the
+ *  earliest time goes next, and on a tie the one from the earlier source. */
+export function* mergeByTime(sources: Iterable<unknown>[]): Generator<unknown> {
+  const its = sources.map((s) => s[Symbol.iterator]())
+  try {
+    const heads = its.map((it) => it.next())
+    for (;;) {
+      let next = -1
+      for (let i = 0; i < heads.length; i++) {
+        if (heads[i].done) continue
+        if (next < 0 || rowTs(heads[i].value) < rowTs(heads[next].value)) next = i
+      }
+      if (next < 0) return
+      yield heads[next].value
+      heads[next] = its[next].next()
+    }
+  } finally {
+    // A reader that stops early closes the logs still open.
+    for (const it of its) it.return?.()
+  }
+}
+
+/** A session's raw log rows, oldest first: each live log as written, with the
+ *  recovered rows put in among them by time. A live row goes first on a tie. */
+export function rawRows(id: string): Generator<unknown> {
+  return mergeByTime([...rawLogPathsFor(id).map((p) => jsonlRows(p)), recoveredRows(id)])
+}
+
+/** The tool calls a row's message makes, and the call it answers. A recovered
+ *  row with one a live row also has is the same message: the live one wins. */
+export function messageKeys(row: unknown): string[] {
+  const message = (row as { message?: Record<string, unknown> } | null)?.message
+  if (!message || typeof message !== 'object') return []
+  const keys: string[] = []
+  if (Array.isArray(message.tool_calls)) {
+    for (const call of message.tool_calls as Array<Record<string, unknown>>) {
+      if (call && typeof call.id === 'string') keys.push(`call:${call.id}`)
+    }
+  }
+  if (message.role === 'tool_result' && typeof message.tool_call_id === 'string') {
+    keys.push(`result:${message.tool_call_id}`)
+  }
+  return keys
+}
+
 /** Index a session's raw transcript. It keeps each call's arguments and the
  *  text of each result, not the rows, so an image-heavy log costs no more
  *  memory. A cut result's saved file is read when the result is asked for. */
 export function readRawRecord(id: string): RawRecord {
-  const rawPaths = rawLogPathsFor(id)
-  const recoveredPaths = sessionLogPathsFor(id, 'raw_messages.recovered.jsonl')
-  const rows = function* () {
-    // The recovered rows are a transcript's worth at most: read whole, sorted,
-    // and put in among the live rows by time.
-    const recovered = recoveredPaths.flatMap((p) => readJsonl(p)).sort((a, b) => rowTs(a) - rowTs(b))
-    let next = 0
-    for (const rawPath of rawPaths) {
-      for (const row of jsonlRows(rawPath)) {
-        while (next < recovered.length && rowTs(recovered[next]) < rowTs(row)) yield recovered[next++]
-        yield row
-      }
-    }
-    while (next < recovered.length) yield recovered[next++]
-  }
+  const rows = () => rawRows(id)
   const calls = new Map<string, ModelCall>()
   const resultTexts = new Map<string, string[]>()
   // Results read from a live row, and recovered results with only their
