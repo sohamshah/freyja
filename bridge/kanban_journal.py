@@ -9,20 +9,27 @@ mission can survive a bridge restart.
 Storage layout:
     ~/.freyja/sessions/{session_id}.kanban.jsonl
 
-Event shapes (one per line):
+Row shapes (one per line; `append` stamps each with `ts`, in ms):
 
     {"kind": "create", "ts": <ms>, "task": <full to_dict()>}
     {"kind": "update", "ts": <ms>, "id": <card_id>, "actor": "...",
-     "fields": <delta dict>, "status": <maybe>}
-    {"kind": "comment", "ts": <ms>, "id": <card_id>, "actor": "...",
-     "body": "..."}
+     "task": <full to_dict()>}
     {"kind": "link", "ts": <ms>, "parent": <pid>, "child": <cid>,
      "actor": "..."}
     {"kind": "unblock", "ts": <ms>, "id": <card_id>, "actor": "..."}
+    {"kind": "restarted", "ts": <ms>}
 
-The replay path applies events to a fresh SessionKanbanBoard using the
-same internal helpers as live mutations — there is exactly one source
-of truth for what each kind means.
+An update row holds the whole card after the write, not a delta. Every
+`update()` writes one (comments included), and so does every child a
+parent's write moved: promoted out of triage, or marked orphaned. A link
+or unblock row names the cards only, so replay redoes what `link()` or
+`unblock()` did to them. The bridge writes `restarted` each time it
+restores a board from a log that has rows; replay skips it.
+
+`SessionKanbanBoard.replay_events` applies the rows to a fresh board.
+The app's `kanbanCardsFromJournal` (src/main/persistence.ts) replays them
+for a gateway session, whose board lives in the gateway; keep the two in
+step.
 """
 
 from __future__ import annotations
