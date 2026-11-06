@@ -1729,6 +1729,27 @@ def _hand_over(job: JobRecord, slot: float | None, attempt: int, *, to_app: bool
     return True
 
 
+def _fire_on_its_way(job_id: str) -> bool:
+    """True when a fire of ``job_id`` was handed to the gateway or the app
+    (``_hand_over``) and has not been read there yet."""
+    from bridge.gateway.control_channel import (
+        commands_offset_path,
+        commands_path,
+        desktop_commands_offset_path,
+        desktop_commands_path,
+        unread_commands,
+    )
+
+    return any(
+        cmd.get("type") == "scheduler_fire" and cmd.get("job_id") == job_id
+        for commands, offset in (
+            (commands_path(), commands_offset_path()),
+            (desktop_commands_path(), desktop_commands_offset_path()),
+        )
+        for cmd in unread_commands(commands, offset)
+    )
+
+
 def _failed_for_a_passing_reason(run: RunRecord) -> bool:
     """True when ``run`` failed for a reason that passes by itself: the
     network was down (the Mac asleep or in DarkWake, no Wi-Fi), a request
@@ -1950,8 +1971,8 @@ def _settle_interrupted_runs() -> None:
 def _missed_one_shot_slot(job: JobRecord) -> float | None:
     """The time of ``job``, a one-shot, when it has passed and no run of
     it since then succeeded; None for any other job. Refuses a one-shot
-    that ran, saying when, and one whose run goes on: resumed during the
-    run of its slot, it ran again after."""
+    that ran, saying when, and one whose run goes on or is on its way:
+    resumed during the run of its slot, it ran again after."""
     if not isinstance(job.schedule, OnceSchedule):
         return None
     # Its only slot: the first fire of its schedule from the epoch.
@@ -1961,6 +1982,10 @@ def _missed_one_shot_slot(job: JobRecord) -> float | None:
     with FileLock(job_run_lock_path(job.id)) as free:
         if not free:
             raise ValueError("a run of it is going on; try again when that run ends")
+    if _fire_on_its_way(job.id):
+        # The gateway or the app takes the run lock as it reads the fire.
+        # Resumed before, the one-shot was claimed again and ran twice.
+        raise ValueError("its run is starting; try again when that run ends")
     for run in load_runs_started_since(job.id, slot):
         if run.status in ("succeeded", "partial_failure"):
             ran = datetime.datetime.fromtimestamp(run.started_at)

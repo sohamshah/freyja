@@ -100,6 +100,29 @@ def start_reading_at_end_if_new(commands_file: Path, offset_file: Path) -> None:
         pass
 
 
+def unread_commands(commands_file: Path, offset_file: Path) -> list[dict[str, Any]]:
+    """The commands in ``commands_file`` past where its reader saved that it
+    got to: not read yet, or in the batch it reads now. Its reader saves
+    once it has handled the batch. None when the reader never started: it
+    starts at the end of the file."""
+    try:
+        offset = int(offset_file.read_text().strip() or "0")
+        with commands_file.open("rb") as fp:
+            fp.seek(offset)
+            data = fp.read()
+    except (OSError, ValueError):
+        return []
+    out: list[dict[str, Any]] = []
+    for raw in data.splitlines():
+        try:
+            cmd = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(cmd, dict):
+            out.append(cmd)
+    return out
+
+
 # The reader takes at most this much per read and dispatches whole lines
 # only, so a longer line is skipped unread (see ControlChannelReader._drain).
 MAX_LINE_BYTES = 1024 * 1024
