@@ -1,6 +1,7 @@
 // Checks for src/renderer/lib/kanbanSnapshot.ts, which tells a worker's
-// sub-agent card where its kanban card stands in review, and for the chat
-// lines Conversation.tsx writes for the review loop. The event shapes
+// sub-agent card where its kanban card stands in review, for the chat
+// lines Conversation.tsx writes for the review loop, and for the status
+// pips on the board's tiles (KanbanBridgeView.tsx). The event shapes
 // and actor strings are the bridge's: a worker writes as
 // "<label> (<session id>)", the judge as "kanban-judge" (from the kanban
 // journal in ~/.freyja/sessions). Run from the repo root:
@@ -205,6 +206,44 @@ check('a card blocked at the review cap names the cap of three reviews', () => {
 check('a rework counts its review against the cap of three', () => {
   const line = narrate('kanban_rework_started', { cardId: 'card_002', reviewIteration: 2, chatVisible: true })
   assert.equal(line, 'reworking card_002 · iter 2/3')
+})
+
+// The board's tiles (KanbanBridgeView.tsx), rendered on the server. The
+// dispatcher holds a card while a parent can still finish, as the
+// bridge's `_pending_parents` counts them: the mission root counts as
+// done, and a cancelled, failed or missing parent never finishes.
+const { createElement } = await import('react')
+const { renderToStaticMarkup } = await import('react-dom/server')
+const { KanbanBridgeView } = await import('./src/renderer/components/views/KanbanBridgeView.tsx')
+
+check('a tile the dispatcher holds on a pending parent says it waits on it, not that it is ready', () => {
+  const tile = (id, status, parents = [], metadata = {}) => ({ id, title: `title ${id}`, status, parents, metadata, events: [], comments: [] })
+  const cards = [
+    tile('card_001', 'running', [], { role: 'mission_root' }),
+    tile('card_002', 'running', ['card_001']),
+    tile('card_003', 'cancelled', ['card_001']),
+    tile('card_004', 'triage', ['card_001', 'card_002']),
+    tile('card_005', 'ready', ['card_001', 'card_002', 'card_003']),
+    tile('card_006', 'review', ['card_002']),
+    tile('card_007', 'ready', ['card_001', 'card_003', 'card_009']),
+  ]
+  const html = renderToStaticMarkup(createElement(KanbanBridgeView, {
+    sessionId: 's', objective: 'o', cards, agents: [], telemetryEvents: [], contextPct: 0, cost: 0,
+    autoDispatchEnabled: false, onAttach() {}, onOpenDispatcherBrief() {},
+  }))
+  const pip = (id) => {
+    const at = html.indexOf(`title ${id}<`)
+    assert.ok(at > 0, `no tile for ${id}`)
+    const start = html.lastIndexOf('<article', at)
+    const pipAt = html.lastIndexOf('<span title="', at)
+    assert.ok(pipAt > start, `no pip on ${id}`)
+    const [, title, label] = html.slice(pipAt).match(/^<span title="([^"]*)"[^>]*><span[^>]*><\/span>([^<]*)</)
+    return { title, label }
+  }
+  assert.deepEqual(pip('card_004'), { title: 'Waits on card_002', label: 'waiting' })
+  assert.deepEqual(pip('card_005'), { title: 'Waits on card_002', label: 'waiting' })
+  assert.equal(pip('card_006').label, 'waiting')
+  assert.equal(pip('card_007').label, 'ready')
 })
 
 if (failures) {

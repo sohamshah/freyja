@@ -829,6 +829,10 @@ class SessionKanbanBoard:
                             "promotedAtSeconds": int(now - task.updated_at),
                         }
                     )
+                    # The dispatcher holds a card while a parent can still
+                    # finish (link() gave it one after a worker picked it up).
+                    if pending := self._pending_parents(task):
+                        ready[-1]["pendingParents"] = pending
                 elif task.status in ("review", "done_unverified"):
                     review.append(
                         {
@@ -841,6 +845,9 @@ class SessionKanbanBoard:
                             "ageSeconds": int(now - task.updated_at),
                         }
                     )
+                    # The judge or verifier waits for it too.
+                    if pending := self._pending_parents(task):
+                        review[-1]["pendingParents"] = pending
                 elif task.status == "blocked":
                     blocked.append(
                         {

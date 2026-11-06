@@ -297,6 +297,38 @@ async def test_kanban_digest_groups_cards_by_actionable_bucket() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("lane", "bucket"), [(["review", "ready"], "ready"), (["review"], "review")])
+async def test_kanban_digest_marks_a_card_the_dispatcher_holds_on_a_pending_parent(
+    lane: list[str], bucket: str,
+) -> None:
+    """The dispatcher holds a card past triage while a parent can still
+    finish (link() gave it one after a worker picked it up). The digest
+    showed it in its bucket like any card that goes out on the next
+    tick. It now names the parents it waits on."""
+    board = SessionKanbanBoard()
+    await board.create(title="mission", metadata={"role": "mission_root"})
+    parent = (await board.create(title="parent")).id
+    failed = (await board.create(title="failed")).id
+    card = (await board.create(title="card")).id
+    free = (await board.create(title="free")).id
+    await board.update(card, actor="worker", status="running", worker_session_id="sub_w")
+    await board.link(parent, card, actor="parent")
+    await board.link(failed, card, actor="parent")
+    await board.update(failed, actor="parent", status="cancelled")
+    for status in lane:
+        await board.update(card, actor="worker", status=status)
+    await board.update(free, actor="worker", status="running", worker_session_id="sub_f")
+    for status in lane:
+        await board.update(free, actor="worker", status=status)
+
+    digest = await board.digest()
+
+    entries = {entry["id"]: entry for entry in digest[bucket]}
+    assert entries[card]["pendingParents"] == [parent]
+    assert "pendingParents" not in entries[free]
+
+
+@pytest.mark.asyncio
 async def test_kanban_show_inlines_parent_context() -> None:
     board = SessionKanbanBoard()
     tool = KanbanTool(board, actor_id="parent", actor_label="parent")

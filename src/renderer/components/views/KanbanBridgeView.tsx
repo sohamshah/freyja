@@ -655,6 +655,19 @@ function TaskBoard({
     }
     return m
   }, [stations])
+  // Cards the dispatcher holds on a parent that can still finish. They
+  // sit in ready or review with the cards that go out next.
+  const waitingByCard = useMemo(() => {
+    const byId = new Map(cards.map((c) => [c.id, c]))
+    const m = new Map<string, string[]>()
+    for (const c of cards) {
+      const column = columnForCard(c)
+      if (column !== 'ready' && column !== 'review') continue
+      const pending = pendingParents(c, byId)
+      if (pending.length > 0) m.set(c.id, pending)
+    }
+    return m
+  }, [cards])
 
   return (
     <section className="min-w-0 overflow-hidden">
@@ -680,6 +693,7 @@ function TaskBoard({
             stationsByCard={stationsByCard}
             verdictsByCard={verdictsByCard}
             staleByCard={staleByCard}
+            waitingByCard={waitingByCard}
             isAddingHere={addOpen && addColumn === col.key}
             autoDispatchEnabled={autoDispatchEnabled}
             tickInfo={tickInfo}
@@ -702,6 +716,7 @@ function BoardColumnSection({
   stationsByCard,
   verdictsByCard,
   staleByCard,
+  waitingByCard,
   isAddingHere,
   autoDispatchEnabled,
   tickInfo,
@@ -717,6 +732,7 @@ function BoardColumnSection({
   stationsByCard: Map<string, Station[]>
   verdictsByCard: Map<string, JudgeHistoryEntry[]>
   staleByCard: Map<string, { firstStaleAt: number; ageSeconds: number }>
+  waitingByCard: Map<string, string[]>
   isAddingHere: boolean
   autoDispatchEnabled: boolean
   tickInfo: TickInfo | null
@@ -783,6 +799,7 @@ function BoardColumnSection({
                 stations={stationsByCard.get(c.id) ?? []}
                 verdicts={verdictsByCard.get(c.id) ?? []}
                 staleEvent={staleByCard.get(c.id)}
+                waitingOn={waitingByCard.get(c.id)}
                 onOpen={() => onOpenCard(c.id)}
                 onOpenAgent={onOpenAgent}
               />
@@ -924,6 +941,7 @@ function TicketCard({
   stations,
   verdicts,
   staleEvent,
+  waitingOn,
   onOpen,
   onOpenAgent,
 }: {
@@ -932,6 +950,7 @@ function TicketCard({
   stations: Station[]
   verdicts: JudgeHistoryEntry[]
   staleEvent: { firstStaleAt: number; ageSeconds: number } | undefined
+  waitingOn: string[] | undefined
   onOpen: () => void
   onOpenAgent: (sessionId: string) => void
 }) {
@@ -1046,7 +1065,12 @@ function TicketCard({
                 stale {staleAgeMinutes}m
               </span>
             ) : null}
-            <StatusPip column={column} status={card.status} workerTerminalState={card.workerTerminalState} />
+            <StatusPip
+              column={column}
+              status={card.status}
+              workerTerminalState={card.workerTerminalState}
+              waitingOn={waitingOn}
+            />
           </div>
         </div>
 
@@ -1166,10 +1190,12 @@ function StatusPip({
   column,
   status,
   workerTerminalState,
+  waitingOn,
 }: {
   column: ColumnKey
   status?: string
   workerTerminalState?: string
+  waitingOn?: string[]
 }) {
   const meta = STATUS_PIP_META[column]
   // Two sources of "what really happened":
@@ -1193,18 +1219,26 @@ function StatusPip({
   //   · Blocked column → keep the worker-terminal-as-label behavior
   //     (e.g. "blocked-by-worker") because it's already the most
   //     informative thing to surface for that column.
+  //   · Waiting → the dispatcher holds the card on a parent that can
+  //     still finish, so it says "waiting" and names those parents.
   //   · Other columns → use the column label.
   const terminalLabel = terminalStatusLabel(status)
   const isTerminalFailure = !!terminalLabel
+  const waiting = !isTerminalFailure && !!waitingOn?.length
   const cls = isTerminalFailure
     ? 'text-danger bg-danger/[0.10] border border-danger/[0.34]'
-    : meta.cls
-  const dotCls = isTerminalFailure ? 'bg-danger animate-pulse-soft' : meta.dotCls
+    : waiting
+      ? 'text-fg-2 bg-white/[0.04] border border-white/[0.10]'
+      : meta.cls
+  const dotCls = isTerminalFailure ? 'bg-danger animate-pulse-soft' : waiting ? 'bg-fg-3' : meta.dotCls
   let label = meta.label
   let titleText: string = meta.label
   if (isTerminalFailure && terminalLabel) {
     label = terminalLabel
     titleText = `Worker ended as: ${terminalLabel}. Card is in blocked until you intervene.`
+  } else if (waiting && waitingOn) {
+    label = 'waiting'
+    titleText = `Waits on ${waitingOn.join(', ')}`
   } else if (column === 'review' && workerTerminalState) {
     label = `${meta.label} · worker ${workerTerminalState}`
     titleText = `${meta.label} · worker exited ${workerTerminalState} — awaiting judge verdict.`
@@ -2734,6 +2768,18 @@ function columnForCard(card: KanbanCardView): ColumnKey {
   if (s === 'running' || s === 'in_progress' || s === 'in-progress')
     return 'flight'
   return 'ready'
+}
+
+// The parents a card waits on, as the bridge's `_pending_parents` counts
+// them: the dispatcher holds the card while one can still finish. The
+// mission root counts as done; a cancelled, failed or missing parent
+// never finishes.
+function pendingParents(card: KanbanCardView, byId: Map<string, KanbanCardView>): string[] {
+  return (card.parents ?? []).filter((pid) => {
+    const parent = byId.get(pid)
+    if (!parent || parent.metadata?.role === 'mission_root') return false
+    return !['done', 'cancelled', 'failed'].includes((parent.status ?? '').toLowerCase())
+  })
 }
 
 function bucketCards(cards: KanbanCardView[]): Buckets {
