@@ -337,3 +337,37 @@ async def test_a_turn_queued_behind_a_run_whose_runner_raises_does_not_clear_its
     assert _last_reply(sess) == "The build is green"
     assert (run.status, run.output_text) == ("failed", "")
     assert "the request could not be built" in run.error
+
+
+# ─── a run whose turn cannot run at all ───────────────────────────────
+
+
+@pytest.mark.parametrize("missing", ["session", "runner"])
+async def test_a_run_whose_session_is_not_set_up_fails_with_why(operator_session, missing):
+    # run_turn returned with an error that names no run, so the run said it
+    # was most likely asleep through its time.
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    setattr(sess, missing, None)  # initialize left it unset.
+
+    run = await asyncio.wait_for(fire_job(_Service({"s1": sess}), _job()), 10)
+
+    assert (run.status, run.output_text) == ("failed", "")
+    assert f"{missing} not initialized" in run.error
+
+
+async def test_a_run_into_a_session_another_process_runs_fails_with_why(operator_session, monkeypatch):
+    # The refusal was a notice for the app alone, so the run said it was
+    # most likely asleep through its time.
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.replies = {"write the digest": "Here is the digest"}
+    monkeypatch.setattr(fb, "_held_elsewhere", lambda _state, _sid: fb._GATEWAY_RUNS_IT)
+
+    run = await asyncio.wait_for(fire_job(_Service({"s1": sess}), _job()), 10)
+
+    assert (run.status, run.output_text) == ("failed", "")
+    assert "runs in the Slack gateway" in run.error

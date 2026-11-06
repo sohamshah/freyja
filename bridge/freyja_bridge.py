@@ -11335,12 +11335,16 @@ class _BridgeSession:
         await self.initialize()
         if self.session is None:
             emit_error("session not initialized", session_id=self.id)
+            # As for a turn that raised before it started: the run whose
+            # prompt it was hears why.
+            _emit_turn_failed(self, RuntimeError("session not initialized"), run_id)
             return
         if self.runtime != "native":
             await self._run_harness_turn(user_content, attachments, run_id)
             return
         if self.runner is None:
             emit_error("runner not initialized", session_id=self.id)
+            _emit_turn_failed(self, RuntimeError("runner not initialized"), run_id)
             return
 
         # Suppress the stale-task reminder on the FIRST provider call
@@ -15454,6 +15458,13 @@ def _schedule_or_queue_turn(
         # Another process runs it: a turn here would never reach the Slack
         # thread, and would be saved over (see _BridgeSession._held_elsewhere).
         emit_error(_COPY_TURN.format(why=held), recoverable=True)
+        if run_id:
+            # The run whose prompt it was hears why. Told this process's
+            # listeners alone: the app may show the turn the other runs.
+            notify_session_listeners(sess.id, {
+                "type": "turn_failed", "sessionId": sess.id,
+                "message": _COPY_TURN.format(why=held), "runId": run_id,
+            })
         return False
     if content not in SYNTHETIC_WAKE_PROMPTS:
         # A turn no agent's message asked for: what an emergency stop
