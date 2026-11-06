@@ -5,8 +5,9 @@ desktop renderer), it runs unattended — the operator can't approve a
 per-tool permission prompt, and the session may run anywhere the
 gateway daemon is hosted. With ``slack.enable_tool_filter`` on (it is
 off by default) the tool surface is restricted to the list below: file
-reads and writes, web research, sub-agents, skills, memory and
-schedules, with no shell, computer use or browser.
+reads, writes in the session's project output dir, web research,
+sub-agents, skills, memory and schedules, with no shell, computer use
+or browser.
 
 The default set lives here as code. v2 will read it from
 ``~/.freyja/gateway.yaml`` with per-workflow overrides.
@@ -30,10 +31,9 @@ logger = logging.getLogger(__name__)
 #      reference code, docs, and previously-produced artifacts.
 #   2. RESEARCH — internet access for context. No persistent
 #      side effects on the user's machine.
-#   3. WRITE — write_file, edit_file and edit_json. A relative path
-#      lands in the session's project output dir, but an absolute
-#      path writes any file the process can, the source tree and
-#      ~/.freyja included. This is not a sandbox.
+#   3. WRITE — write_file, edit_file and edit_json, which write only
+#      inside the session's project output dir (confine_writes). The
+#      source tree and ~/.freyja stay out of reach.
 #   4. SYNTHESIS — sub-agent spawn so the agent can fan out to
 #      explore-fast / verify / code profiles. A sub-agent of a
 #      filtered session gets only tools on this list too
@@ -112,6 +112,61 @@ def tools_allowed_for_gateway(platform: Any) -> set[str]:
         if extras:
             base |= set(extras)
     return base
+
+
+class _ProjectDirWriteTool:
+    """A write tool that writes only inside one session's project output
+    dir. Any other path, absolute or climbing out with ``..``, is refused."""
+
+    def __init__(self, tool: Any, resolver: Any, platform: str) -> None:
+        self._tool = tool
+        self._resolver = resolver
+        self._platform = platform
+
+    @property
+    def definition(self) -> Any:
+        return self._tool.definition
+
+    async def execute(self, call_id: str, arguments: dict[str, Any]) -> Any:
+        from bridge.tools.base import ToolResult
+
+        name = self._tool.definition.name
+        project_dir = self._resolver.project_dir
+        try:
+            path = self._resolver.resolve(
+                str(arguments.get("path") or ""),
+                tool_name=name,
+                base=str(arguments.get("base") or arguments.get("location") or "auto"),
+            )
+        except ValueError as exc:
+            return ToolResult(call_id=call_id, content=f"Error: {exc}", is_error=True)
+        if not path.is_relative_to(project_dir):
+            return ToolResult(
+                call_id=call_id,
+                content=(
+                    f"Error: with the {self._platform.title()} tool filter on, {name} "
+                    f"writes only inside this session's project output directory, "
+                    f"{project_dir}. {path} is outside it. Pass a path inside it, "
+                    f'or a relative path with base="project".'
+                ),
+                is_error=True,
+            )
+        return await self._tool.execute(call_id, {**arguments, "path": str(path)})
+
+
+def confine_writes(registry: Any, resolver: Any, platform: str) -> None:
+    """Make write_file, edit_file and edit_json in ``registry`` write only
+    inside ``resolver.project_dir``, the session's project output dir.
+
+    Called on a filtered session's registry. A sub-agent copies these tool
+    objects, so it is confined to the same directory."""
+    from bridge.artifact_store import MUTATING_FILE_TOOL_NAMES
+
+    for name in sorted(MUTATING_FILE_TOOL_NAMES):
+        tool = registry.get(name)
+        if tool is not None:
+            registry.unregister(name)
+            registry.register(_ProjectDirWriteTool(tool, resolver, platform))
 
 
 def tools_denied_for_gateway(platform: Any, all_tools: set[str]) -> set[str]:

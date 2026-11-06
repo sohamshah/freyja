@@ -366,7 +366,8 @@ def _run_slack_setup() -> int:
         for i, line in enumerate(textwrap.wrap(names, 66)):
             _info(_green(("  ✓ " if i == 0 else "    ") + line))
         _info(_red("  ✗ every other tool, such as bash, computer use, browser and MCP tools"))
-        _info(_dim("  write_file, edit_file and edit_json write files; memory edits memory."))
+        _info(_dim("  write_file, edit_file and edit_json write only in the session's project"))
+        _info(_dim("  output dir; memory edits memory."))
         _info(_dim("  A job made with schedule keeps this filter."))
         print()
         _info(_dim("Flip slack.enable_tool_filter to false in ~/.freyja/gateway.yaml"))

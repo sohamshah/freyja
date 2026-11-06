@@ -5540,6 +5540,7 @@ class _BridgeSession:
         # model honoring a prompt-level hint. A scheduled job made under
         # the filter keeps it in its own sessions, which have no source.
         from bridge.gateway.capabilities import (
+            confine_writes,
             gateway_filter_enabled,
             tools_allowed_for_gateway,
         )
@@ -5607,6 +5608,9 @@ class _BridgeSession:
             for name in registry.list_names():
                 if name not in allowed:
                     registry.unregister(name)
+            # Writes stay in the session's project output dir. An absolute
+            # path reached gateway.yaml, job files and shell rc files.
+            confine_writes(registry, self.path_resolver, self.tool_filter)
             # No MCP tool is on the list, so a server that connects
             # later must not register its tools here.
             mcp_manager = getattr(self.state, "mcp_manager", None)
