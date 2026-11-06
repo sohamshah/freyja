@@ -589,6 +589,24 @@ Sinks (where the output goes):
 
   Must be a real JSON array — not a JSON-encoded string.
 
+Missed runs (`misfire_policy`):
+  A run is missed when its time passes while no Freyja scheduler runs:
+  the Mac was off or asleep, or Freyja was restarting. Omit the field
+  for the default: "fire_once" for a one-time job, "skip" for a
+  recurring one.
+    · "skip"      — do not catch up; the job waits for its next time
+                    (if the Mac only slept, one late run may still
+                    happen). For frequent checks whose late result is
+                    worthless.
+    · "fire_once" — run once, as soon as possible, however many times
+                    were missed. For reminders, and for digests where
+                    only the latest result matters.
+    · "fire_all"  — run once per missed time: the latest 10 from the
+                    last 7 days. Only when each run matters on its own,
+                    such as one report per day.
+  A run that starts 5 minutes or more late is told its due time, and
+  opens its reply by saying it is late.
+
 Self-paced loops:
   When the schedule is `self_paced`, two extra tools are auto-registered
   during each fire: `scheduler_continue_loop(delay_seconds, reason)` and
@@ -707,6 +725,17 @@ _PARAMETERS = {
         "misfire_policy": {
             "type": "string",
             "enum": ["skip", "fire_once", "fire_all"],
+            "description": (
+                "What happens to runs missed while no Freyja scheduler "
+                "ran (Mac off or asleep, Freyja restarting). Omit for the "
+                "default: fire_once for a one-time job, skip for a "
+                "recurring one. skip: no catch-up; wait for the next "
+                "time. Use for frequent checks. fire_once: one run as "
+                "soon as possible. Use for reminders and digests. "
+                "fire_all: one run per missed time, the latest 10 from "
+                "the last 7 days. Use only when each run matters on its "
+                "own, such as one report per day."
+            ),
         },
         "overlap_policy": {
             "type": "string",
