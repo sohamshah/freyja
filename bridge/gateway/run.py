@@ -2988,9 +2988,13 @@ class GatewayDaemon:
         # Keep the launchd-captured stdout log bounded. Nothing else
         # rotates it: launchd owns the descriptor, so this has to be a
         # copytruncate from inside the daemon (see pid.rotate_log_if_large).
-        self._log_rotate_task = asyncio.create_task(
-            self._rotate_logs_periodically(), name="gateway-log-rotate"
-        )
+        # Only the gateway that listens writes it. The scheduler daemon's
+        # send-only one rotated it too, under the daemon's writers' locks,
+        # not the gateway's: the daemon rotates its own daemon.log.
+        if listen:
+            self._log_rotate_task = asyncio.create_task(
+                self._rotate_logs_periodically(), name="gateway-log-rotate"
+            )
         # Messages other processes queue in the inbox files of sessions
         # loaded here: a job's session while this process owns the tick.
         # The scheduler daemon reads no control channel, so this is its

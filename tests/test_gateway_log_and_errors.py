@@ -262,3 +262,55 @@ async def test_the_gateway_rotates_its_logs_under_its_writers_locks(monkeypatch)
         # The log handlers' locks, then emit()'s.
         assert locks[-1] is fb._EMIT_LOCK
         assert handler.lock in locks
+
+
+@pytest.mark.parametrize("listen", [True, False], ids=["gateway", "scheduler daemon"])
+async def test_only_the_gateway_that_listens_rotates_its_logs(monkeypatch, listen):
+    """The listening gateway writes gateway.log; the scheduler daemon starts a send-only GatewayDaemon too, and rotated the gateway's log as well: two processes rotating one log, the daemon under its own writers' locks."""
+    import asyncio
+    import types
+
+    import bridge.freyja_bridge as fb
+    import bridge.gateway.config as gcfg
+    import bridge.gateway.mcp_slack as mcp_slack
+    import bridge.gateway.run as run_mod
+
+    class _Scheduler:
+        async def start(self) -> None:
+            return None
+
+    class _State:
+        def __init__(self, **_kw) -> None:
+            self.sessions: dict = {}
+            self.scheduler = _Scheduler()
+
+    class _Adapter:
+        name = "slack"
+
+        async def connect(self, _on_inbound, *, listen: bool = True) -> bool:
+            return False
+
+    async def _noop(*_a, **_kw):
+        return None
+
+    monkeypatch.setattr(fb, "_BridgeState", _State)
+    monkeypatch.setattr(
+        gcfg.GatewayConfig, "load",
+        classmethod(lambda cls: types.SimpleNamespace(default_model="m", default_reasoning_level="low")),
+    )
+    monkeypatch.setattr(run_mod, "SlackAdapter", _Adapter)
+    monkeypatch.setattr(mcp_slack, "ensure_manager", lambda _d: types.SimpleNamespace(server_count=0))
+    gateway = run_mod.GatewayDaemon()
+    rotations: list[bool] = []
+
+    async def rotate() -> None:
+        rotations.append(True)
+
+    monkeypatch.setattr(gateway, "_rotate_logs_periodically", rotate)
+    monkeypatch.setattr(gateway, "_start_control_channel", _noop)
+    monkeypatch.setattr(gateway, "_sweep_orphaned_permission_requests", lambda: None)
+
+    await gateway.start(listen=listen)
+    await asyncio.sleep(0)
+
+    assert rotations == ([True] if listen else [])
