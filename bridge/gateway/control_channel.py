@@ -3,10 +3,10 @@
 The desktop renderer needs to send commands *to* the gateway daemon —
 most urgently, ``permission_response`` so the operator can approve or
 deny a ``permission_request`` from the desktop UI without us needing
-to stand up a socket between Electron and Python. Both directions are
-already file-coupled (the desktop tails the daemon's per-session
-``.events.jsonl`` to see live activity), so we mirror that for the
-write path:
+to stand up a socket between Electron and Python. The read path is
+already file-coupled (the desktop tails ``~/.freyja/logs/gateway.log``,
+where the daemon writes every event, to see live activity), so we
+mirror that for the write path:
 
   · Desktop appends one JSON command per line to
     ``~/.freyja/control/commands.jsonl``.
@@ -27,7 +27,8 @@ gateway-side agents can push ``talk_deliver`` messages to sessions
 that live in the desktop process.
 
 Command types today: ``permission_response``, ``set_permission_policy``,
-``skill_candidate_resolve``, ``skill_learn_this``, ``talk_deliver``.
+``skill_candidate_resolve``, ``skill_learn_this``, ``talk_deliver``,
+``artifact_note``.
 The dispatch table is a plain dict so adding more is one line each.
 """
 
