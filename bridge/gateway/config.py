@@ -13,14 +13,14 @@ Schema (all keys optional; missing → default):
   slack:
     allowed_user_ids:                  # per-workspace allowlist of
       T012345: [U001, U002]            #   Slack user ids
-      T067890: [U003]
-                                       # empty list / missing → allow
-                                       #   any user in that workspace
+      T067890: ["*"]                   # "*" → every member of that
+                                       #   workspace, with full tools
+                                       # empty list → nobody
                                        # workspace not present at all
                                        #   → DENY-ALL for unknown
                                        #   workspaces (safer default)
-    enforce_workspace_allowlist: true  # set false to allow any user
-                                       # in any workspace
+    enforce_workspace_allowlist: true  # no longer opens anything when
+                                       # false; kept so old files load
     mention_required_in_channels: true
     reply_in_thread: true
 """
@@ -47,14 +47,15 @@ def config_path() -> Path:
 class SlackConfig:
     """Slack-specific gateway config."""
 
-    # Map of team_id → list of allowed user_ids. An entry with an
-    # empty list = allow any user in that workspace. Workspace not in
-    # this map at all → behavior depends on
-    # ``enforce_workspace_allowlist``.
+    # Map of team_id → list of allowed user_ids. Whoever is let in gets
+    # the full toolset unless ``enable_tool_filter`` is on, so opening a
+    # workspace is explicit: "*" in its list lets in every member. An
+    # empty list lets in no one, and a workspace not in this map at all
+    # is denied.
     allowed_user_ids: dict[str, list[str]] = field(default_factory=dict)
-    # When true (default): a workspace not in ``allowed_user_ids`` is
-    # treated as DENY-ALL. When false: any user in any workspace is
-    # allowed (legacy / dev mode).
+    # False used to let in any user of any workspace. An open gateway
+    # now takes "*", so this changes nothing; it stays so older files
+    # and the desktop app's setup still load and save it.
     enforce_workspace_allowlist: bool = True
     mention_required_in_channels: bool = True
     reply_in_thread: bool = True
@@ -68,18 +69,10 @@ class SlackConfig:
 
     def user_allowed(self, team_id: str, user_id: str) -> bool:
         """Decide whether a user from a workspace should be heard."""
-        if not self.enforce_workspace_allowlist:
-            return True
         if not team_id or not user_id:
             return False
-        if team_id not in self.allowed_user_ids:
-            return False
-        ids = self.allowed_user_ids[team_id]
-        # Empty list = allow any user in this workspace (explicit
-        # opt-in to the workspace, but no per-user restriction).
-        if not ids:
-            return True
-        return user_id in ids
+        ids = self.allowed_user_ids.get(team_id) or []
+        return "*" in ids or user_id in ids
 
 
 @dataclass
@@ -133,6 +126,18 @@ class GatewayConfig:
                 slack_raw.get("enable_tool_filter", False)
             ),
         )
+        if not slack.enforce_workspace_allowlist:
+            logger.warning(
+                "%s: slack.enforce_workspace_allowlist: false no longer lets "
+                "everyone in; list \"*\" under a workspace in allowed_user_ids "
+                "to open it", path,
+            )
+        for team, ids in slack.allowed_user_ids.items():
+            if not ids:
+                logger.warning(
+                    "%s: slack.allowed_user_ids.%s is empty, so no one there "
+                    "is let in; list \"*\" to let in every member", path, team,
+                )
         return cls(
             default_model=str(
                 defaults.get("model") or cls.default_model

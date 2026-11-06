@@ -198,12 +198,12 @@ defaults:
   coordination_strategy: bus      # bus | isolated | kanban
 
 slack:
-  # Map of workspace_id → list of allowed user IDs.
-  # Empty list = allow any user in that workspace.
+  # Map of workspace_id → list of allowed user IDs. Everyone let in gets the full toolset unless enable_tool_filter is on.
+  # "*" = every member of that workspace. Empty list = nobody.
   # Workspace absent = deny-all (safe default for shared workspaces).
   allowed_user_ids:
     T012345: [U001, U002]
-  enforce_workspace_allowlist: true
+  enforce_workspace_allowlist: true   # kept for old files; false no longer opens anything
   mention_required_in_channels: true  # DMs always respond; channels need @mention
   reply_in_thread: true
   enable_tool_filter: false           # set true in shared workspaces to restrict tools

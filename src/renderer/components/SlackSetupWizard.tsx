@@ -61,7 +61,7 @@ export function SlackSetupWizard({ open, onClose }: Props) {
   const [verifying, setVerifying] = useState(false)
   const [verifyResult, setVerifyResult] = useState<SlackVerifyResult | null>(null)
   const [verifyError, setVerifyError] = useState<string>('')
-  const [allowlistMode, setAllowlistMode] = useState<'workspace' | 'specific' | 'any'>('workspace')
+  const [allowlistMode, setAllowlistMode] = useState<'workspace' | 'specific'>('specific')
   const [allowlistUsers, setAllowlistUsers] = useState('')
   const [installing, setInstalling] = useState(false)
   const [installResult, setInstallResult] = useState<string>('')
@@ -235,19 +235,17 @@ export function SlackSetupWizard({ open, onClose }: Props) {
 
   async function saveAllowlistAndContinue() {
     if (!verifyResult?.teamId) return
-    let userIds: string[] = []
-    let enforce = true
-    if (allowlistMode === 'any') {
-      enforce = false
-    } else if (allowlistMode === 'specific') {
+    // '*' lets in every member of this workspace; an empty list lets
+    // in no one, so the open choice has to be written out.
+    let userIds: string[] = ['*']
+    if (allowlistMode === 'specific') {
       userIds = allowlistUsers
         .split(',')
         .map((u) => u.trim())
         .filter((u) => u.length > 0)
     }
-    // workspace mode: enforce=true, userIds=[] (empty allowlist = allow any in workspace)
     const res = await window.harness.slackSetAllowlist(
-      verifyResult.teamId, userIds, enforce,
+      verifyResult.teamId, userIds, true,
     )
     if (res.ok) setStep('install')
   }
@@ -789,8 +787,8 @@ function AllowlistStep({
   result, mode, onModeChange, users, onUsersChange, onContinue, onBack,
 }: {
   result: SlackVerifyResult
-  mode: 'workspace' | 'specific' | 'any'
-  onModeChange: (m: 'workspace' | 'specific' | 'any') => void
+  mode: 'workspace' | 'specific'
+  onModeChange: (m: 'workspace' | 'specific') => void
   users: string
   onUsersChange: (v: string) => void
   onContinue: () => void
@@ -800,24 +798,19 @@ function AllowlistStep({
     <div className="flex flex-col gap-6">
       <SectionHeading
         title="Step 5 — Who's allowed to talk to your bot?"
-        subtitle="Without an allowlist, anyone in your workspace can DM the bot. Pick a stricter scope for production / demos."
+        subtitle="Whoever you let in can DM the bot and gets its full toolset: shell, files, computer use."
       />
       <div className="flex flex-col gap-2">
         {([
           {
             id: 'workspace' as const,
             title: 'Anyone in this workspace',
-            sub: `All members of ${result.teamName} can talk to the bot. Other workspaces denied.`,
+            sub: `All members of ${result.teamName} can talk to the bot, with full tools. Other workspaces denied.`,
           },
           {
             id: 'specific' as const,
             title: 'Just these users',
             sub: 'Most secure for demos. Paste comma-separated Slack user IDs.',
-          },
-          {
-            id: 'any' as const,
-            title: 'Anyone, anywhere (dev only)',
-            sub: 'No allowlist — every user in every workspace where the app is installed.',
           },
         ]).map((opt) => {
           const active = mode === opt.id

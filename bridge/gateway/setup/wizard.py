@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -171,6 +172,9 @@ async def _verify_tokens(bot_token: str, app_token: str) -> tuple[bool, dict[str
 # ── the wizard ──────────────────────────────────────────────────
 
 
+_SLACK_USER_ID = re.compile(r"^[UW][A-Z0-9]{2,}$")
+
+
 def run_slack_setup() -> int:
     """Top-level Slack setup wizard. Returns shell exit code."""
     print()
@@ -288,45 +292,45 @@ def run_slack_setup() -> int:
     # ── Step 6a: Per-workspace allowlist ──
     _step(6, TOTAL, "Lock down who can talk to your bot")
     _info(
-        "Without an allowlist, anyone in the workspace can DM your bot or "
-        "@mention it. For a demo deployment we recommend allowlisting just "
-        "yourself + a small handful of trusted users."
+        "Only the users you list can DM your bot or @mention it, and they "
+        "get the full toolset. We recommend listing just yourself + a "
+        "small handful of trusted users."
     )
     _info(
         f"Bot user_id in workspace {info['team_name']}: " + _bold(info["bot_user_id"] or "?")
     )
     _info(_dim("(That's the bot — find your own user_id in Slack: profile → ⋮ → 'Copy member ID')"))
     print()
-    allowlist_raw = _prompt(
-        "Allowed user_ids (comma-separated, or 'any' for no restriction)",
-        default="",
-    )
-    from bridge.gateway.config import GatewayConfig, SlackConfig, write_config
-    cfg = GatewayConfig.load()
-    if allowlist_raw.strip().lower() == "any":
-        # Flip off the global enforce toggle. We DO NOT clear
-        # ``allowed_user_ids`` — those per-team allowlists are
-        # preserved so the user can flip enforcement back on later
-        # without redoing the per-workspace setup.
-        cfg.slack.enforce_workspace_allowlist = False
-        _warn(
-            "Allowlist disabled — every user in every workspace where the "
-            "app is installed can talk to the bot. Existing per-team "
-            "allowlists preserved for if you re-enable enforcement later."
+    # A blank answer used to let in every member of the workspace. An
+    # open gateway is now the explicit "*", and anything else must be
+    # a list of user ids.
+    while True:
+        allowlist_raw = _prompt(
+            "Allowed user_ids (comma-separated, or '*' for every member)",
+            default="",
         )
-    elif allowlist_raw.strip():
         ids = [u.strip() for u in allowlist_raw.split(",") if u.strip()]
-        cfg.slack.enforce_workspace_allowlist = True
-        cfg.slack.allowed_user_ids[info["team_id"]] = ids
-        _ok(
-            f"Allowlist for {info['team_name']}: " + ", ".join(ids)
+        if ids == ["*"] or (ids and all(_SLACK_USER_ID.match(u) for u in ids)):
+            break
+        if ids:
+            _err("Slack user_ids look like U012ABCDEF (they start with U or W)")
+        else:
+            _err("List at least one user_id, usually your own")
+        if not _yes_no("Try again?", default=True):
+            return 0
+    from bridge.gateway.config import GatewayConfig, write_config
+    cfg = GatewayConfig.load()
+    cfg.slack.enforce_workspace_allowlist = True
+    cfg.slack.allowed_user_ids[info["team_id"]] = ids
+    if ids == ["*"]:
+        _warn(
+            f"Every member of {info['team_name']} can now talk to the bot, "
+            "with full tools (shell, files, computer use) unless "
+            "slack.enable_tool_filter is on. Other workspaces stay denied."
         )
     else:
-        cfg.slack.enforce_workspace_allowlist = True
-        cfg.slack.allowed_user_ids[info["team_id"]] = []  # empty = allow any user in this workspace
         _ok(
-            f"Allowlist scope set to workspace {info['team_name']} "
-            "(any user in this workspace allowed; other workspaces denied)"
+            f"Allowlist for {info['team_name']}: " + ", ".join(ids)
         )
     write_config(cfg)
 
