@@ -586,6 +586,8 @@ RunStatus = Literal[
     "cancelled",      # user-requested cancellation
     "timed_out",      # wall-clock timeout
     "budget_exceeded",# went over its budget; never retried
+    "queued",         # its prompt waits behind the turn that started it (run_now
+                      # from that session's tool call); the record is the dispatch
 ]
 
 
