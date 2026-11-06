@@ -11,7 +11,9 @@ so a single ``chat.postMessage`` is the right call.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -30,7 +32,7 @@ async def deliver_slack(
     ctx: "SinkContext",
 ) -> str | None:
     """Returns the Slack message ``ts`` on success, else raises."""
-    adapter = _find_slack_adapter(ctx.state)
+    adapter = await _slack_adapter(ctx.state)
     if adapter is None:
         raise RuntimeError(
             f"no Slack adapter available for workspace {spec.workspace_id}"
@@ -88,6 +90,44 @@ def _find_slack_adapter(state: Any) -> Any | None:
     for a in getattr(gw, "adapters", None) or []:
         if getattr(a, "name", None) == "slack":
             return a
+    return None
+
+
+async def _slack_adapter(state: Any) -> Any | None:
+    """The gateway's Slack adapter, or in a process without one (the
+    desktop bridge: "Run now", or a fire while it owns the tick) a
+    send-only adapter built once from the gateway's bot token. Send-only
+    opens no Socket Mode connection; only the gateway may listen."""
+    adapter = _find_slack_adapter(state)
+    if adapter is not None:
+        return adapter
+    # One build per process, shared by sinks that deliver at once.
+    pending = getattr(state, "scheduler_slack_sender", None)
+    if pending is None:
+        pending = asyncio.ensure_future(_connect_send_only())
+        state.scheduler_slack_sender = pending
+    adapter = await asyncio.shield(pending)
+    if adapter is None and state.scheduler_slack_sender is pending:
+        state.scheduler_slack_sender = None  # try again on the next run
+    return adapter
+
+
+async def _connect_send_only() -> Any | None:
+    from bridge.gateway.platforms.slack import SlackAdapter
+    from bridge.gateway.setup.env_writer import read_env
+
+    async def _no_inbound(_message: Any) -> None:
+        return None
+
+    try:
+        # The token lives in ~/.freyja/.env, which only the gateway
+        # loads into its environment.
+        token = os.environ.get("SLACK_BOT_TOKEN") or read_env().get("SLACK_BOT_TOKEN", "")
+        adapter = SlackAdapter(config={"bot_token": token})
+        if await adapter.connect(_no_inbound, listen=False):
+            return adapter
+    except Exception:  # noqa: BLE001
+        logger.exception("send-only Slack adapter could not be built")
     return None
 
 

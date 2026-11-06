@@ -49,10 +49,13 @@ class _State:
 
 class _SlackAdapter:
     name = "slack"
+    built: list["_SlackAdapter"] = []
 
-    def __init__(self) -> None:
+    def __init__(self, *, config: dict | None = None) -> None:
+        self.config = config or {}
         self.listen: bool | None = None
         self.sent: list[tuple[str, str, str | None]] = []
+        _SlackAdapter.built.append(self)
 
     async def connect(self, _on_inbound, *, listen: bool = True) -> bool:
         self.listen = listen
@@ -158,3 +161,28 @@ async def test_a_scheduled_run_posts_with_its_own_workspace_s_token():
 
     # The banner, then the output.
     assert posted == [("T2", "C2"), ("T2", "C2")]
+
+
+async def test_the_desktop_bridge_posts_through_a_send_only_adapter(monkeypatch, tmp_path):
+    # The desktop bridge runs no gateway, so "Run now" from the app on a
+    # job with a Slack sink, or any fire while the desktop bridge held
+    # the owner lock, failed with "no Slack adapter available". It now
+    # builds one send-only adapter from the gateway's bot token. It must
+    # never listen: a second Socket Mode connection splits Slack's events
+    # and both processes answer (f032cfb).
+    import bridge.gateway.platforms.slack as slack_platform
+
+    monkeypatch.setattr(slack_platform, "SlackAdapter", _SlackAdapter)
+    monkeypatch.setattr(_SlackAdapter, "built", [])
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    (tmp_path / ".env").write_text("SLACK_BOT_TOKEN=xoxb-from-gateway-env\n")
+    desktop_state = SimpleNamespace(gateway_runner=None)
+
+    assert await _deliver(desktop_state) == "1793000000.000100"
+    assert await _deliver(desktop_state) == "1793000000.000100"
+
+    [adapter] = _SlackAdapter.built
+    assert adapter.listen is False
+    assert adapter.config == {"bot_token": "xoxb-from-gateway-env"}
+    assert len(adapter.sent) == 2
+    assert not os.environ.get("SLACK_BOT_TOKEN")
