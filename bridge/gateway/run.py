@@ -2958,6 +2958,7 @@ class GatewayDaemon:
         reader.register("skill_learn_this", self._on_skill_learn_this)
         reader.register("talk_deliver", self._on_talk_deliver)
         reader.register("artifact_note", self._on_artifact_note)
+        reader.register("cancel_turn", self._on_cancel_turn)
         await reader.start()
         self.control_channel = reader
 
@@ -2971,6 +2972,35 @@ class GatewayDaemon:
         from bridge.freyja_bridge import _handle_talk_deliver_command
 
         await _handle_talk_deliver_command(self.state, cmd)
+
+    async def _on_cancel_turn(self, cmd: dict[str, Any]) -> None:
+        """Stop pressed in the app on a Slack session's turn (the app's
+        bridge forwards it). It stops the turn as /stop and Slack's Stop
+        button do; Slack has not sealed the thread's message this time,
+        so the consumer seals it. The app hears of it as it does for its
+        own sessions: turn_cancelled now, the stopped turn's turn_complete
+        as it unwinds."""
+        from bridge.freyja_bridge import _stop_is_stale, emit
+
+        session_id = str(cmd.get("sessionId") or "")
+        sess = (getattr(self.state, "sessions", None) or {}).get(session_id)
+        if sess is None:
+            logger.info("control: cancel_turn — session %s not loaded", session_id)
+            return
+        kind = str(cmd.get("kind") or "cancel_turn")
+        if _stop_is_stale(sess, cmd, kind):
+            return
+        cancelled = self._cancel_session(session_id)
+        logger.info("[gateway] app stop: session=%s cancelled=%s", session_id, cancelled)
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": session_id,
+                "subtype": "turn_cancelled",
+                "message": f"Cancelled {int(cancelled)} in-flight operation(s)",
+                "details": {"fired": int(cancelled), "kind": kind, "scope": "turn"},
+            }
+        )
 
     async def _on_artifact_note(self, cmd: dict[str, Any]) -> None:
         """Operator comment on an artifact, addressed to a session this daemon

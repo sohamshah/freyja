@@ -43,6 +43,7 @@ def app_bridge(monkeypatch, tmp_path):
     state = SimpleNamespace(
         sessions={}, active_session_id=None, ensure_session=ensure_session, gateway_runner=None,
     )
+    state.get = lambda sid: state.sessions.get(sid) if sid else None
     return state, events, built
 
 
@@ -106,6 +107,7 @@ async def test_the_gateway_runs_the_forwarded_message_with_its_slack_hook(app_br
         id=SLACK, inbox=SessionInbox(session_id=SLACK), pending_task=None, talk_wake_hook=None,
     )
     thread.wake_for_inbox = lambda: fb._BridgeSession.wake_for_inbox(thread)
+    thread.accepts_followups = lambda: fb._BridgeSession.accepts_followups(thread)
     gateway = SimpleNamespace(sessions={SLACK: thread}, talk_wake_hook_factory=lambda _sess: hook)
     await fb._handle_talk_deliver_command(gateway, cmd)
     assert turns == [("check the build", hook)]
@@ -138,6 +140,112 @@ async def test_a_message_too_large_for_the_control_channel_is_refused(app_bridge
     assert "Slack" in err["message"]
     (refused,) = [e for e in events if e["type"] == "send_refused"]
     assert (refused["sessionId"], refused["clientId"]) == (SLACK, "m2")
+
+
+# ── Stop pressed in the app stops the gateway's turn ─────────────────
+
+
+def _gateway_thread(turn_id: str):
+    """The gateway's end: its session for the thread, with a turn running
+    and the Slack consumer streaming it."""
+    import asyncio
+
+    from bridge.gateway.run import GatewayDaemon
+
+    aborts: list[dict] = []
+    consumer = SimpleNamespace(finalized=False, abort=lambda **kw: aborts.append(kw))
+    task = asyncio.get_running_loop().create_task(asyncio.sleep(60))
+    thread = SimpleNamespace(id=SLACK, pending_task=task, current_turn_id=turn_id, _active_stream_consumer=consumer)
+    daemon = GatewayDaemon()
+    daemon.state = SimpleNamespace(sessions={SLACK: thread})
+    return daemon, task, aborts
+
+
+async def _stop(state, turn_id: str) -> None:
+    await fb._handle_command(state, {"type": "force_cancel", "sessionId": SLACK, "scope": "turn", "turnId": turn_id})
+
+
+async def test_stop_pressed_in_the_app_stops_the_gateways_turn(app_bridge, monkeypatch):
+    import asyncio
+
+    state, events, built = app_bridge
+    _gateway_running(monkeypatch, os.getpid() + 1)
+    await _stop(state, "turn-3")
+    assert built == []
+    (cmd,) = _forwarded()
+    assert (cmd["type"], cmd["sessionId"], cmd["turnId"]) == ("cancel_turn", SLACK, "turn-3")
+
+    daemon, task, aborts = _gateway_thread("turn-3")
+    await daemon._on_cancel_turn(cmd)
+    await asyncio.sleep(0)
+    assert task.cancelled()
+    # As /stop does: Slack has not sealed the thread's message, so the
+    # consumer seals it.
+    assert aborts == [{"stopped_by_user": False}]
+    # The app hears of it as it does for its own sessions.
+    (note,) = [e for e in events if e.get("subtype") == "turn_cancelled"]
+    assert note["sessionId"] == SLACK
+
+
+async def test_a_stop_for_a_turn_that_already_ended_leaves_the_gateways_new_turn_running(app_bridge, monkeypatch):
+    # A new message in the thread may have started another turn by then.
+    state, events, _built = app_bridge
+    _gateway_running(monkeypatch, os.getpid() + 1)
+    await _stop(state, "turn-3")
+    (cmd,) = _forwarded()
+    daemon, task, aborts = _gateway_thread("turn-4")
+    await daemon._on_cancel_turn(cmd)
+    assert not task.done() and aborts == []
+    (stale,) = [e for e in events if e.get("subtype") == "turn_cancel_stale"]
+    assert stale["sessionId"] == SLACK
+    task.cancel()
+
+
+async def test_a_cut_in_typed_in_the_app_cuts_into_the_gateways_running_turn(app_bridge, monkeypatch):
+    # ⌃↵: the app's own follow-ups cut the running step short; pushed into
+    # the thread's inbox as talk, this one waited for the step to end.
+    import asyncio
+
+    state, events, _built = app_bridge
+    _gateway_running(monkeypatch, os.getpid() + 1)
+    await fb._handle_command(
+        state,
+        {
+            "type": "send_message", "sessionId": SLACK, "content": "use the other branch",
+            "clientId": "m9", "followup": True, "force": True,
+        },
+    )
+    (cmd,) = _forwarded()
+
+    interrupts: list[int] = []
+    yields: list[bool] = []
+    task = asyncio.get_running_loop().create_task(asyncio.sleep(60))
+    thread = SimpleNamespace(
+        id=SLACK, inbox=SessionInbox(session_id=SLACK), pending_task=task, runtime="native", talk_wake_hook=None,
+        runner=SimpleNamespace(request_interrupt=lambda: interrupts.append(1) or True),
+        _request_tool_yield=lambda *, hard: yields.append(hard),
+    )
+    for name in ("accepts_followups", "push_operator_followup", "interrupt_for_inbox", "wake_for_inbox"):
+        setattr(thread, name, getattr(fb._BridgeSession, name).__get__(thread))
+    gateway = SimpleNamespace(sessions={SLACK: thread}, talk_wake_hook_factory=lambda _sess: None)
+    await fb._handle_talk_deliver_command(gateway, cmd)
+    task.cancel()
+
+    assert interrupts == [1] and yields == [True]
+    (msg,) = thread.inbox.unread
+    assert (msg.content, msg.kind, msg.force, msg.client_id) == ("use the other branch", KIND_FOLLOWUP, True, "m9")
+    # The app's pending bubble learns it is cutting in, as for its own.
+    (queued,) = [e for e in events if e["type"] == "followup_queued"]
+    assert (queued["clientId"], queued["force"], queued["interrupting"]) == ("m9", True, True)
+
+
+async def test_stop_says_so_when_no_gateway_runs(app_bridge, monkeypatch):
+    state, events, _built = app_bridge
+    _gateway_running(monkeypatch, None)
+    await _stop(state, "turn-3")
+    assert _forwarded() == []
+    (err,) = [e for e in events if e["type"] == "error"]
+    assert "Slack" in err["message"]
 
 
 # ── a copy built by any other command writes nothing ─────────────────

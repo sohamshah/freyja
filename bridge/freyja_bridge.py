@@ -1492,6 +1492,66 @@ def _refuse_send(sid: str, client_id: str | None, reason: str) -> None:
     emit({"type": "send_refused", "sessionId": sid, "clientId": client_id})
 
 
+def _route_stop_to_gateway(sid: str, cmd: dict[str, Any]) -> bool:
+    """Stop pressed on a Slack session's turn in the app: hand it to the
+    gateway, which runs the turn. Returns False when ``sid`` is not a Slack
+    session the gateway holds, or the stop is not for the turn."""
+    if not _gateway_holds(sid) or str(cmd.get("scope") or "all") != "turn":
+        return False
+    from bridge.gateway.control_channel import append_command
+    from bridge.gateway.pid import get_running_pid
+
+    if get_running_pid() is None:
+        emit_error(_STOP_GATEWAY_DOWN, recoverable=True)
+        return True
+    try:
+        append_command(
+            {
+                "type": "cancel_turn",
+                "sessionId": sid,
+                "turnId": str(cmd.get("turnId") or "").strip() or None,
+                "kind": cmd.get("type"),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        emit_error(f"Not stopped: could not reach the Slack gateway: {exc}", recoverable=True)
+        return True
+    log("info", f"stop → gateway for {sid}")
+    return True
+
+
+def _stop_is_stale(sess: Any, cmd: dict[str, Any], kind: str) -> bool:
+    """A stop names the turn the operator was looking at. Memo wake turns
+    start on their own (and in Slack, anyone's message in the thread), so
+    by the time the command lands a different turn may be running;
+    stopping it would kill work the operator never saw. Refuse and say so
+    (True) — the stop button is still there for the turn that is actually
+    running."""
+    expected = str(cmd.get("turnId") or "").strip()
+    running = sess.pending_task is not None and not sess.pending_task.done()
+    current = getattr(sess, "current_turn_id", None)
+    if not (expected and running and current and current != expected):
+        return False
+    log("info", f"{kind} for {expected} ignored on session={sess.id}: {current} is running now")
+    emit(
+        {
+            "type": "system_event",
+            "sessionId": sess.id,
+            "subtype": "turn_cancel_stale",
+            "message": (
+                "That turn had already finished — a new one started "
+                "since. Stop again to stop it."
+            ),
+            "details": {
+                "expectedTurnId": expected,
+                "runningTurnId": current,
+                "chatVisible": True,
+            },
+        }
+    )
+    return True
+
+
 def _process_owns_gateway() -> bool:
     """True when THIS process holds the gateway PID lock — i.e. it is
     the authoritative host for ``freyja:<platform>:…`` sessions."""
@@ -1505,12 +1565,25 @@ def _process_owns_gateway() -> bool:
 
 async def _handle_talk_deliver_command(state: "_BridgeState", cmd: dict[str, Any]) -> None:
     """Control-channel handler for cross-process talk delivery."""
-    from bridge.inbox import InboxMessage
+    from bridge.inbox import KIND_QUEUED, OPERATOR_KINDS, InboxMessage
 
     sid = str(cmd.get("to") or "")
     msg = InboxMessage.from_dict(cmd.get("message"))
     if not sid or msg is None or not msg.content:
         log("warn", "talk_deliver: malformed command dropped")
+        return
+    sess = state.sessions.get(sid)
+    if sess is not None and msg.from_role == "operator" and msg.kind in OPERATOR_KINDS and sess.accepts_followups():
+        # Typed in the app for a Slack thread whose turn is running
+        # (_route_operator_message_to_gateway): it goes into that turn as
+        # the app's own follow-ups do, and a cut-in (⌃↵) cuts the running
+        # step short. Pushed as talk, it waited for the step to end.
+        _install_talk_wake_hook(state, sess)
+        sess.push_operator_followup(
+            msg.content, msg.attachments, force=msg.force, client_id=msg.client_id,
+            after_turn=msg.kind == KIND_QUEUED,
+        )
+        log("info", f"talk_deliver: {msg.id[:8]} → {sid} (follow-up for the running turn)")
         return
     status = await deliver_talk_message_locally(state, sid, msg)
     log("info", f"talk_deliver: {msg.id[:8]} → {sid} ({status})")
@@ -13166,6 +13239,10 @@ _SEND_GATEWAY_TOO_LARGE = (
     "Not sent: this session lives in Slack, and the message is too large to "
     "hand to the Slack gateway. Attach large files in the Slack thread."
 )
+_STOP_GATEWAY_DOWN = (
+    "Not stopped: this session's turn runs in the Slack gateway, which is "
+    "not running."
+)
 
 
 def _gateway_holds(session_id: str) -> bool:
@@ -14148,6 +14225,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sys.exit(0)
 
     if ctype == "cancel" or ctype == "force_cancel":
+        # Stop pressed on a Slack session: its turn runs in the gateway.
+        if session_id and _route_stop_to_gateway(session_id, cmd):
+            return
         sess = state.get(session_id)
         if sess is None and session_id:
             # Stop pressed in a sub-agent's pane: stop that sub-agent. Its
@@ -14172,41 +14252,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             scope = str(cmd.get("scope") or "all")
             if scope not in ("turn", "subagents", "all"):
                 scope = "all"
-            # A stop names the turn the operator was looking at. Memo wake
-            # turns start on their own, so by the time the command lands a
-            # different turn may be running; stopping it would kill work
-            # the operator never saw. Refuse and say so — the stop button
-            # is still there for the turn that is actually running.
-            expected = str(cmd.get("turnId") or "").strip()
-            running = sess.pending_task is not None and not sess.pending_task.done()
-            if (
-                scope == "turn"
-                and expected
-                and running
-                and getattr(sess, "current_turn_id", None)
-                and sess.current_turn_id != expected
-            ):
-                log(
-                    "info",
-                    f"{ctype} for {expected} ignored on session={sess.id}: "
-                    f"{sess.current_turn_id} is running now",
-                )
-                emit(
-                    {
-                        "type": "system_event",
-                        "sessionId": sess.id,
-                        "subtype": "turn_cancel_stale",
-                        "message": (
-                            "That turn had already finished — a new one started "
-                            "since. Stop again to stop it."
-                        ),
-                        "details": {
-                            "expectedTurnId": expected,
-                            "runningTurnId": sess.current_turn_id,
-                            "chatVisible": True,
-                        },
-                    }
-                )
+            if scope == "turn" and _stop_is_stale(sess, cmd, ctype):
                 return
             fired = _force_cancel_session(sess, scope=scope)
             log(

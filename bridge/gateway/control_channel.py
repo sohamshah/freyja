@@ -28,7 +28,7 @@ that live in the desktop process.
 
 Command types today: ``permission_response``, ``set_permission_policy``,
 ``skill_candidate_resolve``, ``skill_learn_this``, ``talk_deliver``,
-``artifact_note``.
+``artifact_note``, ``cancel_turn``.
 The dispatch table is a plain dict so adding more is one line each.
 """
 
