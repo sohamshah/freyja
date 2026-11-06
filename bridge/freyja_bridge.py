@@ -16521,6 +16521,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 _uncancel_current_task()
             except Exception as exc:  # noqa: BLE001
                 log("error", f"edit_user_message turn failed: {exc}")
+                _emit_turn_failed(sess, exc)
             # Follow-ups / memos that arrived during the edited turn.
             await _drain_after_turn(sess, cancelled=cancelled)
 
@@ -16586,6 +16587,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 _uncancel_current_task()
             except Exception as exc:  # noqa: BLE001
                 log("error", f"rerun_user_message turn failed: {exc}")
+                _emit_turn_failed(sess, exc)
             await _drain_after_turn(sess, cancelled=cancelled)
 
         sess.pending_task = asyncio.create_task(_run_rerun(), name=f"rerun-{sess.id}")

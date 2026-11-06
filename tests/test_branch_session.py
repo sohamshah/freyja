@@ -936,6 +936,21 @@ async def test_live_commands_still_act_on_the_first_kept_message(sessions_dir, m
     assert not [e for e in events if e["type"] == "error"]
 
 
+@pytest.mark.parametrize("cmd", REWINDS[:2])
+async def test_an_edit_or_rerun_whose_turn_raises_tells_the_app(sessions_dir, monkeypatch, cmd):
+    """A turn that raises past run_turn's own handler sends turn_failed, which ends the turn in the app. The edit and rerun tasks only logged it, so the app went on showing the turn running, or showed nothing."""
+    fb, sess, state, events = _live(monkeypatch, AFTER)
+
+    async def run_turn(*_a, **_k):
+        fb.emit({"type": "turn_start", "sessionId": "s", "turnId": "turn-1"})
+        raise RuntimeError("cannot read the attachment")
+
+    sess.run_turn = run_turn
+    await _send(fb, sess, state, {**cmd, "messageCreatedAt": ON_U2 * 1000})
+    (failed,) = [e for e in events if e["type"] == "turn_failed"]
+    assert (failed["sessionId"], failed["message"]) == ("s", "cannot read the attachment")
+
+
 async def test_live_commands_act_on_the_first_message_an_old_summary_kept(sessions_dir, monkeypatch):
     import bridge.project_paths as pp
 
