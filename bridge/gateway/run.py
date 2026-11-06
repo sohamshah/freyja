@@ -2055,6 +2055,16 @@ class GatewayDaemon:
         cancelled = self._cancel_session(key, stopped_by_user=True)
         logger.info("[gateway] stop button: session=%s cancelled=%s", key, cancelled)
 
+    async def _on_session_stop_refused(self, info: dict[str, Any]) -> None:
+        """Someone not on the allowlist pressed Stop. Slack sealed the
+        messages it listed anyway, but the turn goes on: its reply
+        continues in a fresh message instead of one post at the end."""
+        sessions = getattr(self.state, "sessions", {}) if self.state else {}
+        session = sessions.get(self._slack_key_for(self._slack_adapter(), info))
+        consumer = getattr(session, "_active_stream_consumer", None)
+        if consumer is not None:
+            await consumer.continue_after_seal(list(info.get("streaming_message_ts") or []))
+
     async def _on_session_title_changed(self, info: dict[str, Any]) -> None:
         """The operator renamed a session in Slack. Mirror it to the
         session index through the same event the desktop rename uses."""
@@ -2936,6 +2946,7 @@ class GatewayDaemon:
             # Agent session surface: Stop button, sidebar renames, the
             # Messages tab opening, and feedback all land here.
             adapter.on_session_stopped = self._on_session_stopped
+            adapter.on_session_stop_refused = self._on_session_stop_refused
             adapter.on_session_title_changed = self._on_session_title_changed
             adapter.on_home_opened = self._on_home_opened
             adapter.on_feedback = self._on_feedback

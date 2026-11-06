@@ -348,6 +348,7 @@ class SlackAdapter:
         # Daemon hooks for the agent-session surface. Each is an async
         # callable taking one dict, set by the gateway after construction.
         self.on_session_stopped: Any = None
+        self.on_session_stop_refused: Any = None
         self.on_session_title_changed: Any = None
         self.on_home_opened: Any = None
         self.on_feedback: Any = None
@@ -2353,6 +2354,13 @@ class SlackAdapter:
             what="a stop", notice="Only Freyja's owner can stop it.",
             user_team=self._user_team(event, body),
         ):
+            # Slack sealed the listed messages all the same, and the turn
+            # goes on, so its reply continues in a fresh one.
+            if self.on_session_stop_refused is not None:
+                try:
+                    await self.on_session_stop_refused(info)
+                except Exception:  # noqa: BLE001
+                    logger.exception("[slack] on_session_stop_refused raised")
             return
         if self.on_session_stopped is None:
             return

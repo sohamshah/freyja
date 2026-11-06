@@ -1022,6 +1022,9 @@ class SlackStreamConsumer:
                 st.stream_ts = result.message_id
                 st.stream_count += 1
                 st.stream_chars = 0
+                # Closing a message Slack had sealed fails and turns the
+                # cards off; the new message takes them again.
+                st.cards_disabled = False
                 st.phase_open = False
                 st.phase_title = None
                 st.cards_emitted_this_phase = 0
@@ -1586,6 +1589,19 @@ class SlackStreamConsumer:
             asyncio.run_coroutine_threadsafe(_seal(), self._loop)
         except RuntimeError:
             pass
+
+    async def continue_after_seal(self, sealed: list[str]) -> None:
+        """Slack sealed this turn's message on a Stop the gateway refused,
+        and the turn goes on. Continue in a fresh message, as a rollover
+        does, rather than lose the cards and post the rest at the end."""
+        async with self._lock:
+            st = self._state
+            old_ts = st.stream_ts
+            if st.finalized or not old_ts or old_ts not in sealed:
+                return
+            await self._rollover_locked()
+            if st.stream_ts != old_ts:
+                self._fold_in_background(old_ts)
 
     async def finalize(self) -> None:
         """Seal the turn's message: tail prose, images, feedback, status."""
