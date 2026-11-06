@@ -5451,9 +5451,16 @@ class _BridgeSession:
                 # posture, and it's not destructive.
                 allowed = set(tools_allowed_for_gateway(platform))
                 allowed.update({"send_attachment", "slack_widget", "code_channel"})
-                for name in list(registry._tools.keys()):  # noqa: SLF001
+                # unregister() drops the catalog entry too: the tool list,
+                # tool_search and a read-only fork are built from it.
+                for name in registry.list_names():
                     if name not in allowed:
-                        registry._tools.pop(name, None)  # noqa: SLF001
+                        registry.unregister(name)
+                # No MCP tool is on the list, so a server that connects
+                # later must not register its tools here.
+                mcp_manager = getattr(self.state, "mcp_manager", None)
+                if mcp_manager is not None:
+                    mcp_manager.detach(registry)
                 log(
                     "info",
                     f"gateway session {self.id}: tool surface restricted to "

@@ -645,6 +645,13 @@ class McpManager:
             return
         self._registries.append(weakref.ref(registry))
 
+    def detach(self, registry: Any) -> None:
+        """Stop feeding this registry: later connects no longer register
+        their tools into it (a gateway session with its tools filtered)."""
+        self._registries = [
+            r for r in self._registries if r() is not None and r() is not registry
+        ]
+
     def register_into(self, registry: Any) -> None:
         """attach() + immediately register all current proxy tools."""
         self.attach(registry)

@@ -479,11 +479,11 @@ The wizard asks for the Slack user ids this workspace lets in, or `"*"` for ever
 >   ✓ All tools available  (same as desktop: bash, computer-use, browser, write, memory, sub-agents)
 >
 > Flip slack.enable_tool_filter to true in ~/.freyja/gateway.yaml
-> for a restricted read-mostly surface (e.g. shared workspaces).
+> to keep Slack sessions to a short list: no shell, computer use or browser.
 
 Two settings decide this. `slack.enable_tool_filter` is `false` by default (`bridge/gateway/config.py`), so a Slack session gets the same tools as the desktop. A gateway session also runs at the `yolo` permission tier (`_BridgeSession.__init__` in `bridge/freyja_bridge.py`), so every permission level, `DANGEROUS` included, is approved without a prompt. Set `FREYJA_GATEWAY_PERMISSION_AUTO` (`none`, `low`, `medium`, `high` or `yolo`) in the gateway's environment to get prompts back. So everyone on the allowlist can run shell commands, write files, and use computer use and the browser on the operator's Mac. `/perms` in Slack shows the current tool surface.
 
-With `slack.enable_tool_filter: true`, a Slack session gets only the tools in `SLACK_TOOL_ALLOWLIST` (`bridge/gateway/capabilities.py`): file reads and writes, web search, sub-agents, skills, memory and schedules, but no shell, computer use or browser. The setting applies to Slack sessions created after the change. The permission tier stays `yolo` either way.
+With `slack.enable_tool_filter: true`, a Slack session gets only the tools in `SLACK_TOOL_ALLOWLIST` (`bridge/gateway/capabilities.py`): file reads and writes, web search, sub-agents, skills, memory and schedules, but no shell, computer use or browser. No MCP tool is on the list, and `tool_search` and `call_tool` reach only the listed tools. A job made with `schedule` runs in a new session by default, and the filter does not apply there. The setting applies to Slack sessions created after the change. The permission tier stays `yolo` either way.
 
 ### Step 7 — Install gateway daemon
 

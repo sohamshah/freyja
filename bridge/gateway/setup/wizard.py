@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
 from typing import Any
 
@@ -359,11 +360,14 @@ def _run_slack_setup() -> int:
     # ── Step 6b: Capability defaults (informational) ──
     print()
     if cfg.slack.enable_tool_filter:
-        _info("Tool surface for Slack-routed sessions (filter ON):")
-        _info(_green("  ✓ read_file, list_directory, glob, grep   ") + _dim("(read-only filesystem)"))
-        _info(_green("  ✓ web_search, web_fetch                   ") + _dim("(internet access)"))
-        _info(_green("  ✓ sub_agent                               ") + _dim("(spawn specialized helpers)"))
-        _info(_red("  ✗ bash, computer, browser, typing tools   ") + _dim("(restricted by filter)"))
+        from bridge.gateway.capabilities import tools_allowed_for_gateway
+        _info("Tool surface for Slack-routed sessions (filter ON), only these tools:")
+        names = ", ".join(sorted(tools_allowed_for_gateway("slack")))
+        for i, line in enumerate(textwrap.wrap(names, 66)):
+            _info(_green(("  ✓ " if i == 0 else "    ") + line))
+        _info(_red("  ✗ every other tool, such as bash, computer use, browser and MCP tools"))
+        _info(_dim("  write_file, edit_file and edit_json write files; memory edits memory."))
+        _info(_dim("  A job made with schedule runs in a new session by default, without this filter."))
         print()
         _info(_dim("Flip slack.enable_tool_filter to false in ~/.freyja/gateway.yaml"))
         _info(_dim("to give the agent the full toolset over Slack."))
@@ -372,7 +376,7 @@ def _run_slack_setup() -> int:
         _info(_green("  ✓ All tools available  ") + _dim("(same as desktop: bash, computer-use, browser, write, memory, sub-agents)"))
         print()
         _info(_dim("Flip slack.enable_tool_filter to true in ~/.freyja/gateway.yaml"))
-        _info(_dim("for a restricted read-mostly surface (e.g. shared workspaces)."))
+        _info(_dim("to keep Slack sessions to a short list: no shell, computer use or browser."))
 
     # ── Step 7: launchd install ──
     _step(7, TOTAL, "Install the gateway as a background service")
