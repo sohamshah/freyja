@@ -123,10 +123,22 @@ class GatewayConfig:
             return cls()
         defaults = raw.get("defaults") or {}
         slack_raw = raw.get("slack") or {}
+        allowed_raw = slack_raw.get("allowed_user_ids") or {}
+        if not isinstance(allowed_raw, dict):
+            # A flat list names no workspace. Fail closed, but start, so
+            # the log says what to fix instead of launchd restarting a
+            # gateway that crashes here.
+            logger.error(
+                "%s: slack.allowed_user_ids must map each workspace id to a "
+                "list of user ids, like `T012345: [U001]`, or `T012345: "
+                "[\"*\"]` for every member; it is a %s, so no one is let in",
+                path, type(allowed_raw).__name__,
+            )
+            allowed_raw = {}
         slack = SlackConfig(
             allowed_user_ids={
                 str(team): [str(u) for u in (ids or [])]
-                for team, ids in (slack_raw.get("allowed_user_ids") or {}).items()
+                for team, ids in allowed_raw.items()
             },
             enforce_workspace_allowlist=bool(
                 slack_raw.get("enforce_workspace_allowlist", True)
