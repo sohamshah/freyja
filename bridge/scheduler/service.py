@@ -903,13 +903,14 @@ class SchedulerService:
     ) -> None:
         """End the run of ``job`` that started at ``since`` or later and has
         not ended, as failed with ``exc``, the error its fire raised, and
-        count it as a fire, as a failed run is. A ``scheduled`` fire's run
-        then goes through what follows a scheduled run (_after_run). Our
-        caller holds the job's run lock, so that run is the fire's own.
-        Left so, it said "running" until the next scheduler start marked it
-        interrupted; ended without the rest, it was not counted against
-        max_fires nor retried, and a one-shot it used up said nothing."""
-        from bridge.scheduler.runtime import count_fire
+        count it as a fire, as a failed run is (a self-paced loop waits its
+        maximum delay). A ``scheduled`` fire's run then goes through what
+        follows a scheduled run (_after_run). Our caller holds the job's run
+        lock, so that run is the fire's own. Left so, it said "running"
+        until the next scheduler start marked it interrupted; ended without
+        the rest, it was not counted against max_fires nor retried, and a
+        one-shot it used up said nothing."""
+        from bridge.scheduler.runtime import count_failed_fire
 
         for run in load_runs_started_since(job.id, since):
             if run.finished_at is not None:
@@ -919,7 +920,7 @@ class SchedulerService:
             run.finished_at = time.time()
             run.duration_seconds = run.finished_at - run.started_at
             save_run(run)
-            await update_job_record(job.id, lambda fresh: count_fire(fresh, run))
+            await update_job_record(job.id, lambda fresh: count_failed_fire(self, fresh, run))
             append_event({
                 "type": "scheduler_run_failed",
                 "job_id": job.id,

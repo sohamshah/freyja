@@ -141,7 +141,7 @@ async def fire_job(
         save_run(run)
         # A fire, as every run that ends is: uncounted, a job with max_fires
         # fired past it.
-        await update_job_record(job.id, lambda fresh: count_fire(fresh, run))
+        await update_job_record(job.id, lambda fresh: count_failed_fire(service, fresh, run))
         append_event({
             "type": "scheduler_run_failed",
             "job_id": job.id,
@@ -535,6 +535,19 @@ def count_fire(job: JobRecord, run: RunRecord) -> None:
         job.status = "disabled_max_fires"
         job.enabled = False
         job.next_fire_at = None
+
+
+def count_failed_fire(service: "SchedulerService", job: JobRecord, run: RunRecord) -> None:
+    """Count ``run``, which failed before its turn could choose a loop's
+    next fire (its session could not be set up, or its fire crashed), as a
+    fire of ``job``. A self-paced loop still running waits its maximum
+    delay, as one whose agent chose none: kept, the placeholder the claim
+    set ran it again at its minimum delay, to fail again."""
+    if isinstance(job.schedule, SelfPacedSchedule) and job.enabled and job.status == "active":
+        from bridge.tools.schedule_tool import LoopDecision
+
+        _apply_loop_decision(service, job, LoopDecision())
+    count_fire(job, run)
 
 
 def _apply_loop_decision(service: "SchedulerService", job: JobRecord, decision: Any) -> None:

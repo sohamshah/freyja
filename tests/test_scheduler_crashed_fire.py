@@ -24,6 +24,7 @@ from bridge.scheduler.models import (
     NoopSinkSpec,
     OnceSchedule,
     RetryPolicy,
+    SelfPacedSchedule,
 )
 from bridge.scheduler.persistence import load_job, load_run, load_runs_for_job, save_job
 from bridge.scheduler.service import SchedulerService
@@ -162,3 +163,49 @@ async def test_a_one_shot_whose_fire_raises_says_it_did_not_complete(service):
 
     (notice,) = [e for e in service.emitted if e["subtype"] == "scheduler_one_shot_failed"]
     assert "did not complete" in notice["message"] and CRASH in notice["message"]
+
+
+# A self-paced loop's next fire after its claim is its minimum delay, a
+# placeholder its run replaces: with the delay the agent chose, or the
+# maximum delay when it chose none. A crashed run replaced nothing, so the
+# loop fired again at its minimum delay, and crashed again, until three
+# failures stopped it.
+
+
+@pytest.mark.parametrize("how", ["scheduled", "run now"])
+async def test_a_loop_whose_fire_raises_waits_its_maximum_delay(service, how):
+    job = _job()
+    job.schedule = SelfPacedSchedule(min_delay_seconds=60, max_delay_seconds=1800)
+    job.next_fire_at = time.time() - 1 if how == "scheduled" else time.time() + 60
+    save_job(job)
+
+    if how == "scheduled":
+        await service._try_claim_and_fire(job.id)
+        await asyncio.gather(*service._in_flight_runs.values())
+    else:
+        with pytest.raises(RuntimeError, match=CRASH):
+            await service.run_job_now(job.id)
+
+    saved = load_job(job.id)
+    assert saved.next_fire_at == pytest.approx(time.time() + 1800, abs=5)
+    assert (saved.enabled, saved.status, saved.fire_count) == (True, "active", 1)
+
+
+async def test_a_loop_paused_while_its_fire_ran_gets_no_next_fire_when_it_raises(service, monkeypatch):
+    job = _job()
+    job.schedule = SelfPacedSchedule(min_delay_seconds=60, max_delay_seconds=1800)
+    save_job(job)
+
+    def pause_then_crash(*_a, **_kw):
+        paused = load_job(job.id)
+        paused.enabled, paused.status, paused.next_fire_at = False, "paused", None
+        save_job(paused)
+        raise RuntimeError(CRASH)
+
+    monkeypatch.setattr(runtime, "_compose_fire_prompt", pause_then_crash)
+
+    await service._try_claim_and_fire(job.id)
+    await asyncio.gather(*service._in_flight_runs.values())
+
+    saved = load_job(job.id)
+    assert (saved.enabled, saved.status, saved.next_fire_at) == (False, "paused", None)
