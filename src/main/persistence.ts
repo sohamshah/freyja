@@ -1012,9 +1012,12 @@ function kanbanCardsFromJournal(id: string): Record<string, Record<string, unkno
       cards[taskId] = row.task
       if (!missionRoot && row.task.metadata?.role === 'mission_root') missionRoot = taskId
       // The row is the new card's alone; create() also added it to each
-      // parent's children. A parent whose create row was lost is skipped.
+      // parent's children and stamped the parent then. A parent whose
+      // create row was lost is skipped.
       for (const pid of Array.isArray(row.task.parents) ? row.task.parents : []) {
-        if (cards[pid]) cards[pid] = { ...cards[pid], children: ids(cards[pid].children, taskId) }
+        if (!cards[pid]) continue
+        cards[pid] = { ...cards[pid], children: ids(cards[pid].children, taskId) }
+        if (cards[pid].updatedAt < row.task.createdAt) cards[pid].updatedAt = row.task.createdAt
       }
     } else if (row?.kind === 'update' && cards[taskId]) {
       cards[taskId] = row.task

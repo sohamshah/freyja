@@ -312,9 +312,10 @@ await check("a Slack session's linked kanban card is in the lane link() gave it,
   // are done (the mission root counts as done), else ready, and leaves a
   // card a worker has picked up in its lane; its row has only the ids.
   // create() adds the new card to its parents' children, but its row is
-  // the new card's alone. card_004's create row was cut short, so card_005
-  // names a parent nobody can see, which is not done. card_009's create
-  // row is gone too, but its update row holds the whole card.
+  // the new card's alone, and create() stamps each parent then. card_004's
+  // create row was cut short, so card_005 names a parent nobody can see,
+  // which is not done. card_009's create row is gone too, but its update
+  // row holds the whole card.
   const sessionsDir = path.join(home, '.freyja', 'sessions')
   const card = (id, status, parents, children = [], metadata = {}) => ({ id, title: id, status, parents, children, metadata, events: [] })
   fs.writeFileSync(
@@ -337,6 +338,8 @@ await check("a Slack session's linked kanban card is in the lane link() gave it,
     { kind: 'link', parent: 'card_003', child: 'card_008', actor: 'parent' },
     { kind: 'update', id: 'card_009', task: card('card_009', 'running', ['card_001']) },
     { kind: 'create', task: card('card_010', 'triage', ['card_009']) },
+    { kind: 'update', id: 'card_002', task: { ...card('card_002', 'done', ['card_001'], ['card_003', 'card_006']), updatedAt: 1_000 } },
+    { kind: 'create', task: { ...card('card_011', 'ready', ['card_002']), createdAt: 61_000 } },
   ].map((row) => JSON.stringify(row))
   rows.splice(4, 0, JSON.stringify({ kind: 'create', task: card('card_004', 'done', []) }).slice(0, 40))
   const journal = path.join(sessionsDir, 'freyjaslackT1channelC33.0.kanban.jsonl')
@@ -349,11 +352,12 @@ await check("a Slack session's linked kanban card is in the lane link() gave it,
   const app = lanes(kanbanCards)
   assert.deepEqual(
     Object.fromEntries(Object.entries(app).map(([id, c]) => [id, c.status])),
-    { card_001: 'running', card_002: 'done', card_003: 'triage', card_005: 'triage', card_006: 'ready', card_007: 'triage', card_008: 'running', card_009: 'running', card_010: 'triage' },
+    { card_001: 'running', card_002: 'done', card_003: 'triage', card_005: 'triage', card_006: 'ready', card_007: 'triage', card_008: 'running', card_009: 'running', card_010: 'triage', card_011: 'ready' },
   )
   assert.deepEqual(app.card_001.children, ['card_002', 'card_003', 'card_006', 'card_008', 'card_009'])
   assert.deepEqual(app.card_003.children, ['card_005', 'card_007', 'card_008'])
   assert.deepEqual(app.card_009.children, ['card_010'])
+  assert.equal(kanbanCards.card_002.updatedAt, 61_000)
   // The bridge's replay (SessionKanbanBoard.replay_events) on the same
   // journal, under this test's HOME.
   const replay = [
@@ -366,7 +370,9 @@ await check("a Slack session's linked kanban card is in the lane link() gave it,
     'print(json.dumps([t.to_dict() for t in asyncio.run(board.list())]))',
   ].join('\n')
   const out = execFileSync('uv', ['run', '--extra', 'dev', 'python', '-c', replay, journal], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-  assert.deepEqual(app, lanes(JSON.parse(out)))
+  const bridge = JSON.parse(out)
+  assert.deepEqual(app, lanes(bridge))
+  assert.equal(bridge.find((c) => c.id === 'card_002').updatedAt, kanbanCards.card_002.updatedAt)
 })
 
 if (failures) {

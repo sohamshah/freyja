@@ -1150,11 +1150,13 @@ class SessionKanbanBoard:
         if task.metadata.get("role") == "mission_root" and self._mission_root_id is None:
             self._mission_root_id = task.id
         # The row is the new card's alone; create() also added it to each
-        # parent's children. A parent whose create row was lost is skipped.
+        # parent's children and stamped the parent then. A parent whose
+        # create row was lost is skipped.
         for parent_id in task.parents:
             parent = self._tasks.get(parent_id)
             if parent is not None and task.id not in parent.children:
                 parent.children.append(task.id)
+                parent.updated_at = max(parent.updated_at, task.created_at)
 
     def _apply_update_snapshot(self, snapshot: dict[str, Any]) -> None:
         existing = self._tasks.get(snapshot.get("id") or "")

@@ -616,3 +616,25 @@ async def test_replay_rebuilds_a_card_whose_create_row_was_lost_from_its_update_
     assert [c.body for c in card.comments] == ["halfway"]
     await restored.update(lost, actor="kanban-judge", status="done")
     assert (await restored.get(child)).status == "ready"
+
+
+@pytest.mark.asyncio
+async def test_replay_stamps_a_parent_when_a_child_is_made_under_it(tmp_path) -> None:
+    """create() stamps each parent's updated_at when it adds the new
+    card to its children, and the stale sweep times a running card from
+    that stamp. Replay added the child but kept the parent's older stamp,
+    so after a restart a running parent looked quiet for longer than it
+    was."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    parent = (await live.create(title="parent")).id
+    await live.update(parent, actor="worker", status="running")
+    await live.create(title="child", parents=[parent])
+    events = KanbanJournal(tmp_path / "kanban.jsonl").read_all()
+    # The child came a minute after the parent's last row.
+    events[-1]["task"]["createdAt"] = (events[-2]["ts"] // 1000 + 60) * 1000
+
+    restored = SessionKanbanBoard()
+    restored.replay_events(events)
+
+    stamp = (await restored.get(parent)).to_dict()["updatedAt"]
+    assert stamp == events[-1]["task"]["createdAt"]
