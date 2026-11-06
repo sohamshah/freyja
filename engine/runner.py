@@ -3094,7 +3094,13 @@ class AsyncAgentRunner:
                 ctx.consecutive_errors = 0
                 return True
 
-        tokens_before = self._current_context_tokens(session)
+        trigger_tokens = self._current_context_tokens(session)
+        # The size after can only be the tokenizer's count (no call has
+        # measured the compacted transcript), so the size before is too.
+        try:
+            tokens_before = int(session.estimate_tokens())
+        except Exception:  # noqa: BLE001
+            tokens_before = trigger_tokens
         await self._emit_system_event(SystemEvent(
             type="compaction_start",
             message=(
@@ -3103,6 +3109,7 @@ class AsyncAgentRunner:
             ),
             details={
                 "tokens_before": tokens_before,
+                "trigger_tokens": trigger_tokens,
                 "trigger": "overflow_cascade",
                 "attempt": ctx.compaction_attempts + 1,
                 "max_attempts": self.config.max_compaction_attempts,
@@ -3135,6 +3142,7 @@ class AsyncAgentRunner:
                     trigger="overflow_cascade",
                     tokens_before=tokens_before,
                     tokens_after=tokens_after,
+                    trigger_tokens=trigger_tokens,
                 ),
             ))
             return True
@@ -3147,6 +3155,7 @@ class AsyncAgentRunner:
                 "trigger": "overflow_cascade",
                 "reason": result.error or "unknown",
                 "tokens_before": tokens_before,
+                "trigger_tokens": trigger_tokens,
                 "attempt": ctx.compaction_attempts,
                 "max_attempts": self.config.max_compaction_attempts,
             },
@@ -3421,6 +3430,7 @@ class AsyncAgentRunner:
         tokens_before: int | None = None,
         tokens_after: int | None = None,
         effective_window: int | None = None,
+        trigger_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Canonical details dict for every compaction system_event.
 
@@ -3429,6 +3439,9 @@ class AsyncAgentRunner:
         the event; the old per-path variations (request_tokens vs
         context_tokens vs transcript_tokens) are still computed
         downstream but are derived from these canonical fields.
+        ``tokens_before`` and ``tokens_after`` must be one measure, as the
+        saving is their difference; ``trigger_tokens`` is the reading that
+        set the compaction off.
         """
         # canonical pre/post sizes — transcript.estimate_tokens
         # measured before and after append_compaction.
@@ -3461,6 +3474,11 @@ class AsyncAgentRunner:
             round((after / effective_window) * 100, 1)
             if effective_window and effective_window > 0 else None
         )
+        pct_trigger = (
+            round((trigger_tokens / effective_window) * 100, 1)
+            if trigger_tokens is not None and effective_window and effective_window > 0
+            else None
+        )
         return {
             # Canonical token fields (Gap 5).
             "tokens_before": before,
@@ -3474,6 +3492,8 @@ class AsyncAgentRunner:
             "effective_window": effective_window,
             "pressure_pct_before": pct_before,
             "pressure_pct_after": pct_after,
+            "trigger_tokens": trigger_tokens,
+            "trigger_pressure_pct": pct_trigger,
             # Counts.
             "entries_removed": result.entries_removed,
             "messages_before": result.messages_before,
@@ -3562,11 +3582,22 @@ class AsyncAgentRunner:
 
         if usage_fraction > CONTEXT_COMPACTION_THRESHOLD:
             ctx.state = RunnerState.COMPACTING
-            tokens_before = used_tokens
+            # The size after can only be the tokenizer's count (no call has
+            # measured the compacted transcript), so the size before is too:
+            # the reading that crossed the threshold set against it showed
+            # the gap between the two measures as saved.
+            try:
+                tokens_before = int(session.estimate_tokens())
+            except Exception:  # noqa: BLE001
+                tokens_before = used_tokens
             await self._emit_system_event(SystemEvent(
                 type="compaction_start",
                 message="Pre-request compaction...",
-                details={"tokens_before": tokens_before, "trigger": "pre_request"},
+                details={
+                    "tokens_before": tokens_before,
+                    "trigger_tokens": used_tokens,
+                    "trigger": "pre_request",
+                },
             ))
             compaction_result = await self._attempt_compaction(session, ctx)
             if compaction_result.success:
@@ -3586,6 +3617,7 @@ class AsyncAgentRunner:
                         trigger="pre_request",
                         tokens_before=tokens_before,
                         tokens_after=tokens_after,
+                        trigger_tokens=used_tokens,
                     ),
                 ))
             else:
@@ -3603,6 +3635,7 @@ class AsyncAgentRunner:
                         "trigger": "pre_request",
                         "reason": compaction_result.error or "unknown",
                         "tokens_before": tokens_before,
+                        "trigger_tokens": used_tokens,
                     },
                 ))
             ctx.state = RunnerState.RUNNING

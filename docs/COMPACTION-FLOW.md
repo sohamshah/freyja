@@ -119,12 +119,14 @@ summary_continued_prompt: bool      # Call A continued the cached prompt
 
 ### The details dict (`AsyncAgentRunner._compaction_event_details`)
 
-Paths A and B build their events with it. Path C builds its own in the tool. Path D builds an equivalent dict in `force_compact`, with extra fields: `request_tokens_before/after` (the tokenizer's count of the request), `last_provider_context_tokens` (the measured size), `transcript_tokens_before/after` and the snapshot paths. Its `tokens_before` and `tokens_after` are both the tokenizer's count of the request: no call has measured the compacted transcript, and the measured size set against the count after it would show the gap between the two measures as saved. Path E builds a short one: `trigger`, `reason`, `tokens_before`, `tokens_after` (the tokenizer's count of the request), `entries_removed`, the summary text and the summarizer fields.
+Paths A and B build their events with it. Their `tokens_before` and `tokens_after` are both the tokenizer's count of the request, taken just before and just after the summary, so the saving is like for like. The reading that set the compaction off (`_current_context_tokens`, after halving) is `trigger_tokens`, with `trigger_pressure_pct`: it says why the compaction ran. Before 2026-11-06 `tokens_before` was that reading, set against the tokenizer's count after, so on Claude the gap between the two measures showed as saved (90.2% recorded where the next call's measured size gives 88.1%). Path C builds its own in the tool. Path D builds an equivalent dict in `force_compact`, with extra fields: `request_tokens_before/after` (the tokenizer's count of the request), `last_provider_context_tokens` (the measured size), `transcript_tokens_before/after` and the snapshot paths. Its `tokens_before` and `tokens_after` are both the tokenizer's count of the request: no call has measured the compacted transcript, and the measured size set against the count after it would show the gap between the two measures as saved. Path E builds a short one: `trigger`, `reason`, `tokens_before`, `tokens_after` (the tokenizer's count of the request), `entries_removed`, the summary text and the summarizer fields.
 
 ```jsonc
 {
   "tokens_before": <int>,              // the caller's measure, else the transcript's
-  "tokens_after": <int>,
+  "tokens_after": <int>,               // the same measure as tokens_before
+  "trigger_tokens": <int> | null,      // the reading that set the compaction off (A, B)
+  "trigger_pressure_pct": <float> | null,
   "transcript_tokens_before": <int>,   // transcript.estimate_tokens()
   "transcript_tokens_after": <int>,
   "context_tokens_before": <int>,      // alias the renderer's inline marker reads
@@ -205,6 +207,8 @@ tokens_after               <int>
 effective_window           <int | null>
 pressure_pct_before        <float | null>
 pressure_pct_after         <float | null>
+trigger_tokens             <int | null>     the reading that set a path A or B compaction off
+trigger_pressure_pct       <float | null>
 summary_tokens             <int>
 mechanism                  the details' "strategy" ("llm_summary", "recent_computer_screenshots", ...)
                            or, without one, "summary" | "summary_iterative" | "tool_halve"
@@ -296,6 +300,7 @@ They give the agent a chance to call `summarize_context` itself before the runti
 - Only the newest compaction entry stays in the live transcript. A later compaction deletes the earlier entry with the rest of the old history. The earlier summaries stay in `compactions.jsonl`.
 - When the summary extends a previous one from a digest, the previous summary's message is left out of the digest, so the summarizer does not read it twice.
 - The thrash detector in `_attempt_compaction` skips a compaction when the last two each saved under 10%. It writes a `thrash_skip` row.
+- Summary rows written before 2026-11-06 by paths A, B and D set a measured reading before against the tokenizer's count after. They overstate the saving by the gap between the two measures, a few points each. They carry no size to correct it with, so the dashboard reads them as recorded. A row with `trigger_tokens` is like for like.
 - A sub-agent's runner gets its own `summarize_context` and `session_memory` tools, bound to the sub-agent's session. Otherwise a sub-agent would compact the parent's transcript.
 - `force_compact` does not go through the runner. It runs the compactor through `run_off_loop`, forwards the summary calls to the runner's `on_llm_call`, and calls `_mirror_compaction_event` itself.
 - The sync `AgentRunner` is legacy. The bridge always uses `AsyncAgentRunner`. The sync runner takes `on_llm_call`, so its compactions report their summary calls, but nothing in the app runs it.

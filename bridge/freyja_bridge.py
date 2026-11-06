@@ -11345,6 +11345,10 @@ class _BridgeSession:
                 "effective_window": details.get("effective_window"),
                 "pressure_pct_before": details.get("pressure_pct_before"),
                 "pressure_pct_after": details.get("pressure_pct_after"),
+                # What set a pre-request or overflow compaction off; its
+                # sizes before and after are both the tokenizer's count.
+                "trigger_tokens": details.get("trigger_tokens"),
+                "trigger_pressure_pct": details.get("trigger_pressure_pct"),
                 "summary_tokens": int(details.get("summary_tokens") or 0),
                 "mechanism": mechanism,
                 "trigger": details.get("trigger"),
@@ -11391,6 +11395,8 @@ class _BridgeSession:
                 "effective_window": details.get("effective_window"),
                 "pressure_pct_before": details.get("pressure_pct_before"),
                 "pressure_pct_after": details.get("pressure_pct_after"),
+                "trigger_tokens": details.get("trigger_tokens"),
+                "trigger_pressure_pct": details.get("trigger_pressure_pct"),
                 "entries_removed": int(details.get("entries_removed") or 0),
                 "summary_text": (
                     details.get("summary_text") or details.get("summary_preview") or ""
