@@ -1135,11 +1135,20 @@ class SlackAdapter:
         if not channel_id:
             return
 
+        # The channel's own workspace comes from the envelope, never from
+        # the message: a message's ``team`` is its author's. In a channel
+        # shared with another organization one external message would move
+        # the channel to that workspace, and the operator's own Stop and
+        # reactions there (which name no team) would be refused.
+        home_team = str((body or {}).get("team_id") or "")
+        if home_team in self._team_clients:
+            self._channel_team[channel_id] = home_team
+
         # Resolve missing team_id. Slack omits it on some Socket Mode
         # payloads (thread broadcasts, edits, file_share subtypes).
         # Three fallback tiers:
-        #   1. channel→team cache populated from prior events on the
-        #      same channel that DID include team
+        #   1. channel→team cache populated from the envelopes of events
+        #      on the same channel
         #   2. for single-workspace installs (the common case), default
         #      to the only authenticated team — there's no ambiguity
         #      about where the message came from
@@ -1157,9 +1166,6 @@ class SlackAdapter:
                 team_id = cached
             elif len(self._team_clients) == 1:
                 team_id = next(iter(self._team_clients.keys()))
-
-        if team_id and channel_id:
-            self._channel_team[channel_id] = team_id
 
         # Workspace/user allowlist enforcement. When the operator
         # configures gateway.yaml's `slack.allowed_user_ids`, we deny
