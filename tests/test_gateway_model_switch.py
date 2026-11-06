@@ -159,6 +159,92 @@ async def test_a_retired_model_picked_in_the_app_during_a_running_turn_is_report
     assert held["details"] == {"model": "glm-5.3-fireworks", "reasoningLevel": "max"}
 
 
+async def _session_with_turns(monkeypatch, tmp_path, count: int):
+    """A real bridge session whose turns run until their end is set:
+    ``ends[i]`` ends turn i, and ``ran`` is the model each turn ran on."""
+    import bridge.freyja_bridge as fb
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "emit", lambda _event: None)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("session-desktop")
+    ends = [asyncio.get_running_loop().create_future() for _ in range(count)]
+    ran: list[str] = []
+
+    async def run_turn(_content, _attachments=None, **_kw):
+        ran.append(sess.model_id)
+        await ends[len(ran) - 1]
+
+    sess.run_turn = run_turn
+    return fb, state, sess, ends, ran
+
+
+async def _pick_model(fb, state, model: str) -> None:
+    await fb._handle_command(state, {"type": "set_model", "sessionId": "session-desktop", "model": model})
+
+
+async def _until(done) -> None:
+    for _ in range(200):
+        if done():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("never happened")
+
+
+async def test_a_model_picked_during_a_queued_turn_is_made_when_that_turn_ends(monkeypatch, tmp_path):
+    """The drain made a held change before each queued turn and never after the last one, so the change waited through the next turn, which ran on the old model."""
+    fb, state, sess, ends, ran = await _session_with_turns(monkeypatch, tmp_path, 3)
+    fb._schedule_or_queue_turn(sess, "first")
+    fb._schedule_or_queue_turn(sess, "second")  # queued behind the first
+    ends[0].set_result(None)
+    await _until(lambda: len(ran) == 2)
+    await _pick_model(fb, state, "glm-5.3-fireworks")  # held for the queued turn
+    ends[1].set_result(None)
+    await sess.pending_task
+    assert sess.model_id == "glm-5.3-fireworks" and not sess.pending_config
+    fb._schedule_or_queue_turn(sess, "third")
+    await _until(lambda: len(ran) == 3)
+    ends[2].set_result(None)
+    await sess.pending_task
+    assert ran == ["kimi-k3-fast", "kimi-k3-fast", "glm-5.3-fireworks"]
+
+
+async def test_a_model_picked_with_no_turn_running_is_not_overridden_by_an_older_held_one(monkeypatch, tmp_path):
+    """The held change outlived the drain. A model picked after it, between turns, was made at once, and the older held change was made over it when the next turn ended."""
+    fb, state, sess, ends, ran = await _session_with_turns(monkeypatch, tmp_path, 3)
+    fb._schedule_or_queue_turn(sess, "first")
+    fb._schedule_or_queue_turn(sess, "second")
+    ends[0].set_result(None)
+    await _until(lambda: len(ran) == 2)
+    await _pick_model(fb, state, "glm-5.3-fireworks")
+    ends[1].set_result(None)
+    await sess.pending_task
+    await _pick_model(fb, state, "claude-opus-5-5")  # no turn running: made at once
+    assert sess.model_id == "claude-opus-5-5"
+    fb._schedule_or_queue_turn(sess, "third")
+    await _until(lambda: len(ran) == 3)
+    ends[2].set_result(None)
+    await sess.pending_task
+    assert sess.model_id == "claude-opus-5-5"
+
+
+async def test_a_model_picked_while_the_drain_makes_a_held_change_is_made_too(monkeypatch, tmp_path):
+    """Making a held change awaits (the transcript load, the Slack note, which waits for the reply's seal). A change picked then was held, and left held when the drain ended."""
+    fb, state, sess, ends, ran = await _session_with_turns(monkeypatch, tmp_path, 1)
+
+    async def note(_sess, _text):
+        if sess.model_id == "glm-5.3-fireworks":
+            await _pick_model(fb, state, "claude-opus-5-5")
+
+    state.thread_notice = note
+    fb._schedule_or_queue_turn(sess, "first")
+    await _until(lambda: len(ran) == 1)
+    await _pick_model(fb, state, "glm-5.3-fireworks")
+    ends[0].set_result(None)
+    await sess.pending_task
+    assert sess.model_id == "claude-opus-5-5" and not sess.pending_config
+
+
 # ── 3. validation ────────────────────────────────────────────────────
 
 def test_the_command_help_examples_are_real_models():

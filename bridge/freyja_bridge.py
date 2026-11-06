@@ -14574,6 +14574,14 @@ async def _drain_after_turn(sess: "_BridgeSession", *, cancelled: bool = False) 
             log("error", f"queued turn failed (session={sess.id}): {exc}")
             _emit_turn_failed(sess, exc)
 
+    # A change parked during the last turn run here, or while this drain
+    # awaited (making a change loads the transcript and posts the Slack
+    # note), is made before the turn task ends. Left parked, it waited
+    # through the next turn, and was then made over any change picked in
+    # between, which no running turn had held.
+    while sess.pending_config:
+        await _apply_pending_config(sess)
+
 
 def _schedule_or_queue_turn(
     sess: "_BridgeSession",
