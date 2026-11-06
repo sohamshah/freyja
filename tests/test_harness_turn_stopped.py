@@ -99,3 +99,46 @@ async def test_a_run_whose_harness_turn_the_operator_stops_is_cancelled_and_not_
     assert delivered == []
     assert run.status == "cancelled"
     assert load_runs_for_job(job.id, limit=1)[0].status == "cancelled"
+
+
+# ─── a run whose harness turn fails ───────────────────────────────────
+
+
+class _Raises(_Adapter):
+    async def run_turn(self, text, *, mcp_servers=None, turn_id=""):
+        raise RuntimeError("the codex app-server exited")
+
+
+def _report_job() -> JobRecord:
+    job = JobRecord(id="sched_report", name="report", schedule=IntervalSchedule(seconds=3600),
+                    prompt="write the report", execution=ExistingSession(session_id="h1"),
+                    sinks=[NoopSinkSpec()])
+    save_job(job)
+    return job
+
+
+async def test_a_run_whose_harness_turn_raises_fails_with_the_harness_error(monkeypatch, tmp_path):
+    # _run_harness_turn noted no error, so the run said it was most likely
+    # asleep through its time.
+    from bridge.scheduler.runtime import fire_job
+
+    _state, sess = await _harness_session(monkeypatch, tmp_path)
+    sess.harness_adapter = _Raises()
+
+    run = await asyncio.wait_for(fire_job(_Service({"h1": sess}), _report_job()), 10)
+
+    assert run.status == "failed"
+    assert "the codex app-server exited" in run.error
+
+
+async def test_a_run_whose_harness_cannot_be_built_fails_with_why(monkeypatch, tmp_path):
+    from bridge.scheduler.runtime import fire_job
+
+    _state, sess = await _harness_session(monkeypatch, tmp_path)
+    sess.harness_adapter = None
+    sess.runtime = "aider"  # A runtime this build does not know.
+
+    run = await asyncio.wait_for(fire_job(_Service({"h1": sess}), _report_job()), 10)
+
+    assert run.status == "failed"
+    assert "unknown harness runtime: 'aider'" in run.error

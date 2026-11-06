@@ -11737,6 +11737,9 @@ class _BridgeSession:
             )
         except ValueError as exc:
             log("error", f"failed to build harness adapter: {exc}")
+            # Why the turn that asked for it fails: a scheduled run whose
+            # turn it was ends with it (_RunCost).
+            self.last_turn_error = f"failed to start {self.runtime} harness: {exc}"[:400]
             return None
         return self.harness_adapter
 
@@ -11978,6 +11981,8 @@ class _BridgeSession:
             raise
         except Exception as exc:  # noqa: BLE001
             log("warn", f"harness run_turn raised: {exc}")
+            # As in run_turn: a scheduled run whose turn it was ends with it.
+            self.last_turn_error = (str(exc).strip() or exc.__class__.__name__)[:400]
             traceback.print_exc(file=sys.stderr)
             emit_error(f"harness turn failed: {exc}", recoverable=True, session_id=self.id)
             emit(
