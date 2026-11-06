@@ -477,16 +477,46 @@ async def _emit_frame(
 
 async def _post_action_frame(
     spec: ComputerToolSpec, native: Any, reason: str
-) -> EmittedFrame | None:
+) -> EmittedFrame | str:
     """The screenshot after an action, of the display the model last looked
     at (the one its coordinates belong to). Without a display_id the capture
     takes the session's default display, which is the main one in a session
     that is not pinned: after `screenshot(display_id=2)` and a click on
     display 2, the model got a picture of display 1 and the coordinate space
     moved there with it. A space that was cleared (dims None) names no
-    display, and the default one is taken as before."""
+    display, and the default one is taken as before.
+
+    When the capture fails, returns why instead (see `_capture_failed_text`),
+    for `_result_with_frame` to put in the result."""
     shown = spec.frame_display_id if spec.native_dims is not None else None
-    return await _emit_frame(spec, native, display_id=shown, reason=reason)
+    frame = await _emit_frame(spec, native, display_id=shown, reason=reason)
+    if frame is not None:
+        return frame
+    return await _capture_failed_text(
+        spec, native, shown if shown is not None else spec.default_display_id
+    )
+
+
+async def _capture_failed_text(
+    spec: ComputerToolSpec, native: Any, display_id: int | None
+) -> str:
+    """Why a capture of `display_id` failed, in the words the screenshot tool
+    uses: the display is not connected, with the ids that are, or else the
+    Screen Recording hint. `_emit_frame` only logs the error."""
+    if display_id is not None:
+        try:
+            displays = await asyncio.to_thread(native.list_displays)
+        except Exception:  # noqa: BLE001
+            displays = []
+        if displays and not any(d.id == display_id for d in displays):
+            return _display_gone_text(
+                display_id,
+                displays,
+                pinned=display_id == spec.default_display_id,
+                hint=_SCREENSHOT_FIRST_HINT,
+                coordinates=spec.native_dims is not None and display_id == spec.frame_display_id,
+            )
+    return _CAPTURE_FAILED_TEXT
 
 
 async def _await_highlight_or_cancel(
@@ -518,7 +548,7 @@ def _cancelled_result(call_id: str, tool: str) -> ToolResult:
 def _result_with_frame(
     call_id: str,
     summary: str,
-    frame: EmittedFrame | None,
+    frame: EmittedFrame | str | None,
     *,
     is_error: bool = False,
 ) -> ToolResult:
@@ -530,7 +560,21 @@ def _result_with_frame(
     model ALWAYS sees a fresh screenshot alongside the action summary
     — matching Anthropic's reference computer-use pattern where every
     atomic action returns a new `base64_image` in its result.
+
+    `frame` is the reason the capture failed when it is a string (see
+    `_post_action_frame`). The result then says the action was done and
+    why there is no picture, so the model does not take the action for
+    failed or guess at the cause.
     """
+    if isinstance(frame, str):
+        return ToolResult(
+            call_id=call_id,
+            content=(
+                f"{summary} The action was done, but no screenshot could be "
+                f"taken after it: {frame}"
+            ),
+            is_error=is_error,
+        )
     if frame is None:
         return ToolResult(
             call_id=call_id, content=summary, is_error=is_error
@@ -718,10 +762,7 @@ async def _ensure_dims(spec: ComputerToolSpec, native: Any) -> str | None:
                 spec.default_display_id,
                 displays,
                 pinned=True,
-                hint=(
-                    "Take a screenshot with one of those ids as display_id first; "
-                    "coordinates then refer to that screenshot."
-                ),
+                hint=_SCREENSHOT_FIRST_HINT,
             )
     else:
         target = next((d for d in displays if d.is_primary), displays[0])
@@ -756,16 +797,12 @@ async def _stale_dims(spec: ComputerToolSpec, native: Any) -> str | None:
     if not displays:
         return None
     target = next((d for d in displays if d.id == shown), None)
-    hint = (
-        "Take a screenshot with one of those ids as display_id first; "
-        "coordinates then refer to that screenshot."
-    )
     if target is None:
         return _display_gone_text(
             shown,
             displays,
             pinned=shown == spec.default_display_id,
-            hint=hint,
+            hint=_SCREENSHOT_FIRST_HINT,
             coordinates=True,
         )
     size = (int(target.width), int(target.height))
@@ -929,6 +966,17 @@ async def _missing_display_result(
         content=f"{tool}: {_display_gone_text(display_id, displays, pinned=pinned, hint=hint)}",
         is_error=True,
     )
+
+
+# The capture errors' shared wording (screenshot, and the screenshot after an action).
+_CAPTURE_FAILED_TEXT = (
+    "capture failed. Likely missing Screen Recording permission — open System "
+    "Settings → Privacy & Security → Screen Recording and enable it for this app."
+)
+_SCREENSHOT_FIRST_HINT = (
+    "Take a screenshot with one of those ids as display_id first; "
+    "coordinates then refer to that screenshot."
+)
 
 
 def _display_gone_text(
@@ -1213,12 +1261,7 @@ decide where to act. Screenshots are cheap — take as many as you need.
                 return missing
             return ToolResult(
                 call_id=call_id,
-                content=(
-                    "screenshot: capture failed. Likely missing Screen "
-                    "Recording permission — open System Settings → "
-                    "Privacy & Security → Screen Recording and enable "
-                    "it for this app."
-                ),
+                content=f"screenshot: {_CAPTURE_FAILED_TEXT}",
                 is_error=True,
             )
         if window_id is not None:

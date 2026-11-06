@@ -435,3 +435,72 @@ async def test_the_frame_trim_keeps_to_the_session_that_wrote_the_frame(monkeypa
     mine = [n for n in names if re.fullmatch(r"jev_x_\d+_screenshot_tool\.jpg", n)]
     assert len(mine) == 20
     assert names == set(theirs) | set(mine) | {"latest.jpg"}
+
+
+NO_SHOT = " The action was done, but no screenshot could be taken after it: "
+SHOT_FIRST = (
+    "Take a screenshot with one of those ids as display_id first; coordinates then refer to "
+    "that screenshot."
+)
+
+
+async def test_a_display_unplugged_during_a_click_says_the_click_was_done_and_why_no_screenshot(monkeypatch):
+    screens = _Monitors()
+    tools, _ = _session(monkeypatch, screens)
+    await tools["screenshot"].execute("c1", {"display_id": 2})
+
+    def click_then_unplug(x, y, **kw):
+        screens.sent.append(("click", x, y))
+        del screens.displays[2], screens.geometry[2]
+
+    screens.click = click_then_unplug
+    res = await tools["click"].execute("c2", {"x": 640, "y": 360, "settle_ms": 0})
+    assert not res.is_error
+    assert screens.sent == [("click", -1280, 720)]
+    assert res.content == (
+        "Clicked at (640, 360) with left." + NO_SHOT + "display 2, the one your coordinates refer "
+        "to, is not connected (it may have been unplugged, or the id is from an old list). "
+        "Connected displays: 1 (primary). " + SHOT_FIRST
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "summary", "sent"),
+    [
+        ("press_key", {"key": "return"}, "Pressed return.", ("press_key", "return")),
+        ("type_text", {"text": "hi"}, "Typed 2 characters.", ("type_text", "hi")),
+    ],
+)
+async def test_a_pinned_display_unplugged_before_a_key_action_says_why_there_is_no_screenshot(
+    monkeypatch, name, args, summary, sent
+):
+    # Keys need no coordinates, so the action runs; only its screenshot fails.
+    screens = _Monitors()
+    tools, _ = _session(monkeypatch, screens, default_display_id=2)
+    await tools["screenshot"].execute("c1", {})
+    del screens.displays[2], screens.geometry[2]
+    res = await tools[name].execute("c2", {**args, "settle_ms": 0})
+    assert not res.is_error
+    assert screens.sent == [sent]
+    assert res.content == (
+        summary + NO_SHOT + "this session is pinned to display 2, which is not connected (it may "
+        "have been unplugged, or the id is from an old list). Connected displays: 1 (primary). "
+        + SHOT_FIRST
+    )
+
+
+async def test_a_connected_display_whose_screenshot_fails_after_an_action_keeps_the_permission_hint(monkeypatch):
+    screens = _Monitors()
+    tools, _ = _session(monkeypatch, screens)
+    await tools["screenshot"].execute("c1", {"display_id": 2})
+
+    def refuse(**kw):
+        raise RuntimeError("CGDisplayCreateImage returned null")
+
+    screens.screenshot = refuse
+    res = await tools["press_key"].execute("c2", {"key": "return", "settle_ms": 0})
+    assert not res.is_error
+    assert res.content == (
+        "Pressed return." + NO_SHOT + "capture failed. Likely missing Screen Recording permission "
+        "— open System Settings → Privacy & Security → Screen Recording and enable it for this app."
+    )
