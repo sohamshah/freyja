@@ -158,6 +158,46 @@ await check('/goal on a desktop session still says the goal loop is armed', asyn
   assert.match(H().toast?.message ?? '', /armed/)
 })
 
+const autopilotAnswer = (sessionId, subtype, message, reason) =>
+  H().handleEvent({
+    type: 'system_event', sessionId, subtype, message,
+    details: { chatVisible: !reason, ...(reason ? { reason } : {}) },
+  })
+const microtasks = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+await check('/autopilot on a Slack session waits for the gateway to say what it did', async () => {
+  openSlack()
+  sent.length = 0
+  H().runSlashCommand('/autopilot', 'on')
+  assert.equal(sent.at(-1).type, 'kanban_autopilot')
+  assert.equal(H().toast, null)
+  // Not in kanban mode: the gateway leaves autopilot off.
+  autopilotAnswer(SLACK, 'kanban_autopilot_disabled',
+    'Kanban autopilot unavailable — session is not in kanban mode', 'strategy_not_kanban')
+  await microtasks()
+  assert.match(H().toast?.message ?? '', /not in kanban mode/)
+})
+
+await check('/autopilot on a Slack session in kanban mode says on when the gateway turned it on', async () => {
+  openSlack()
+  H().runSlashCommand('/autopilot', 'on')
+  assert.equal(H().toast, null)
+  autopilotAnswer(SLACK, 'kanban_autopilot_enabled', 'Kanban auto-dispatch enabled')
+  await microtasks()
+  assert.equal(H().toast?.message, 'autopilot on')
+  // Later autopilot events for the thread answer no command.
+  useHarness.setState({ toast: null })
+  autopilotAnswer(SLACK, 'kanban_autopilot_disabled', 'Kanban auto-dispatch disabled')
+  await microtasks()
+  assert.equal(H().toast, null)
+})
+
+await check('/autopilot on a desktop session still says on at once', async () => {
+  useHarness.setState({ activeSessionId: 'session-desktop', sessions: [row('session-desktop')], toast: null })
+  H().runSlashCommand('/autopilot', 'on')
+  assert.equal(H().toast?.message, 'autopilot on')
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

@@ -957,6 +957,28 @@ function undoRefusedChange<S extends HarnessState>(
   }
 }
 
+/** Slack sessions whose `/autopilot` waits for the gateway's answer. The
+ *  gateway turns autopilot on or off, or keeps it off for a thread not in
+ *  kanban mode, so the toast says what it did, not what was asked. */
+const autopilotAsked = new Set<string>()
+
+/** Toast the gateway's answer to a Slack session's `/autopilot`. */
+function answerAutopilot(sessionId: string, subtype: string, message: string, details?: Record<string, unknown>): void {
+  if (!autopilotAsked.has(sessionId)) return
+  if (subtype === 'control_command_skipped' && details?.command === 'kanban_autopilot') {
+    // The gateway has no such thread, and its note is in the chat.
+    autopilotAsked.delete(sessionId)
+    return
+  }
+  const on = subtype === 'kanban_autopilot_enabled'
+  if (!on && subtype !== 'kanban_autopilot_disabled') return
+  autopilotAsked.delete(sessionId)
+  const unavailable = details?.reason === 'strategy_not_kanban'
+  queueMicrotask(() =>
+    useHarness.getState().showToast(unavailable ? message : `autopilot ${on ? 'on' : 'off'}`, unavailable ? 'warn' : 'info'),
+  )
+}
+
 /** What was attached to a message sent to a Slack session, keyed on its
  *  bubble, for as long as the bridge may still refuse it (`send_refused`).
  *  The bubble keeps only previews, so a refusal gives these back to the
@@ -4537,6 +4559,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       // The refusal goes on to the session's chat below.
       if (ev.type === 'system_event' && ev.sessionId) {
         prev = undoRefusedChange(prev, ev.sessionId, ev.subtype, ev.details?.requestId)
+        answerAutopilot(ev.sessionId, ev.subtype, ev.message, ev.details)
       }
 
       // Session-scoped events: route to the right slice.
@@ -6920,6 +6943,12 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           sessionId: state.activeSessionId,
           enabled,
         })
+        // A Slack session's gateway may keep autopilot off; the toast
+        // waits for its answer (answerAutopilot).
+        if (isInSlackThread(state.sessions, state.activeSessionId)) {
+          autopilotAsked.add(state.activeSessionId)
+          return true
+        }
         show(`autopilot ${enabled ? 'on' : 'off'}`, 'info')
         return true
       }
