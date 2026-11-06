@@ -179,6 +179,8 @@ class SchedulerService:
         no longer referenced, kept the lock from every peer."""
         if self._owner_lock is not None:
             return
+        # A restart after stop(): the loop exits as soon as it sees this.
+        self._stopped = False
         ensure_dirs()
         # Try to claim ownership of the tick loop. If a peer (daemon
         # or another desktop bridge) already holds it, we still
