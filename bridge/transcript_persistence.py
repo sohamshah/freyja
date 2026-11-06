@@ -1133,6 +1133,9 @@ _PROJECT_JSONL = (
     ("raw_messages.recovered.jsonl", ("ts",), 1000),
 )
 _PROJECT_JSON = ("working_memory.json",)
+# The dir owner's own logs. A sub-agent, or a session opened on another
+# session's dir, keeps its logs beside its sidecars instead.
+_PROJECT_LOGS = ("compactions.jsonl", "raw_messages.jsonl", "raw_messages.recovered.jsonl")
 
 
 def _copy_tree(src: Path, dst: Path) -> None:
@@ -1163,6 +1166,7 @@ def clone_project_dir(
     id_remap: dict[str, str],
     cutoff_ms: float | None = None,
     records_cutoff_ms: float | None = None,
+    with_logs: bool = True,
 ) -> bool:
     """Clone a session's project output directory (artifacts, manifest,
     action ledger, working memory, compaction log, raw message logs) for a
@@ -1173,8 +1177,11 @@ def clone_project_dir(
     at/after the cutoff dropped (compaction rows: at/after
     ``records_cutoff_ms`` when it is given). Artifact files themselves are never
     deleted (a file written after the branch point stays on disk; only
-    its manifest row is dropped). Returns False when there is nothing
-    to clone or the destination already exists.
+    its manifest row is dropped). Without ``with_logs`` the logs are left
+    out: the source works in another session's dir, so they are that
+    session's, and ``clone_session_sidecars`` copies the source's own.
+    Returns False when there is nothing to clone or the destination
+    already exists.
     """
     src_dir = Path(src_dir)
     dst_dir = Path(dst_dir)
@@ -1191,7 +1198,9 @@ def clone_project_dir(
         return False
     for name, ts_fields, unit_ms in _PROJECT_JSONL:
         path = dst_dir / name
-        if path.exists():
+        if not with_logs and name in _PROJECT_LOGS:
+            path.unlink(missing_ok=True)
+        elif path.exists():
             _clone_jsonl_file(
                 path,
                 path,

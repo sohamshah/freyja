@@ -15950,6 +15950,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 id_remap=project_remap,
                 cutoff_ms=cutoff_ms,
                 records_cutoff_ms=records_cutoff_ms,
+                with_logs=old_project_id == session_id,
             )
             if project_cloned:
                 # Stamp the copied ledger so the fork knows the rows above

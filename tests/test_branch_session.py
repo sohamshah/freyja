@@ -1234,6 +1234,59 @@ async def test_a_root_fork_has_its_raw_log_and_recovered_rows_up_to_the_anchor(
         assert len(_rows(projects / "s" / name)) == len(ids)
 
 
+async def test_a_fork_of_a_sub_agent_has_its_logs_and_none_of_its_parents(sessions_dir, monkeypatch):
+    """A sub-agent works in its parent's project dir, and its logs are
+    beside its sidecars: the logs in that dir are the parent's. A fork of
+    the sub-agent copies the dir, but takes only the sub-agent's logs."""
+    import bridge.freyja_bridge as fb
+    import bridge.project_paths as pp
+
+    projects = sessions_dir / "projects"
+    monkeypatch.setattr(pp, "project_output_dir", lambda sid: projects / str(sid))
+    events: list[dict] = []
+    monkeypatch.setattr(fb, "emit", events.append)
+    state = SimpleNamespace(get=lambda sid: None, sessions={})
+    tp.save_transcript(
+        "sub_a", _transcript("sub_a", BEFORE, parent_session_id="p", project_session_id="p")
+    )
+    names = ("raw_messages.jsonl", "raw_messages.recovered.jsonl", "compactions.jsonl")
+    _write(projects / "p" / "artifacts" / "report.md", "# hi\n")
+    for name in names:
+        _write(
+            projects / "p" / name,
+            "".join(
+                json.dumps({"ts": ts, "session_id": "p", "message": {"role": "user", "content": "parent"}}) + "\n"
+                for ts in (100.5, 102.5)
+            ),
+        )
+        _write(
+            sessions_dir / f"sub_a.{name}",
+            "".join(
+                json.dumps({"ts": e["timestamp"] + 0.002, "session_id": "sub_a", "message": e["message"]}) + "\n"
+                for e in BEFORE
+            ),
+        )
+
+    await fb._handle_command(
+        state,
+        {"type": "branch_session", "sessionId": "sub_a", "messageOrdinal": 2, "messageCreatedAt": ON_U2 * 1000},
+    )
+    (branched,) = [e for e in events if e["type"] == "session_branched"]
+    new = branched["newSessionId"]
+    assert branched["projectCloned"]
+    assert (projects / new / "artifacts" / "report.md").read_text() == "# hi\n"
+
+    for name in names:
+        # Both places the fork's logs are read from (src/main/sessionRecord.ts).
+        paths = [sessions_dir / f"{new}.{name}", projects / new / name]
+        rows = [row for p in paths if p.exists() for row in _rows(p)]
+        assert [(r["session_id"], r["message"]["content"]) for r in rows] == [
+            (new, e["message"]["content"]) for e in BEFORE[:2]
+        ]
+        # The parent keeps its rows, under its own id.
+        assert {r["session_id"] for r in _rows(projects / "p" / name)} == {"p"}
+
+
 # ── follow-ups slid into a running turn ────────────────────────────────
 #
 # The renderer shows the j-th follow-up of an ``inbox_injected`` event
