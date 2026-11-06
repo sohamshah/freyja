@@ -177,6 +177,9 @@ class SchedulerService:
         self._is_owner: bool = False
         # While CRUD-only: retries the owner lock until a peer frees it.
         self._claim_task: asyncio.Task | None = None
+        # Jobs that came due but could not fire yet. The loop does not
+        # wake early for them: it looks again at its usual once a second.
+        self._waiting_job_ids: set[str] = set()
         # Wake-mtime watermark: peers bump ``.wake`` on every CRUD;
         # we use it to know whether to bother re-scanning even if our
         # sleep timed out early. Currently informational — the tick
@@ -339,7 +342,7 @@ class SchedulerService:
             # so cross-process wake-touches surface within ~1s. We
             # always re-scan disk on the next tick regardless.
             now = time.time()
-            next_at = self._earliest_next_fire_from_disk()
+            next_at = self._earliest_next_fire_from_disk(now)
             if next_at is None:
                 delay = _TICK_CAP_SECONDS
             else:
@@ -384,7 +387,9 @@ class SchedulerService:
         if not lock.acquire():
             # Another process / claim task got here first. Their
             # pre-advance + fire is canonical; we drop out.
+            self._waiting_job_ids.add(job_id)
             return
+        self._waiting_job_ids.discard(job_id)
         try:
             # Re-read under the lock — the peer may have already
             # advanced next_fire_at past now.
@@ -832,15 +837,19 @@ class SchedulerService:
             job.enabled = False
             job.status = "disabled_max_fires"
 
-    def _earliest_next_fire_from_disk(self) -> float | None:
+    def _earliest_next_fire_from_disk(self, now: float) -> float | None:
         """Scan disk for the minimum next_fire_at across all active
         jobs. O(n) in job count; called once per tick. At 1000 jobs
-        and 1Hz ticks this is ~1ms — fine."""
+        and 1Hz ticks this is ~1ms — fine. A due job that could not fire
+        yet is left out: counted, it kept the loop waking every 0.05 s
+        until it could."""
         ts: float | None = None
         for j in load_all_jobs():
             if not j.enabled or j.status != "active":
                 continue
             if j.next_fire_at is None:
+                continue
+            if j.next_fire_at <= now and j.id in self._waiting_job_ids:
                 continue
             if ts is None or j.next_fire_at < ts:
                 ts = j.next_fire_at
