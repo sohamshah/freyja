@@ -396,3 +396,68 @@ async def test_a_sub_agent_running_in_the_app_under_a_job_session_still_gets_its
     assert not fb._scheduler_runs_elsewhere(state, SCHED_SUB)
     status = await fb.deliver_talk_message_locally(state, SCHED_SUB, _talk("status?"))
     assert status == "delivered to sub-agent"
+
+
+# ── run now ──────────────────────────────────────────────────────────
+
+
+def _job(job_id: str, execution):
+    from bridge.scheduler.models import IntervalSchedule, JobRecord, NoopSinkSpec
+    from bridge.scheduler.persistence import save_job
+
+    job = JobRecord(
+        id=job_id, name="digest", prompt="write the digest",
+        schedule=IntervalSchedule(seconds=3600), execution=execution, sinks=[NoopSinkSpec()],
+    )
+    save_job(job)
+    return job
+
+
+async def _run_now(state, events, job_id: str) -> dict:
+    import asyncio
+
+    await fb._handle_command(state, {"type": "scheduler.run_job_now", "id": "q1", "jobId": job_id})
+    await asyncio.gather(*state.scheduler._in_flight_runs.values())
+    (resp,) = [e for e in events if e.get("type") == "scheduler_response"]
+    return resp
+
+
+async def test_run_now_in_the_app_of_a_job_that_keeps_its_session_is_refused(app_bridge):
+    # The tick owner has the job's session loaded from its earlier runs. A
+    # run here loaded it again, ran, and saved; the owner's next save of
+    # its own copy dropped that run.
+    from bridge.scheduler.models import PersistentJobSession
+    from bridge.scheduler.persistence import load_runs_for_job
+
+    state, events, built = app_bridge
+    job = _job("sched_19f0", PersistentJobSession())
+
+    resp = await _run_now(state, events, job.id)
+
+    assert built == [] and load_runs_for_job(job.id) == []
+    assert "run" not in resp and "background scheduler" in resp["error"]
+
+
+async def test_run_now_in_the_app_of_a_job_that_starts_a_new_session_each_run_runs_there(app_bridge, monkeypatch):
+    # The Morning room's rebrief: each run starts from an empty session,
+    # so a run here writes nothing the owner reads back, and its session
+    # is the app's while it goes on.
+    import time
+
+    import bridge.scheduler.runtime as runtime
+    from bridge.scheduler.models import NewSession, RunRecord
+
+    state, events, _built = app_bridge
+    held: list[str | None] = []
+
+    async def fire(_service, job, *, run_id=None, **_kw):
+        held.append(fb._held_elsewhere(state, "scheduler:sched_19f1.ephemeral"))
+        return RunRecord(run_id=run_id, job_id=job.id, job_name=job.name, started_at=time.time(), status="succeeded")
+
+    monkeypatch.setattr(runtime, "fire_job", fire)
+    job = _job("sched_19f1", NewSession())
+
+    resp = await _run_now(state, events, job.id)
+
+    assert "error" not in resp and held == [None]
+    assert fb._held_elsewhere(state, "scheduler:sched_19f1.ephemeral")

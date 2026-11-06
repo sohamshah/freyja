@@ -1452,6 +1452,7 @@ class SchedulerService:
         job = load_job(job_id)
         if job is None:
             raise KeyError(job_id)
+        _check_runs_now_here(self, job)
         lock = FileLock(job_run_lock_path(job_id))
         if not lock.acquire():
             raise RuntimeError(
@@ -1823,6 +1824,27 @@ def _scheduler_session_of(job: JobRecord) -> str | None:
     if (spec.session_id or "").startswith(scheduler_session_id("")):
         return spec.session_id
     return None
+
+
+def _check_runs_now_here(service: SchedulerService, job: JobRecord) -> None:
+    """Refuse a run now of ``job`` in a process whose scheduler does not
+    hold the session the job keeps from run to run (a PersistentJobSession,
+    or an existing scheduler session). The tick owner, in another process,
+    loads and saves it, and keeps it loaded from earlier runs, so its next
+    save drops a run made here. No route hands the run to it: the
+    scheduler daemon reads no control channel, and nothing says whether it
+    or the gateway owns the tick. A NewSession job runs here: each run
+    starts from an empty session, which the owner resets at its next run
+    and never reads back."""
+    session = _scheduler_session_of(job)
+    if session is None or isinstance(job.execution, NewSession) or service.holds_session(session):
+        return
+    raise ValueError(
+        f"{job.name} cannot run now from here: it keeps one session from run "
+        "to run, and Freyja's background scheduler, in another process, holds "
+        "that session, so a run here would be lost from it. It runs at its "
+        "next scheduled time"
+    )
 
 
 def _gateway_runs() -> bool:
