@@ -635,35 +635,28 @@ Notes on the scope choices:
     └── gateway.log            # launchd-managed log
 ```
 
-### 7.2 `gateway.yaml` (v1 shape — minimal)
+### 7.2 `gateway.yaml`
 
 ```yaml
-# Gateway-level config. Edited by setup wizard, hot-reloaded on change.
+# Gateway-level config. Written by `freyja setup slack` and the desktop setup, read when the gateway starts.
 
 defaults:
-  model: claude-opus-4-7
+  model: claude-opus-5-5
   reasoning_level: high
-  coordination_strategy: bus      # 'bus' | 'goal' | 'kanban' | 'isolated'
-  permission_tier: medium         # 'low' | 'medium' | 'high' (no 'yolo' over Slack)
-  tool_exclude:
-    - bash                         # no shell over Slack by default
-    - computer
-    - computer_use
-    - click
-    - move_mouse
-    - type_text
-    - press_key
-    - screenshot
-    - browser_execute_js
-    - browser_screenshot
+  coordination_strategy: bus      # 'bus' | 'goal' | 'kanban'
 
 slack:
-  allow_bots: none                 # 'none' | 'mentions' | 'all'
-  allowed_user_ids: []             # if non-empty, deny everyone else (per workspace? per global?)
+  # Workspace (team) id → the Slack user ids Freyja answers there.
+  allowed_user_ids:
+    T012345: [U012ABCDEF]          # explicit ids, usually just your own
+    # T067890: ["*"]               # every member of that workspace, with full tools
+  enforce_workspace_allowlist: true  # kept so old files load; false no longer opens anything
   mention_required_in_channels: true
   reply_in_thread: true
-  reply_broadcast: false
+  enable_tool_filter: false        # true gives Slack sessions a read-mostly tool set
 ```
+
+Everyone on the allowlist gets the same full toolset as the operator (shell, file writes, computer use) unless `enable_tool_filter` is on. So list explicit user ids. `"*"` opens a workspace to every member, and the wizard warns when you choose it. An empty list lets nobody in, and a workspace that is not in the map is denied. `allowed_user_ids` is a map from workspace id to a list, not a flat list.
 
 ### 7.3 launchd plist
 
@@ -851,6 +844,7 @@ That last criterion is the real one. If the demo doesn't make people lean in, we
 - 2026-10-20 (evening): Section 14 corrected after the first live channel thread. Slack's cap on a streamed message is 12,000 characters of content, not 30,000 of prose, and the consumer now handles events in order through one worker.
 - 2026-10-22: Section 14 adds the fold: a sealed message's step cards collapse into one plan block through `chat.update`.
 - 2026-10-27: Section 14: the notice before a slow reply reads the runner's context outlook and says "Compacting" only when the runner will compact. A restore compaction reports failure and gets a deadline that grows with the transcript.
+- 2026-11-06: Section 7.2 shows the `gateway.yaml` the gateway reads today. The allowlist takes explicit user ids per workspace, or `"*"` to open one; the old sketch's `allowed_user_ids: []` lets nobody in.
 
 ## 14. The agent session surface (October 2026)
 
