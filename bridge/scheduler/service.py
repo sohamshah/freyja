@@ -83,6 +83,7 @@ from bridge.scheduler.persistence import (
     load_recent_runs_global,
     load_runs_for_job,
     owner_lock_path,
+    read_run_cancel_requested,
     read_wake_mtime,
     request_run_cancellation,
     save_job,
@@ -510,8 +511,7 @@ class SchedulerService:
             if job.next_fire_at is None or job.next_fire_at > now:
                 return
             if not run_lock.acquire():
-                # Its last run is still going: it fires once that ends.
-                self._waiting_job_ids.add(job_id)
+                self._came_due_while_running(job)
                 return
             if _misfire_policy(job) == "fire_all":
                 _bound_catch_up(job, now)
@@ -542,6 +542,42 @@ class SchedulerService:
             lock.release()
             if run_lock is not None:
                 run_lock.release()
+
+    def _came_due_while_running(self, job: JobRecord) -> None:
+        """``job`` is due while its last run still goes on (the caller
+        holds its record lock). Its overlap policy decides: queue fires
+        once that run ends, skip_if_running drops the slot, and
+        cancel_running asks that run to stop, then fires. A self-paced
+        job's next fire is set when its run ends; the time it came due by
+        is a placeholder, so it waits."""
+        policy = _overlap_policy(job)
+        if isinstance(job.schedule, SelfPacedSchedule):
+            policy = "queue"
+        if policy == "skip_if_running":
+            slot = job.next_fire_at
+            self._recompute_next_fire(job, force=True, after_fire=True)
+            save_job(job)
+            touch_wake()
+            logger.info("job %s: skipped the slot at %s; its last run is still going", job.id, slot)
+            append_event({"type": "scheduler_slot_skipped_running", "job_id": job.id, "slot": slot})
+            return
+        self._waiting_job_ids.add(job.id)
+        if policy != "cancel_running":
+            return
+        # The newest run is the one going on: runs of a job never overlap.
+        # Until it has a record, the next tick looks again.
+        last = next(iter(load_runs_for_job(job.id, limit=1)), None)
+        if last is None or last.finished_at is not None:
+            return
+        if read_run_cancel_requested(job.id, last.run_id):
+            return
+        request_run_cancellation(job.id, last.run_id)
+        logger.info("job %s: due again; asked its run %s to stop", job.id, last.run_id)
+        append_event({
+            "type": "scheduler_run_cancelled_for_next",
+            "job_id": job.id,
+            "run_id": last.run_id,
+        })
 
     async def _fire_with_concurrency(
         self, job: JobRecord, run_lock: FileLock, slot: float | None,
@@ -707,6 +743,7 @@ class SchedulerService:
         Reads back from disk before returning so the caller gets the
         canonical (post-pre-advance, post-validation) record."""
         _check_misfire_policy(spec.misfire_policy)
+        _check_overlap_policy(spec.overlap_policy)
         if not spec.id:
             spec.id = new_job_id()
         spec.created_at = spec.updated_at = time.time()
@@ -769,6 +806,7 @@ class SchedulerService:
         """Take the per-job flock, re-read under it, apply the patch,
         save. Eliminates lost-update against concurrent peer writes."""
         _check_misfire_policy(patch.misfire_policy)
+        _check_overlap_policy(patch.overlap_policy)
         with FileLock(job_lock_path(job_id)) as got:
             if not got:
                 # A peer is writing this job's record, for milliseconds
@@ -1059,6 +1097,28 @@ def _check_misfire_policy(policy: str | None) -> None:
         raise ValueError(
             f"unknown misfire_policy {policy!r}: use skip, fire_once or fire_all"
         )
+
+
+_OVERLAP_POLICIES = ("queue", "skip_if_running", "cancel_running")
+
+
+def _check_overlap_policy(policy: str | None) -> None:
+    """Refuse an overlap policy the scheduler does not know. Empty means
+    unset (queue). The dashboard offered "skip", saved as is."""
+    if policy and policy not in _OVERLAP_POLICIES:
+        raise ValueError(
+            f"unknown overlap_policy {policy!r}: use queue, skip_if_running "
+            "or cancel_running"
+        )
+
+
+def _overlap_policy(job: JobRecord) -> str:
+    """``job``'s overlap policy; unset is queue. "skip", which the
+    dashboard saved before this was checked, meant skip_if_running."""
+    policy = job.overlap_policy or "queue"
+    if policy == "skip":
+        return "skip_if_running"
+    return policy if policy in _OVERLAP_POLICIES else "queue"
 
 
 def _misfire_policy(job: JobRecord) -> str:

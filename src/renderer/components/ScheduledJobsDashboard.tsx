@@ -994,9 +994,9 @@ function ScheduleDetail(props: {
                 className="w-full rounded border border-white/[0.10] bg-black/[0.30] px-2 py-1.5 font-mono text-[11.5px] text-fg-0 focus:border-accent/[0.40] focus:outline-none"
               >
                 <option value="">(default)</option>
-                <option value="skip">skip — drop if previous still running</option>
                 <option value="queue">queue — run after previous finishes</option>
-                <option value="cancel_running">cancel_running — kill previous + start fresh</option>
+                <option value="skip_if_running">skip_if_running — drop if previous still running</option>
+                <option value="cancel_running">cancel_running — stop previous + start fresh</option>
               </select>
             </FormField>
             <FormField label="timeout (s)">

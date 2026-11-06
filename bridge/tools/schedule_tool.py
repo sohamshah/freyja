@@ -740,6 +740,14 @@ _PARAMETERS = {
         "overlap_policy": {
             "type": "string",
             "enum": ["queue", "skip_if_running", "cancel_running"],
+            "description": (
+                "What happens when the job comes due while its last run "
+                "is still going. queue (default): run once that run ends. "
+                "skip_if_running: drop this time; the job waits for its "
+                "next one. Use for frequent checks. cancel_running: stop "
+                "the last run and start a new one. Use when only the "
+                "newest run's result matters."
+            ),
         },
         "timeout_seconds": {"type": "integer"},
         "tags": {"type": "array", "items": {"type": "string"}},
