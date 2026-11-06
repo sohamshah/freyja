@@ -145,6 +145,137 @@ async def test_a_run_whose_queued_prompt_the_emergency_stop_dropped_is_cancelled
     assert load_runs_for_job(job.id, limit=1)[0].status == "cancelled"
 
 
+async def _a_run_queued_behind_the_operators_turn(monkeypatch, tmp_path, *, timeout=None):
+    """A fire into a session whose turn the operator started waits in its
+    queue. Returns the session, the turns that ran, the fire's job, its
+    task and the deliveries made."""
+    import bridge.freyja_bridge as fb
+    import bridge.gateway.pid as gp
+    import bridge.scheduler.runtime as runtime
+    from bridge.scheduler.runtime import fire_job
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "_SESSION_EVENT_DIR", tmp_path / "events")
+    monkeypatch.setattr(gp, "holds_desktop_lock", lambda: True)  # this is the app's bridge
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("s1")
+    await sess.initialize()
+    ran: list[str] = []
+
+    async def run_turn(content, _attachments=None, **_kw):
+        ran.append(content)
+        transcript = sess.session.transcript
+        transcript.append_message(Message(role="user", content=content))
+        transcript.append_message(Message(role="assistant", content=f"Half an answer to {content}"))
+        if content == "the operator's question":
+            await asyncio.sleep(60)
+
+    sess.run_turn = run_turn
+    delivered: list[str] = []
+
+    async def deliver_all(job, run, output, ctx):
+        delivered.append(output.text)
+        return []
+
+    monkeypatch.setattr(runtime, "deliver_all", deliver_all)
+    fb._schedule_or_queue_turn(sess, "the operator's question")
+    job = _report_job()
+    job.timeout_seconds = timeout
+    save_job(job)
+    fire = asyncio.create_task(fire_job(_Service({"s1": sess}), job))
+    for _ in range(200):
+        if sess.queued_messages:
+            break
+        await asyncio.sleep(0)
+    return sess, ran, job, fire, delivered
+
+
+async def test_a_queued_run_that_is_cancelled_leaves_the_operators_turn_running(monkeypatch, tmp_path):
+    """A run cancelled while its prompt still waits in the queue stopped
+    whatever turn was running, the operator's, and its prompt stayed
+    queued and ran after it. Only the run's prompt goes."""
+    sess, ran, job, fire, delivered = await _a_run_queued_behind_the_operators_turn(monkeypatch, tmp_path)
+    operators_turn = sess.pending_task
+    request_run_cancellation(job.id, load_runs_for_job(job.id, limit=1)[0].run_id)
+    run = await asyncio.wait_for(fire, 10)
+
+    assert not operators_turn.done()
+    assert sess.queued_messages == []
+    assert run.status == "cancelled"
+    assert run.output_text == "" and delivered == []
+    operators_turn.cancel()
+    await asyncio.gather(operators_turn, return_exceptions=True)
+    assert ran == ["the operator's question"]
+
+
+async def test_a_queued_run_that_times_out_leaves_the_operators_turn_running(monkeypatch, tmp_path):
+    sess, ran, job, fire, delivered = await _a_run_queued_behind_the_operators_turn(
+        monkeypatch, tmp_path, timeout=0.2,
+    )
+    operators_turn = sess.pending_task
+    run = await asyncio.wait_for(fire, 10)
+
+    assert not operators_turn.done()
+    assert sess.queued_messages == []
+    assert run.status == "timed_out"
+    assert run.output_text == "" and delivered == []
+    operators_turn.cancel()
+    await asyncio.gather(operators_turn, return_exceptions=True)
+    assert ran == ["the operator's question"]
+
+
+async def test_a_run_that_times_out_after_its_turn_leaves_the_operators_next_turn_running(monkeypatch, tmp_path):
+    """The run waits for its sub-agents after its turn ends. A turn the
+    operator started meanwhile is not the run's to stop."""
+    import bridge.freyja_bridge as fb
+    import bridge.gateway.pid as gp
+    import bridge.scheduler.runtime as runtime
+    from bridge.scheduler.runtime import fire_job
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "_SESSION_EVENT_DIR", tmp_path / "events")
+    monkeypatch.setattr(gp, "holds_desktop_lock", lambda: True)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("s1")
+    await sess.initialize()
+    child = SimpleNamespace(id="sub_1", label="researcher")
+    children: list = []
+    sess._running_background_work = lambda: list(children)
+    stopped_children: list = []
+    monkeypatch.setattr(fb, "_stop_background_work", lambda s, exclude=(): stopped_children.append(s))
+    turn_no = 0
+
+    async def run_turn(content, _attachments=None, **_kw):
+        nonlocal turn_no
+        turn_no += 1
+        sess.current_turn_id = f"turn-{turn_no}"
+        fb.emit({"type": "turn_start", "sessionId": sess.id, "turnId": sess.current_turn_id})
+        if content == "the operator's next question":
+            await asyncio.sleep(60)
+        else:
+            children.append(child)  # the run's sub-agent works on
+
+    sess.run_turn = run_turn
+    monkeypatch.setattr(runtime, "deliver_all", lambda *a: asyncio.sleep(0, []))
+    job = _report_job()
+    job.timeout_seconds = 0.5
+    save_job(job)
+    fire = asyncio.create_task(fire_job(_Service({"s1": sess}), job))
+    for _ in range(200):
+        if children and sess.pending_task.done():
+            break
+        await asyncio.sleep(0.01)
+    fb._schedule_or_queue_turn(sess, "the operator's next question")
+    operators_turn = sess.pending_task
+    run = await asyncio.wait_for(fire, 10)
+
+    assert run.status == "timed_out"
+    assert stopped_children == [sess]
+    assert not operators_turn.done()
+    operators_turn.cancel()
+    await asyncio.gather(operators_turn, return_exceptions=True)
+
+
 async def test_a_run_asked_to_stop_while_its_session_loads_stops(monkeypatch):
     import bridge.scheduler.runtime as runtime
     from bridge.scheduler.runtime import fire_job

@@ -313,7 +313,11 @@ async def fire_job(
             )
 
             def _abort_this_fire() -> None:
-                _force_cancel_session(sess, scope="turn")
+                # A prompt still queued waits behind another turn, the
+                # operator's maybe: only the prompt goes. A turn that is
+                # not the fire's is left running.
+                if not run_cost.take_prompt_back(sess) and run_cost.runs_turn(sess):
+                    _force_cancel_session(sess, scope="turn")
                 _stop_background_work(sess, exclude=preexisting)
 
             cancel_outcome = await _await_pending_with_cancel_poll(
@@ -335,6 +339,9 @@ async def fire_job(
             # turn this fire waited behind.
             run.status = "cancelled"
             run.error = "not run: the emergency stop dropped its prompt from the session's queue"
+        elif run_cost.unqueued:
+            # Never ran either: stopped while its prompt waited in the queue.
+            run.error = f"{run.error or run.status}, while its prompt was still queued: it never ran"
         else:
             # Read the most recent assistant message back out of the
             # transcript. This is the cleanest capture point: by the time
@@ -1037,7 +1044,8 @@ class _RunCost:
     (a sub-agent's report wakes the session with a user message).
 
     ``dropped``: the emergency stop dropped the fire's prompt from the
-    session's queue before it ran."""
+    session's queue before it ran. ``unqueued``: the run was stopped while
+    its prompt was queued, and took it back out (take_prompt_back)."""
 
     def __init__(self, run_id: str, budget: BudgetSpec | None) -> None:
         self.cost = 0.0
@@ -1053,12 +1061,33 @@ class _RunCost:
         self._next_turn_is_ours = False
         self._prompt_left_queue = False
         self.dropped = False
+        self.unqueued = False
 
     def our_turn_starts(self) -> None:
         """The on_turn_start hook of the fire's prompt: the session's next
         turn is the fire's."""
         self._next_turn_is_ours = True
         self._prompt_left_queue = True
+
+    def take_prompt_back(self, sess: Any) -> bool:
+        """Take the fire's prompt out of the session's queue, where it waits
+        behind another turn. False when it is not there."""
+        queued = getattr(sess, "queued_messages", None) or []
+        for i, entry in enumerate(queued):
+            if len(entry) > 2 and entry[2] == self.our_turn_starts:
+                del queued[i]
+                self.unqueued = True
+                return True
+        return False
+
+    def runs_turn(self, sess: Any) -> bool:
+        """Whether the session's running turn is the fire's: its prompt's,
+        or one that started on its own after it (a wake for its sub-agents'
+        memos), not one the operator started after it. Before the fire's
+        turn has started, a prompt that is not queued is running."""
+        if self._turns and not self._next_turn_is_ours:
+            return getattr(sess, "current_turn_id", None) in self._turns
+        return not self.dropped
 
     def on_event(self, event: dict[str, Any]) -> None:
         kind = event.get("type")
