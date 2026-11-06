@@ -121,6 +121,22 @@ await check('Delete on a desktop session still deletes it', async () => {
   assert.deepEqual(calls, [['delete', 'session-2'], ['command', 'delete_session']])
 })
 
+await check('a Slack thread with only its settings saved, before its first message, is not listed', () => {
+  // The gateway saves a mode or model set before a thread's first message
+  // as transcript metadata with no entries, so a restart keeps it.
+  const fresh = 'freyja:slack:T1:channel:C1:2.0'
+  writeTranscript(fresh, { coordination_strategy: 'kanban' })
+  touch(file(fresh, '.transcript.json'), past)
+  assert.ok(!listed().includes(fresh))
+  // Its first turn saves the transcript over it.
+  fs.writeFileSync(file(fresh, '.transcript.json'), JSON.stringify({
+    version: 1, session_id: fresh, metadata: { coordination_strategy: 'kanban' },
+    transcript: { entries: [{ id: 'e1', message: { role: 'user', content: 'plan the release' } }], head_id: 'e1' },
+  }))
+  touch(file(fresh, '.transcript.json'), past + 1_000)
+  assert.ok(listed().includes(fresh))
+})
+
 fs.rmSync(home, { recursive: true, force: true })
 if (failures) {
   console.log(`\n${failures} failed`)

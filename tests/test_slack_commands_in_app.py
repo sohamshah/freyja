@@ -524,6 +524,40 @@ async def test_a_change_to_a_thread_not_loaded_since_the_gateway_started_is_save
     assert _saved()["coordination_strategy"] == "bus"
 
 
+async def test_a_mode_set_before_a_threads_first_message_is_kept_over_a_gateway_restart(gateway, tmp_path):
+    # The thread had no transcript to save the mode with, so a restart
+    # brought it back as bus.
+    daemon, _state, _events = gateway
+    await _slash_mode(daemon, "goal")
+    await daemon._on_set_model({"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5"})
+    # Then /mode again, on the thread loaded now.
+    await _slash_mode(daemon, "kanban")
+    thread = await _after_a_restart(tmp_path)
+    assert (thread.coordination_strategy, thread.model_id) == ("kanban", "claude-opus-5-5")
+    # Its settings alone: no messages, which its first turn saves over.
+    assert tp.load_transcript(SLACK)["transcript"]["entries"] == []
+
+
+async def test_settings_saved_alone_never_replace_a_transcript(gateway, monkeypatch):
+    # A thread whose transcript did not load keeps it on disk.
+    daemon, _state, _events = gateway
+    _thread_saved("bus")
+
+    async def _not_restored(self):
+        return False
+
+    monkeypatch.setattr(fb._BridgeSession, "try_restore_transcript", _not_restored)
+    await _slash_mode(daemon, "goal")
+    assert len(tp.load_transcript(SLACK)["transcript"]["entries"]) == 2
+
+
+async def test_a_copy_of_a_thread_in_the_app_saves_no_settings(app):
+    state, _events = app
+    await state.ensure_session(SLACK, coordination_strategy="goal")
+    await state.ensure_session("session-desktop", coordination_strategy="goal")
+    assert tp.load_transcript(SLACK) is None and tp.load_transcript("session-desktop") is None
+
+
 async def test_a_change_held_for_a_running_turn_is_saved_when_the_turn_ends(gateway):
     daemon, state, _events = gateway
     _thread_saved("bus")

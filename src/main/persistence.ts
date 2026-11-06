@@ -593,6 +593,13 @@ function mirrorGatewaySessions(known: Set<string>): PersistedSessionMeta[] {
       _gatewayMirrorCache.set(fullPath, { mtimeMs, meta: null })
       continue
     }
+    if (isGatewayRoot && !parsed?.transcript?.entries?.length) {
+      // A Slack thread with nothing in it yet: the gateway saves a mode or
+      // model set before its first message as metadata alone, so a
+      // restart keeps it. Listed, it was an empty session in the sidebar.
+      _gatewayMirrorCache.set(fullPath, { mtimeMs, meta: null })
+      continue
+    }
     const messageCount = Array.isArray(parsed?.transcript?.entries)
       ? parsed.transcript.entries.filter((e: any) => e?.message).length
       : 0

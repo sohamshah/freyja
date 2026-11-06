@@ -6902,6 +6902,34 @@ class _BridgeSession:
         # Sidecar file `~/.freyja/sessions/{id}.goal.json`.
         self._save_goal_state()
 
+    def _save_settings_alone(self) -> None:
+        """Save a Slack thread's model and mode when it has no transcript
+        to save them with: set before its first message (/mode, or the
+        app's menus), they were lost to a gateway restart. The file holds
+        the metadata and no entries; the app does not list it, and the
+        thread's first turn saves over it. A transcript on disk is never
+        replaced, and no other session saves anything here."""
+        if not _is_gateway_session_id(self.id) or self._gateway_copy:
+            return
+        try:
+            from bridge.transcript_persistence import load_transcript, save_transcript
+
+            data = load_transcript(self.id) or {
+                "version": 1,
+                "session_id": self.id,
+                "transcript": {"entries": []},
+            }
+            if (data.get("transcript") or {}).get("entries"):
+                return
+            data.setdefault("metadata", {}).update(
+                model_id=self.model_id,
+                reasoning_level=self.reasoning_level,
+                coordination_strategy=self.coordination_strategy,
+            )
+            save_transcript(self.id, data)
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"failed to save settings for {self.id}: {exc}")
+
     def _save_goal_state(self) -> None:
         """Persist goal_state + judge_rules + goal_verdict_history to disk.
 
@@ -13278,6 +13306,8 @@ class _BridgeState:
                         # Saved with the change now. Saved only when the
                         # next turn ended, it was lost to a restart first.
                         existing._save_transcript()  # noqa: SLF001
+                    else:
+                        existing._save_settings_alone()  # noqa: SLF001
                 else:
                     await existing._restore_persisted_transcript_if_empty()  # noqa: SLF001
             finally:
@@ -13291,6 +13321,7 @@ class _BridgeState:
         # also strips every thinking block from the transcript. Nothing
         # sends the gateway a thread's mode, so a kanban thread came back
         # as bus, without its board, and a goal thread without its loop.
+        asked = (model_id, reasoning_level, coordination_strategy) != (None, None, None)
         saved: dict[str, Any] = {}
         if model_id is None or coordination_strategy is None:
             saved = _saved_metadata(session_id)
@@ -13348,6 +13379,10 @@ class _BridgeState:
             # Loaded for a change (a thread the gateway has not run since
             # it started): saved with it now, as a loaded session's is.
             s._save_transcript()  # noqa: SLF001
+        elif not restored and asked:
+            # A thread with no transcript yet (/mode before its first
+            # message): its settings alone, so a restart keeps them.
+            s._save_settings_alone()  # noqa: SLF001
         return s
 
     def get(self, session_id: str | None) -> _BridgeSession | None:
