@@ -15,6 +15,7 @@ whatever the policy said.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 
@@ -32,6 +33,7 @@ from bridge.scheduler.persistence import load_job, save_job
 from bridge.scheduler.service import SchedulerService
 
 HOUR = 3600
+DAY = 24 * HOUR
 
 
 @pytest.fixture
@@ -131,3 +133,61 @@ async def test_a_late_tick_after_sleep_follows_the_policy(fired, policy, runs):
 
     assert fired == [job.id] * runs
     assert load_job(job.id).next_fire_at > time.time()
+
+
+def _events(kind: str) -> list[dict]:
+    from bridge.scheduler.persistence import events_path
+
+    rows = [json.loads(line) for line in events_path().read_text().splitlines()]
+    return [r for r in rows if r["type"] == kind]
+
+
+async def test_fire_all_catches_up_at_most_ten_slots(fired):
+    # An every-minute job missed over a weekend has 2,880 slots, and
+    # fire_all ran every one of them, one after another.
+    now = time.time()
+    job = JobRecord(
+        id="sched_minutely",
+        name="uptime check",
+        schedule=IntervalSchedule(seconds=60),
+        prompt="check",
+        sinks=[NoopSinkSpec()],
+        misfire_policy="fire_all",
+    )
+    job.last_fire_at = now - 2 * DAY
+    job.next_fire_at = job.last_fire_at + 60
+    save_job(job)
+
+    await _run_owner(1.5)
+
+    assert fired == [job.id] * 10
+    assert load_job(job.id).next_fire_at > time.time()
+    [dropped] = _events("scheduler_missed_slots_dropped")
+    assert dropped["job_id"] == job.id
+    assert dropped["from"] == job.next_fire_at
+    assert dropped["until"] == pytest.approx(now - 9.5 * 60, abs=60)
+    assert dropped["catch_up_runs"] == 10
+
+
+async def test_fire_all_drops_slots_older_than_a_week(fired):
+    # A daily job missed for nine days: the two slots more than a week
+    # old are dropped, the seven since then run.
+    now = time.time()
+    job = JobRecord(
+        id="sched_daily",
+        name="daily report",
+        schedule=IntervalSchedule(seconds=DAY),
+        prompt="report",
+        sinks=[NoopSinkSpec()],
+        misfire_policy="fire_all",
+    )
+    job.last_fire_at = now - 9.5 * DAY
+    job.next_fire_at = job.last_fire_at + DAY
+    save_job(job)
+
+    await _run_owner(1.0)
+
+    assert fired == [job.id] * 7
+    [dropped] = _events("scheduler_missed_slots_dropped")
+    assert dropped["until"] == pytest.approx(now - 6.5 * DAY, abs=2)
+    assert dropped["catch_up_runs"] == 7

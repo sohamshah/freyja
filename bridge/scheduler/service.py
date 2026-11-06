@@ -37,6 +37,7 @@ import asyncio
 import logging
 import os
 import time
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
 from bridge.scheduler.models import (
@@ -48,6 +49,7 @@ from bridge.scheduler.models import (
     JobPatch,
     JobRecord,
     NewSession,
+    OnceSchedule,
     PersistentJobSession,
     RunRecord,
     SchedulerMetrics,
@@ -101,6 +103,12 @@ _TICK_CAP_SECONDS = 1.0
 # How often a CRUD-only scheduler tries the owner lock again. When the
 # owner exits and nothing restarts it, jobs wait at most this long.
 _OWNER_RETRY_SECONDS = 15.0
+
+# "fire_all" catches up at most this many missed slots, the latest ones,
+# and none older than a week. Unbounded, an every-minute job missed over
+# a weekend ran about 2,880 times in a row.
+_CATCH_UP_MAX_RUNS = 10
+_CATCH_UP_MAX_AGE_SECONDS = 7 * 24 * 3600
 
 # How long stop() waits for in-flight runs before the process drops
 # them. Below launchd's 20 s exit timeout, so a stopping gateway still
@@ -386,6 +394,13 @@ class SchedulerService:
             now = time.time()
             if job.next_fire_at is None or job.next_fire_at > now:
                 return
+            if job.misfire_policy == "fire_all":
+                _bound_catch_up(job, now)
+                if job.next_fire_at is None or job.next_fire_at > now:
+                    # Every missed slot was too old to run.
+                    save_job(job)
+                    touch_wake()
+                    return
             # Pre-advance + persist BEFORE firing — at-most-once.
             self._recompute_next_fire(job, force=True, after_fire=True)
             save_job(job)
@@ -787,7 +802,7 @@ class SchedulerService:
         last = job.last_fire_at if after_fire else None
         # "fire_all" runs every missed slot: step on from the slot being
         # fired, not from now, so an overdue job stays due until each
-        # missed slot has had its run.
+        # missed slot has had its run (within _bound_catch_up's limits).
         if (
             after_fire
             and job.misfire_policy == "fire_all"
@@ -858,6 +873,41 @@ def _catches_up(job: JobRecord, now: float) -> bool:
         and job.next_fire_at is not None
         and job.next_fire_at <= now
     )
+
+
+def _bound_catch_up(job: JobRecord, now: float) -> None:
+    """Move an overdue "fire_all" job past the missed slots it will not
+    run: all but the latest ``_CATCH_UP_MAX_RUNS``, and any older than
+    ``_CATCH_UP_MAX_AGE_SECONDS``. The event log records the dropped
+    slots: every slot of the schedule from ``from`` until ``until``."""
+    if isinstance(job.schedule, (OnceSchedule, SelfPacedSchedule)):
+        return
+    first = job.next_fire_at
+    slot = first
+    cutoff = now - _CATCH_UP_MAX_AGE_SECONDS
+    if slot < cutoff:
+        # Jump, rather than step through, slots too old to run.
+        slot = compute_next_fire(job.schedule, now=cutoff, last_fire=first)
+    kept: deque[float] = deque(maxlen=_CATCH_UP_MAX_RUNS)
+    while slot is not None and slot <= now:
+        kept.append(slot)
+        slot = compute_next_fire(job.schedule, now=slot, last_fire=slot)
+    until = kept[0] if kept else slot
+    if until == first:
+        return
+    job.next_fire_at = until
+    logger.info(
+        "job %s (fire_all): dropped the missed slots from %s until %s; "
+        "%d catch-up runs",
+        job.id, first, until, len(kept),
+    )
+    append_event({
+        "type": "scheduler_missed_slots_dropped",
+        "job_id": job.id,
+        "from": first,
+        "until": until,
+        "catch_up_runs": len(kept),
+    })
 
 
 def _count_jobs_on_disk() -> int:
