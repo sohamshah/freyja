@@ -7,7 +7,8 @@ That reads like a rate limit but never clears. The provider drops the
 `-fast` tier on the first one, the runner resends at once at standard speed
 and posts a chat notice, and the picker gates a `-fast` id the org has no
 quota for instead of letting the click wait through three backoffs for a
-"provider overloaded" verdict."""
+"provider overloaded" verdict. The failure text for the case the provider
+did not catch is in test_runner_failure_surface.py."""
 
 from __future__ import annotations
 
@@ -215,17 +216,3 @@ def test_picker_gates_the_fast_id_the_org_has_no_quota_for(monkeypatch):
     served = by_id["claude-opus-5-5-fast"]
     assert served["available"] is True
     assert "unavailableReason" not in served
-
-
-def test_failure_text_names_the_missing_quota_instead_of_overload():
-    from bridge.freyja_bridge import _format_user_facing_runner_failure
-
-    text = _format_user_facing_runner_failure(
-        reason="rate_limit",
-        message=_no_quota_body("claude-opus-4-8")["error"]["message"],
-        already_streamed=False,
-    )
-
-    assert "Fast mode is not enabled" in text
-    assert "overloaded" not in text.lower()
-    assert "fast-mode quota" in text

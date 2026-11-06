@@ -1,12 +1,12 @@
 """Speed tiers listed as their own model ids: OpenAI's `-ultrafast` and
 Anthropic's `-fast`. The API gets the base model plus the tier flag, and the
-cost meter prices each call by the tier id."""
+cost meter prices each call by the tier id. The Anthropic tier's wire shape
+and its quota drop live in test_fast_mode_quota.py."""
 
 import pytest
 
-from engine.anthropic_provider import AnthropicConfig, AnthropicProvider
-from engine.openai_provider import OpenAIConfig, OpenAIProvider
-from engine.providers import compute_cost
+from engine.openai_provider import ULTRAFAST_MODELS, OpenAIConfig, OpenAIProvider
+from engine.providers import MODEL_REGISTRY, compute_cost
 from engine.types import Message, ThinkingConfig
 
 
@@ -20,7 +20,7 @@ def _openai(model: str) -> OpenAIProvider:
     )
 
 
-@pytest.mark.parametrize("base", ["gpt-6.1-sol", "gpt-6-astra"])
+@pytest.mark.parametrize("base", sorted(ULTRAFAST_MODELS))
 def test_ultrafast_id_sends_base_model_on_the_ultrafast_tier(base: str) -> None:
     provider = _openai(f"{base}-ultrafast")
 
@@ -29,7 +29,7 @@ def test_ultrafast_id_sends_base_model_on_the_ultrafast_tier(base: str) -> None:
     assert params["model"] == base
     assert params["service_tier"] == "ultrafast"
     assert params["reasoning"]["effort"] == "high"
-    assert provider.context_window == 1_050_000
+    assert provider.context_window == MODEL_REGISTRY[base]["context_window"]
     assert provider.model_id == f"{base}-ultrafast"
 
 
@@ -47,7 +47,7 @@ def test_ultrafast_on_a_model_without_the_tier_is_refused() -> None:
         _openai("gpt-6-luna-ultrafast")
 
 
-@pytest.mark.parametrize("base", ["gpt-6.1-sol", "gpt-6-astra"])
+@pytest.mark.parametrize("base", sorted(ULTRAFAST_MODELS))
 def test_ultrafast_costs_six_times_standard(base: str) -> None:
     usage = dict(
         input_tokens=1_000_000,
@@ -59,11 +59,3 @@ def test_ultrafast_costs_six_times_standard(base: str) -> None:
     assert compute_cost(f"{base}-ultrafast", **usage) == pytest.approx(
         6 * compute_cost(base, **usage)
     )
-
-
-def test_fast_id_is_the_model_id_the_meter_prices() -> None:
-    provider = AnthropicProvider(
-        AnthropicConfig(api_key="test-key", model="claude-opus-5-5-fast")
-    )
-
-    assert provider.model_id == "claude-opus-5-5-fast"

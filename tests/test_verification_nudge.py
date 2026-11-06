@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from bridge.gateway.platforms.base import MessageSource, SendResult
+from bridge.gateway.platforms.base import MessageSource
 from bridge.gateway.stream_consumer import SlackStreamConsumer
 from engine.providers import APIUsage, ProviderResponse, ToolCallResponse
 from engine.runner import AsyncAgentRunner

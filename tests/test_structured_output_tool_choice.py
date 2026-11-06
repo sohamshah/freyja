@@ -39,16 +39,32 @@ def _provider(monkeypatch, model: str) -> AnthropicProvider:
 
 
 def test_model_rejects_forced_tool_choice_detection():
-    assert _model_rejects_forced_tool_choice("claude-fable-5")
-    assert _model_rejects_forced_tool_choice("claude-fable-5-20260601")  # suffix-tolerant
-    assert not _model_rejects_forced_tool_choice("claude-opus-4-8")
-    assert not _model_rejects_forced_tool_choice("claude-sonnet-4-6")
-    assert not _model_rejects_forced_tool_choice("")
+    """Substring match: dated, `-fast` and point-release ids inherit the
+    quirk (a miss is a 400 on every structured-output call), while
+    "claude-sonnet-5-5" must not catch the still-supported "claude-sonnet-5"."""
+    for model in (
+        "claude-fable-5",
+        "claude-fable-5-1",
+        "claude-fable-5-20260601",
+        "claude-opus-5-5-fast",
+        "claude-sonnet-5-5",
+    ):
+        assert _model_rejects_forced_tool_choice(model), model
+    for model in ("claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", ""):
+        assert not _model_rejects_forced_tool_choice(model), model
 
 
 @pytest.mark.asyncio
-async def test_structured_uses_auto_for_fable(monkeypatch):
-    p = _provider(monkeypatch, "claude-fable-5")
+@pytest.mark.parametrize(
+    "model,expected",
+    [
+        ("claude-fable-5", [{"type": "auto"}]),
+        ("claude-opus-4-8", [{"type": "tool", "name": "working_memory"}]),
+    ],
+    ids=["fable-goes-auto-first-time", "opus-is-forced"],
+)
+async def test_structured_picks_tool_choice_per_model(monkeypatch, model, expected):
+    p = _provider(monkeypatch, model)
     seen: list = []
 
     async def fake(**kw):
@@ -61,26 +77,8 @@ async def test_structured_uses_auto_for_fable(monkeypatch):
         schema=SCHEMA,
         schema_name="working_memory",
     )
-    assert seen == [{"type": "auto"}]  # never attempted forced
+    assert seen == expected
     assert res.data == {"x": "hi"}
-
-
-@pytest.mark.asyncio
-async def test_structured_forces_for_supported_models(monkeypatch):
-    p = _provider(monkeypatch, "claude-opus-4-8")
-    seen: list = []
-
-    async def fake(**kw):
-        seen.append(kw.get("tool_choice"))
-        return _resp()
-
-    p.complete_async = fake  # type: ignore[assignment]
-    await p.complete_structured(
-        messages=[Message(role="user", content="x")],
-        schema=SCHEMA,
-        schema_name="working_memory",
-    )
-    assert seen == [{"type": "tool", "name": "working_memory"}]  # forced
 
 
 @pytest.mark.asyncio

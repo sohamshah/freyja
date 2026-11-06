@@ -27,8 +27,6 @@ from __future__ import annotations
 import ast
 import pathlib
 
-import pytest
-
 ENGINE = pathlib.Path(__file__).resolve().parent.parent / "engine"
 
 # Methods that take an optional per-call reasoning override.
@@ -66,27 +64,25 @@ def _assigned(fn) -> set[str]:
     return out
 
 
-@pytest.mark.parametrize(
-    "filename,classname,fn",
-    [(f, c, fn) for f, c, fn in _provider_methods()],
-    ids=lambda v: v if isinstance(v, str) else getattr(v, "name", "fn"),
-)
-def test_completion_method_declares_the_reasoning_param_it_forwards(
-    filename, classname, fn
-):
-    """If the body reads `thinking`, the signature must bind it."""
-    reads = {
-        n.id
-        for n in ast.walk(fn)
-        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
-    }
-    if "thinking" not in reads:
-        return  # provider bakes reasoning in at construction time — fine.
-
-    bound = _declared(fn) | _assigned(fn)
-    assert "thinking" in bound, (
-        f"{filename}:{classname}.{fn.name} forwards `thinking` but never binds it — "
-        "this raises NameError at call time, not import time."
+def test_every_completion_method_binds_the_reasoning_param_it_forwards():
+    """If a body reads `thinking`, the signature must bind it. One sweep over
+    every provider module; a provider that bakes reasoning in at construction
+    time never reads the name and is fine."""
+    checked = 0
+    offenders: list[str] = []
+    for filename, classname, fn in _provider_methods():
+        checked += 1
+        reads = {
+            n.id
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+        }
+        if "thinking" in reads and "thinking" not in _declared(fn) | _assigned(fn):
+            offenders.append(f"{filename}:{classname}.{fn.name}")
+    assert checked, "no provider completion methods found — did the engine layout move?"
+    assert offenders == [], (
+        "forward `thinking` without binding it "
+        f"(NameError at call time, not import time): {offenders}"
     )
 
 

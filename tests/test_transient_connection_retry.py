@@ -15,12 +15,9 @@ REMOTE_PROTOCOL = (
 )
 
 
-def test_remote_protocol_error_is_retryable():
+def test_connection_drops_are_retryable_and_real_failures_are_not():
     assert is_transient_connection_error(REMOTE_PROTOCOL)
     assert is_retryable_error(REMOTE_PROTOCOL)
-
-
-def test_other_connection_drops_are_retryable():
     for msg in [
         "httpx.RemoteProtocolError: Server disconnected without sending a response.",
         "ConnectionResetError: [Errno 54] Connection reset by peer",
@@ -32,8 +29,6 @@ def test_other_connection_drops_are_retryable():
     ]:
         assert is_retryable_error(msg), msg
 
-
-def test_non_connection_errors_unaffected():
     # Genuinely non-retryable failures must stay non-retryable.
     assert not is_transient_connection_error("authentication_error: invalid x-api-key")
     assert not is_retryable_error("authentication_error: invalid x-api-key")

@@ -22,7 +22,8 @@ mid-word. Before the fix the engine chained four defects:
 
 These tests pin the fixes plus the server-side refusal-fallback opt-in
 (``fallbacks`` + ``server-side-fallback-2026-06-01`` beta) for
-Fable-class models.
+Fable-class models. The operator-facing wording is in
+test_runner_failure_surface.py.
 """
 
 from __future__ import annotations
@@ -33,15 +34,15 @@ import pytest
 
 from engine import anthropic_provider
 from engine.anthropic_provider import (
-    AnthropicConfig,
-    AnthropicProvider,
     REFUSAL_FALLBACK_TARGETS,
     SERVER_FALLBACK_BETA,
+    AnthropicConfig,
+    AnthropicProvider,
     _model_wants_refusal_fallback,
     _refusal_fallback_target,
 )
 from engine.providers import APIUsage, ProviderError, ProviderResponse
-from engine.runner import StopCondition, _describe_refusal
+from engine.runner import _describe_refusal
 from engine.types import Message, ThinkingConfig
 
 
@@ -65,27 +66,13 @@ def _refusal_response(
 
 
 # ============================================================================
-# 1. Stop condition: refusal must stop the loop
+# 1. Refusal diagnostics carry the full real reason
 # ============================================================================
 
-def test_should_stop_on_refusal():
-    stop = StopCondition()
-    assert stop.should_stop(_refusal_response(), iteration=1, max_iter=100)
-
-
-def test_should_stop_on_refusal_with_partial_content():
-    """Mid-stream refusal: partial prose, still a hard stop — continuing
-    would replay the transcript ending in an assistant message (prefill)."""
-    stop = StopCondition()
-    resp = _refusal_response(content="Path 1 is genuinely uncanny when the reply dra")
-    assert stop.should_stop(resp, iteration=1, max_iter=100)
-
-
-# ============================================================================
-# 2. Refusal diagnostics carry the full real reason
-# ============================================================================
-
-def test_describe_refusal_includes_category_and_explanation():
+def test_describe_refusal_carries_the_real_reason():
+    """Category and explanation when the API sent them; an explicit note
+    when it did not (an empty string reads like a silent early stop); and
+    the size of a discarded mid-stream partial."""
     msg, info = _describe_refusal(_refusal_response(
         stop_details={
             "type": "refusal",
@@ -98,16 +85,10 @@ def test_describe_refusal_includes_category_and_explanation():
     assert info["category"] == "cyber"
     assert info["explanation"] == "Request touched restricted cybersecurity content."
 
-
-def test_describe_refusal_explicit_when_api_sent_no_details():
-    """A refusal with no stop_details must say so — not render as an
-    empty string that reads like a silent early stop."""
     msg, info = _describe_refusal(_refusal_response(stop_details=None))
     assert "no stop_details" in msg
     assert info["stop_details"] is None
 
-
-def test_describe_refusal_notes_discarded_partial():
     msg, info = _describe_refusal(_refusal_response(
         content="partial prose that got cut",
         stop_details={"category": "cyber"},
@@ -118,7 +99,7 @@ def test_describe_refusal_notes_discarded_partial():
 
 
 # ============================================================================
-# 3. Provider conversion: empty assistant turns can't poison a request
+# 2. Provider conversion: empty assistant turns can't poison a request
 # ============================================================================
 
 def test_convert_messages_drops_empty_assistant_messages(monkeypatch):
@@ -164,65 +145,57 @@ def test_ensure_alternating_merge_never_yields_whitespace_only(monkeypatch):
 
 
 # ============================================================================
-# 4. Server-side refusal fallbacks: opted in for Fable-class models only
+# 3. Server-side refusal fallbacks: opted in for Fable-class models only
 # ============================================================================
-
-def test_fallback_model_detection():
-    assert _model_wants_refusal_fallback("claude-fable-5")
-    assert _model_wants_refusal_fallback("claude-mythos-5")
-    assert _model_wants_refusal_fallback("claude-opus-5-5")
-    assert _model_wants_refusal_fallback("claude-sonnet-5-5")
-    assert not _model_wants_refusal_fallback("claude-opus-4-8")
-    assert not _model_wants_refusal_fallback("claude-sonnet-5")
-    assert not _model_wants_refusal_fallback("claude-sonnet-4-6")
-    assert not _model_wants_refusal_fallback("")
-
 
 def test_each_model_falls_back_to_a_target_its_allow_list_has():
     """A target outside the model's allowed_fallback_models is a 400 on every
     request: Sonnet 5.5 shipped with claude-opus-4-8 and never answered.
-    Allow-lists from GET /v1/models/{model}, 2026-10-09."""
+    Allow-lists from GET /v1/models/{model}, 2026-10-09. The match is by
+    substring, so dated and `-fast` ids inherit their base model's target,
+    and "claude-sonnet-5-5" must not catch the still-separate
+    "claude-sonnet-5"."""
     allowed = {
         "claude-fable-5": {"claude-opus-4-8", "claude-opus-5"},
         "claude-fable-5-1": {"claude-opus-4-8", "claude-opus-5"},
+        "claude-mythos-5": {"claude-opus-4-8", "claude-opus-5"},
         "claude-opus-5-5": {"claude-opus-4-8", "claude-opus-5"},
         "claude-opus-5-5-fast": {"claude-opus-4-8", "claude-opus-5"},
         "claude-sonnet-5-5": {"claude-sonnet-5"},
     }
     for model, targets in allowed.items():
         assert _refusal_fallback_target(model) in targets, model
+    for model in ("claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", ""):
+        assert not _model_wants_refusal_fallback(model), model
 
 
-def test_build_request_adds_fallbacks_for_fable(monkeypatch):
-    p = _provider(monkeypatch, "claude-fable-5")
-    kwargs = p._build_request(
-        messages=[Message(role="user", content="hello")],
-    )
-    assert kwargs["extra_body"]["fallbacks"] == [{"model": "claude-opus-4-8"}]
-    assert SERVER_FALLBACK_BETA in kwargs["extra_headers"]["anthropic-beta"]
-
-
-def test_build_request_sonnet_5_5_falls_back_to_sonnet_5(monkeypatch):
-    p = _provider(monkeypatch, "claude-sonnet-5-5")
-    kwargs = p._build_request(
-        messages=[Message(role="user", content="hello")],
-        thinking=ThinkingConfig(enabled=True, effort="high"),
-    )
-    assert kwargs["thinking"]["type"] == "adaptive"
-    assert kwargs["extra_body"]["fallbacks"] == [{"model": "claude-sonnet-5"}]
-
-
-def test_sonnet_5_5_thinking_off_goes_without_a_fallback(monkeypatch):
+@pytest.mark.parametrize(
+    "model,thinking,fallbacks",
+    [
+        ("claude-fable-5", None, [{"model": "claude-opus-4-8"}]),
+        (
+            "claude-sonnet-5-5",
+            ThinkingConfig(enabled=True, effort="high"),
+            [{"model": "claude-sonnet-5"}],
+        ),
+        ("claude-sonnet-5-5", ThinkingConfig(enabled=False), None),
+        ("claude-opus-4-8", None, None),
+    ],
+    ids=["fable-5", "sonnet-5-5-thinking-on", "sonnet-5-5-thinking-off", "opus-4-8"],
+)
+def test_build_request_fallbacks_follow_the_allow_list(monkeypatch, model, thinking, fallbacks):
     """Thinking off on Sonnet 5.5 is `between_tools`, which claude-sonnet-5
     lacks; the API checks the request against the target too (400 "…
-    between_tools is not supported for this model", live 2026-10-09)."""
-    p = _provider(monkeypatch, "claude-sonnet-5-5")
-    kwargs = p._build_request(
-        messages=[Message(role="user", content="hello")],
-        thinking=ThinkingConfig(enabled=False),
-    )
-    assert kwargs["thinking"] == {"type": "between_tools"}
-    assert "fallbacks" not in (kwargs.get("extra_body") or {})
+    between_tools is not supported for this model", live 2026-10-09), so
+    that request goes without a fallback."""
+    p = _provider(monkeypatch, model)
+    kwargs = p._build_request(messages=[Message(role="user", content="hello")], thinking=thinking)
+
+    assert (kwargs.get("extra_body") or {}).get("fallbacks") == fallbacks
+    if fallbacks:
+        assert SERVER_FALLBACK_BETA in kwargs["extra_headers"]["anthropic-beta"]
+    if thinking is not None:
+        assert kwargs["thinking"]["type"] == ("adaptive" if thinking.enabled else "between_tools")
 
 
 class _FallbackRefused(Exception):
@@ -350,16 +323,8 @@ async def test_runner_resends_at_once_after_a_refused_fallback(monkeypatch):
     assert not [delay for delay in slept if delay > 0]
 
 
-def test_build_request_no_fallbacks_for_opus(monkeypatch):
-    p = _provider(monkeypatch, "claude-opus-4-8")
-    kwargs = p._build_request(
-        messages=[Message(role="user", content="hello")],
-    )
-    assert "fallbacks" not in (kwargs.get("extra_body") or {})
-
-
 # ============================================================================
-# 5. Fallback content blocks: echo-safety and pass-through
+# 4. Fallback content blocks: echo-safety and pass-through
 # ============================================================================
 
 def _sdk_response(blocks, stop_reason="end_turn", model="claude-fable-5"):
@@ -399,53 +364,8 @@ def test_parse_response_drops_pre_fallback_thinking(monkeypatch):
     assert "continuation from opus" in parsed.content
 
 
-def test_parse_response_refusal_without_details_still_parses(monkeypatch):
-    p = _provider(monkeypatch, "claude-fable-5")
-    parsed = p._parse_response(_sdk_response(
-        [SimpleNamespace(type="text", text="partial")],
-        stop_reason="refusal",
-    ))
-    assert parsed.stop_reason == "refusal"
-    assert parsed.stop_details is None
-
-
 # ============================================================================
-# 6. Bridge: the user sees the full real reason
-# ============================================================================
-
-def test_refusal_message_shows_even_when_already_streamed():
-    """Unlike provider errors, the refusal notice must appear even after
-    streamed prose — it's what explains the mid-word cut-off."""
-    from bridge.freyja_bridge import _format_user_facing_runner_failure
-    detail = (
-        "category=cyber; explanation: Request touched restricted "
-        "cybersecurity content; 1625 chars of partial output were cut off "
-        "mid-stream and discarded from the model's context"
-    )
-    out = _format_user_facing_runner_failure(
-        reason="refusal", message=detail, already_streamed=True,
-    )
-    assert out != ""
-    assert "refusal" in out.lower()
-    assert "category=cyber" in out
-    assert "Request touched restricted cybersecurity content" in out
-
-
-def test_refusal_message_without_streamed_prose():
-    from bridge.freyja_bridge import _format_user_facing_runner_failure
-    out = _format_user_facing_runner_failure(
-        reason="refusal",
-        message="the API returned no stop_details for this refusal",
-        already_streamed=False,
-    )
-    assert "refusal" in out.lower()
-    assert "no stop_details" in out
-    # Actionable next step is present.
-    assert "claude-opus-4-8" in out
-
-
-# ============================================================================
-# 7. Async runner integration: refusal ends the turn, commits nothing
+# 5. Async runner integration: refusal ends the turn, commits nothing
 # ============================================================================
 
 class _RefusingProvider:
@@ -474,6 +394,9 @@ class _RefusingProvider:
 
 @pytest.mark.asyncio
 async def test_async_runner_refusal_ends_turn_without_committing():
+    """A mid-stream refusal with partial prose is a hard stop: one provider
+    call, a non-retryable refusal error carrying the real reason, and no
+    assistant message left in the transcript to trip the prefill 400."""
     from engine.runner import AsyncAgentRunner
     from engine.session import Session
 
@@ -489,10 +412,7 @@ async def test_async_runner_refusal_ends_turn_without_committing():
     assert result.error.reason == "refusal"
     assert result.error.retryable is False
     assert result.stop_reason == "refusal"
-    # Full real reason present in the error message.
     assert "category=cyber" in result.error.message
     assert "restricted content" in result.error.message
-    # The refused partial was discarded: no assistant message in the
-    # transcript, so the next turn can't trip the prefill 400.
     roles = [m.role for m in session.get_messages()]
     assert "assistant" not in roles

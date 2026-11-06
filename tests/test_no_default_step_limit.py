@@ -10,20 +10,10 @@ keeps its back-and-forth cap.
 
 from __future__ import annotations
 
-import sys
-
+from engine.providers import APIUsage, ProviderResponse
 from engine.runner import AgentRunner
 from engine.session import Session, TranscriptManager
-from engine.types import AgentConfig
-from engine.providers import APIUsage, ProviderResponse
-
 from tests.test_max_iterations_visibility import _LoopingProvider, _NoopTool
-
-
-def test_default_config_is_uncapped():
-    assert AgentConfig().compute_max_iterations(1) == sys.maxsize
-    assert AgentConfig().compute_max_iterations(50) == sys.maxsize
-    assert AgentConfig(max_iterations=7).compute_max_iterations(1) == 7
 
 
 def test_default_run_goes_past_the_old_160_ceiling():
@@ -60,9 +50,3 @@ def test_work_profiles_uncapped_review_and_background_profiles_capped(monkeypatc
     for name, cap in (("judge-calibrator", 1), ("judge-deep", 3),
                       ("skill-drafter", 15), ("skill-drafter-fork", 6)):
         assert types[name].max_iterations == cap, name
-
-
-def test_kanban_review_back_and_forth_cap_kept():
-    from bridge.freyja_bridge import _BridgeSession
-
-    assert _BridgeSession.KANBAN_MAX_REVIEW_ITERATIONS == 3

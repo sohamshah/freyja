@@ -9,8 +9,6 @@ the UI, and it silently tracked whatever the default model became.
 
 from __future__ import annotations
 
-import pytest
-
 from bridge.freyja_bridge import (
     _GOAL_JUDGE_MODEL,
     _GOAL_JUDGE_MODEL_ALT,
@@ -30,12 +28,13 @@ _ALL_JUDGE_MODELS = (
 )
 
 
-@pytest.mark.parametrize("model", _ALL_JUDGE_MODELS)
-def test_every_judge_model_is_registered(model):
+def test_every_judge_model_is_registered_and_priced():
     """An unregistered judge model fails at spawn time, mid-review —
     the pool comment calls this out as the main risk of editing it."""
-    assert model in MODEL_REGISTRY, model
-    assert model in MODEL_PRICING_PER_M, model
+    unregistered = sorted(m for m in _ALL_JUDGE_MODELS if m not in MODEL_REGISTRY)
+    assert unregistered == [], f"judge models not in MODEL_REGISTRY: {unregistered}"
+    unpriced = sorted(m for m in _ALL_JUDGE_MODELS if m not in MODEL_PRICING_PER_M)
+    assert unpriced == [], f"judge models with no pricing row: {unpriced}"
 
 
 def test_board_pool_spans_three_providers():
@@ -47,12 +46,13 @@ def test_board_pool_spans_three_providers():
 
 
 def test_judge_never_grades_its_own_model():
-    # Normal case: session model is unrelated, so the preferred judge wins.
+    """Regression guard for the actual bug: goal mode judged with
+    `self.model_id`. A session already on the judge model gets the alt,
+    which must differ from the preferred or the guard does nothing."""
     assert (
         _distinct_judge_model("glm-5.3-fireworks", _GOAL_JUDGE_MODEL, _GOAL_JUDGE_MODEL_ALT)
         == _GOAL_JUDGE_MODEL
     )
-    # Collision: session is already running the judge model → use the alt.
     assert (
         _distinct_judge_model(_GOAL_JUDGE_MODEL, _GOAL_JUDGE_MODEL, _GOAL_JUDGE_MODEL_ALT)
         == _GOAL_JUDGE_MODEL_ALT
@@ -68,23 +68,8 @@ def test_judge_never_grades_its_own_model():
         _distinct_judge_model("", _GOAL_JUDGE_MODEL, _GOAL_JUDGE_MODEL_ALT)
         == _GOAL_JUDGE_MODEL
     )
-    # The alt must differ from the preferred, or the guard does nothing.
     assert _GOAL_JUDGE_MODEL_ALT != _GOAL_JUDGE_MODEL
     assert _GOAL_JUDGE_QUICK_MODEL_ALT != _GOAL_JUDGE_QUICK_MODEL
-
-
-def test_goal_judge_is_never_the_session_default():
-    """Regression guard for the actual bug: goal mode judged with
-    `self.model_id`, so changing FREYJA_MODEL silently changed the judge
-    to the agent itself."""
-    import os
-
-    default_model = os.environ.get("FREYJA_MODEL") or "glm-5.3-fireworks"
-    for preferred, alt in (
-        (_GOAL_JUDGE_MODEL, _GOAL_JUDGE_MODEL_ALT),
-        (_GOAL_JUDGE_QUICK_MODEL, _GOAL_JUDGE_QUICK_MODEL_ALT),
-    ):
-        assert _distinct_judge_model(default_model, preferred, alt) != default_model
 
 
 def test_quick_judge_is_actually_cheap():

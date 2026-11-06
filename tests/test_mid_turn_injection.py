@@ -298,13 +298,15 @@ async def test_outer_cancel_still_stops_the_turn():
     """An operator stop cancels the turn task; the interrupt racing must
     not swallow that cancellation."""
     inbox = _Inbox()
+    in_flight = asyncio.Event()
 
     async def hang(on_event):
+        in_flight.set()
         return await _forever()
 
     runner = _runner(_ScriptedProvider([hang]), inbox)
     task = asyncio.create_task(runner.run(Session.create(system_prompt="t"), "go"))
-    await asyncio.sleep(0.05)
+    await in_flight.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -324,9 +326,12 @@ class _YieldingTool(_Tool):
     async def execute(self, call_id: str, arguments: dict) -> ToolResult:
         self.started.set()
         runner = self._runner_ref["r"]
-        while not runner._interrupt_pending():
-            await asyncio.sleep(0.02)
-        await asyncio.sleep(0.3)  # detaching takes a moment
+        await runner._interrupt.wait()
+        # Detaching takes a few turns of the event loop. A runner that
+        # cancelled the tool on the interrupt instead of granting the grace
+        # period lands its CancelledError on one of these awaits.
+        for _ in range(50):
+            await asyncio.sleep(0)
         return ToolResult(call_id=call_id, content="moved to background", is_error=False)
 
 
@@ -363,15 +368,17 @@ async def test_a_yielding_tool_gets_to_step_aside_instead_of_being_cut(parallel)
 
 async def test_a_stop_mid_reply_keeps_what_was_said_and_notes_it():
     inbox = _Inbox()
+    streamed = asyncio.Event()
 
     async def long_stream(on_event):
         await on_event(TextDeltaEvent(text="Here is the plan: first"))
+        streamed.set()
         return await _forever()
 
     runner = _runner(_ScriptedProvider([long_stream]), inbox)
     session = Session.create(system_prompt="t")
     task = asyncio.create_task(runner.run(session, "plan it"))
-    await asyncio.sleep(0.1)
+    await streamed.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -412,9 +419,12 @@ async def test_a_cut_in_after_a_handled_stop_is_still_a_cut_in():
         ref["r"].request_interrupt()
         return await _forever()
 
+    waiting = asyncio.Event()
+
     async def body():
+        waiting.set()
         try:
-            await asyncio.sleep(10)
+            await _forever()
         except asyncio.CancelledError:
             pass  # a stop, handled — count stays at 1
         assert asyncio.current_task().cancelling() == 1
@@ -423,7 +433,7 @@ async def test_a_cut_in_after_a_handled_stop_is_still_a_cut_in():
         return await runner.run(Session.create(system_prompt="t"), "go")
 
     task = asyncio.create_task(body())
-    await asyncio.sleep(0.02)
+    await waiting.wait()
     task.cancel()
     result = await asyncio.wait_for(task, timeout=5)
     assert result.success is True and result.response == "ok"

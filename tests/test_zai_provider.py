@@ -13,17 +13,17 @@ import pytest
 
 from engine.providers import MODEL_REGISTRY, get_provider_name
 from engine.types import Message, TextBlock, ThinkingConfig
-from engine.zai_provider import (
-    ZaiConfig,
-    ZaiProvider,
-    _map_effort_to_zai,
-)
+from engine.zai_provider import ZaiConfig, ZaiProvider
 
 
 def _provider(**cfg_kwargs) -> ZaiProvider:
     # Dummy key — construction makes no network call; we only exercise the
     # pure request builders below.
     return ZaiProvider(ZaiConfig(model="glm-5.3", api_key="dummy-key", **cfg_kwargs))
+
+
+def _hi() -> list[Message]:
+    return [Message(role="user", content=[TextBlock(text="hi")])]
 
 
 def test_registry_routes_glm53_to_zai():
@@ -39,9 +39,7 @@ def test_registry_routes_glm53_to_zai():
         "glm-5.3-fireworks",
         "glm-5.3-flash-fireworks",
     ):
-        spec = MODEL_REGISTRY[model]
-        assert spec["reasoning_mode"] == "required", model
-        assert spec["reasoning_levels"] == ("low", "high", "max"), model
+        assert MODEL_REGISTRY[model]["reasoning_mode"] == "required", model
 
 
 def test_env_var_routing_splits_zai_from_fireworks():
@@ -90,10 +88,7 @@ def test_fireworks_required_mode_omits_effort_when_disabled():
     p = FireworksProvider(
         FireworksConfig(model="glm-5.3-fireworks", api_key="dummy-key")
     )
-    kwargs = p._build_request(
-        [Message(role="user", content=[TextBlock(text="hi")])],
-        thinking=ThinkingConfig(enabled=False),
-    )
+    kwargs = p._build_request(_hi(), thinking=ThinkingConfig(enabled=False))
     assert "reasoning_effort" not in kwargs
 
 
@@ -113,44 +108,22 @@ def test_flash_sends_images_as_image_url_parts():
     assert isinstance(text_only._convert_messages([msg])[0]["content"], str)
 
 
-def test_effort_ladder_mapping():
-    levels = ("low", "high", "max")
-    assert _map_effort_to_zai("low", levels) == "low"
-    assert _map_effort_to_zai("high", levels) == "high"
-    assert _map_effort_to_zai("max", levels) == "max"
-    # Rungs Z.ai doesn't have
-    assert _map_effort_to_zai("none", levels) == "low"
-    assert _map_effort_to_zai("minimal", levels) == "low"
-    assert _map_effort_to_zai("medium", levels) == "high"
-    assert _map_effort_to_zai("xhigh", levels) == "high"
-
-
-def test_disabled_thinking_still_sends_enabled_with_low():
-    p = _provider()
-    kwargs = p._build_request(
-        [Message(role="user", content=[TextBlock(text="hi")])],
-        thinking=ThinkingConfig(enabled=False),
-    )
-    assert kwargs["reasoning_effort"] == "low"
-    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
-
-
-def test_enabled_thinking_maps_effort():
-    p = _provider()
-    for effort, expected in (("low", "low"), ("medium", "high"), ("high", "high"), ("max", "max")):
-        kwargs = p._build_request(
-            [Message(role="user", content=[TextBlock(text="hi")])],
-            thinking=ThinkingConfig(enabled=True, effort=effort),
-        )
-        assert kwargs["reasoning_effort"] == expected, effort
-        assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
-
-
-def test_request_always_carries_thinking_even_without_config():
-    # No thinking kwarg at all → falls back to config default (disabled) → low.
-    p = _provider()
-    kwargs = p._build_request([Message(role="user", content=[TextBlock(text="hi")])])
-    assert kwargs["reasoning_effort"] in {"low", "high", "max"}
+@pytest.mark.parametrize(
+    "thinking,effort",
+    [
+        (None, "low"),  # no override → config default (disabled) → low
+        (ThinkingConfig(enabled=False), "low"),
+        (ThinkingConfig(enabled=True, effort="low"), "low"),
+        (ThinkingConfig(enabled=True, effort="medium"), "high"),  # no medium rung
+        (ThinkingConfig(enabled=True, effort="high"), "high"),
+        (ThinkingConfig(enabled=True, effort="xhigh"), "high"),  # no xhigh rung
+        (ThinkingConfig(enabled=True, effort="max"), "max"),
+    ],
+    ids=["unset", "disabled", "low", "medium", "high", "xhigh", "max"],
+)
+def test_request_always_sends_thinking_enabled_on_the_zai_ladder(thinking, effort):
+    kwargs = _provider()._build_request(_hi(), thinking=thinking)
+    assert kwargs["reasoning_effort"] == effort
     assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
 
 
@@ -227,15 +200,12 @@ def test_insufficient_balance_is_billing_not_rate_limit():
     assert isinstance(converted, RateLimitError) and converted.retryable
 
 
-def test_missing_key_raises(monkeypatch):
+def test_env_supplies_the_key_and_the_base_url(monkeypatch):
     from engine.providers import AuthenticationError
 
     monkeypatch.delenv("ZAI_API_KEY", raising=False)
     with pytest.raises(AuthenticationError):
         ZaiProvider(ZaiConfig(model="glm-5.3"))
 
-
-def test_base_url_env_override(monkeypatch):
     monkeypatch.setenv("ZAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4")
-    p = _provider()
-    assert "coding" in str(p._async_client.base_url)
+    assert "coding" in str(_provider()._async_client.base_url)

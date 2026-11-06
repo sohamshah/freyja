@@ -6,22 +6,18 @@ deprecated ones with a shutdown date (claude-sonnet-4-5, gpt-5.3-codex,
 gpt-5.4-nano, the routed gemini-3.7/3.5-flash, the access-limited 2.5s).
 Sessions on disk, scheduler jobs, Slack bindings, sub-agent profiles and
 FREYJA_MODEL may still name any of them. Each entry point maps the id to
-its replacement instead of failing at the first request.
+its replacement instead of failing at the first request. That every
+replacement is itself live is swept in test_model_registry_consistency.py.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
-from engine.providers import MODEL_REGISTRY, RETIRED_MODEL_REPLACEMENTS, resolve_retired_model
-
-
 # ── bridge: a saved session resumes on the replacement ───────────────────
 
 
-def test_saved_session_on_a_retired_model_restores_on_its_replacement(monkeypatch):
+def test_saved_session_restores_on_the_replacement_or_falls_to_the_default(monkeypatch):
     import bridge.freyja_bridge as fb
     import bridge.transcript_persistence as tp
 
@@ -30,31 +26,12 @@ def test_saved_session_on_a_retired_model_restores_on_its_replacement(monkeypatc
         "load_transcript",
         lambda sid: {"metadata": {"model_id": "gemini-3.7-flash", "reasoning_level": "medium"}},
     )
-    model, level = fb._saved_model("s1")
-    assert model == "gemini-3.8-flash"
-    assert level == "medium"
-
-
-def test_saved_session_on_an_unknown_model_falls_to_the_default(monkeypatch):
-    import bridge.freyja_bridge as fb
-    import bridge.transcript_persistence as tp
+    assert fb._saved_model("s1") == ("gemini-3.8-flash", "medium")
 
     monkeypatch.setattr(
         tp, "load_transcript", lambda sid: {"metadata": {"model_id": "never-a-model"}}
     )
     assert fb._saved_model("s2") == (None, None)
-
-
-def test_live_model_id_logs_the_swap(monkeypatch):
-    import bridge.freyja_bridge as fb
-
-    lines: list[str] = []
-    monkeypatch.setattr(fb, "log", lambda level, msg, *a, **k: lines.append(f"{level}:{msg}"))
-    assert fb._live_model_id("kimi-k2.6", where="test") == "kimi-k3"
-    assert any("kimi-k2.6" in line and "kimi-k3" in line for line in lines)
-    lines.clear()
-    assert fb._live_model_id("kimi-k3", where="test") == "kimi-k3"
-    assert lines == []
 
 
 def test_gated_catalog_entry_is_listed_but_not_available(monkeypatch):
@@ -107,7 +84,7 @@ def test_profile_list_dedupes_after_the_swap(monkeypatch):
 # ── gateway ──────────────────────────────────────────────────────────────
 
 
-def test_slack_inline_model_flag_accepts_a_retired_id():
+def test_slack_inline_model_flag_accepts_a_retired_id_and_rejects_nonsense():
     from bridge.gateway.session_router import parse_inline_session_flags
 
     model, _mode, _cleaned, errors, _show = parse_inline_session_flags(
@@ -116,22 +93,12 @@ def test_slack_inline_model_flag_accepts_a_retired_id():
     assert errors == []
     assert model == "gemini-3.8-flash"
 
-
-def test_slack_inline_model_flag_still_rejects_nonsense():
-    from bridge.gateway.session_router import parse_inline_session_flags
-
     model, _mode, _cleaned, errors, _show = parse_inline_session_flags("--model banana hello")
     assert model is None
     assert errors and "banana" in errors[0]
 
 
 # ── engine ───────────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("old,new", sorted(RETIRED_MODEL_REPLACEMENTS.items()))
-def test_every_replacement_is_registered(old, new):
-    assert old not in MODEL_REGISTRY
-    assert resolve_retired_model(old) in MODEL_REGISTRY
 
 
 def test_create_provider_runs_the_replacement(monkeypatch):

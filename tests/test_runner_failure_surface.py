@@ -1,4 +1,4 @@
-"""Tests for the bridge's runner-failure surfacing path.
+"""The operator-facing text for a runner give-up, in one place.
 
 When ``engine.runner`` gives up after consecutive ProviderError retries it
 returns ``AgentResult(success=False, error=...)`` rather than raising.
@@ -8,95 +8,148 @@ Slack staring at "Catching up — back to you shortly" forever while the
 real failure (overloaded_error from Anthropic) lived only in the bridge
 logs.
 
-These tests pin the policy behavior of the user-facing message and
-guard the no-double-message rule (we suppress the failure tail when
-the agent already streamed partial prose).
+``_format_user_facing_runner_failure`` encodes these product decisions:
+
+* After streamed prose a provider error stays quiet (the operator has an
+  answer; a "(provider error)" tail is noise), but a refusal and the step
+  ceiling still show — they are what explains a reply cut off mid-word or
+  an announced action that never happened.
+* Each cause names itself, carries the engine's detail (so operators can
+  grep the logs) and ends with the next step the operator can take.
+* An org with no fast-mode quota is told so, not "overloaded".
 """
 
 from __future__ import annotations
 
 import pytest
 
+from bridge.freyja_bridge import _format_user_facing_runner_failure
 
-def test_failure_message_omitted_when_already_streamed():
-    """If the agent produced any prose this turn, the post-hoc failure
-    line is suppressed — otherwise the operator sees their answer
-    followed by an awkward "(provider error)" tail."""
-    from bridge.freyja_bridge import _format_user_facing_runner_failure
+_NO_QUOTA = (
+    "This request would exceed your organization's rate limit of 0 fast mode "
+    "input tokens per minute (org: 00000000-0000-4000-8000-000000000000, "
+    "model: claude-opus-4-8)"
+)
+_REFUSAL_DETAIL = (
+    "category=cyber; explanation: Request touched restricted cybersecurity "
+    "content; 1625 chars of partial output were cut off mid-stream and "
+    "discarded from the model's context"
+)
+EMPTY = object()
+
+
+@pytest.mark.parametrize(
+    "kwargs,prefix,contains,excludes",
+    [
+        pytest.param(
+            dict(reason="rate_limit", message="overloaded_error", already_streamed=True),
+            None, EMPTY, (),
+            id="provider-error-after-prose-stays-quiet",
+        ),
+        pytest.param(
+            dict(reason="rate_limit", message="overloaded_error", already_streamed=False),
+            None, ("overloaded", "overloaded_error", ("retry", "again")), (),
+            id="rate-limit-names-cause-detail-and-next-step",
+        ),
+        pytest.param(
+            dict(reason="auth", message="invalid x-api-key", already_streamed=False),
+            None, (("auth", "key"), "invalid x-api-key"), (),
+            id="auth-points-at-the-key",
+        ),
+        pytest.param(
+            dict(
+                reason="context",
+                message="prompt is too long: 350000 tokens",
+                already_streamed=False,
+            ),
+            None, (("/reset", "longer"),), (),
+            id="context-overflow-offers-reset-or-a-longer-model",
+        ),
+        pytest.param(
+            dict(
+                reason="some_new_reason",
+                message="weird internal failure",
+                already_streamed=False,
+            ),
+            None, ("some_new_reason",), (),
+            id="unknown-reason-is-never-silent-and-carries-its-tag",
+        ),
+        pytest.param(
+            dict(reason="rate_limit", message=_NO_QUOTA, already_streamed=False),
+            None, ("Fast mode is not enabled", "fast-mode quota"), ("overloaded",),
+            id="no-fast-quota-is-not-overload",
+        ),
+        pytest.param(
+            dict(
+                reason="unknown",
+                message="Reached maximum iterations (100)",
+                already_streamed=True,
+                code="max_iterations",
+            ),
+            "\n\n---\n", ("100 steps", "did NOT"), (),
+            id="step-limit-shows-after-prose-and-negates-the-announced-action",
+        ),
+        pytest.param(
+            dict(
+                reason="unknown",
+                message="Reached maximum iterations (100)",
+                already_streamed=False,
+                code="max_iterations",
+            ),
+            "⚠️", ("100 steps",), (),
+            id="step-limit-without-prose-has-no-separator",
+        ),
+        pytest.param(
+            dict(
+                reason="unknown",
+                message="Reached maximum iterations",
+                already_streamed=False,
+                code="max_iterations",
+            ),
+            None, ("step limit",), ("()",),
+            id="step-limit-survives-an-unparseable-count",
+        ),
+        pytest.param(
+            dict(reason="refusal", message=_REFUSAL_DETAIL, already_streamed=True),
+            None,
+            ("refusal", "category=cyber", "Request touched restricted cybersecurity content"),
+            (),
+            id="refusal-shows-after-prose-with-the-full-reason",
+        ),
+        pytest.param(
+            dict(
+                reason="refusal",
+                message="the API returned no stop_details for this refusal",
+                already_streamed=False,
+            ),
+            None, ("refusal", "no stop_details", "claude-opus-4-8"), (),
+            id="refusal-without-details-says-so-and-names-a-way-out",
+        ),
+    ],
+)
+def test_failure_text_policy(kwargs, prefix, contains, excludes):
+    out = _format_user_facing_runner_failure(**kwargs)
+
+    if contains is EMPTY:
+        assert out == ""
+        return
+    assert out
+    if prefix is not None:
+        assert out.startswith(prefix), out[:20]
+    for needle in contains:
+        if isinstance(needle, tuple):
+            assert any(n in out for n in needle), (needle, out)
+        else:
+            assert needle in out, (needle, out)
+    for needle in excludes:
+        assert needle not in out.lower(), (needle, out)
+
+
+def test_long_detail_is_truncated_so_the_chat_bubble_stays_readable():
+    """Provider error blobs can be huge (JSON dumps, full URLs). The full
+    detail still lives in the bridge log; the bubble gets a marked cut."""
     out = _format_user_facing_runner_failure(
-        reason="rate_limit",
-        message="overloaded_error",
-        already_streamed=True,
+        reason="rate_limit", message="x" * 5000, already_streamed=False
     )
-    assert out == ""
-
-
-def test_rate_limit_returns_overloaded_message_with_retry_hint():
-    """The most common case — Anthropic returns overloaded_error on every
-    retry. Message must name the cause, surface the detail, and tell the
-    operator the actionable next step (wait + retry or switch model)."""
-    from bridge.freyja_bridge import _format_user_facing_runner_failure
-    out = _format_user_facing_runner_failure(
-        reason="rate_limit",
-        message="overloaded_error",
-        already_streamed=False,
-    )
-    assert "overloaded" in out.lower()
-    assert "retry" in out.lower() or "again" in out.lower()
-    # Must surface the engine's detail so operators can grep logs.
-    assert "overloaded_error" in out
-
-
-def test_auth_failure_surfaces_key_check_hint():
-    from bridge.freyja_bridge import _format_user_facing_runner_failure
-    out = _format_user_facing_runner_failure(
-        reason="auth",
-        message="invalid x-api-key",
-        already_streamed=False,
-    )
-    assert "auth" in out.lower() or "key" in out.lower()
-
-
-def test_context_overflow_returns_reset_hint():
-    """When the engine gives up because the context exceeded the model
-    limit even after compaction, the only operator-actionable advice is
-    /reset or switching to a longer-context model."""
-    from bridge.freyja_bridge import _format_user_facing_runner_failure
-    out = _format_user_facing_runner_failure(
-        reason="context",
-        message="prompt is too long: 350000 tokens",
-        already_streamed=False,
-    )
-    assert "/reset" in out or "longer" in out.lower()
-
-
-def test_unknown_reason_falls_through_with_reason_tag():
-    """Unknown reasons must still produce a non-empty message — silence
-    is the bug we are fixing. The reason tag is surfaced so the operator
-    can log-grep the cause class."""
-    from bridge.freyja_bridge import _format_user_facing_runner_failure
-    out = _format_user_facing_runner_failure(
-        reason="some_new_reason",
-        message="weird internal failure",
-        already_streamed=False,
-    )
-    assert out  # non-empty
-    assert "some_new_reason" in out
-
-
-def test_long_detail_truncated_so_chat_bubble_stays_readable():
-    """Provider error blobs can be huge (JSON dumps, full URLs, etc.).
-    Truncate so the Slack message doesn't fill the screen. The full
-    detail still lives in the bridge log."""
-    from bridge.freyja_bridge import _format_user_facing_runner_failure
-    huge = "x" * 5000
-    out = _format_user_facing_runner_failure(
-        reason="rate_limit",
-        message=huge,
-        already_streamed=False,
-    )
-    # Cap somewhere reasonable — implementation caps at 260 chars.
     assert len(out) < 700
-    # Must include the truncation marker so the operator knows there
-    # was more.
     assert "…" in out
