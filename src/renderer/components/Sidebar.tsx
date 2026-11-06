@@ -777,10 +777,12 @@ export function Sidebar() {
           {recentRuns.slice(0, 12).map((run) => {
             const sid =
               run.execution_session_id || `scheduler:${run.job_id}.ephemeral`
-            const failed = run.status === 'failed' || run.status === 'timed_out' || run.status === 'budget_exceeded'
+            const failed = run.status === 'failed' || run.status === 'timed_out'
+              || run.status === 'budget_exceeded' || run.status === 'interrupted'
             const active = run.status === 'running' || run.status === 'delivering'
-            // As the dashboard's run feed: grey for a run cancelled, cut off
-            // (interrupted) or not started yet, never the green of a success.
+            // As the dashboard's run feed: red for a run cut off by a crash or
+            // a restart (interrupted) too, grey for one cancelled or that
+            // never ran, never the green of a success.
             const dotClass = failed ? 'bg-danger'
               : active ? 'bg-accent'
               : run.status === 'succeeded' ? 'bg-ok'

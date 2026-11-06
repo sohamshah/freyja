@@ -50,8 +50,10 @@ const expected = {
   partial_failure: 'bg-warn',
   running: 'bg-accent',
   cancelled: 'bg-fg-3',
-  interrupted: 'bg-fg-3',
+  interrupted: 'bg-danger',
   claimed: 'bg-fg-3',
+  expired: 'bg-fg-3',
+  not_started: 'bg-fg-3',
 }
 useSchedulerStore.setState({
   recentRuns: Object.keys(expected).map((status, i) => ({

@@ -626,13 +626,46 @@ function statusPillClass(status: string): string {
   return 'bg-white/[0.04] text-fg-2 ring-1 ring-white/[0.06]'
 }
 
+// The color of a run's status in the run feed, the schedule's detail and
+// the run's drawer: red for a run that did not complete, as the "failed"
+// filter and the timeline count it (FAILED_RUN_STATUSES), and grey for one
+// cancelled or that never ran (expired, not_started, queued, claimed).
+type RunTone = 'ok' | 'danger' | 'warn' | 'accent' | 'muted'
+
+function runStatusTone(status: string): RunTone {
+  if (status === 'succeeded') return 'ok'
+  if (FAILED_RUN_STATUSES.includes(status)) return 'danger'
+  if (status === 'partial_failure') return 'warn'
+  if (status === 'running' || status === 'delivering') return 'accent'
+  return 'muted'
+}
+
+const RUN_TONE_TEXT: Record<RunTone, string> = {
+  ok: 'text-ok', danger: 'text-danger', warn: 'text-warn', accent: 'text-accent', muted: 'text-fg-3',
+}
+const RUN_TONE_DOT: Record<RunTone, string> = {
+  ok: 'bg-ok', danger: 'bg-danger', warn: 'bg-warn', accent: 'bg-accent', muted: 'bg-fg-3',
+}
+
 function runStatusTextClass(status: string): string {
-  if (status === 'succeeded') return 'text-ok'
-  if (status === 'failed' || status === 'timed_out' || status === 'budget_exceeded') return 'text-danger'
-  if (status === 'partial_failure') return 'text-warn'
-  if (status === 'running') return 'text-accent'
-  if (status === 'cancelled') return 'text-fg-3'
-  return 'text-fg-1'
+  return RUN_TONE_TEXT[runStatusTone(status)]
+}
+
+// A run's status in words, for its drawer.
+const RUN_STATUS_LABELS: Record<string, string> = {
+  claimed: 'starting',
+  running: 'in flight',
+  delivering: 'delivering',
+  succeeded: 'completed',
+  partial_failure: 'partial delivery failure',
+  failed: 'failed',
+  cancelled: 'cancelled',
+  timed_out: 'timed out',
+  budget_exceeded: 'over budget',
+  queued: 'queued',
+  interrupted: 'interrupted',
+  expired: 'expired',
+  not_started: 'not started',
 }
 
 // ─── 14-day timeline strip ───────────────────────────────────────────
@@ -1296,12 +1329,8 @@ function RunRow(props: {
       }`}
     >
       <div className="flex items-center gap-2 font-mono text-[10.5px]">
-        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-          r.status === 'succeeded' ? 'bg-ok'
-            : r.status === 'failed' || r.status === 'timed_out' || r.status === 'budget_exceeded' ? 'bg-danger'
-              : r.status === 'partial_failure' ? 'bg-warn'
-                : r.status === 'running' ? 'bg-accent animate-pulse-soft'
-                  : 'bg-fg-3'
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${RUN_TONE_DOT[runStatusTone(r.status)]}${
+          r.status === 'running' ? ' animate-pulse-soft' : ''
         }`} />
         <span className={`uppercase tracking-[0.10em] ${runStatusTextClass(r.status)}`}>
           {r.status}
@@ -1362,21 +1391,15 @@ function RunDetailDrawer(props: {
     useSchedulerStore.getState().closeDashboard()
   }, [sessionId, openSessionPane])
 
-  const statusLabel = run.status === 'running' ? 'in flight'
-    : run.status === 'succeeded' ? 'completed'
-      : run.status === 'failed' ? 'failed'
-        : run.status === 'timed_out' ? 'timed out'
-          : run.status === 'budget_exceeded' ? 'over budget'
-            : run.status === 'partial_failure' ? 'partial delivery failure'
-              : run.status
-
   return (
     <DetailDrawer
       open
       onClose={props.onClose}
       width={560}
       title={job?.name || run.job_name || 'Scheduled run'}
-      statusLabel={statusLabel}
+      statusLabel={RUN_STATUS_LABELS[run.status] ?? run.status.replace(/_/g, ' ')}
+      statusTone={runStatusTone(run.status)}
+      statusPulse={run.status === 'running'}
       footer={
         <div className="flex items-center gap-2">
           {sessionId && (
