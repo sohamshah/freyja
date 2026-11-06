@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import datetime
 import logging
 import os
 import re
@@ -65,6 +66,7 @@ from bridge.scheduler.models import (
     SinkSpec,
     SlackSinkSpec,
     new_job_id,
+    new_run_id,
 )
 from bridge.scheduler.daemon import (
     always_on_scheduler_installed,
@@ -83,11 +85,13 @@ from bridge.scheduler.persistence import (
     load_job,
     load_recent_runs_global,
     load_runs_for_job,
+    load_runs_started_since,
     owner_lock_path,
     read_run_cancel_requested,
     read_wake_mtime,
     request_run_cancellation,
     save_job,
+    save_run,
     touch_wake,
     update_job_record,
 )
@@ -662,6 +666,8 @@ class SchedulerService:
         reason is retried by its own rule and does not use up a retry; a
         slot is counted toward the stop once its retries are spent."""
         from bridge.scheduler.runtime import fire_job
+        if await self._held_by_daily_budget(job, attempt):
+            return
         run = await fire_job(self, job, scheduled_for=slot, attempt=attempt)
         if await self._tell_if_stopped_over_budget(job, run):
             return
@@ -812,10 +818,64 @@ class SchedulerService:
         fresh = load_job(job.id)
         if fresh is None or fresh.status != "disabled_budget_exhausted":
             return False
+        await self._tell_stopped_over_budget(
+            fresh, run, f"a run went over its budget ({_over_budget_said(budget, run)})",
+        )
+        return True
+
+    async def _held_by_daily_budget(self, job: JobRecord, attempt: int) -> bool:
+        """True when ``job`` has spent its max_cost_usd_per_day today (the
+        Mac's local day), so its run does not start. With on_exceeded
+        abort_run the slot is skipped and the job runs again at a slot on
+        a day it has budget left; with abort_job the job is stopped and
+        says why, as after a run over its per-run budget. Nothing read the
+        daily budget: a job ran every slot, whatever it had spent."""
+        budget = job.budget
+        if budget is None or budget.max_cost_usd_per_day is None:
+            return False
+        spent = sum(r.cost_usd for r in load_runs_started_since(job.id, _start_of_today()))
+        if spent < budget.max_cost_usd_per_day:
+            return False
+        said = (
+            f"it spent ${spent:.2f} today, the budget is "
+            f"${budget.max_cost_usd_per_day:.2f} a day"
+        )
+        if budget.on_exceeded != "abort_job":
+            logger.info("job %s: skipped its slot; %s", job.id, said)
+            append_event({
+                "type": "scheduler_slot_skipped_over_budget",
+                "job_id": job.id,
+                "spent_today": spent,
+                "max_cost_usd_per_day": budget.max_cost_usd_per_day,
+            })
+            return True
+        # The stop is a run that went over its budget before it started:
+        # the notice, the dashboard and the schedule tool point to it.
+        now = time.time()
+        run = RunRecord(
+            run_id=new_run_id(), job_id=job.id, job_name=job.name,
+            started_at=now, finished_at=now, status="budget_exceeded",
+            fire_number=job.fire_count + 1, attempt=attempt, prompt=job.prompt,
+            error=f"daily budget exceeded: {said}",
+        )
+        save_run(run)
+
+        def _stop(fresh: JobRecord) -> None:
+            fresh.enabled = False
+            fresh.status = "disabled_budget_exhausted"
+            fresh.next_fire_at = None
+
+        fresh = await update_job_record(job.id, _stop)
+        await self._tell_stopped_over_budget(
+            fresh or job, run, f"it reached its daily budget ({said})",
+        )
+        return True
+
+    async def _tell_stopped_over_budget(self, job: JobRecord, run: RunRecord, why: str) -> None:
+        """Post that ``job`` stopped over its budget, and ``why``."""
         notice = (
-            f"I stopped the scheduled job *{fresh.name}*: a run went over its "
-            f"budget ({_over_budget_said(budget, run)}). To run it again, raise "
-            "or remove the budget, then resume it."
+            f"I stopped the scheduled job *{job.name}*: {why}. To run it "
+            "again, raise or remove the budget, then resume it."
         )
         append_event({
             "type": "scheduler_job_stopped_over_budget",
@@ -828,8 +888,7 @@ class SchedulerService:
             message=notice,
             details={"jobId": job.id, "runId": run.run_id, "error": run.error},
         )
-        await self._tell_stopped(fresh, run, notice)
-        return True
+        await self._tell_stopped(job, run, notice)
 
     async def _tell_stopped(self, job: JobRecord, run: RunRecord, notice: str) -> None:
         """Post ``notice`` of why ``job`` stopped, with its last ``run``,
@@ -1414,6 +1473,11 @@ def _over_budget_said(budget: BudgetSpec, run: RunRecord) -> str:
             f"${budget.max_cost_usd_per_run:.2f} a run"
         )
     return "; ".join(said)
+
+
+def _start_of_today() -> float:
+    """When the Mac's local day began, in POSIX seconds."""
+    return datetime.datetime.combine(datetime.date.today(), datetime.time.min).timestamp()
 
 
 def _stopped_only_by_passing_failures(job: JobRecord) -> bool:

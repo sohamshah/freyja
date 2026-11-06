@@ -580,7 +580,7 @@ function statusWord(job: SchedulerJob): string {
  *  the whole answer. */
 function stoppedHint(job: SchedulerJob): string | undefined {
   if (job.status === 'disabled_budget_exhausted') {
-    return 'A run went over this job’s budget, so it stopped. Ask Freyja to raise or remove the budget, then resume it.'
+    return 'A run, or the day’s runs, went over this job’s budget, so it stopped. Ask Freyja to raise or remove the budget, then resume it.'
   }
   if (job.status === 'disabled_error') {
     return 'Its runs kept failing, so it stopped. The last run says why. Fix that, then resume it.'

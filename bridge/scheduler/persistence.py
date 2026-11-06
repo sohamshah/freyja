@@ -466,6 +466,28 @@ def load_runs_for_job(job_id: str, *, limit: int = 50) -> list[RunRecord]:
     return out
 
 
+def load_runs_started_since(job_id: str, since: float) -> list[RunRecord]:
+    """``job_id``'s runs that started at ``since`` or later, newest first.
+    A run's file is written when it starts and again when it ends, so
+    files last written before ``since`` hold none and are not read."""
+    d = runs_dir(job_id)
+    if not d.exists():
+        return []
+    out: list[RunRecord] = []
+    stamped = sorted(((p.stat().st_mtime, p) for p in d.glob("*.json")), reverse=True)
+    for mtime, path in stamped:
+        if mtime < since:
+            break
+        try:
+            with open(path) as f:
+                run = RunRecord.from_dict(json.load(f))
+        except Exception:  # noqa: BLE001
+            continue
+        if run.started_at >= since:
+            out.append(run)
+    return out
+
+
 def load_recent_runs_global(limit: int = 100) -> list[RunRecord]:
     """All runs across all jobs, newest first. Used by the global Run
     History view."""

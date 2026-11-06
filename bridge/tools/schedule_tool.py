@@ -446,9 +446,9 @@ def _stopped_note(j: JobRecord) -> str | None:
     time has passed, and runs a job whose max_fires are used up once."""
     if j.status == "disabled_budget_exhausted":
         return (
-            "over budget: a run went over the job's budget, whose "
-            "on_exceeded is abort_job. To run it again, raise or remove the "
-            "budget with action='update', then action='resume'."
+            "over budget: a run, or the day's runs, went over the job's "
+            "budget, whose on_exceeded is abort_job. To run it again, raise "
+            "or remove the budget with action='update', then action='resume'."
         )
     if j.status == "disabled_error":
         return (
@@ -756,8 +756,12 @@ _PARAMETERS = {
             "type": "object",
             "description": (
                 "Optional caps: max_tokens_per_run, max_cost_usd_per_run, "
-                "max_cost_usd_per_day, wall_clock_timeout_seconds, "
-                "on_exceeded ('abort_run' | 'abort_job')."
+                "max_cost_usd_per_day (no scheduled run starts once the "
+                "job's runs today, local time, cost this much), "
+                "wall_clock_timeout_seconds, on_exceeded: 'abort_run' "
+                "(default; the run is aborted, or skipped for the daily "
+                "cap, and the job goes on) | 'abort_job' (the job stops "
+                "until resumed)."
             ),
         },
         "max_fires": {"type": "integer"},

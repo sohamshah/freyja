@@ -254,8 +254,8 @@ def _job_status(j: Any) -> str:
     resume = f"`/freyja schedule resume {j.id}`"
     if j.status == "disabled_budget_exhausted":
         return (
-            "stopped over budget (a run went over its budget; raise or remove "
-            f"the budget, then {resume})"
+            "stopped over budget (a run, or the day's runs, went over its "
+            f"budget; raise or remove the budget, then {resume})"
         )
     if j.status == "disabled_error":
         return (

@@ -333,7 +333,8 @@ def sink_from_dict(d: dict[str, Any]) -> SinkSpec:
 @dataclass
 class BudgetSpec:
     """All None = unlimited (user explicitly chose 'no defaults'). The
-    runtime checks before/after each LLM call inside a run."""
+    per-run caps are checked when a run ends, the daily cap before a
+    scheduled run starts (the job's run costs since local midnight)."""
 
     max_tokens_per_run: int | None = None
     max_cost_usd_per_run: float | None = None
