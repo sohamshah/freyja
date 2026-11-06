@@ -1213,6 +1213,12 @@ def stop_run_now(run_id: str, outcome: str = "cancelled") -> bool:
     return True
 
 
+def stop_all_runs_now() -> int:
+    """Stop every run of this process that waits on its turn, as cancelled
+    (stop_run_now): the emergency stop. Returns how many."""
+    return sum(stop_run_now(run_id) for run_id in list(_stop_now))
+
+
 async def _await_pending_with_cancel_poll(
     pending: asyncio.Future,
     *,

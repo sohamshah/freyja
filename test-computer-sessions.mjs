@@ -145,6 +145,33 @@ check('a new bridge ends what the old one was doing on the screen', () => {
   assert.equal(h().computerActive, false)
 })
 
+emit({
+  type: 'emergency_stop_report',
+  stopId: 's1',
+  message: 'Emergency stop confirmed by the app (2 tasks). The scheduler daemon did not confirm it.',
+  processes: [
+    { process: 'app', confirmed: true, stopped: 2 },
+    { process: 'scheduler daemon', confirmed: false, stopped: null },
+  ],
+})
+check('the emergency stop says which processes confirmed it, and warns when one did not', () => {
+  assert.equal(h().toast?.message, 'Emergency stop confirmed by the app (2 tasks). The scheduler daemon did not confirm it.')
+  assert.equal(h().toast?.tone, 'warn')
+})
+emit({
+  type: 'emergency_stop_report',
+  stopId: 's2',
+  message: 'Emergency stop confirmed by the app (0 tasks) and the Slack gateway (1 task).',
+  processes: [
+    { process: 'app', confirmed: true, stopped: 0 },
+    { process: 'Slack gateway', confirmed: true, stopped: 1 },
+  ],
+})
+check('every process confirmed it', () => {
+  assert.equal(h().toast?.message, 'Emergency stop confirmed by the app (0 tasks) and the Slack gateway (1 task).')
+  assert.equal(h().toast?.tone, 'info')
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

@@ -1921,6 +1921,7 @@ async def _start_desktop_control_reader(state: "_BridgeState") -> Any | None:
             "scheduler_fire",
             lambda cmd: _handle_scheduler_fire_command(state, cmd),
         )
+        reader.register("emergency_stop_done", _handle_emergency_stop_done)
         lock_task = getattr(state, "_desktop_lock_task", None)
         if lock_task is not None and not lock_task.done():
 
@@ -14450,6 +14451,199 @@ def _drop_queued_turns(sess: "_BridgeSession") -> int:
     return dropped
 
 
+def _emergency_stop_sessions(state: Any, *, seal: Any = None) -> int:
+    """The emergency stop in this process: each session's turn, its
+    sub-agents and the turns queued behind it stop, and each scheduled run
+    waiting on a turn here ends cancelled. Ended by its stopped turn, a run
+    delivered that turn's partial answer to its sinks. ``seal`` is called
+    with each session first: the gateway seals the Slack message its turn
+    streams. Returns the number of cancel signals fired."""
+    from bridge.scheduler.runtime import stop_all_runs_now
+
+    # First, so each run sees its stop before it sees its turn end.
+    stop_all_runs_now()
+    stopped = 0
+    for sess in list(state.sessions.values()):
+        if seal is not None:
+            seal(sess)
+        stopped += _force_cancel_session(sess)
+        _drop_queued_turns(sess)
+    return stopped
+
+
+# When this process started (imported this module). An emergency stop sent
+# before then is not for this process (_take_emergency_stop).
+_PROCESS_STARTED_AT = time.time()
+# How often the scheduler daemon looks at the emergency stop marker.
+_EMERGENCY_STOP_WATCH_SECONDS = 1.0
+# How long the app's bridge waits for the other processes to confirm its
+# emergency stop. The gateway reads its control channel every 0.25 s, the
+# daemon its marker every second, and the app's bridge their answers every
+# 0.25 s.
+_EMERGENCY_STOP_CONFIRM_S = 5.0
+# The emergency stops this process has taken, by stop id.
+_EMERGENCY_STOPS_TAKEN: set[str] = set()
+# The app's bridge: the answers to each emergency stop it is waiting on, by
+# stop id, then by process; and the tasks waiting for them.
+_EMERGENCY_STOP_ANSWERS: dict[str, dict[str, dict[str, Any]]] = {}
+_EMERGENCY_STOP_REPORTS: set[asyncio.Task[None]] = set()
+
+
+def _send_emergency_stop_elsewhere(stop_id: str, reason: str) -> list[str]:
+    """The app's bridge sends its emergency stop to the other processes
+    that run turns: the Slack gateway on the control channel, and the
+    scheduler daemon, which reads none, by the marker it watches
+    (_watch_emergency_stop_marker). Returns the processes it went to."""
+    from bridge.gateway.control_channel import append_command, emergency_stop_marker_path
+    from bridge.gateway.pid import get_running_pid
+
+    cmd = {"type": "emergency_stop", "stopId": stop_id, "at": time.time(), "reason": reason}
+    sent_to: list[str] = []
+    gateway = get_running_pid()
+    if gateway is not None and gateway != os.getpid():
+        try:
+            append_command(cmd)
+            sent_to.append("Slack gateway")
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"emergency stop not sent to the Slack gateway: {exc}")
+    marker = emergency_stop_marker_path()
+    try:
+        tmp = marker.with_name(marker.name + ".tmp")
+        tmp.write_text(json.dumps(cmd), encoding="utf-8")
+        os.replace(tmp, marker)
+        sent_to.append("scheduler daemon")
+    except OSError as exc:
+        log("warn", f"emergency stop not sent to the scheduler daemon: {exc}")
+    return sent_to
+
+
+def _scheduler_daemon_running() -> bool:
+    """The scheduler daemon's LaunchAgent runs (calls launchctl)."""
+    from bridge.scheduler.daemon import daemon_status
+
+    return bool(daemon_status().get("running"))
+
+
+def _handle_emergency_stop_done(cmd: dict[str, Any]) -> None:
+    """The Slack gateway or the scheduler daemon confirms an emergency stop
+    of the app's bridge (desktop control channel)."""
+    answers = _EMERGENCY_STOP_ANSWERS.get(str(cmd.get("stopId") or ""))
+    if answers is not None:
+        answers.setdefault(str(cmd.get("process") or "?"), cmd)
+
+
+async def _report_emergency_stop(stop_id: str, stopped: int, sent_to: list[str]) -> None:
+    """Tell the app which processes confirmed the emergency stop: this
+    bridge, and those it was sent to that run, once each has answered or
+    _EMERGENCY_STOP_CONFIRM_S has passed."""
+    answers = _EMERGENCY_STOP_ANSWERS.setdefault(stop_id, {})
+    try:
+        waiting = [p for p in sent_to if p != "scheduler daemon"]
+        if "scheduler daemon" in sent_to and await asyncio.to_thread(_scheduler_daemon_running):
+            waiting.append("scheduler daemon")
+        deadline = time.monotonic() + _EMERGENCY_STOP_CONFIRM_S
+        while any(p not in answers for p in waiting) and time.monotonic() < deadline:
+            await asyncio.sleep(0.25)
+        processes = [{"process": "app", "confirmed": True, "stopped": stopped}]
+        for name in waiting:
+            answer = answers.get(name)
+            processes.append(
+                {
+                    "process": name,
+                    "confirmed": answer is not None,
+                    "stopped": answer.get("stopped") if answer is not None else None,
+                }
+            )
+    finally:
+        _EMERGENCY_STOP_ANSWERS.pop(stop_id, None)
+
+    def _listed(items: list[str]) -> str:
+        return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+    confirmed = [
+        f"the {p['process']} ({p['stopped']} task{'' if p['stopped'] == 1 else 's'})"
+        for p in processes if p["confirmed"]
+    ]
+    message = f"Emergency stop confirmed by {_listed(confirmed)}."
+    missing = [f"the {p['process']}" for p in processes if not p["confirmed"]]
+    if missing:
+        text = _listed(missing)
+        message += f" {text[0].upper()}{text[1:]} did not confirm it."
+    log("warn" if missing else "info", message)
+    emit(
+        {
+            "type": "emergency_stop_report",
+            "stopId": stop_id,
+            "message": message,
+            "processes": processes,
+        }
+    )
+
+
+def _take_emergency_stop(state: Any, cmd: dict[str, Any], *, seal: Any = None) -> bool:
+    """The app's emergency stop, in the Slack gateway (control channel) or
+    the scheduler daemon (marker): stop everything this process runs, and
+    confirm it to the app's bridge. Each stop is taken once. One sent
+    before this process started stops nothing: what it was for went with
+    the old process, and it would stop work started since (a command that
+    waited in the control file while no gateway ran, a marker left from
+    before a restart). Returns True when it stopped."""
+    from bridge.gateway.control_channel import append_command, desktop_commands_path
+
+    stop_id = str(cmd.get("stopId") or "")
+    try:
+        at = float(cmd.get("at") or 0.0)
+    except (TypeError, ValueError):
+        at = 0.0
+    if state is None or not stop_id or stop_id in _EMERGENCY_STOPS_TAKEN:
+        return False
+    if at < _PROCESS_STARTED_AT:
+        log("info", f"emergency stop {stop_id} was sent before this process started: not taken")
+        return False
+    _EMERGENCY_STOPS_TAKEN.add(stop_id)
+    stopped = _emergency_stop_sessions(state, seal=seal)
+    process = "Slack gateway" if _process_owns_gateway() else "scheduler daemon"
+    log("warn", f"emergency stop from the app — the {process} signaled {stopped} tasks")
+    try:
+        append_command(
+            {
+                "type": "emergency_stop_done",
+                "stopId": stop_id,
+                "process": process,
+                "pid": os.getpid(),
+                "stopped": stopped,
+            },
+            path=desktop_commands_path(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log("warn", f"emergency stop not confirmed to the app: {exc}")
+    return True
+
+
+async def _watch_emergency_stop_marker(state: Any, *, seal: Any = None) -> None:
+    """The scheduler daemon reads no control channel: it takes the app's
+    emergency stops from the marker the app's bridge writes, looked at
+    every _EMERGENCY_STOP_WATCH_SECONDS."""
+    from bridge.gateway.control_channel import emergency_stop_marker_path
+
+    path = emergency_stop_marker_path()
+    seen: int | None = None
+    while True:
+        try:
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        if mtime is not None and mtime != seen:
+            seen = mtime
+            try:
+                cmd = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(cmd, dict):
+                    _take_emergency_stop(state, cmd, seal=seal)
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"emergency stop marker not read: {exc}")
+        await asyncio.sleep(_EMERGENCY_STOP_WATCH_SECONDS)
+
+
 def _run_pre_turn_hook(hook: Any, sess: "_BridgeSession") -> None:
     """Run a turn's setup hook safely. The hook is the caller's chance
     to install per-turn state (gateway_source, stream consumer
@@ -17869,19 +18063,27 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
     if ctype == "computer.emergency_stop":
         # Global scope force-cancel: same mechanism as per-session
         # cancel, applied to every session at once, and nothing queued
-        # behind the stopped turns runs.
-        stopped = 0
-        for sess in state.sessions.values():
-            stopped += _force_cancel_session(sess)
-            _drop_queued_turns(sess)
+        # behind the stopped turns runs. The Slack gateway and the
+        # scheduler daemon run turns too: they stop theirs, and the app
+        # hears which processes confirmed the stop.
+        stopped = _emergency_stop_sessions(state)
         log("warn", f"emergency stop fired — signaled {stopped} tasks")
+        reason = cmd.get("reason") or "user"
+        stop_id = uuid.uuid4().hex
+        _EMERGENCY_STOP_ANSWERS[stop_id] = {}
+        sent_to = _send_emergency_stop_elsewhere(stop_id, reason)
         emit(
             {
                 "type": "emergency_stop",
-                "reason": cmd.get("reason") or "user",
+                "reason": reason,
                 "stopped": stopped,
             }
         )
+        task = asyncio.create_task(
+            _report_emergency_stop(stop_id, stopped, sent_to), name="emergency-stop-report"
+        )
+        _EMERGENCY_STOP_REPORTS.add(task)
+        task.add_done_callback(_EMERGENCY_STOP_REPORTS.discard)
         return
 
     log("warn", f"unknown command type: {ctype}")

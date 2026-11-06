@@ -28,9 +28,11 @@ that live in the desktop process.
 
 Command types today: ``permission_response``, ``set_permission_policy``,
 ``skill_candidate_resolve``, ``skill_learn_this``, ``talk_deliver``,
-``artifact_note``, ``cancel_turn``, ``scheduler_fire``, ``set_model``,
-``set_coordination_strategy``, and the kanban board's commands
-(``kanban_operator_create`` and the rest).
+``artifact_note``, ``cancel_turn``, ``emergency_stop``, ``scheduler_fire``,
+``set_model``, ``set_coordination_strategy``, and the kanban board's
+commands (``kanban_operator_create`` and the rest). The desktop bridge
+reads ``talk_deliver``, ``artifact_note``, ``scheduler_fire`` and
+``emergency_stop_done`` (a process confirms the app's emergency stop).
 The dispatch table is a plain dict so adding more is one line each.
 """
 
@@ -69,6 +71,14 @@ def desktop_commands_path() -> Path:
 
 def desktop_commands_offset_path() -> Path:
     return control_dir() / "desktop-commands.offset"
+
+
+def emergency_stop_marker_path() -> Path:
+    """The app's last emergency stop, for the scheduler daemon, which reads
+    no control channel: the ``emergency_stop`` command the gateway gets,
+    written whole by the app's bridge each time. The daemon looks at it
+    every second and takes each stop once."""
+    return control_dir() / "emergency-stop.json"
 
 
 def append_command(cmd: dict[str, Any], *, path: Path | None = None) -> None:

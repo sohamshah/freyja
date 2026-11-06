@@ -548,6 +548,9 @@ class GatewayDaemon:
         # Reads desktop → daemon commands (permission_response, etc.)
         # from ~/.freyja/control/commands.jsonl. Started in ``start``.
         self.control_channel: ControlChannelReader | None = None
+        # The scheduler daemon's look at the emergency stop marker, as it
+        # reads no control channel. Started in ``start``.
+        self._emergency_stop_watch: asyncio.Task | None = None
 
     async def _on_inbound(self, message: IncomingMessage) -> None:
         """Single callback every adapter feeds inbound messages into."""
@@ -2007,17 +2010,22 @@ class GatewayDaemon:
         session = sessions.get(session_key)
         if session is None:
             return False
+        self._seal_stream(session, stopped_by_user=stopped_by_user)
+        task = getattr(session, "pending_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            return True
+        return False
+
+    @staticmethod
+    def _seal_stream(session: Any, *, stopped_by_user: bool = False) -> None:
+        """Seal the Slack message the session's running turn streams."""
         consumer = getattr(session, "_active_stream_consumer", None)
         if consumer is not None and not getattr(consumer, "finalized", True):
             try:
                 consumer.abort(stopped_by_user=stopped_by_user)
             except Exception:  # noqa: BLE001
                 logger.debug("consumer abort on cancel failed", exc_info=True)
-        task = getattr(session, "pending_task", None)
-        if task is not None and not task.done():
-            task.cancel()
-            return True
-        return False
 
     # ── agent session surface (Slack) ─────────────────────────────
 
@@ -3126,6 +3134,13 @@ class GatewayDaemon:
                 "control channel NOT started — this process does not hold "
                 "the gateway lock (it is a co-resident daemon)"
             )
+            # It takes the app's emergency stop from a marker file instead.
+            from bridge.freyja_bridge import _watch_emergency_stop_marker
+
+            self._emergency_stop_watch = asyncio.create_task(
+                _watch_emergency_stop_marker(self.state, seal=self._seal_stream),
+                name="emergency-stop-watch",
+            )
             return
         reader = ControlChannelReader()
         reader.register("permission_response", self._on_permission_response)
@@ -3135,6 +3150,7 @@ class GatewayDaemon:
         reader.register("talk_deliver", self._on_talk_deliver)
         reader.register("artifact_note", self._on_artifact_note)
         reader.register("cancel_turn", self._on_cancel_turn)
+        reader.register("emergency_stop", self._on_emergency_stop)
         reader.register("scheduler_fire", self._on_scheduler_fire)
         reader.register("set_model", self._on_set_model)
         reader.register("set_coordination_strategy", self._on_set_coordination_strategy)
@@ -3199,6 +3215,14 @@ class GatewayDaemon:
                 "details": {"fired": fired, "kind": kind, "scope": scope},
             }
         )
+
+    async def _on_emergency_stop(self, cmd: dict[str, Any]) -> None:
+        """The app's emergency stop: everything this process runs stops, as
+        the app's bridge stops its own, and each Slack message a stopped
+        turn streams is sealed. The app's bridge hears that it did."""
+        from bridge.freyja_bridge import _take_emergency_stop
+
+        _take_emergency_stop(self.state, cmd, seal=self._seal_stream)
 
     async def _on_set_model(self, cmd: dict[str, Any]) -> None:
         """A model picked in the app for a Slack session. It changes the
@@ -3644,6 +3668,9 @@ class GatewayDaemon:
                 logger.exception("scheduler stop raised")
         # Stop the control channel next so a late command can't fire
         # against half-shut-down state.
+        watch = getattr(self, "_emergency_stop_watch", None)
+        if watch is not None:
+            watch.cancel()
         if self.control_channel is not None:
             try:
                 await self.control_channel.stop()

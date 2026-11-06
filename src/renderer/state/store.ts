@@ -4367,6 +4367,19 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           },
         }
       }
+      if (ev.type === 'emergency_stop_report') {
+        // The Slack gateway and the scheduler daemon stop their own work:
+        // say which processes confirmed it, and which did not.
+        return {
+          ...prev,
+          toast: {
+            id: nextId('toast'),
+            message: ev.message,
+            tone: ev.processes.every((p) => p.confirmed) ? 'info' : 'warn',
+            at: Date.now(),
+          },
+        }
+      }
       if (ev.type === 'permission_request') {
         return {
           ...prev,

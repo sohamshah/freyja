@@ -475,7 +475,10 @@ export class HarnessBridge {
     // and skip the high-volume streaming traffic (text_delta etc.)
     // that already lives in the bridge's own log file.
     const type = (event as { type?: string }).type
-    if (type === 'log' || type === 'error' || type === 'ready' || type === 'emergency_stop') {
+    if (
+      type === 'log' || type === 'error' || type === 'ready'
+      || type === 'emergency_stop' || type === 'emergency_stop_report'
+    ) {
       appendMainLog({ source: 'main', event })
     }
     this.onEvent(event)

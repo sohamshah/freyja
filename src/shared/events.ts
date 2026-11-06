@@ -1672,6 +1672,15 @@ export type BridgeEvent = Received & (
       error?: string
     } & SessionId)
   | { type: 'emergency_stop'; reason?: string; stopped?: number }
+  // Which processes confirmed an emergency stop: the app's bridge, and the
+  // Slack gateway and the scheduler daemon when they run. `stopped` is
+  // the cancel signals each fired, null for one that did not answer.
+  | {
+      type: 'emergency_stop_report'
+      stopId: string
+      message: string
+      processes: { process: string; confirmed: boolean; stopped: number | null }[]
+    }
   // ── Voice events (docs/GALDR-BUILD.md §2) ─────────────────────────
   // Deliberately NOT session-scoped: voice sessions are keyed by
   // voiceSessionId, not by chat sessionId, so these skip the SessionId
