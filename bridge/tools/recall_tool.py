@@ -22,12 +22,13 @@ sub-agent had none) are in ``raw_messages.recovered.jsonl`` beside it, which
 rows, by time, and a live row wins, as exports do (src/main/sessionRecord.ts).
 
 A log can be tens of MB, so it is read a line at a time and only what is
-returned is kept. A search of one log reads it from the end and stops at the
-newest matches.
+returned is kept, in a worker thread so the event loop keeps serving. A search
+of one log reads it from the end and stops at the newest matches.
 """
 
 from __future__ import annotations
 
+import asyncio
 import heapq
 import json
 import logging
@@ -299,20 +300,11 @@ class RecallTool:
         path = ", ".join(str(p) for p in paths + recovered) or str(archives[-1])
         query = str(arguments.get("query") or "").strip()
         try:
-            # The recovered rows are a transcript's worth at most.
-            recovered_rows = [
-                row for p in recovered for row in map(_parse, _lines(p)) if row is not None
-            ]
-            if action == "timeline":
-                rows, count = _newest(paths, recovered_rows, lambda row: row, limit, count_all=True)
-                empty = not count
-            else:
-                rows = []
-                if query:
-                    rows, _ = _newest(paths, recovered_rows, _hit(query), limit)
-                empty = not rows and not recovered_rows and not any(
-                    _parse(line) is not None for p in paths for line in _lines(p)
-                )
+            # A read of the 96 MB log takes 0.14 s: on the loop it would
+            # hold the bridge for all of it.
+            rows, count, empty = await asyncio.to_thread(
+                _read, paths, recovered, action, query, limit
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug("recall load failed", exc_info=True)
             return _err(call_id, f"recall failed to read archive: {exc}")
@@ -357,6 +349,28 @@ class RecallTool:
             "turn_count": count,
             "results": out,
         })
+
+
+def _read(
+    paths: list[Path], recovered: list[Path], action: str, query: str, limit: int
+) -> tuple[list[Any], int, bool]:
+    """What ``action`` returns from the live logs ``paths`` and the recovered
+    ones: its rows, how many rows the timeline has (for a timeline), and
+    whether the logs hold no row at all. It blocks while it reads."""
+    # The recovered rows are a transcript's worth at most.
+    recovered_rows = [
+        row for p in recovered for row in map(_parse, _lines(p)) if row is not None
+    ]
+    if action == "timeline":
+        rows, count = _newest(paths, recovered_rows, lambda row: row, limit, count_all=True)
+        return rows, count, not count
+    rows = []
+    if query:
+        rows, _ = _newest(paths, recovered_rows, _hit(query), limit)
+    empty = not rows and not recovered_rows and not any(
+        _parse(line) is not None for p in paths for line in _lines(p)
+    )
+    return rows, 0, empty
 
 
 def _hit(query: str) -> Callable[[dict[str, Any]], dict[str, Any] | None]:

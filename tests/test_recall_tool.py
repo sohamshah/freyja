@@ -262,6 +262,41 @@ async def test_recall_reads_a_long_log_a_line_at_a_time(tmp_path):
         assert peak < 4 * 2**20, (args, peak)
 
 
+async def test_a_recall_leaves_the_event_loop_free_while_it_reads(tmp_path, monkeypatch):
+    # A read of the 96 MB log took 0.14 s, and on the loop it held the
+    # bridge for all of it. The read here waits until a ticker on the loop
+    # ticks; on the loop it would wait out its timeout.
+    import asyncio
+    import threading
+
+    import bridge.tools.recall_tool as recall_tool
+
+    _jsonl(tmp_path / "raw_messages.jsonl", [_said(1, "a needle")])
+    reading, ticked = threading.Event(), threading.Event()
+    newest = recall_tool._newest
+
+    def slow_newest(*args, **kwargs):
+        reading.set()
+        ticked.wait(timeout=2)
+        return newest(*args, **kwargs)
+
+    monkeypatch.setattr(recall_tool, "_newest", slow_newest)
+
+    async def ticker():
+        while True:
+            if reading.is_set():
+                ticked.set()
+            await asyncio.sleep(0)
+
+    ticks = asyncio.create_task(ticker())
+    try:
+        tool = RecallTool(session_id="s1", project_output_dir=tmp_path)
+        assert await _search(tool, "needle") == ["a needle"]
+        assert ticked.is_set()
+    finally:
+        ticks.cancel()
+
+
 async def test_a_row_holding_a_line_separator_is_found(tmp_path):
     # Text from web pages can hold U+2028. The bridge writes it as it is
     # (ensure_ascii=False), and splitting the file on it cut the row in two.
