@@ -293,6 +293,13 @@ class ScheduleTool:
                 "gateway or the app), so the run was handed to it and runs "
                 "there. Use action='get_run' with this run_id for its outcome."
             )
+        elif run.status == "queued":
+            # The run's error said so before the run went on to its end.
+            payload["note"] = (
+                "The job runs in this session, so its prompt runs once this "
+                "turn ends. Use action='get_run' with this run_id for its "
+                "outcome."
+            )
         return payload
 
     async def _action_runs(self, args: dict[str, Any]) -> dict[str, Any]:

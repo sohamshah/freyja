@@ -602,7 +602,7 @@ RunStatus = Literal[
     "timed_out",      # wall-clock timeout
     "budget_exceeded",# went over its budget; never retried
     "queued",         # its prompt waits behind the turn that started it (run_now
-                      # from that session's tool call); the record is the dispatch
+                      # from that session's tool call); it ends as any run does
     "interrupted",    # the process that ran it exited before it ended
     "expired",        # a run now handed to the gateway or the app, read too late to run
     "not_started",    # a run now handed to the gateway or the app, which could not start it

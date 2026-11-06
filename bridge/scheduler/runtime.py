@@ -224,6 +224,58 @@ async def fire_job(
         logger.debug("notes snapshot failed: %s", exc)
     prompt = _compose_fire_prompt(job, run, service, scheduled_for=scheduled_for)
 
+    if getattr(sess, "pending_task", None) is asyncio.current_task():
+        # Run now from a tool call of the session's own turn: its prompt can
+        # only run once that turn ends, and the turn waits for this call. The
+        # call is answered "queued" now, and the run goes on by itself: it
+        # queues its prompt and ends as any run does, with its turn's cost
+        # and reply, delivered. Ended here, the turn that ran the prompt was
+        # no run's: no cost, no output, nothing delivered.
+        run.status = "queued"
+        save_run(run)
+        append_event({
+            "type": "scheduler_run_queued",
+            "job_id": job.id,
+            "run_id": run.run_id,
+        })
+        service.emit_event(
+            subtype="scheduler_run_queued",
+            message=f"Scheduled job '{job.name}' {run.status}",
+            details={"jobId": job.id, "runId": run.run_id},
+        )
+        rest = asyncio.ensure_future(_run_fire(
+            service, job, run, sess, sess_id, owns_session, prompt,
+            loop_decision, registered_loop_tools,
+        ))
+        _queued_runs[run.run_id] = rest
+        rest.add_done_callback(lambda _t: _queued_runs.pop(run.run_id, None))
+        return run
+    return await _run_fire(
+        service, job, run, sess, sess_id, owns_session, prompt,
+        loop_decision, registered_loop_tools,
+    )
+
+
+# The rest of each run whose prompt is queued behind the turn that started
+# it (fire_job), by run id, held so none is collected while it waits.
+_queued_runs: dict[str, asyncio.Task] = {}
+
+
+async def _run_fire(
+    service: "SchedulerService",
+    job: JobRecord,
+    run: RunRecord,
+    sess: Any,
+    sess_id: str,
+    owns_session: bool,
+    prompt: str,
+    loop_decision: Any,
+    registered_loop_tools: list[str],
+) -> RunRecord:
+    """Run ``prompt``, the fire of ``job`` that ``run`` records, in ``sess``,
+    and end the run: its output and cost, its sinks, the job's record.
+    ``registered_loop_tools`` are a loop's tools, removed once its turns are
+    done, and ``loop_decision`` what its agent chose with them."""
     # ── Run the agent turn ────────────────────────────────────────────
     output_text = ""
     output_attachments: list[dict[str, Any]] = []
@@ -252,57 +304,6 @@ async def fire_job(
             sess, prompt, attachments=None, on_turn_start=run_cost.our_turn_starts,
         )
         pending = getattr(sess, "pending_task", None)
-        # Detect the self-await trap. This fires when:
-        #   (a) `run_now` is invoked from within a tool call — the
-        #       calling agent's turn task is the same task that fire_job
-        #       is now running in;
-        #   (b) a scheduled fire targets a session whose own turn task
-        #       happens to be the one driving this fire (rare, but
-        #       possible inside nested tool flows).
-        # In either case, the prompt has been queued via
-        # _schedule_or_queue_turn and will run after the current turn
-        # finishes. We treat this run record as a dispatch acknowledgement
-        # rather than the actual execution — the agent's caller is told
-        # the prompt is queued so they don't think it failed silently.
-        current_task = asyncio.current_task()
-        if pending is not None and pending is current_task:
-            run.status = "queued"
-            run.error = (
-                "execution target is the calling session — prompt was "
-                "queued to run after the current turn finishes; this "
-                "run record represents the dispatch, not the eventual "
-                "execution. Look at the session's transcript for the "
-                "deferred turn's output."
-            )
-            run.finished_at = time.time()
-            run.duration_seconds = run.finished_at - run.started_at
-            save_run(run)
-            # A fire, as a run whose prompt waits behind another turn is:
-            # its prompt runs once the calling turn ends. Uncounted, the
-            # next run took its fire number, and a job ran past max_fires.
-            await update_job_record(job.id, lambda fresh: count_fire(fresh, run))
-            if loop_decision is not None:
-                # A loop's tools stay for its prompt, and its decision is
-                # applied once that has run. Removed as the run returned, the
-                # prompt ran without them and no decision was applied.
-                _end_queued_loop_run(
-                    service, job.id, sess, registered_loop_tools, loop_decision, preexisting,
-                )
-                registered_loop_tools = []  # Handed over: the finally leaves them.
-            # Its end, as every run's: without it, the claim was the last
-            # the events log and the dashboard heard of it.
-            append_event({
-                "type": "scheduler_run_queued",
-                "job_id": job.id,
-                "run_id": run.run_id,
-                "duration_seconds": run.duration_seconds,
-            })
-            service.emit_event(
-                subtype="scheduler_run_queued",
-                message=f"Scheduled job '{job.name}' {run.status}",
-                details={"jobId": job.id, "runId": run.run_id, "duration": run.duration_seconds},
-            )
-            return run
         if pending is not None:
             # Poll the run JSON for cancel_requested while we wait. A
             # peer process (e.g. the user clicked Cancel in the
@@ -443,7 +444,7 @@ async def fire_job(
     # as real output (e.g. a morning briefing that was never written) and
     # suppress any retry. Fail it explicitly instead so it's visible and
     # downstream recovery can re-fire.
-    if run.status == "running" and iteration_count == 0 and not (output_text or "").strip():
+    if run.status in ("running", "queued") and iteration_count == 0 and not (output_text or "").strip():
         run.status = "failed"
         turn_error = getattr(sess, "last_turn_error", None)
         run.error = (
@@ -610,42 +611,6 @@ def _remove_loop_tools(sess: Any, names: list[str]) -> None:
                     pass
     except Exception:  # noqa: BLE001
         pass
-
-
-# The ends of loop runs whose prompts wait to run (_end_queued_loop_run),
-# held so none is collected while it waits.
-_queued_loop_run_ends: set[asyncio.Task] = set()
-
-
-def _end_queued_loop_run(
-    service: "SchedulerService",
-    job_id: str,
-    sess: Any,
-    tools: list[str],
-    decision: Any,
-    preexisting: set[str],
-) -> None:
-    """End a self-paced loop's run whose prompt was queued behind the turn
-    that started it (fire_job), once that prompt's turn and the work it
-    started are done, as fire_job ends a run whose prompt waits behind
-    another turn: remove its loop ``tools``, then apply its ``decision``."""
-
-    async def _end() -> None:
-        from bridge.freyja_bridge import wait_until_quiescent
-
-        try:
-            await wait_until_quiescent(
-                sess, background_wait_cap_s=BACKGROUND_WORK_WAIT_CAP_S, ignore_ids=preexisting,
-            )
-        finally:
-            _remove_loop_tools(sess, tools)
-        await update_job_record(
-            job_id, lambda fresh: _apply_run_loop_decision(service, fresh, decision),
-        )
-
-    task = asyncio.ensure_future(_end())
-    _queued_loop_run_ends.add(task)
-    task.add_done_callback(_queued_loop_run_ends.discard)
 
 
 def _apply_loop_decision(service: "SchedulerService", job: JobRecord, decision: Any) -> None:

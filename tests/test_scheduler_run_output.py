@@ -37,21 +37,28 @@ def _text(message) -> str:
 @pytest.fixture
 def operator_session(monkeypatch, tmp_path):
     """The operator's session, run by the real run_turn. Each turn replies
-    what ``replies`` gives for its prompt; one whose prompt holds a key of
-    ``holds`` waits on that event first. With ``slow_start`` set, the next
+    what ``replies`` gives for its prompt, in one model call that costs what
+    ``costs`` gives in cents (none by default); one whose prompt holds a key
+    of ``holds`` waits on that event first, and one whose prompt holds a key
+    of ``tool_calls`` makes that call. With ``slow_start`` set, the next
     turn's start waits on it (a session's MCP servers starting), and
     ``starting`` is set then."""
     import bridge.freyja_bridge as fb
     import bridge.transcript_persistence as tp
+    import engine.providers as providers
     from engine.session import Session
 
     monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path / "sessions")
+    # A call's cost in cents is its output tokens.
+    monkeypatch.setattr(providers, "compute_cost", lambda _m, **kw: kw["output_tokens"] / 100)
     state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
     sess = fb._BridgeSession("s1", workspace=str(tmp_path), model_id="claude-sonnet-5-5",
                              reasoning_level="auto", coordination_strategy="bus", state=state)
     sess.session = Session.create(system_prompt="t")
     sess.replies = {}
+    sess.costs = {}
     sess.holds = {}
+    sess.tool_calls = {}
     sess.slow_start = None
     sess.starting = asyncio.Event()
 
@@ -71,7 +78,13 @@ def operator_session(monkeypatch, tmp_path):
             for key, hold in sess.holds.items():
                 if key in prompt:
                     await hold.wait()
+            for key, call in sess.tool_calls.items():
+                if key in prompt:
+                    await call()
             reply = next(r for key, r in sess.replies.items() if key in prompt)
+            cents = next((c for key, c in sess.costs.items() if key in prompt), 0)
+            sess._on_llm_call({"provider": "anthropic", "model": "claude-sonnet-5-5",
+                               "input_tokens": 1000, "output_tokens": cents})
             await asyncio.sleep(0.05)
             session.add_assistant_message(reply)
             return SimpleNamespace(success=True, response=reply, stop_reason="end_turn")

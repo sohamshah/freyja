@@ -102,7 +102,8 @@ async def test_a_one_shot_cut_off_mid_run_is_due_again_on_the_next_boot(fired, m
     assert fired == [(job.id, DUE, 0)]
 
 
-@pytest.mark.parametrize("status", ["claimed", "delivering"])
+# "queued": a run now from its session's own turn waits for that turn to end.
+@pytest.mark.parametrize("status", ["claimed", "queued", "delivering"])
 async def test_a_run_cut_off_before_or_after_its_turn_is_interrupted_too(fired, monkeypatch, status):
     job = _used_up_reminder()
     _left_running(job, status=status)

@@ -157,10 +157,11 @@ _DID_NOT_COMPLETE_STATUSES = _FAILED_RUN_STATUSES | {"interrupted"}
 # Runs that came to no outcome of the job's own: a run now handed over and
 # never started (expired, not_started), one stopped from outside
 # (cancelled), one whose process exited under it (interrupted), one whose
-# prompt was queued behind the turn that started it (queued: the record is
-# the dispatch, and the turn that runs it later has no run). None failed,
-# and none showed the job works either, so the count of failed runs in a
-# row passes over them. Taken for a success, each began the count again.
+# prompt is queued behind the turn that started it and has not run yet
+# (queued; before such a run went on to its end, its record stayed the
+# dispatch of the prompt). None failed, and none showed the job works
+# either, so the count of failed runs in a row passes over them. Taken for
+# a success, each began the count again.
 _RUNS_WITHOUT_AN_OUTCOME = frozenset({"expired", "not_started", "cancelled", "interrupted", "queued"})
 
 # A run that failed for a passing reason (no network, a timeout, an
@@ -208,11 +209,11 @@ _REFUSED_RETRY_MAX_SECONDS = 60.0
 _HANDED_RUN_NOW_EXPIRES_SECONDS = 5 * 60
 
 # A run whose process exited before it ended (a crash, a quit app, a
-# restart) is still "claimed", "running" or "delivering" on disk. Every
-# scheduler start looks for such runs among all of each job's runs: one
-# cut off while a later run held the run lock at each start, or before
+# restart) is still "claimed", "running", "queued" or "delivering" on disk.
+# Every scheduler start looks for such runs among all of each job's runs:
+# one cut off while a later run held the run lock at each start, or before
 # this look existed, is not among the newest.
-_UNFINISHED_RUN_STATUSES = frozenset({"claimed", "running", "delivering"})
+_UNFINISHED_RUN_STATUSES = frozenset({"claimed", "running", "queued", "delivering"})
 
 # Run errors that pass by themselves, beyond those the engine already
 # classifies: a provider's 5xx, and a host the network could not reach

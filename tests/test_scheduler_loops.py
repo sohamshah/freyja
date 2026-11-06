@@ -239,6 +239,8 @@ async def test_a_loop_run_queued_behind_the_turn_that_started_it_keeps_its_loop_
 
     async def calling_turn():
         run = await fire_job(_Service({"s1": sess}), job)  # Its tool call.
+        answered = run.status
+        await asyncio.sleep(0)  # Its next model call: the run queues its prompt.
         # The turn ends, and its task runs the queued prompt (_drain_turns).
         _prompt, _attachments, on_turn_start = sess.queued_messages.pop(0)
         on_turn_start()
@@ -246,16 +248,16 @@ async def test_a_loop_run_queued_behind_the_turn_that_started_it_keeps_its_loop_
         tool = sess.tool_registry.get(CONTINUE_LOOP_TOOL)
         if decides == "continue" and tool is not None:
             await tool.execute("call-1", {"delay_seconds": 300})
-        return run
+        return answered
 
     sess.pending_task = asyncio.ensure_future(calling_turn())
-    run = await sess.pending_task
+    answered = await sess.pending_task
     for _ in range(50):  # The run's end follows the session's turn task.
         if load_job(job.id).next_fire_at > time.time() + 200:
             break
         await asyncio.sleep(0.02)
 
-    assert run.status == "queued"
+    assert answered == "queued"
     assert {CONTINUE_LOOP_TOOL, COMPLETE_LOOP_TOOL} <= set(offered)
     assert CONTINUE_LOOP_TOOL not in sess.tool_registry
     saved = load_job(job.id)
