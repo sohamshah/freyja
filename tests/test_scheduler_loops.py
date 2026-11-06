@@ -323,6 +323,35 @@ async def test_a_success_between_failures_keeps_the_job(monkeypatch) -> None:
     assert load_job(job.id).enabled
 
 
+@pytest.mark.parametrize("status", ["expired", "not_started", "cancelled", "interrupted"])
+async def test_a_run_without_an_outcome_between_failed_runs_is_passed_over(monkeypatch, status) -> None:
+    # It does not count as a failure, and it did not show the job works
+    # either: counted as a success, it reset the count, and a job whose
+    # every run failed ran on with a run now that expired between them.
+    import bridge.scheduler.sinks as sinks
+    from bridge.scheduler.service import SchedulerService
+
+    posted: list[str] = []
+
+    async def deliver_all(job, run, output, ctx):
+        posted.append(output.text)
+        return []
+
+    monkeypatch.setattr(sinks, "deliver_all", deliver_all)
+    service = SchedulerService(SimpleNamespace())
+    monkeypatch.setattr(service, "emit_event", lambda **_kw: None)
+    job = _job()
+    _failed_run(job, 1)
+    save_run(RunRecord(run_id="run_2", job_id=job.id, job_name=job.name, started_at=time.time(),
+                       status=status))
+    time.sleep(0.01)
+    _failed_run(job, 3)
+
+    assert await service._stop_if_failing(job, _failed_run(job, 4))
+    assert load_job(job.id).status == "disabled_error"
+    assert "its last 3 runs failed" in posted[0]
+
+
 # ─── a session reloaded from disk keeps its model ─────────────────────
 
 

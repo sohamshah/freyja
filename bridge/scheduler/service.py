@@ -154,6 +154,14 @@ _FAILED_RUN_STATUSES = frozenset({"failed", "timed_out", "budget_exceeded"})
 # and the retries leave it out.
 _DID_NOT_COMPLETE_STATUSES = _FAILED_RUN_STATUSES | {"interrupted"}
 
+# Runs that came to no outcome of the job's own: a run now handed over and
+# never started (expired, not_started), one stopped from outside
+# (cancelled), one whose process exited under it (interrupted). None
+# failed, and none showed the job works either, so the count of failed
+# runs in a row passes over them. Taken for a success, each began the
+# count again.
+_RUNS_WITHOUT_AN_OUTCOME = frozenset({"expired", "not_started", "cancelled", "interrupted"})
+
 # A run that failed for a passing reason (no network, a timeout, an
 # overloaded provider) says nothing about the job and does not count
 # toward the three above: three runs in DarkWake stopped the Morning
@@ -2249,11 +2257,14 @@ def _sink_errors(run: RunRecord) -> str:
 
 def _failures_in_a_row(runs: list[RunRecord]) -> tuple[int, int]:
     """``(real, passing)``: how many runs at the head of ``runs``
-    (newest first) failed, by cause. A slot's failed retries under the
-    job's retry_policy count as one with its own run: counted alone, a job
+    (newest first) failed, by cause, passing over runs without an outcome
+    (_RUNS_WITHOUT_AN_OUTCOME). A slot's failed retries under the job's
+    retry_policy count as one with its own run: counted alone, a job
     allowing two retries was stopped after one bad slot."""
     real = passing = 0
     for r in runs:
+        if r.status in _RUNS_WITHOUT_AN_OUTCOME:
+            continue
         if r.status not in _FAILED_RUN_STATUSES:
             break
         if _failed_for_a_passing_reason(r):
@@ -2288,6 +2299,8 @@ def _failed_runs_said(runs: list[RunRecord]) -> str:
     out: it said 3 runs failed when 6 had."""
     failed = retries = 0
     for r in runs:
+        if r.status in _RUNS_WITHOUT_AN_OUTCOME:
+            continue
         if r.status not in _FAILED_RUN_STATUSES:
             break
         failed += 1
