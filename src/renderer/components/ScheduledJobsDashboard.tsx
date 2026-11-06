@@ -566,10 +566,12 @@ function CardButton(props: {
   )
 }
 
-/** The pill's word for a job. A job stopped over its budget read
- *  "paused", as every disabled job did. */
+/** The pill's word for a job. Every disabled job read "paused": one
+ *  stopped over its budget or for failing, and one that was done. */
 function statusWord(job: SchedulerJob): string {
   if (job.status === 'disabled_budget_exhausted') return 'over budget'
+  if (job.status === 'disabled_error') return 'failing'
+  if (job.status === 'disabled_max_fires') return 'done'
   return job.enabled ? job.status : 'paused'
 }
 
@@ -579,7 +581,17 @@ function stoppedHint(job: SchedulerJob): string | undefined {
   if (job.status === 'disabled_budget_exhausted') {
     return 'A run went over this job’s budget, so it stopped. Ask Freyja to raise or remove the budget, then resume it.'
   }
-  return undefined
+  if (job.status === 'disabled_error') {
+    return 'Its runs kept failing, so it stopped. The last run says why. Fix that, then resume it.'
+  }
+  if (job.status !== 'disabled_max_fires') return undefined
+  if (job.max_fires != null && job.fire_count >= job.max_fires) {
+    return `It ran all ${job.max_fires} of its max fires. Raise max fires, then resume it.`
+  }
+  if (job.schedule?.kind === 'self_paced') {
+    return 'Its loop ended itself. Resume it to start the loop again.'
+  }
+  return 'Its schedule has no more times. Give it a new time, then resume it.'
 }
 
 function StatusDot(props: { status: string; enabled: boolean }) {

@@ -246,15 +246,32 @@ def _find_job_by_token(jobs: list[Any], token: str) -> Any | None:
 
 
 def _job_status(j: Any) -> str:
-    """A job's status as Slack shows it. A job stopped over its budget
-    read as disabled_budget_exhausted, which said nothing of how to run
-    it again."""
+    """A job's status as Slack shows it. A stopped job read as its raw
+    status (disabled_budget_exhausted, disabled_error, disabled_max_fires),
+    which said nothing of why or how to run it again."""
+    from bridge.scheduler.models import SelfPacedSchedule
+
+    resume = f"`/freyja schedule resume {j.id}`"
     if j.status == "disabled_budget_exhausted":
         return (
             "stopped over budget (a run went over its budget; raise or remove "
-            f"the budget, then `/freyja schedule resume {j.id}`)"
+            f"the budget, then {resume})"
         )
-    return j.status
+    if j.status == "disabled_error":
+        return (
+            f"stopped for failing (its runs kept failing; `/freyja schedule runs "
+            f"{j.id}` shows their errors; fix the cause, then {resume})"
+        )
+    if j.status != "disabled_max_fires":
+        return j.status
+    if j.max_fires is not None and j.fire_count >= j.max_fires:
+        return (
+            f"done (it ran all {j.max_fires} of its max fires; raise max fires, "
+            f"then {resume})"
+        )
+    if isinstance(j.schedule, SelfPacedSchedule):
+        return f"done (its loop ended itself; {resume} starts it again)"
+    return f"done (its schedule has no more times; give it a new time, then {resume})"
 
 
 def _format_jobs_table(jobs: list[Any]) -> str:

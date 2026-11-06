@@ -434,13 +434,45 @@ def _job_summary(j: JobRecord) -> dict[str, Any]:
         "tags": list(j.tags),
         "creator_surface": j.creator.surface,
     }
+    stopped = _stopped_note(j)
+    if stopped:
+        summary["stopped"] = stopped
+    return summary
+
+
+def _stopped_note(j: JobRecord) -> str | None:
+    """Why a job that is not paused stopped, and what runs it again. Its
+    raw status said neither: resume alone does not run a one-shot whose
+    time has passed, and runs a job whose max_fires are used up once."""
     if j.status == "disabled_budget_exhausted":
-        summary["stopped"] = (
+        return (
             "over budget: a run went over the job's budget, whose "
             "on_exceeded is abort_job. To run it again, raise or remove the "
             "budget with action='update', then action='resume'."
         )
-    return summary
+    if j.status == "disabled_error":
+        return (
+            "failing: its runs kept failing, so the scheduler stopped it. "
+            "action='runs' shows their errors. Fix the cause, then "
+            "action='resume'."
+        )
+    if j.status != "disabled_max_fires":
+        return None
+    if j.max_fires is not None and j.fire_count >= j.max_fires:
+        return (
+            f"done: it ran all {j.max_fires} of its max_fires. To run it "
+            "again, raise max_fires with action='update', then "
+            "action='resume'."
+        )
+    if isinstance(j.schedule, SelfPacedSchedule):
+        return (
+            "done: its loop ended itself (scheduler_complete_loop). "
+            "action='resume' starts the loop again."
+        )
+    return (
+        "done: its schedule has no more times. To run it again, give it a "
+        "new time with action='update', then action='resume'."
+    )
 
 
 def _run_summary(r) -> dict[str, Any]:
