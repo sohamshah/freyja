@@ -599,6 +599,41 @@ async def test_the_emergency_stop_drops_the_turns_queued_behind_the_running_one(
     assert note["details"] == {"count": 2, "chatVisible": True}
 
 
+async def test_a_stop_of_a_memo_wake_turn_still_runs_the_turns_queued_behind_it(monkeypatch, tmp_path):
+    """The drain runs a wake turn for a memo that came after the runner's
+    last step. A stop of that turn ended the drain, and a turn queued while
+    it ran waited for the next message, as a stopped queued turn's did."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "emit", lambda _e: None)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("session-desktop")
+    first_ends = asyncio.get_running_loop().create_future()
+    ran: list[tuple[str, int]] = []
+
+    async def run_turn(content, _attachments=None, **_kw):
+        ran.append((content, asyncio.current_task().cancelling()))
+        if content == "first":
+            await first_ends
+        elif content == fb.MEMO_WAKE_PROMPT:
+            await asyncio.sleep(5)
+
+    sess.run_turn = run_turn
+    fb._schedule_or_queue_turn(sess, "first")
+    reg = SubAgentRegistry()
+    rec = _record(reg, "sub_a")
+    reg.mark_done("sub_a", "report", SubAgentState.DONE)
+    sess.inbox.push(build_subagent_memo(rec))  # after the runner's last step
+    first_ends.set_result(None)
+    for _ in range(200):
+        if ran[-1:] and ran[-1][0] == fb.MEMO_WAKE_PROMPT:
+            break
+        await asyncio.sleep(0)
+    fb._schedule_or_queue_turn(sess, "second")
+    await fb._handle_command(state, {"type": "cancel", "sessionId": "session-desktop", "scope": "turn"})
+    await asyncio.wait_for(asyncio.gather(sess.pending_task, return_exceptions=True), timeout=2)
+    assert ran == [("first", 0), (fb.MEMO_WAKE_PROMPT, 0), ("second", 0)]
+
+
 class _CancellableTask:
     def __init__(self):
         self.cancelled = False

@@ -14839,8 +14839,14 @@ async def _drain_turns(sess: "_BridgeSession", *, cancelled: bool) -> None:
             try:
                 await sess.run_turn(w_content, w_attachments)
             except asyncio.CancelledError:
+                # The stop is for this turn, as for a queued turn below: the
+                # turns queued while it ran still run. The inbox waits.
+                _uncancel_current_task()
+                cancelled = True
                 log("info", f"inbox turn cancelled (session={sess.id})")
-                break
+                if not sess.queued_messages:
+                    break
+                continue
             except Exception as exc:  # noqa: BLE001
                 log("error", f"inbox turn failed (session={sess.id}): {exc}")
                 _emit_turn_failed(sess, exc)
