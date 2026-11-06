@@ -2183,6 +2183,9 @@ export type CompactionTelemetryRow =
        *  both the tokenizer's count, so the size before is not this. */
       trigger_tokens?: number | null
       trigger_pressure_pct?: number | null
+      /** media_pruning rows: how many images left the context. Null when
+       *  the event carried none. */
+      omitted_images?: number | null
       summary_tokens?: number
       mechanism: string
       trigger?: string | null

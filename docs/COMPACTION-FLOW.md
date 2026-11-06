@@ -211,6 +211,7 @@ pressure_pct_before        <float | null>
 pressure_pct_after         <float | null>
 trigger_tokens             <int | null>     the reading that set a path A or B compaction off
 trigger_pressure_pct       <float | null>
+omitted_images             <int | null>     an image prune's count of the images that left the context
 summary_tokens             <int>
 mechanism                  the details' "strategy" ("llm_summary", "recent_computer_screenshots", ...)
                            or, without one, "summary" | "summary_iterative" | "tool_halve"

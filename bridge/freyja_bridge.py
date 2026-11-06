@@ -11461,6 +11461,8 @@ class _BridgeSession:
                 # sizes before and after are both the tokenizer's count.
                 "trigger_tokens": details.get("trigger_tokens"),
                 "trigger_pressure_pct": details.get("trigger_pressure_pct"),
+                # An image prune's count of the images that left the context.
+                "omitted_images": details.get("omitted_images"),
                 "summary_tokens": int(details.get("summary_tokens") or 0),
                 "mechanism": mechanism,
                 "trigger": details.get("trigger"),

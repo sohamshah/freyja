@@ -318,6 +318,8 @@ def append_subagent_compaction(
                 }.get(subtype, subtype)
             ),
             "trigger": trigger,
+            # An image prune's count of the images that left the context.
+            "omitted_images": details.get("omitted_images"),
             **accounting,
             "reason": details.get("reason") or None,
             "summarizer_duration_ms": int(details.get("summarizer_duration_ms") or 0),
