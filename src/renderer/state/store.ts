@@ -2274,12 +2274,11 @@ function endTurnsOfOldBridge<T extends HarnessState>(state: T): T {
   }
 }
 
-/** The slice fields an `error` changes: the message appended to the reply
- *  being streamed, and the turn over. */
-function endTurnWithError(
-  slice: SessionSlice,
-  message: string,
-): Pick<SessionSlice, 'messages' | 'currentStreamingMessageId' | 'currentTurnId' | 'isStreaming'> {
+/** A session's `error` or a `turn_failed`: the message appended to the
+ *  reply being streamed, and the turn ended as `turn_complete` ends it.
+ *  No turn_complete follows a turn_failed, and the one that follows an
+ *  error from run_turn's own handler finds the turn already over. */
+function endTurnWithError(slice: SessionSlice, message: string): SessionSlice {
   const streamingId = slice.currentStreamingMessageId
   const messages = streamingId
     ? slice.messages.map((m) =>
@@ -2291,13 +2290,7 @@ function endTurnWithError(
           : m,
       )
     : slice.messages
-  return { messages, currentStreamingMessageId: null, currentTurnId: null, isStreaming: false }
-}
-
-/** A `turn_failed`: the message appended to the reply as for an `error`,
- *  and the turn ended as `turn_complete` ends it, since none follows. */
-function endTurnWithFailure(slice: SessionSlice, message: string): SessionSlice {
-  return endTurn({ ...slice, messages: endTurnWithError(slice, message).messages }, 'Not run: the turn failed')
+  return endTurn({ ...slice, messages }, 'Not run: the turn failed')
 }
 
 /** Close out tool chips in `parts` that are still running: `error` with
@@ -3637,7 +3630,6 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       // the turn.
       if (ev.type === 'error' || ev.type === 'turn_failed') {
         const message = ev.type === 'turn_failed' ? `turn failed: ${ev.message}` : ev.message
-        const end = ev.type === 'turn_failed' ? endTurnWithFailure : endTurnWithError
         const notice = {
           logs: [...prev.logs.slice(-200), { level: 'error' as const, message, at: receivedAt(ev) }],
           toast: {
@@ -3654,14 +3646,14 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         const target = ev.sessionId
         if (!target) return { ...prev, ...notice }
         if (target === prev.activeSessionId) {
-          return { ...prev, ...notice, ...end(sliceFromState(prev), message) }
+          return { ...prev, ...notice, ...endTurnWithError(sliceFromState(prev), message) }
         }
         const archived = prev.sessionArchive[target]
         if (!archived) return { ...prev, ...notice }
         return {
           ...prev,
           ...notice,
-          sessionArchive: { ...prev.sessionArchive, [target]: { ...archived, ...end(archived, message) } },
+          sessionArchive: { ...prev.sessionArchive, [target]: { ...archived, ...endTurnWithError(archived, message) } },
         }
       }
       if (ev.type === 'memory_retrieved' || ev.type === 'memory_updated') {

@@ -191,6 +191,21 @@ await check("the active session's own error ends its turn", () => {
   assert.equal(h().messages.at(-1).parts.at(-1).text, 'turn failed: boom')
 })
 
+await check("a failure run_turn caught itself settles the reply's chips and stamps its end", () => {
+  // run_turn's own handler sends the session's error, then turn_complete.
+  seed()
+  emit({ type: 'turn_start', sessionId: P, turnId: 't1' })
+  emit({ type: 'text_delta', sessionId: P, text: 'Looking.' })
+  emit({ type: 'tool_use_start', sessionId: P, id: 'spin', name: 'bash' })
+  emit({ type: 'error', sessionId: P, message: 'turn failed: the connection reset' })
+  emit({ type: 'turn_complete', sessionId: P, turnId: 't1', success: false })
+  const reply = h().messages.at(-1)
+  assert.deepEqual(shape(reply), ['text:Looking.', 'tool:spin', 'system:turn failed: the connection reset'])
+  assert.ok(reply.completedAt, 'the reply carries its end time')
+  assert.equal(h().toolCalls.spin.status, 'error')
+  assert.equal(h().isStreaming, false)
+})
+
 // ── A turn that raised past run_turn's own handler ──────────────────────
 // The bridge sends turn_failed and no turn_complete: turn_start then
 // turn_failed when the turn raised after it started, turn_failed alone
