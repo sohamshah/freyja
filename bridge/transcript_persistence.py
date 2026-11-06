@@ -328,6 +328,157 @@ def truncate_entries_before(
     return kept, head
 
 
+class SummarizedAnchorError(Exception):
+    """The message an anchor names was folded into a compaction summary,
+    and no snapshot on disk holds it as written."""
+
+
+def _field(entry: Any, name: str) -> Any:
+    # A dict read from disk, or a live engine TranscriptEntry.
+    if isinstance(entry, dict):
+        return entry.get(name)
+    return getattr(entry, name, None)
+
+
+def _entry_ts(entry: Any) -> float:
+    try:
+        return float(_field(entry, "timestamp") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _before_snapshots(session_id: str) -> list[tuple[int, Path]]:
+    """The session's ``-before.json`` compaction snapshots, oldest first.
+    The bridge writes one when a compaction starts; it holds the whole
+    transcript as it was."""
+    root = SESSIONS_DIR / "compactions"
+    if not root.is_dir():
+        return []
+    pattern = re.compile(
+        rf"^{re.escape(_compaction_safe_id(session_id))}-(\d+)-before\.json$"
+    )
+    found: list[tuple[int, Path]] = []
+    for path in root.iterdir():
+        m = pattern.match(path.name)
+        if m:
+            found.append((int(m.group(1)), path))
+    return sorted(found)
+
+
+def _snapshot_entries(path: Path) -> list[dict[str, Any]] | None:
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))["transcript"]["entries"]
+    except Exception:
+        return None
+    return entries if isinstance(entries, list) else None
+
+
+def summarized_through(session_id: str, summary: Any, entries: list[Any]) -> float | None:
+    """Stamp of the newest message the compaction entry ``summary`` (one
+    of ``entries``) stands in for. Summaries written before entries
+    recorded it are read off the snapshot the bridge took when that
+    compaction started. None when nothing tells."""
+    through = _field(summary, "summarized_through")
+    if through is not None:
+        return float(through)
+    return _snapshot_summarized_through(session_id, _entry_ts(summary) * 1000, entries)
+
+
+def _snapshot_summarized_through(
+    session_id: str, before_ms: float, entries: list[Any]
+) -> float | None:
+    snaps = [(stamp, path) for stamp, path in _before_snapshots(session_id) if stamp < before_ms]
+    if not snaps:
+        return None
+    stamp, path = snaps[-1]
+    snap = _snapshot_entries(path)
+    if snap is None:
+        return None
+    snap_ids = {e.get("id") for e in snap}
+    kept = next(
+        (
+            e
+            for e in entries
+            if _field(e, "message") is not None and _entry_ts(e) * 1000 < before_ms
+        ),
+        None,
+    )
+    if kept is not None and _field(kept, "id") not in snap_ids:
+        # Taken before messages the compaction then summarized (by an
+        # attempt that was skipped): it would understate the range.
+        return None
+    live = {_field(e, "id") for e in entries}
+    stamps = [
+        _entry_ts(e)
+        for e in snap
+        if e.get("message") is not None and e.get("id") not in live
+    ]
+    if stamps:
+        return max(stamps)
+    older = next((e for e in snap if e.get("is_compaction")), None)
+    if older is None:
+        return 0.0
+    # Only an older summary went: this one covers what that one did.
+    if older.get("summarized_through") is not None:
+        return float(older["summarized_through"])
+    return _snapshot_summarized_through(
+        session_id, min(_entry_ts(older) * 1000, stamp), snap
+    )
+
+
+def anchor_summarized(session_id: str, entries: list[Any], cutoff_ts: float) -> bool | None:
+    """Whether the renderer message stamped ``cutoff_ts`` was folded into
+    the transcript's compaction summary.
+
+    The renderer keeps every message; the engine replaced the oldest ones
+    with a summary entry. An anchor on one of those resolves to the first
+    kept message instead, which is a different message, and the summary
+    describes what came after the anchor. Only an anchor that resolves to
+    the first message after the summary can be one: a later anchor has a
+    kept message before it. None when that summary predates
+    ``summarized_through`` and no snapshot tells.
+    """
+    summaries: list[Any] = []
+    for entry in entries:
+        if _field(entry, "message") is not None:
+            if _entry_ts(entry) < cutoff_ts:
+                return False
+            break
+        if _field(entry, "is_compaction"):
+            summaries.append(entry)
+    through = 0.0
+    for summary in summaries:
+        covered = summarized_through(session_id, summary, entries)
+        if covered is None:
+            return None
+        through = max(through, covered)
+    return bool(summaries) and cutoff_ts <= through
+
+
+def fork_entries(session_id: str, entries: list[Any], cutoff_ts: float) -> list[Any]:
+    """The entries a fork before ``cutoff_ts`` is cut from: the
+    transcript's own, or, when compaction summarized the anchor away, the
+    newest compaction snapshot that still holds it as written. Raises
+    SummarizedAnchorError when none does."""
+    if anchor_summarized(session_id, entries, cutoff_ts) is False:
+        return entries
+    for _stamp, path in reversed(_before_snapshots(session_id)):
+        snap = _snapshot_entries(path)
+        if snap is None:
+            continue
+        if not any(
+            e.get("message") is not None and _entry_ts(e) >= cutoff_ts for e in snap
+        ):
+            # Taken before the anchor was written; older ones are too.
+            break
+        if anchor_summarized(session_id, snap, cutoff_ts) is False:
+            return snap
+    raise SummarizedAnchorError(
+        "Can't fork from this message: it is part of a compaction summary now, "
+        "and no snapshot from before that compaction is left."
+    )
+
+
 def clone_transcript(
     old_id: str,
     new_id: str,
@@ -342,7 +493,9 @@ def clone_transcript(
     Used by the branch operation.
 
     - ``cutoff_ts`` (preferred): keep only entries created before this
-      UNIX timestamp; see ``truncate_entries_before``.
+      UNIX timestamp; see ``truncate_entries_before``. When compaction
+      summarized the anchor away they come from a snapshot (see
+      ``fork_entries``), which raises SummarizedAnchorError if none has it.
     - ``truncate_to_message_ordinal`` (legacy): keep the first N
       message-bearing entries. Only consulted when no ``cutoff_ts`` is
       given. Note this counts ``tool_result`` entries too, so it does
@@ -365,7 +518,9 @@ def clone_transcript(
     transcript = dst.get("transcript") or {}
     entries = transcript.get("entries") or []
     if cutoff_ts is not None:
-        kept, new_head = truncate_entries_before(entries, cutoff_ts)
+        kept, new_head = truncate_entries_before(
+            fork_entries(old_id, entries, cutoff_ts), cutoff_ts
+        )
         transcript["entries"] = kept
         transcript["head_id"] = new_head
         dst["transcript"] = transcript

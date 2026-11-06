@@ -161,6 +161,11 @@ class TranscriptEntry:
     ``split_point`` back to before the earliest pinned message so
     pinned content stays in the kept-tail."""
 
+    summarized_through: float | None = None
+    """On a compaction entry: the timestamp of the newest message it
+    summarized. A renderer message stamped at or before it no longer has
+    an entry of its own. None on summaries written before this existed."""
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize for transcript persistence."""
         d: dict[str, Any] = {
@@ -180,6 +185,8 @@ class TranscriptEntry:
             d["parent_id"] = self.parent_id
         if self.compaction_excluded:
             d["compaction_excluded"] = True
+        if self.summarized_through is not None:
+            d["summarized_through"] = self.summarized_through
         return d
 
     @classmethod
@@ -198,6 +205,7 @@ class TranscriptEntry:
             timestamp=d.get("timestamp", 0.0),
             parent_id=d.get("parent_id"),
             compaction_excluded=bool(d.get("compaction_excluded", False)),
+            summarized_through=d.get("summarized_through"),
         )
 
 
@@ -313,7 +321,16 @@ class TranscriptManager:
                     break
 
         entries_removed = keep_from_index
+        removed = self._entries[:keep_from_index]
         kept_entries = self._entries[keep_from_index:]
+        stamps = [e.timestamp for e in removed if e.message is not None]
+        if stamps:
+            summarized_through: float | None = max(stamps)
+        else:
+            # Only an earlier summary went: this one covers what it did.
+            summarized_through = next(
+                (e.summarized_through for e in removed if e.is_compaction), 0.0
+            )
 
         entry_id = str(uuid.uuid4())
         self._entries = kept_entries
@@ -329,6 +346,7 @@ class TranscriptManager:
             tokens_before=tokens_before,
             tokens_after=tokens_after,
             parent_id=None,
+            summarized_through=summarized_through,
         )
 
         self._entries = [compaction_entry] + kept_entries

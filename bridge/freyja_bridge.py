@@ -12780,10 +12780,12 @@ def _find_message_entry_index(
     appended at/after that wall-clock. The renderer stamps ``createdAt``
     before the bridge appends the corresponding engine entry, and every
     engine entry created for a LATER renderer message is later still,
-    so this is exact regardless of compaction or how many tool_result
-    entries a turn produced. Without it (legacy): the ``ordinal``-th
-    message-bearing entry, which only lines up with the renderer's
-    user/assistant numbering for tool-free, never-compacted sessions.
+    so this is exact however many tool_result entries a turn produced.
+    A message compaction summarized away has no entry left: callers
+    check ``_refuse_summarized_anchor`` first. Without it (legacy): the
+    ``ordinal``-th message-bearing entry, which only lines up with the
+    renderer's user/assistant numbering for tool-free, never-compacted
+    sessions.
     """
     msg_count = 0
     for i, entry in enumerate(entries):
@@ -12798,6 +12800,35 @@ def _find_message_entry_index(
             return i
         msg_count += 1
     return None
+
+
+def _refuse_summarized_anchor(sess: Any, cmd: dict[str, Any], verb: str) -> bool:
+    """True, after telling the operator, when the message ``cmd`` is
+    anchored on was folded into a compaction summary (or may have been,
+    with nothing left to check). Its anchor would resolve to the first
+    kept message, so rerun and pin would act on a different message, and
+    edit and delete would keep a summary of what came after it."""
+    cutoff_ts = _message_cutoff_ts(cmd)
+    if cutoff_ts is None or sess.session is None:
+        return False
+    from bridge.transcript_persistence import anchor_summarized
+
+    summarized = anchor_summarized(sess.id, sess.session.transcript.entries, cutoff_ts)
+    if summarized is False:
+        return False
+    if summarized:
+        emit_error(
+            f"Can't {verb} this message: it is part of a compaction summary now, "
+            "so the agent no longer has it as written. Fork from it instead.",
+            recoverable=True,
+        )
+    else:
+        emit_error(
+            f"Can't {verb} this message: it may be part of a compaction summary, "
+            "and no snapshot is left to check.",
+            recoverable=True,
+        )
+    return True
 
 
 def _truncate_session_at_message_ordinal(
@@ -14987,6 +15018,16 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sess = state.get(session_id)
         if sess is None or sess.session is None:
             return
+        if _refuse_summarized_anchor(sess, cmd, "pin" if pinned else "unpin"):
+            # Undo the renderer's optimistic toggle.
+            emit({
+                "type": "entry_pin_changed",
+                "sessionId": session_id,
+                "entryId": None,
+                "messageOrdinal": ordinal,
+                "pinned": not pinned,
+            })
+            return
         target_entry_id: str | None = None
         try:
             entries = sess.session.transcript.entries
@@ -15033,6 +15074,8 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if sess.pending_task and not sess.pending_task.done():
             log("warn", "edit_user_message: turn in progress, ignoring")
             return
+        if _refuse_summarized_anchor(sess, cmd, "edit"):
+            return
         ok, target = _truncate_session_at_message_ordinal(
             sess.session, ordinal, cutoff_ts=_message_cutoff_ts(cmd)
         )
@@ -15072,6 +15115,8 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             return
         if sess.pending_task and not sess.pending_task.done():
             log("warn", "rerun_user_message: turn in progress, ignoring")
+            return
+        if _refuse_summarized_anchor(sess, cmd, "rerun"):
             return
         ok, target = _truncate_session_at_message_ordinal(
             sess.session, ordinal, cutoff_ts=_message_cutoff_ts(cmd)
@@ -15211,6 +15256,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
 
         from bridge.project_paths import project_output_dir
         from bridge.transcript_persistence import (
+            SummarizedAnchorError,
             clone_project_dir,
             clone_session_sidecars,
             clone_transcript,
@@ -15256,14 +15302,19 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             "subagent_id": None,
         }
 
-        if not clone_transcript(
-            session_id,
-            new_parent_id,
-            truncate_to_message_ordinal=(None if whole or cutoff_ts is not None else ordinal),
-            cutoff_ts=cutoff_ts,
-            id_remap=id_remap,
-            metadata_overrides=parent_overrides,
-        ):
+        try:
+            cloned = clone_transcript(
+                session_id,
+                new_parent_id,
+                truncate_to_message_ordinal=(None if whole or cutoff_ts is not None else ordinal),
+                cutoff_ts=cutoff_ts,
+                id_remap=id_remap,
+                metadata_overrides=parent_overrides,
+            )
+        except SummarizedAnchorError as exc:
+            emit_error(str(exc), recoverable=True)
+            return
+        if not cloned:
             emit_error(
                 f"branch_session: cannot read transcript for {session_id}",
                 recoverable=True,
@@ -15360,6 +15411,8 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             return
         if sess.pending_task and not sess.pending_task.done():
             log("warn", "delete_messages_from: turn in progress, ignoring")
+            return
+        if _refuse_summarized_anchor(sess, cmd, "delete from"):
             return
         ok, _ = _truncate_session_at_message_ordinal(
             sess.session, ordinal, cutoff_ts=_message_cutoff_ts(cmd)

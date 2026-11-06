@@ -526,3 +526,220 @@ def test_clone_compaction_snapshots(sessions_dir):
     assert tp.clone_compaction_snapshots(old, "session-src-branch-2", id_remap={old: "session-src-branch-2"}) == 4
     # Sources untouched.
     assert (root / f"{old}-9000-after.md").read_text() == "late\n"
+
+
+# ── anchors on messages compaction summarized away ────────────────────
+#
+# The renderer keeps every message; the engine swapped the oldest ones
+# for one summary entry. An anchor on a summarized message would resolve
+# to the first kept message, which is a different message.
+
+# Before compaction: u1 a1 u2 a2. The compaction kept u2 a2, and u3
+# came after it.
+BEFORE = [
+    _entry("u1", "user", 100.0),
+    _entry("a1", "assistant", 101.0),
+    _entry("u2", "user", 102.0),
+    _entry("a2", "assistant", 103.0),
+]
+SUMMARY = _entry("c1", None, 150.0, summarized_through=101.0)
+AFTER = [SUMMARY, BEFORE[2], BEFORE[3], _entry("u3", "user", 160.0)]
+# Renderer stamps: just before the engine appended each entry.
+ON_U1, ON_A1, ON_U2 = 99.99, 100.99, 101.99
+
+
+def _old_style(entries):
+    """The same transcript as written before summaries carried
+    ``summarized_through``."""
+    out = json.loads(json.dumps(entries))
+    for e in out:
+        e.pop("summarized_through", None)
+    return out
+
+
+def _write_before_snapshot(sessions_dir, session_id, stamp_ms, entries):
+    _write(
+        sessions_dir / "compactions" / f"{session_id}-{stamp_ms}-before.json",
+        json.dumps(_transcript(session_id, entries)),
+    )
+
+
+def test_compaction_entry_records_the_newest_message_it_summarized():
+    from engine.session import TranscriptEntry, TranscriptManager
+    from engine.types import Message
+
+    tm = TranscriptManager()
+    for i, role in enumerate(["user", "assistant", "user", "assistant"]):
+        tm.append_message(Message(role=role, content=f"m{i}"))
+    for i, e in enumerate(tm.entries):
+        e.timestamp = 100.0 + i
+    tm.append_compaction("s1", first_kept_id=tm.entries[2].id, tokens_before=1_000)
+    assert tm.entries[0].summarized_through == 101.0
+    assert TranscriptEntry.from_dict(tm.entries[0].to_dict()).summarized_through == 101.0
+    # Folding only the old summary in covers the same messages.
+    tm.append_compaction("s2", first_kept_id=tm.entries[1].id, tokens_before=1_000)
+    assert tm.entries[0].summarized_through == 101.0
+    # Folding more in covers up to the newest of them.
+    tm.append_compaction("s3", first_kept_id=tm.entries[2].id, tokens_before=1_000)
+    assert tm.entries[0].summarized_through == 102.0
+
+
+@pytest.mark.parametrize("old_style", [False, True])
+def test_anchor_summarized_tells_summarized_from_kept(sessions_dir, old_style):
+    entries = _old_style(AFTER) if old_style else AFTER
+    if old_style:
+        # The summary predates the field: the snapshot taken when the
+        # compaction started tells what it folded in.
+        _write_before_snapshot(sessions_dir, "s", 140_000, BEFORE)
+    assert tp.anchor_summarized("s", entries, ON_U1) is True
+    assert tp.anchor_summarized("s", entries, ON_A1) is True
+    assert tp.anchor_summarized("s", entries, ON_U2) is False
+    assert tp.anchor_summarized("s", entries, 102.99) is False
+    assert tp.anchor_summarized("s", entries, 159.99) is False
+    assert tp.anchor_summarized("s", ENTRIES[1:], 1.99) is False
+
+
+def test_anchor_summarized_is_unknown_for_an_old_summary_without_a_snapshot(sessions_dir):
+    entries = _old_style(AFTER)
+    # An anchor on the first kept message, or on one the summary folded
+    # in: both resolve to u2 and nothing tells them apart.
+    assert tp.anchor_summarized("s", entries, ON_U1) is None
+    assert tp.anchor_summarized("s", entries, ON_U2) is None
+    # Past the first kept message it is plain.
+    assert tp.anchor_summarized("s", entries, 102.99) is False
+    # A snapshot from an earlier attempt that never saw u2 cannot tell.
+    _write_before_snapshot(sessions_dir, "s", 100_500, BEFORE[:1])
+    assert tp.anchor_summarized("s", entries, ON_U2) is None
+
+
+def test_old_summary_that_only_folded_an_older_one_reads_the_older_snapshot(sessions_dir):
+    # c2 replaced c1 and nothing else, so c2's own snapshot holds no
+    # message it summarized: c1's snapshot does.
+    c1 = _old_style([SUMMARY])[0]
+    c2 = _entry("c2", None, 170.0)
+    _write_before_snapshot(sessions_dir, "s", 140_000, BEFORE)
+    _write_before_snapshot(sessions_dir, "s", 165_000, [c1] + AFTER[1:])
+    entries = [c2] + AFTER[1:]
+    assert tp.anchor_summarized("s", entries, ON_A1) is True
+    assert tp.anchor_summarized("s", entries, ON_U2) is False
+
+
+def test_fork_at_a_summarized_message_builds_from_the_before_snapshot(sessions_dir):
+    tp.save_transcript("src", _transcript("src", AFTER))
+    _write_before_snapshot(sessions_dir, "src", 140_000, BEFORE)
+
+    assert tp.clone_transcript("src", "f1", cutoff_ts=ON_A1)
+    dst = tp.load_transcript("f1")
+    assert [e["id"] for e in dst["transcript"]["entries"]] == ["u1"]
+    assert dst["transcript"]["head_id"] == "u1"
+    assert dst["metadata"]["forked_from"] == "src"
+
+    assert tp.clone_transcript("src", "f2", cutoff_ts=ON_U1)
+    assert tp.load_transcript("f2")["transcript"]["entries"] == []
+
+    # On the first kept message the summary is right as it is.
+    assert tp.clone_transcript("src", "f3", cutoff_ts=ON_U2)
+    assert [e["id"] for e in tp.load_transcript("f3")["transcript"]["entries"]] == ["c1"]
+
+
+def test_fork_at_a_summarized_message_without_a_snapshot_is_refused(sessions_dir):
+    tp.save_transcript("src", _transcript("src", AFTER))
+    with pytest.raises(tp.SummarizedAnchorError):
+        tp.clone_transcript("src", "f1", cutoff_ts=ON_A1)
+    assert tp.load_transcript("f1") is None
+    # An old summary on its first kept message: it cannot tell, so no.
+    tp.save_transcript("old", _transcript("old", _old_style(AFTER)))
+    with pytest.raises(tp.SummarizedAnchorError):
+        tp.clone_transcript("old", "f2", cutoff_ts=ON_U2)
+    assert tp.clone_transcript("old", "f3", cutoff_ts=102.99)
+
+
+def _live(monkeypatch, entries):
+    """A bridge session over a real engine transcript. Turns it would
+    run are recorded, not run."""
+    import bridge.freyja_bridge as fb
+    from engine.session import Session, TranscriptManager
+
+    events: list[dict] = []
+    monkeypatch.setattr(fb, "emit", events.append)
+
+    async def _no_drain(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(fb, "_drain_after_turn", _no_drain)
+    session = Session.create(system_prompt="t")
+    session.transcript = TranscriptManager.from_dict(
+        {"entries": json.loads(json.dumps(entries)), "head_id": entries[-1]["id"]}
+    )
+    sess = fb._BridgeSession.__new__(fb._BridgeSession)
+    sess.id = "s"
+    sess.session = session
+    sess.pending_task = None
+    sess.project_session_id = None
+    sess.turns = []
+
+    async def run_turn(content, attachments=None, *, pre_formed_message=None, **_k):
+        sess.turns.append(pre_formed_message if pre_formed_message is not None else content)
+
+    sess.run_turn = run_turn
+    sess._save_transcript = lambda: None
+    state = SimpleNamespace(get=lambda sid: sess if sid == "s" else None)
+    return fb, sess, state, events
+
+
+async def _send(fb, sess, state, cmd):
+    await fb._handle_command(state, {"sessionId": "s", "messageOrdinal": 0, **cmd})
+    if sess.pending_task is not None:
+        await sess.pending_task
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        {"type": "rerun_user_message"},
+        {"type": "edit_user_message", "content": "again"},
+        {"type": "delete_messages_from"},
+        {"type": "toggle_entry_pin", "pinned": True},
+    ],
+)
+async def test_live_commands_refuse_a_summarized_anchor(sessions_dir, monkeypatch, cmd):
+    fb, sess, state, events = _live(monkeypatch, AFTER)
+    await _send(fb, sess, state, {**cmd, "messageCreatedAt": ON_A1 * 1000})
+    # Nothing ran, nothing was cut, nothing was pinned.
+    assert sess.turns == []
+    entries = sess.session.transcript.entries
+    assert [e.id for e in entries] == ["c1", "u2", "a2", "u3"]
+    assert not any(e.compaction_excluded for e in entries)
+    # A refused pin puts the renderer's optimistic toggle back.
+    assert [e["pinned"] for e in events if e["type"] == "entry_pin_changed"] == (
+        [False] if cmd["type"] == "toggle_entry_pin" else []
+    )
+    (err,) = [e for e in events if e["type"] == "error"]
+    assert "compaction summary" in err["message"]
+
+
+async def test_live_commands_still_act_on_the_first_kept_message(sessions_dir, monkeypatch):
+    fb, sess, state, events = _live(monkeypatch, AFTER)
+    await _send(fb, sess, state, {"type": "toggle_entry_pin", "pinned": True, "messageCreatedAt": ON_U2 * 1000})
+    assert [e.id for e in sess.session.transcript.entries if e.compaction_excluded] == ["u2"]
+    await _send(fb, sess, state, {"type": "rerun_user_message", "messageCreatedAt": ON_U2 * 1000})
+    assert sess.turns == ["user@102.0"]
+    assert [e.id for e in sess.session.transcript.entries] == ["c1"]
+    assert not [e for e in events if e["type"] == "error"]
+
+
+async def test_branch_at_a_summarized_message_without_a_snapshot_says_why(sessions_dir, monkeypatch):
+    import bridge.project_paths as pp
+
+    monkeypatch.setattr(pp, "project_output_dir", lambda sid: sessions_dir / "projects" / str(sid))
+    fb, sess, state, events = _live(monkeypatch, AFTER)
+    tp.save_transcript("s", _transcript("s", AFTER))
+    await fb._handle_command(
+        state,
+        {"type": "branch_session", "sessionId": "s", "messageOrdinal": 1, "messageCreatedAt": ON_A1 * 1000},
+    )
+    assert not [e for e in events if e["type"] == "session_branched"]
+    (err,) = [e for e in events if e["type"] == "error"]
+    assert "compaction summary" in err["message"]
+    assert not [p for p in sessions_dir.iterdir() if "-branch-" in p.name]
+
