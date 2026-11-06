@@ -1,318 +1,240 @@
 # Compaction flow — end-to-end stocktaking
 
-Last updated: 2026-05-14
+Last updated: 2026-11-06
 
-This is a reference doc for the complete LLM-summary compaction lifecycle in Freyja PLUS the agent-facing `session_memory` tool that lives alongside it. It complements `COMPACTION-DECISION-DRAFT.md` (the design / decision log) by describing what the code actually does today — every trigger path, every emit, every artifact, every metric field. Use it when:
+This doc says what the code does today to keep a session's context inside the model's window. It covers how the runtime measures the context, the cheap pruning it does first, every path to an LLM summary, what each path writes, and the telemetry fields. `COMPACTION-DECISION-DRAFT.md` is the old design log. Where the two disagree, this doc follows the code.
 
-- Debugging a session that compacted unexpectedly.
-- Adding a new compaction trigger and making sure it fires the same signals every other trigger does.
-- Building a new dashboard surface and figuring out which JSONL field to read.
-- Wondering whether the agent's notes in `session_memory` survive a session restore (yes), are in the export bundle (no — Gap G4), or get cleaned up on session deletion (no — Gap G6).
-- Onboarding to the compaction subsystem.
+Use it when:
 
-Sections 1–9 cover LLM-summary compaction itself. Section 10 covers `session_memory` (the agent's compaction-aware scratchpad). Section 11 is the implementation history.
+- A session compacted and you do not know why.
+- You add a compaction trigger and want it to write the same signals as the others.
+- You build a dashboard surface and need to know which JSONL field to read.
+- You onboard to the compaction subsystem.
 
-## 1 — Trigger paths
+Sections 1–9 cover compaction. Section 10 covers `session_memory`, the agent's notes file, which compaction never touches. Section 11 is the history.
 
-There are four ways an LLM-summary compaction can happen. All four eventually call `engine/compaction.py:SummaryCompaction.compact()` through `engine/runner.py:_attempt_compaction()` or directly.
+## 1 — How the runtime measures the context
 
-| Path | Source | Code site | Fires when |
+- The usable window is the model's context window minus `max_tokens_per_turn`, the output reserved for the reply. A provider rejects a request whose input plus `max_tokens` is larger than the window. Every threshold in this doc is a fraction of the usable window, except the restore check (section 3).
+- The measured size is the last call's input, cache-read, cache-write and output tokens (`UsageAccumulator.effective_context_tokens` in `engine/usage.py`).
+- The pre-request check reads `_current_context_tokens`: the larger of the measured size and the tokenizer's count. The tokenizer's count (`Session.estimate_tokens`) adds up the system prompt, the transcript and the tool definitions (estimated, times 2.5). On Claude it reads about two thirds of the measured size.
+- The pressure readers read the measured size only: the Channel 1 tag, the Channel 2 note, the Channel 3 crossing check and the bridge's `pressure_signal` telemetry.
+- A call's usage goes into the accumulator before the call is reported to `on_llm_call`. So each `pressure_signal` row shows the call that wrote it.
+- A new turn keeps the last call's measure while the transcript still starts with what that call sent (`_continues_sent_prompt`), or with what a manual compaction left (`_continues_compacted`). After an edit or a delete the turn starts from zero, and the tokenizer's count stands until the first call reports.
+- After a compaction the measure is the tokenizer's count of the compacted request (`_mark_context_compacted`). A manual compaction calls `mark_context_compacted`, which also records the transcript it left, so the next turn keeps that measure.
+- After halving, the measure is lowered by the tokenizer's count of what halving removed (section 2).
+
+Thresholds:
+
+| Constant | Value | What happens past it |
+|---|---|---|
+| `CONTEXT_PRESSURE_THRESHOLD` (`AgentConfig.compaction_threshold`) | 0.25 | On a cold cache, old tool results are halved and old appshot text is removed. The Channel 1 tag starts. |
+| `CONTEXT_SOFT_SUGGEST_THRESHOLD` | 0.40 | The Channel 2 note starts. The tag suggests `summarize_context` at the next break. |
+| `CONTEXT_STRONG_SUGGEST_THRESHOLD` | 0.55 | The tag and the note recommend `summarize_context` before more tool calls. A rise into this band during a turn raises the Channel 3 advisory. |
+| `CONTEXT_COMPACTION_THRESHOLD` | 0.70 | The runtime compacts before its next request (path A). `CONTEXT_FALLBACK_THRESHOLD` has the same value. |
+
+## 2 — Cheap pruning before a summary
+
+`_ensure_context_room` in `engine/runner.py` runs before every provider call. In order:
+
+1. `_ensure_media_room` drops old computer-use screenshots beyond the newest 4 (`KEEP_RECENT_COMPUTER_IMAGES`), 8 at a time (`SCREENSHOT_PRUNE_BATCH`). It also fits images to the provider's size limit. It emits `media_pruning`.
+2. Halving, when the context is past 25% and the last call's prompt is not in the provider's cache (`_cached_prompt` returns None). On a warm cache a rewrite of history makes the provider write everything after it to the cache again, which costs more than halving saves. So on a warm cache only compaction relieves the pressure.
+3. Compaction (path A), when the context is past 70%.
+
+How halving works (`TranscriptManager.prune_old_tool_results` in `engine/session.py`):
+
+- Every tool result except the newest 3 (`KEEP_RECENT_TOOL_RESULTS`) that is text longer than 500 characters is halved once. It keeps about the first 35% and the last 12.5%.
+- Before it halves a result, it saves the whole text through the truncator (`ToolResultTruncator.write_full_content` in `engine/tools.py`) to `~/.freyja/truncated/<tool>_<time>.txt`. The marker in the halved text names that file and says to read the removed part from it with grep or sed.
+- A result whose text could not be saved stays whole. A result that the marker would not make shorter stays whole.
+- A result that already carries a halving marker, the old one or the new one, is not halved again.
+- The text of old appshots goes too. The newest 2 keep their text, and bodies under 1,500 characters stay.
+- It emits `context_pruning` with `pruned_count`, `tokens_before`, `tokens_after`, `effective_window` and both pressure percentages. The size after is the measured size less the tokenizer's count of what was removed. The 70% check that follows uses that size.
+
+Halving rewrites only the live transcript. `raw_messages.jsonl` holds each result as it was appended, so exports still have the whole result.
+
+The sync `AgentRunner` (`_handle_context_pressure`) halves after each call past 25%, with no cache check, and compacts past 70%. The app does not use it.
+
+## 3 — Paths to an LLM summary
+
+| Path | Trigger label | Code | Fires when |
 |---|---|---|---|
-| **A** Pre-request safety | Runtime, before each provider call | `engine/runner.py:_ensure_context_room` | `ratio > CONTEXT_COMPACTION_THRESHOLD` (0.80) |
-| **B** Overflow cascade | Runtime, after provider returns `ContextOverflowError` | `engine/runner.py:_handle_overflow_cascade` | Provider rejected request |
-| **C** Agent-driven | `summarize_context` tool with LLM scopes (`since_last_compaction`/`all`/`early`) | `bridge/tools/summarize_context_tool.py` | Agent chose to call the tool |
-| **D** Manual | User clicks compact / `/compact` slash command | `bridge/freyja_bridge.py:force_compact` | Explicit user action |
+| **A** Pre-request | `pre_request` | `engine/runner.py:_ensure_context_room` | The context is past 70% before a call. |
+| **B** Overflow | `overflow_cascade` | `engine/runner.py:_handle_overflow_cascade` | The provider rejected a request as too long. It first removes the oldest images when they hold the bytes (trigger `overflow_cascade_image_elision`), then summarizes, then moves down the fallback chain. |
+| **C** Agent | `agent_summarize_context` | `bridge/tools/summarize_context_tool.py` | The agent calls `summarize_context` with scope `since_last_compaction`, `all` or `early`. |
+| **D** Manual | `manual` | `bridge/freyja_bridge.py:force_compact` | The user runs `/compact`. It is skipped while a turn runs. |
+| **E** Restore | `restore` | `bridge/freyja_bridge.py:try_restore_transcript` | A transcript is loaded from disk and its tokenizer's count is past 70% of the model's raw window (reason `pressure`). Or a Slack session was idle 6 hours or more and has more than 50 messages (reason `slack_idle_revisit`). |
 
-The non-LLM scopes of the `summarize_context` tool (`tool_results_only`, `exploration_only`) take their own path inside `SummarizeContextTool._compact_tool_results_only` / `_compact_exploration_only`. They mutate tool-result message bodies in place without an LLM call, emit `context_pruning` system events, and don't carry a summary text. They're not covered in detail in this doc — search for "context_pruning" in the codebase for the full story.
+The agent's cheap scopes, `tool_results_only` and `exploration_only`, make no model call. They replace each matching tool result with a one-line preview and end with `context_pruning`. They save nothing; the raw log still has the results.
 
-## 2 — Universal canonical fields
+Every path runs `SummaryCompaction.compact()` in a worker thread through `run_off_loop` (`engine/runner.py`), so the event loop keeps serving while the summary call blocks. A stop waits for the worker, because the worker rewrites the transcript when the summary returns.
 
-Every successful LLM-summary compaction produces a `CompactionResult` and a system_event whose `details` dict carries the same canonical field set, regardless of which trigger fired it. This was not always true — the four paths used to disagree on `tokens_before` (engine transcript total vs request total vs effective-window-relative), only the manual path wrote snapshot files, and the summarizer LLM call wasn't tracked at all. The 2026-05-14 audit closed those gaps.
+Between turns the runner keeps the cached prompt alive: it re-reads it 60 s before it expires (`CACHE_KEEPALIVE_LEAD_S`), at most twice (`CACHE_KEEPALIVE_PINGS`). A turn start, a reset and a manual compaction stop this keep-alive. During a manual compaction a ping would read the transcript while the worker rewrites it.
 
-### Canonical CompactionResult fields
+## 4 — Inside `SummaryCompaction.compact()`
+
+1. It reads the messages and the tokenizer's count of the transcript (`tokens_before`).
+2. It stops when there are 10 messages or fewer (`KEEP_RECENT_MESSAGES`, the tail it keeps word for word). It also stops when there are fewer than 20 messages (`MIN_MESSAGES_TO_COMPACT`), the older part holds under 2,000 tokens (`MIN_TOKENS_TO_SUMMARIZE`, at 4 characters per token) and the older part holds under 512 KiB of images.
+3. It picks the split. `_find_safe_split` keeps each tool call with its result. `_honor_pins` keeps pinned entries in the kept tail. `_ensure_latest_user_message_kept` keeps the newest user message.
+4. If the transcript already has a summary, the new summary extends it (`resumed_from_previous`).
+5. It asks the runner for the last call's prompt (`prompt_source`, bound to `AsyncAgentRunner.cached_prompt_prefix`). The runner returns it while the provider still caches it and the summary request fits: the current size plus 4,096 tokens (`SUMMARY_REQUEST_HEADROOM_TOKENS`) inside the usable window. After an overflow there is none.
+6. Call A writes the summary.
+   - With the cached prompt, it sends that prompt unchanged, with the instruction (`CONTINUATION_SUMMARY_PROMPT`) as a new user turn after it. Tools are off (`tool_choice` none) and the effort is at most medium. The provider reads the prompt from its cache.
+   - Without it, it sends a digest of the older messages (`_format_conversation`) with `SUMMARY_PROMPT`, or `SUMMARY_UPDATE_PROMPT` when it extends a summary. A message over 2,000 characters keeps its first 1,200 and last 600. A digest over 400,000 characters keeps its start and its end.
+   - When the caller passes the action ledger's confirmed actions (`ground_truth`), the instruction lists them.
+7. Call B extracts working memory (a summary, the actions completed, the entities) at the same time, when the caller passes a sink (`on_working_memory_upserts`). It is best effort and has 90 s (`WORKING_MEMORY_CALL_TIMEOUT_S`).
+8. Call A has `summary_call_timeout_s(tokens)`: 180 s plus 1 s per 1,000 tokens, at most 600 s. If it fails with an overflow error, a plain fallback summary is used. Any other error fails the compaction.
+9. `transcript.append_compaction` deletes the entries before the split from the live transcript and puts one compaction entry in front of the kept tail.
+10. It returns a `CompactionResult` (section 5).
+
+Each summary and working-memory call goes to `on_summarizer_call`, with `call_kind` `summarizer` or `working_memory_extraction`. Every path forwards it to the session's `on_llm_call`, so it lands in `llm_call_metric` and in the session's spend. A report from a worker thread moves to the event loop first: the parent session's since 795a5ad, a sub-agent's since 2026-11-06.
+
+## 5 — Canonical fields
+
+### `CompactionResult`
 
 ```python
 success: bool
 summary: str | None
-tokens_before: int           # transcript.estimate_tokens() before append_compaction
-tokens_after: int            # transcript.estimate_tokens() after append_compaction
+tokens_before: int                  # transcript.estimate_tokens() before append_compaction
+tokens_after: int                   # transcript.estimate_tokens() after it
 error: str | None
-entries_removed: int         # number of pre-split entries deleted
-messages_before: int         # entries_count before
-messages_after: int          # entries_count after (always entries_before - entries_removed + 1)
+entries_removed: int                # entries before the split, now deleted
+messages_before: int                # entry count before
+messages_after: int                 # entry count after
 images_before: int
 images_after: int
-resumed_from_previous: bool  # true on the iterative path (SUMMARY_UPDATE_PROMPT)
-summary_tokens: int          # estimate of the produced summary's own size, len // 4
-summarizer_input_tokens: int   # input tokens charged for the summarizer LLM call
-summarizer_output_tokens: int  # output tokens charged
-summarizer_duration_ms: int    # wall-clock of the summarizer call
-summarizer_model: str | None   # model id that produced the summary
-summarizer_cost_usd: float | None  # estimated cost, None if model isn't priced
+resumed_from_previous: bool         # the summary extends the previous one
+summary_tokens: int                 # len(summary) // 4
+summarizer_input_tokens: int
+summarizer_output_tokens: int
+summarizer_duration_ms: int
+summarizer_model: str | None
+summarizer_cost_usd: float | None   # None when the model has no price
+summarizer_cache_read_tokens: int   # what the summary call read from the cache
+summary_continued_prompt: bool      # Call A continued the cached prompt
 ```
 
-### Canonical details dict (`_compaction_event_details`)
+### The details dict (`AsyncAgentRunner._compaction_event_details`)
+
+Paths A and B build their events with it. Path C builds its own in the tool. Path D builds an equivalent dict in `force_compact`, with extra fields: `request_tokens_before/after` (the tokenizer's count of the request), `last_provider_context_tokens` (the measured size), `transcript_tokens_before/after` and the snapshot paths. Path E builds a short one: `trigger`, `reason`, `tokens_before`, `tokens_after` (the tokenizer's count of the request), `entries_removed`, the summary text and the summarizer fields.
 
 ```jsonc
 {
-  // Tokens — all paths use transcript.estimate_tokens() for the
-  // engine view AND optionally pass a caller-perspective measure
-  // (e.g. _current_context_tokens). Both are exposed.
-  "tokens_before": <int>,                   // caller perspective (or transcript)
+  "tokens_before": <int>,              // the caller's measure, else the transcript's
   "tokens_after": <int>,
-  "transcript_tokens_before": <int>,        // canonical engine measure
+  "transcript_tokens_before": <int>,   // transcript.estimate_tokens()
   "transcript_tokens_after": <int>,
-  "context_tokens_before": <int>,           // back-compat alias
+  "context_tokens_before": <int>,      // alias the renderer's inline marker reads
   "context_tokens_after": <int>,
-  // Effective-window pressure pct — same denominator everywhere.
-  "effective_window": <int> | null,         // context_window - max_tokens_per_turn
-  "pressure_pct_before": <float> | null,    // (tokens_before / effective_window) * 100
+  "effective_window": <int> | null,    // context_window - max_tokens_per_turn
+  "pressure_pct_before": <float> | null,
   "pressure_pct_after": <float> | null,
-  // Counts
   "entries_removed": <int>,
   "messages_before": <int>,
   "messages_after": <int>,
   "images_before": <int>,
   "images_after": <int>,
-  // Summary content
   "summary_chars": <int>,
   "summary_preview": "<first 700 chars>",
   "summary_text": "<full text>",
-  "summary_tokens": <int>,                  // estimate of summary's own size
-  // Summarizer call (Gap 4)
+  "summary_tokens": <int>,
   "summarizer_input_tokens": <int>,
   "summarizer_output_tokens": <int>,
   "summarizer_duration_ms": <int>,
   "summarizer_model": "<model id>" | null,
   "summarizer_cost_usd": <float> | null,
-  // Lineage
-  "resumed_from_previous": <bool>,           // iterative path
-  "trigger": "<path label>",                 // "pre_request" | "overflow_cascade"
-                                             //   | "agent_summarize_context" | "manual"
+  "summarizer_cache_read_tokens": <int>,
+  "summary_continued_prompt": <bool>,
+  "resumed_from_previous": <bool>,
+  "trigger": "pre_request" | "overflow_cascade",
   "strategy": "llm_summary"
 }
 ```
 
-## 3 — Per-trigger event/persistence matrix
+## 6 — What each path writes
 
-Read across each row to see what fires on each trigger:
+| Signal | A | B | C | D | E |
+|---|---|---|---|---|---|
+| `compaction_start` event to the renderer | yes | yes | yes | yes | no (the gateway posts its own notice) |
+| `compaction_complete` event to the renderer | yes | yes | yes | yes | yes |
+| Event on failure | `compaction_skipped` | `compaction_skipped` | `compaction_skipped` | `compaction_skipped` | `compaction_failed` |
+| `compaction_event` rows in telemetry | yes | yes | yes | yes | yes |
+| `compactions.jsonl` row with the full summary | yes | yes | yes | yes | yes |
+| Snapshot pair (`.md` and `.json`, before and after) | yes | yes | no | yes | no |
+| `llm_call_metric` rows for the summary calls | yes | yes | yes | yes | yes |
+| `summarize_context_call` row | no | no | yes | no | no |
+| `usage_snapshot` event at once | no | no | no | yes | no |
+| Transcript saved at once | yes | yes | no | yes | no |
 
-| Signal | A: pre_request | B: overflow_cascade | C: agent | D: manual |
-|---|---|---|---|---|
-| `compaction_start` system_event → renderer | ✅ | ✅ | ✅ | ✅ |
-| `compaction_complete` system_event → renderer | ✅ | ✅ | ✅ | ✅ |
-| `compaction_skipped` (on failure) | ✅ | ✅ | ✅ | ✅ |
-| `compaction_event` JSONL (cross-session telemetry) | ✅ | ✅ | ✅ | ✅ |
-| Per-session `compactions.jsonl` (full summary) | ✅ | ✅ | ✅ | ✅ |
-| Snapshot pair (`.md` + `.json` before/after) | ✅ | ✅ | ✅ | ✅ |
-| `llm_call_metric` JSONL with `call_kind: "summarizer"` | ✅ | ✅ | ✅ | ✅ |
-| `summarize_context_call` JSONL (decision corpus) | ❌ | ❌ | ✅ | ❌ |
-| `usage_snapshot` event | (next call) | (next call) | (next call) | ✅ |
-| Renderer inline `system` message-part | ✅ | ✅ | ✅ | ✅ |
-| `_save_transcript()` immediate (Gap 6 fix) | ✅ (on complete) | ✅ (on complete) | ✅ (on complete) | ✅ (on complete) |
+Paths A and B reach the telemetry through the runner's `on_system_event`: `_BridgeSession._on_system_event` calls `_mirror_compaction_event`, writes the snapshot pair and saves the transcript on `compaction_complete`. Path C reaches it through `_emit_summarize_event`. Paths D and E call `_mirror_compaction_event` themselves. Paths C and E leave the save to the end of a turn.
 
-The asymmetric rows worth understanding:
+`_mirror_compaction_event` also mirrors `context_pruning` and `media_pruning`, so halving and image pruning have telemetry rows.
 
-- **`summarize_context_call`** only fires on agent-driven calls because it captures Dataset 1 (the trigger-decision corpus — scope, reason, pressure_pct_at_call, preserve_facts_missing, pinned_ordinals). The runtime + manual paths don't have an agent-driver to attribute the decision to.
-- **`usage_snapshot`** only fires immediately on manual because the user is staring at a "compact now" button and expects the spend meter to refresh immediately. Runtime + agent paths refresh naturally on the next call's `usage` event.
+## 7 — Where things land
 
-## 4 — Detailed lifecycle of one LLM-summary compaction
-
-### 4.1 Trigger detection
-
-**Path A (pre_request):** `_ensure_context_room` runs at the top of every iteration. Calls `_ensure_media_room` first (image trimming), then computes `usage_fraction = used_tokens / effective_window`.
-- If `ratio > CONTEXT_PRESSURE_THRESHOLD (0.25)`: calls `prune_old_tool_results` (cheap halving, no LLM). Emits `context_pruning` system_event. Updates `used_tokens`.
-- If `ratio > CONTEXT_COMPACTION_THRESHOLD (0.80)`: enters compaction.
-
-**Path B (overflow_cascade):** Caught in `_handle_provider_error` when `is_context_overflow_error(str(error))` is true or the error is a `ContextOverflowError` instance. Forwards to `_handle_overflow_cascade` which is now async (changed 2026-05-14).
-- Bails immediately if `ctx.compaction_attempts >= max_compaction_attempts`.
-
-**Path C (agent):** Agent invokes `summarize_context` with one of the LLM-summary scopes. `SummarizeContextTool.execute`:
-- Validates scope + level.
-- Applies `pin_entries` ordinals to the transcript BEFORE the compactor runs (so `_honor_pins` sees them).
-- Reads pressure_pct from the runner (for telemetry).
-
-**Path D (manual):** `_BridgeSession.force_compact()` called via the `/compact` slash command IPC.
-- Bails if `session is None` or `pending_task` is in progress.
-- Captures snapshots BEFORE compaction.
-
-### 4.2 `compaction_start` emit
-
-All four paths emit a `compaction_start` system_event with details including:
-- `tokens_before` (caller perspective)
-- `transcript_tokens_before`
-- `effective_window`, `pressure_pct_before`
-- `trigger` (path label)
-- For path C: `scope`, `reason`, `pressure_pct_at_call`
-- For path D: `before_snapshot_path`, `before_snapshot_json_path`, `before_preview`
-
-On the bridge side, `_BridgeSession._on_system_event` mirrors this to:
-- The cross-session `~/.freyja/telemetry/compaction.jsonl`.
-- The per-session `~/.freyja/projects/<sid>/compactions.jsonl`.
-- A snapshot pair: `_write_compaction_snapshot(phase="before", ...)` writes a `.md` (human-readable transcript dump) + `.json` (machine-readable transcript) under `~/.freyja/sessions/compactions/<sid>-<ts>-before.{md,json}`.
-
-The manual path also calls `_mirror_compaction_event` directly to make sure these mirrors land — it bypasses the runner so the `on_system_event` callback doesn't fire on its behalf.
-
-### 4.3 `SummaryCompaction.compact()` core
-
-In order:
-1. `messages = transcript.get_messages()` — walks entries, injects a synthetic `[Previous conversation summary]` system message right after any prior compaction entry.
-2. `tokens_before = transcript.estimate_tokens()` — canonical transcript size measure.
-3. Gate: if `len(messages) <= keep_recent (10)`, bail with "Nothing to summarize". If `< min_messages` AND `summarizable_tokens < MIN_TOKENS_TO_SUMMARIZE`, bail. The second gate lets short-but-heavy sessions (huge image, few replies) compact when the simple count gate wouldn't.
-4. `split_point = len(messages) - keep_recent`.
-5. `_find_safe_split` — walks split_point back past any orphan tool_use / tool_result groups so `to_keep` doesn't start with a tool_result missing its tool_use.
-6. `_honor_pins(transcript, split_point)` — accounts for the sys_summary inject and walks `transcript.entries` (which has different indexing than `messages`) to find any `compaction_excluded=True` entries that land in `to_summarize`. Pulls split_point back to before the earliest pin so pinned entries stay in the kept tail.
-7. `_ensure_latest_user_message_kept` — anchors the newest user message in `to_keep` (prevents the summarizer from swallowing the active task into a section the post-compaction system prompt tells the model NOT to act on).
-8. `previous_summary = _find_previous_summary(transcript)` — newest-first walk for a prior `is_compaction=True` entry. Sets `resumed_from_previous = True` if found.
-9. If iterative path, strips the sys_summary inject from `to_summarize` so the prior summary isn't fed in twice (it's already in the `SUMMARY_UPDATE_PROMPT`).
-10. `conversation_text = _format_conversation(to_summarize)`.
-11. `_generate_summary(conversation_text, provider, previous_summary=...)`: a. `redact_sensitive_text` on the input. b. Build either `SUMMARY_PROMPT` or `SUMMARY_UPDATE_PROMPT`. c. **Call provider.complete(...)** — this is the summarizer LLM call. Time it. d. Capture usage (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`), model id, duration_ms, estimated cost via `compute_cost`. e. Stash all of the above into `stats_out`. f. Fire `on_summarizer_call(payload)` with the stats + `call_kind: "summarizer"` so the runner's `on_llm_call` hook can mirror it to the dashboard as compaction overhead (Gap 4). g. Parse `<summary>...</summary>` out of the response. h. `redact_sensitive_text` on the output.
-12. `first_kept_id = transcript.entries[split_point].id`.
-13. `transcript.append_compaction(summary, first_kept_id, tokens_before)`:
-- Walks entries to find `first_kept_id`.
-- **Deletes** every entry before it from `_entries` (in-memory).
-- Prepends a single `is_compaction=True` entry with `compaction_summary=<text>`.
-- Recomputes `tokens_after` if not provided.
-14. `tokens_after = transcript.estimate_tokens()`.
-15. Compute `summary_tokens = len(summary) // 4`.
-16. Return `CompactionResult` populated with all canonical fields.
-
-### 4.4 `compaction_complete` emit
-
-All four paths emit a `compaction_complete` system_event with details from `_compaction_event_details(result, trigger=..., tokens_before=..., tokens_after=...)` — the canonical builder. The runtime paths use the runner's `_compaction_event_details`; the manual path assembles its own equivalent (which now matches).
-
-On the bridge side, `_on_system_event` mirror runs:
-- `_mirror_compaction_event("compaction_complete", details)`:
-- Writes a `compaction_event` row to `~/.freyja/telemetry/compaction.jsonl` (cross-session).
-- Writes a row to `~/.freyja/projects/<sid>/compactions.jsonl` (per-session, FULL summary text).
-- `_write_compaction_snapshot(phase="after", ...)` writes the after-snapshot pair.
-- `_save_transcript()` — persists the just-compacted transcript to `~/.freyja/sessions/<sid>/transcript.json` IMMEDIATELY (Gap 6 fix). Without this, a crash between compaction and turn-end would leave the disk transcript in the pre-compaction state, disagreeing with the just-logged JSONL row.
-
-### 4.5 What the model sees on the next call
-
-After `compact()` returns, the engine transcript is in this shape:
-
-```
-entries = [
-  TranscriptEntry(is_compaction=True, compaction_summary="<full text>"),
-  TranscriptEntry(message=<msg_at_first_kept_id>),
-  TranscriptEntry(message=<next_msg>),
-  ...
-  TranscriptEntry(message=<latest_msg>)
-]
-```
-
-When `transcript.get_messages()` runs on the next iteration:
-- Compaction entries are processed by stashing `last_compaction_summary` for the next real message to consume.
-- The next real entry triggers a synthetic `Message(role="system", content="[Previous conversation summary]\n<text>")` to be prepended.
-
-So the messages list sent to the provider is:
-
-```
-[
-  Message(role="system", content="[Previous conversation summary]\n<...>"),
-  Message(role=msg_at_first_kept.role, content=...),
-  ...
-  Message(role=latest_msg.role, content=...)
-]
-```
-
-The Anthropic provider rewrites the system-role inject as user-role `[System context]: [Previous conversation summary] ...` because Anthropic's API doesn't support system-role inside `messages`. It also stamps `cache_control: ephemeral` on this message (the 3rd cache breakpoint) so the entire prefix through system + tools + summary is cached.
-
-If Channel 2 is active (ratio ≥ 40%), the `_augment_messages_with_pressure_note` adds a `<system-reminder>` block to the tail of the last user message — this is after every cache breakpoint, so cache validity is preserved.
-
-### 4.6 What the renderer sees
-
-The renderer's view diverges from the engine's:
-- The renderer NEVER truncates its own message list. Pre-compaction messages stay visible in the conversation scroll.
-- The renderer inserts a synthetic `system` MessagePart into the conversation showing the compaction marker ("Pre-request compaction complete: X → Y tokens" or "Manual compaction complete: ..." etc.).
-- Clicking the system marker opens the structured detail panel (in `ActivityView.tsx`) which surfaces:
-- SCOPE / MECHANISM / TRIGGER chips
-- Tokens before → after with delta + percent
-- Reason (agent rationale)
-- Full summary text (scrollable, copyable)
-
-## 5 — Persistence surfaces
-
-After a successful LLM-summary compaction, these on-disk artifacts exist:
-
-| Path | Source | Purpose |
+| Path | Written by | What it holds |
 |---|---|---|
-| `~/.freyja/sessions/<sid>/transcript.json` | `_save_transcript` | Engine view (entries with the compaction entry + kept tail). Source of truth for session resume. |
-| `~/.freyja/projects/<sid>/raw_messages.jsonl` | `Session.create(on_message_appended=...)` | Append-only log of every Message ever appended. Survives compaction. Source for export bundle `raw_transcript[]`. |
-| `~/.freyja/projects/<sid>/compactions.jsonl` | `_BridgeSession._append_compaction_log` via `_mirror_compaction_event` | One row per compaction event with FULL summary text + canonical fields. Source for export bundle `compactions[]`. |
-| `~/.freyja/sessions/compactions/<sid>-<ts>-{before,after}.{md,json}` | `_BridgeSession._write_compaction_snapshot` | Transcript snapshot pair around each compaction. Source of truth for "what did the model see before vs after?" |
-| `~/.freyja/telemetry/compaction.jsonl` | `bridge/compaction_telemetry.append_telemetry` via `_mirror_compaction_event` | Cross-session log used by the metrics dashboard. Contains `compaction_event` + `llm_call_metric` + `pressure_signal` + `tool_call_metric` + `summarize_context_call` + `profile_invocation` + `profile_completion` rows. |
-| Renderer session payload (debounced via `sessionSave` IPC) | renderer state | UI view: visible message history + system parts + tool_calls + frames. |
+| `~/.freyja/sessions/<sid>.transcript.json` | `_save_transcript` | The live transcript: the compaction entry, the kept tail, halved results. A resume reads it. |
+| `~/.freyja/projects/<sid>/raw_messages.jsonl` | `_append_raw_message_log`, on every append | Every message as it was appended. Compaction and halving never touch it. Sub-agents have none. |
+| `~/.freyja/projects/<sid>/compactions.jsonl` | `_append_compaction_log` | One row per compaction event, with the full summary. |
+| `~/.freyja/sessions/compactions/<sid>-<ms>-{before,after}.{md,json}` | `_write_compaction_snapshot` | The transcript before and after a compaction (paths A, B and D). |
+| `~/.freyja/telemetry/compaction.jsonl` | `bridge/compaction_telemetry.append_telemetry` | The cross-session rows the metrics dashboard reads (section 8). |
+| `~/.freyja/truncated/*.txt` | `ToolResultTruncator.write_full_content` | The whole text of each result the truncator cut to fit, and of each result halving cut. The cut text names its file. |
 
-The export bundle (`<sid>.bundle.json`) combines `raw_messages.jsonl`
-+ `transcript.json` + `compactions.jsonl` into three views:
-`raw_transcript[]` + `live_transcript[]` + `compactions[]`.
+An export (`exportSessionToFile` in `src/main/persistence.ts`) writes three files. `<dest>.json` is the saved session with each tool result whole. `<dest>.bundle.json` holds `raw_transcript` (the raw log), `full_tool_results`, `live_transcript` (the renderer's messages), `telemetry` (the session's rows by type) and `compactions`. `<dest>.trace.txt` is the session as text. A result the truncator cut is read back from its file (`src/main/sessionRecord.ts`). A halved result needs no read-back: the raw log has it whole.
 
-## 6 — Metric fields by surface
+## 8 — Telemetry rows
 
-### `compaction_event` row in cross-session JSONL
-
-Fields (every successful compaction has these populated):
+### `compaction_event`
 
 ```
 type                       "compaction_event"
 session_id                 <sid>
-agent_type                 <profile name or null for root>
+agent_type                 <profile name, or null for a root session>
 parent_session_id          <parent sid or null>
-subtype                    "compaction_start" | "compaction_complete"
-                           | "compaction_skipped" | "context_pruning"
-                           | "media_pruning" | "thrash_skip"
+subtype                    "compaction_start" | "compaction_complete" | "compaction_skipped"
+                           | "compaction_failed" | "context_pruning" | "media_pruning"
+                           | "thrash_skip"
 model                      <model id>
 tokens_before              <int>
 tokens_after               <int>
-effective_window           <int>
-pressure_pct_before        <float>
-pressure_pct_after         <float>
+effective_window           <int | null>
+pressure_pct_before        <float | null>
+pressure_pct_after         <float | null>
 summary_tokens             <int>
-mechanism                  "summary" | "summary_iterative" | "tool_halve"
-                           | "image_prune" | "thrash_skip"
-                           | "tool_results_only" | "exploration_only"
-trigger                    "pre_request" | "overflow_cascade"
-                           | "agent_summarize_context" | "manual"
-                           | "thrash_detector"
-scope                      <agent's scope choice, agent path only>
-reason                     <agent's free-text rationale, agent path only>
+mechanism                  the details' "strategy" ("llm_summary", "recent_computer_screenshots", ...)
+                           or, without one, "summary" | "summary_iterative" | "tool_halve"
+                           | "image_prune" | "tool_results_only" | "exploration_only"
+                           | "thrash_skip" | the subtype
+trigger                    "pre_request" | "overflow_cascade" | "overflow_cascade_image_elision"
+                           | "agent_summarize_context" | "manual" | "restore"
+                           | "provider_error" | "thrash_detector"
+scope                      the agent's scope (path C)
+reason                     the agent's rationale (path C), the restore reason (path E),
+                           or the error of a skipped compaction
 resumed_from_previous      <bool>
 summarizer_input_tokens    <int>
 summarizer_output_tokens   <int>
 summarizer_duration_ms     <int>
 summarizer_cost_usd        <float | null>
 summary_excerpt            <first 240 chars>
-summary_text               <full text, or null for non-summary subtypes>
+summary_text               <full text, or null>
 ts                         <unix epoch float>
 ```
 
-### `llm_call_metric` row — summarizer flavor
+Path C writes a shorter row from `_emit_summarize_event`, without the window and pressure fields.
 
-When `call_kind == "summarizer"`, the row represents a summarizer LLM call. Fields:
+### `pressure_signal`
 
-```
-type                       "llm_call_metric"
-session_id                 <sid>
-turn_id                    <turn id at time of call>
-agent_type                 <profile or null>
-parent_session_id          <parent or null>
-model                      <model id>
-input_tokens               <int>
-output_tokens              <int>
-cache_read_tokens          <int>
-cache_write_tokens         <int>
-cost_usd                   <float | null>
-duration_ms                <int>
-call_kind                  "summarizer"
-iterative_summarizer       <bool>     # true iff SUMMARY_UPDATE_PROMPT
-ts                         <unix epoch float>
-```
+Written from the bridge's `on_llm_call` when the band changes. Fields: `session_id`, `agent_type`, `parent_session_id`, `band`, `pressure_pct`, `used_tokens`, `effective_window`, `model`, `ts`. The bands are `clean` (under 15%), `pruning` (under 25%), `awareness` (under 40%), `soft` (under 55%), `strong` (under 70%) and `fallback`.
 
-### `summarize_context_call` row — agent decision corpus
+### `llm_call_metric`
 
-Only the agent path produces these. The dashboard's "Agent compaction decisions" panel reads them. Fields:
+One row per model call. Fields: `session_id`, `turn_id`, `agent_type`, `parent_session_id`, `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd`, `duration_ms`, `call_kind`, `iterative_summarizer`, `ts`. `call_kind` is `main`, `summarizer`, `working_memory_extraction` or `cache_keepalive`. `iterative_summarizer` is set on summarizer rows only. A sub-agent's rows come from `_on_sub_llm_call` and carry no `call_kind`.
+
+### `summarize_context_call`
+
+Only path C writes these. The dashboard's "Agent compaction decisions" panel reads them.
 
 ```
 type                       "summarize_context_call"
@@ -325,8 +247,8 @@ scope                      "since_last_compaction" | "all" | "early"
 level_requested            "auto" | "episode" | "chapter"
 level_used                 "episode" | "chapter"
 preserve_facts_count       <int>
-preserve_facts_missing     [<string>, ...]      # facts not in produced summary
-pinned_ordinals            [<int>, ...]         # ordinals pinned by this call
+preserve_facts_missing     [<string>, ...]
+pinned_ordinals            [<int>, ...]
 reason                     <agent rationale>
 pressure_pct_at_call       <float>
 tokens_before              <int>
@@ -340,122 +262,104 @@ model                      <model id>
 ts                         <unix epoch float>
 ```
 
-## 7 — Aggregator → dashboard surface mapping
+## 9 — Dashboard, channels and caveats
 
-Where each metric ends up in the metrics dashboard:
+### Dashboard (`src/renderer/components/MetricsDashboard.tsx`)
 
-| Dashboard element | Source rows | Aggregation |
+| Element | Source rows | Aggregation |
 |---|---|---|
-| Total spend stat tile | `llm_call_metric` (all `call_kind`s) | sum of `cost_usd` |
-| Compactions stat tile | `compaction_event` rows with `subtype == "compaction_complete"` | count |
-| Tokens-saved stat tile | `compaction_event` complete rows | sum of `(tokens_before - tokens_after)` |
-| Cache reuse stat tile | `llm_call_metric` rows | `(cache_read + cache_write) / (input + cache_read + cache_write)` aggregated |
-| Cooperation effectiveness tile | `compaction_event` complete rows | `count(trigger==agent_summarize_context) / total` |
-| Trigger source RankedBars | `compaction_event` rows | groupby `trigger` |
-| Savings trend SVG | `compaction_event` rows with `tokens_before > 0` | `(tokens_before - tokens_after) / tokens_before` over time |
-| Per-session compaction count | `compaction_event` rows | groupby `session_id` |
-| Per-session compaction log in drawer | `compaction_event` rows for that session | sorted by ts |
-| Click row → full summary panel | `compaction_event.summary_text` | direct render |
-| Agent compaction decisions panel | `summarize_context_call` rows | newest-first list + scope mix |
-| Summarizer overhead (TODO surface) | `llm_call_metric` rows with `call_kind == "summarizer"` | sum of `cost_usd` |
+| Total spend tile | `llm_call_metric` | Sum of `cost_usd`. |
+| Compactions tile | `compaction_event` | Every row counts, starts and skips included. The subline counts `compaction_complete` rows as "llm", `context_pruning` and `media_pruning` rows as "prune", and `thrash_skip` rows. |
+| Tokens saved tile | `compaction_event` | Sum of `tokens_before - tokens_after` over rows where it is positive. Halving rows count, since they carry both sizes. |
+| Cooperation | `compaction_event` complete rows | Agent-driven (`agent_summarize_context`) against runtime (`pre_request`, `overflow_cascade`, `context_overflow`, `runtime`, or a row with neither a trigger nor a mechanism). Manual and restore rows count in neither. |
+| Trigger source bars | `compaction_event` | Grouped by `trigger`. |
+| Savings trend | `compaction_event` rows with `tokens_before > 0` | `(tokens_before - tokens_after) / tokens_before` over time. |
+| Per-session compaction log | `compaction_event` rows for the session | Sorted by `ts`. A click shows `summary_text`. |
+| Agent compaction decisions | `summarize_context_call` | Newest first, with the scope mix. |
 
-## 8 — Channel signaling (cooperative protocol)
+### The three channels
 
-The cooperative protocol's three channels surface pressure cues to the agent so it has a chance to drive compaction itself before the runtime fallback at 80%. Briefly:
+They give the agent a chance to call `summarize_context` itself before the runtime compacts at 70%. None of them compacts anything.
 
-- **Channel 1:** Per-tool-result tag `[ctx: NN% · advisory]` appended at `_build_pressure_tag` in `bridge/freyja_bridge.py`. Fires at `ratio ≥ 0.25`.
-- **Channel 2:** `<system-reminder>` block tail-appended to the last user message in the request via `_augment_messages_with_pressure_note` in `engine/runner.py`. Fires at `ratio ≥ 0.40`. Lives in the user message (not system prompt) to preserve the system-block cache marker.
-- **Channel 3:** `[!CTX PRESSURE: window crossed X-Y%]` prepended to the next tool result body when pressure escalates into ≥ strong band during a turn. Set by `mark_channel3_crossing`, consumed by the bridge's tool-result wrapper via `consume_channel3_advisory`. One-shot.
+- **Channel 1** is a tag on each tool result, `[ctx: NN% (used/usable) · advisory]`, from `_build_pressure_tag` in `bridge/freyja_bridge.py`. It starts at 25%. Past 70% the advisory says the runtime compacts the history before its next request.
+- **Channel 2** is a `<system-reminder>` at the end of the last user message, from `_augment_messages_with_pressure_note` in `engine/runner.py`. It starts at 40% and names the 10-point band. It sits after every cache breakpoint, so it does not break the cache.
+- **Channel 3** is a one-shot advisory, `[!CTX PRESSURE: window crossed X-Y% during this turn ...]`, put in front of the next tool result. `mark_channel3_crossing` sets it when the band rises into 55% or more during a turn; the bridge's tool-result wrapper takes it with `consume_channel3_advisory`. It says that past 70% the runtime compacts the history before its next request. Nothing counts or rejects tool calls.
 
-These do NOT trigger compaction directly. They give the agent visibility so it can call `summarize_context` itself. The actual trigger thresholds are:
+### Caveats
 
-- `CONTEXT_PRESSURE_THRESHOLD` (0.25) — runtime cheap pruning.
-- `CONTEXT_COMPACTION_THRESHOLD` (0.80) — runtime fallback LLM compaction. Was 0.40 in Phase 1, restored to 0.80 in Phase 2 so the agent has a real 40–80% cooperation window.
-
-## 9 — Known caveats and design notes
-
-- **Multiple compactions in one turn are possible.** Path B can fire mid-turn after an overflow error, and Path A can fire on the next iteration if pressure stays high. Each produces its own `compaction_event` row.
-- **The transcript mutation is destructive in memory.** Pre-split entries are deleted from `session.transcript.entries`. They only survive in `raw_messages.jsonl`, the per-session `compactions.jsonl` summary text, the renderer's separate message slice, and the snapshot pair files.
-- **`append_compaction` accumulates compactions in the entries list.** After two compactions the entries list is `[compaction_2, kept_tail_2, ...]` — `compaction_1` was deleted when `compaction_2`'s `first_kept_id` walk truncated entries before it. Only the most-recent compaction entry survives in the engine view. Old summaries are in `compactions.jsonl` only.
-- **The iterative path strips the sys_summary inject from `to_summarize`.** Without this the prior summary would be fed to the summarizer twice — once via the `PREVIOUS SUMMARY:` section of `SUMMARY_UPDATE_PROMPT`, once embedded in the conversation transcript.
-- **`_honor_pins` accounts for the inject offset.** Pre-2026-05-12 it walked entries while counting `message_idx` only for non-None message entries — but `get_messages()` adds a sys_summary pseudo-message after every compaction entry. The walker now tracks `inject_pending` and increments `message_idx` for the inject when the next real message follows.
-- **Anti-thrash protection.** `_attempt_compaction` checks `ctx.ineffective_compaction_count >= 2` (last two compactions each saved < 10%) and bails with a `thrash_skip` JSONL row + CompactionResult error. The dashboard counts these as a separate subtype.
-- **Sub-agent isolation.** When a subagent's child registry is built in `_run_child`, the `summarize_context` and `session_memory` tool instances are REPLACED with subagent-scoped ones whose closures point at the child session/runner. Otherwise the subagent would compact the PARENT's transcript.
-- **`force_compact` does NOT route through the runner.** It calls `compactor.compact()` directly via `asyncio.to_thread` with its own `on_summarizer_call` closure that forwards to the runner's `on_llm_call` (when a runner exists). The bridge emits its own start/complete system events and calls `_mirror_compaction_event` directly because the runner's `on_system_event` callback doesn't fire.
-- **Sync runner is legacy.** The sync `AgentRunner` in `engine/runner.py` (line ~235) is the CLI path. The bridge always uses `AsyncAgentRunner`. The async path is the authoritative one for everything in this doc.
+- One turn can compact more than once. Path B can fire after an overflow, and path A can fire on the next iteration. Each writes its own rows.
+- Compaction deletes entries from the live transcript. They survive in `raw_messages.jsonl`, in the summary in `compactions.jsonl`, in the renderer's own message list and in the snapshot pair.
+- Only the newest compaction entry stays in the live transcript. A later compaction deletes the earlier entry with the rest of the old history. The earlier summaries stay in `compactions.jsonl`.
+- When the summary extends a previous one from a digest, the previous summary's message is left out of the digest, so the summarizer does not read it twice.
+- The thrash detector in `_attempt_compaction` skips a compaction when the last two each saved under 10%. It writes a `thrash_skip` row.
+- A sub-agent's runner gets its own `summarize_context` and `session_memory` tools, bound to the sub-agent's session. Otherwise a sub-agent would compact the parent's transcript.
+- `force_compact` does not go through the runner. It runs the compactor through `run_off_loop`, forwards the summary calls to the runner's `on_llm_call`, and calls `_mirror_compaction_event` itself.
+- The sync `AgentRunner` is legacy. The bridge always uses `AsyncAgentRunner`. The sync runner takes `on_llm_call`, so its compactions report their summary calls, but nothing in the app runs it.
 
 ## 10 — The `session_memory` tool
 
-`session_memory` is the agent-facing escape hatch that lets it carry notes across compaction boundaries. It's a sibling to `summarize_context` — together they're how the agent participates in its own memory management.
+`session_memory` lets the agent carry notes across compactions. It works with `summarize_context`: together they are how the agent takes part in its own memory management.
 
 ### 10.1 What it is
 
-A markdown file per session at ``~/.freyja/projects/<safe_sid>/memory.md``, exposed to the agent as a tool with four actions:
+It is a markdown file per session at `~/.freyja/projects/<safe_sid>/memory.md`. The agent reaches it through a tool with four actions:
 
 | Action | Behavior |
 |---|---|
-| `read` | Return current contents (empty string if file doesn't exist). |
-| `write` | REPLACE the file with `content`. |
-| `append` | Add `content` to the file under a `## <timestamp>` header. Preferred for incremental notes. |
-| `clear` | Delete the file. |
+| `read` | Returns the contents, or an empty string if the file does not exist. |
+| `write` | Replaces the file with `content`. |
+| `append` | Adds `content` under a `## <timestamp>` header. Preferred for notes. |
+| `clear` | Deletes the file. |
 
-Source: `bridge/tools/session_memory_tool.py`. Constructor takes just `session_id`; the file path is derived via `bridge/project_paths.py:project_output_dir(session_id) / "memory.md"`.
+The code is in `bridge/tools/session_memory_tool.py`. The path comes from `bridge/project_paths.py:project_output_dir(session_id) / "memory.md"`.
 
-Defensive cap: `_MAX_BYTES = 64 * 1024`. If a write or append would exceed it, the file is truncated **from the head** — oldest entries get dropped so the tail (most recent notes) survives. This is the right shape for a scratchpad where recency matters more than completeness.
+The file is capped at 64 KB (`_MAX_BYTES`). A write or an append past the cap cuts the file from the head: the oldest notes go and the newest stay.
 
 ### 10.2 Expected workflow
 
 The system prompt's `_CONTEXT_DISCIPLINE_BLOCK` tells the agent:
 
 > Before compacting:
-> - Stash anything you'll need to remember into `session_memory` —
->   the file lives outside the transcript and survives every future
->   compaction.
+> - Stash anything you'll need to remember into `session_memory` — the file lives outside the transcript and survives every future compaction.
 
-And the tool's own description doubles down:
+The tool's description says the same:
 
-> Anything you write here SURVIVES compaction by construction — the
-> file is never summarized. Use it to stash facts, plans, or notes
-> that you need to keep retrievable even after the conversation
-> history is condensed.
+> Anything you write here SURVIVES compaction by construction — the file is never summarized. Use it to stash facts, plans, or notes that you need to keep retrievable even after the conversation history is condensed.
 
-The intended workflow is:
+The intended workflow:
 
-1. **During a task**, agent appends notes: `session_memory(action="append", content="<finding / decision / file path>")`
-2. **Before calling `summarize_context`**, agent appends a summary of what just got accomplished and what's still pending.
-3. **After a compaction lands** (next iteration the agent sees the `[Previous conversation summary]` injected message), the agent *should* read `session_memory` to recover anything the summary may have paraphrased away.
-4. **For load-bearing literal strings** (credentials, exact file paths, error messages, API tokens), the agent can either:
-- Write them to `session_memory` so they survive verbatim, OR
-- Pass them as `preserve_facts` to `summarize_context` (the compactor auto-appends them to the summary if missing).
+1. During a task, the agent appends notes: `session_memory(action="append", content="<finding / decision / file path>")`.
+2. Before it calls `summarize_context`, it appends what it just did and what is still pending.
+3. After a compaction (it sees the `[Previous conversation summary]` message), it should read `session_memory` to get back what the summary may have paraphrased away.
+4. For literal strings that matter (exact file paths, error messages, identifiers), it can write them to `session_memory`, or pass them as `preserve_facts` to `summarize_context`, which appends any the summary lost.
 
-Both options are honest about the safety story; `session_memory` is the lower-friction choice for ongoing work.
+### 10.3 What the code does
 
-### 10.3 What actually happens in code
+**Registration.** `bridge/tools/registry.py` registers one `SessionMemoryTool(session_id=_mem_session, on_mutation=...)`. `on_mutation` fires after a successful `write`, `append` or `clear`. The bridge uses it as the signal for a mid-session working-memory extraction.
 
-**Registration.** `bridge/tools/registry.py:152-155` — when `subagent_parent_session_id` is non-empty (which it always is for real bridge sessions), one `SessionMemoryTool(session_id=_mem_session)` gets registered. `_mem_session = subagent_parent_session_id or ""` — the caller passes the current session id here for both root sessions and the registry-build-time call for subagents.
-
-**Subagent isolation.** `bridge/tools/sub_agent_tool.py:1319-1324` — the child registry inherits the parent's tool instances by default, but `_run_child` overwrites two specifically:
+**Sub-agents.** The child registry starts with the parent's tool instances. `_run_child` in `bridge/tools/sub_agent_tool.py` replaces two of them:
 
 ```python
-if "summarize_context" in child_registry._tools:
-    child_registry._tools["summarize_context"] = sub_summarize_tool
-if "session_memory" in child_registry._tools:
-    child_registry._tools["session_memory"] = SessionMemoryTool(
-        session_id=record.id,
-    )
+if fork_context is None:
+    if "summarize_context" in child_registry._tools:
+        child_registry._tools["summarize_context"] = sub_summarize_tool
+    if "session_memory" in child_registry._tools:
+        child_registry._tools["session_memory"] = SessionMemoryTool(
+            session_id=record.id,
+        )
 ```
 
-Without this, a subagent calling `session_memory` would write to the PARENT's `memory.md` file. With it, every subagent has its own per-subagent memory file.
+Without this, a sub-agent would write to the parent's `memory.md`. With it, each sub-agent has its own file. A fork keeps the stubs it was given, which refuse both calls.
 
-**Concurrency.** `execute()` calls `run_in_executor(None, ...)` — so two parallel tool calls (a possible state during the runner's `_handle_tool_calls_parallel`) race in the thread pool. The `append` action is read-then-write which is the most racy. The `_MAX_BYTES` truncation is also done at write time, so a race could land with one side's content silently overwritten. In practice the agent rarely fires parallel `session_memory` calls in the same turn, but the race exists.
+**Concurrency.** `execute()` runs each call with `run_in_executor(None, ...)`, so two parallel calls race in the thread pool. `append` reads, then writes, so it is the most exposed. The cap is applied at write time too, so in a race one side's content can be lost. Agents rarely make parallel `session_memory` calls, but the race exists.
 
-**Persistence.** The file is written eagerly on every successful write/append — no debouncing, no batching. Reading is also direct filesystem I/O. Survives bridge restart, app restart, and every compaction (because it lives outside the transcript).
+**Persistence.** Each successful write or append goes to disk at once. Reads go to disk too. The file survives a bridge restart, an app restart and every compaction.
 
-**Restore.** On session resume, the rebuilt `SessionMemoryTool` points at the same `~/.freyja/projects/<sid>/memory.md` path (since session id is stable). The agent has to remember to read it — there's no auto-injection on restore.
+**Restore.** On resume, the rebuilt tool points at the same file, since the session id does not change. Nothing injects it: the agent has to read it.
 
-### 10.4 Telemetry / observability
+### 10.4 Telemetry
 
-Every `session_memory` invocation produces a `tool_call_metric` JSONL row via the runner's `on_tool_metric` hook in `_execute_single_tool`:
+Each `session_memory` call writes a `tool_call_metric` row through the runner's `on_tool_metric` hook:
 
 ```jsonc
 {
@@ -466,75 +370,74 @@ Every `session_memory` invocation produces a `tool_call_metric` JSONL row via th
   "tool_name": "session_memory",
   "duration_ms": <int>,
   "ok": <bool>,
-  "result_bytes": <int>,    // size of the JSON response, not memory file
+  "result_bytes": <int>,    // size of the JSON response, not of the file
   "ts": <unix epoch>
 }
 ```
 
-The dashboard's per-profile top-tools histogram counts these. But **the row does NOT carry the action** — read / write / append / clear all lump together. The histogram can't tell you "this profile reads memory 80% of the time" vs "writes 80% of the time". For a tool with mode-specific semantics that's information loss.
+The row does not carry the action, so read, write, append and clear count together.
 
-The tool also returns a structured JSON body (`{action, path, bytes, content, ...}`) in its `ToolResult` content. The renderer treats this as a normal tool_result string — so the agent sees the body in the next iteration and the user sees it in the conversation timeline.
+The tool returns a JSON body (`{action, path, bytes, content, ...}`). The agent sees it as a normal tool result, and the user sees it in the conversation.
 
-### 10.5 Surfaces it touches
+### 10.5 Surfaces
 
 | Surface | Behavior |
 |---|---|
-| Conversation timeline | Renders `session_memory` calls + results inline like any other tool. The full file content shows up in the `read` action's result. |
-| Activity panel | Same. No special chip / category. |
-| Metrics dashboard | `tool_call_metric` rows aggregated into the top-tools histogram. No action breakdown. No file-size tracking. |
-| Session export bundle (`<sid>.bundle.json`) | **memory.md content is NOT included.** The bundle has raw_transcript + live_transcript + compactions; the memory file is a separate artifact under projects/. |
-| `~/.freyja/sessions/<sid>/transcript.json` | Doesn't contain memory.md content. The file is outside the engine transcript by design. |
-| Session deletion (`delete_session` IPC) | Removes only `transcript.json`. The entire `~/.freyja/projects/<sid>/` directory — including memory.md, raw_messages.jsonl, compactions.jsonl, artifacts — is left orphaned on disk. |
+| Conversation | Shows `session_memory` calls and results like any other tool. A `read` shows the whole file. |
+| Activity panel | The same. No category of its own. |
+| Metrics dashboard | `tool_call_metric` rows in the top-tools histogram. No action breakdown and no file size. |
+| Export bundle | `memory.md` is not included. |
+| `~/.freyja/sessions/<sid>.transcript.json` | Does not contain `memory.md`. |
+| Session deletion (`delete_session`) | Removes the transcript file only. The `~/.freyja/projects/<sid>/` directory, with `memory.md`, `raw_messages.jsonl`, `compactions.jsonl` and the artifacts, stays on disk. |
 
-### 10.6 Gaps and limitations
+### 10.6 Gaps
 
-This section is the audit. Each item is a real shortcoming worth fixing in a future pass.
+**G1 — Calls do not carry the action.** The dashboard cannot split memory use by action. A fix: put the action from the arguments on the `tool_call_metric` row, or have the tool write its own row.
 
-**G1 — Tool calls don't carry the action.** `tool_call_metric` rows for `session_memory` lump read/write/append/clear together. The dashboard can't break down memory use by mode. Fix: have the runner's `on_tool_metric` hook receive the parsed `arguments` preview (it already does — `arguments_preview`) AND expose it on the row. Or have the tool emit its own `session_memory_event` telemetry row when an action runs.
+**G2 — No reminder after a compaction or a restore.** The agent must call `read` to get its notes back. The `[Previous conversation summary]` message does not mention the file, and a restored session's prompt does not either. Options: add a line to the summary message when the file is not empty; put the file's size in the pressure note; or note the file in the prompt of a restored session.
 
-**G2 — No auto-inject after compaction or restore.** The agent must explicitly call `read` to recover what it wrote. After a compaction, the `[Previous conversation summary]` inject doesn't mention session_memory. After a session restore, nothing in the fresh system prompt prompts the agent to check. We rely on the system prompt's "Before compacting:" guidance and the agent's own memory of having written. The right fix is probably one of:
+**G3 — No view in the UI.** The user sees the notes only in the agent's tool calls. A panel next to the compaction log would help.
 
-- Append a one-liner to the `[Previous conversation summary]` inject when memory.md exists and is non-empty: *"There are agent notes in session_memory (N bytes) — call session_memory(action='read') if relevant."*
-- OR include the current memory.md size in the `[FREYJA CONTEXT PRESSURE]` `<system-reminder>` so the agent has continuous awareness.
-- OR add a short header to the system prompt at session restore time noting that memory.md exists from a prior session.
+**G4 — Not in the export bundle.** The agent's notes are part of what happened in a session. A fix: add a `session_memory` field (`exists`, `bytes`, `content`) to the bundle, read from `~/.freyja/projects/<sid>/memory.md`.
 
-**G3 — No content surface in the UI.** The user can't see what's in memory.md without watching the agent's tool calls scroll by. A dedicated panel in the session detail drawer (alongside the compaction log) would be useful for debugging "why does the agent think X" questions. Similarly, the activity panel could show `session_memory` calls in their own category instead of lumping them with generic tool calls.
+**G5 — Parallel writes race.** A lock keyed on the file path would close it. The practical impact is low.
 
-**G4 — Not in the export bundle.** `<sid>.bundle.json` includes `raw_transcript[]`, `live_transcript[]`, and `compactions[]`, but not memory.md content. For a session you're archiving or sharing for review, the agent's working notes are a meaningful artifact — they should land in the bundle. Trivial fix: add a `session_memory: { exists: bool, bytes: int, content: string }` field in `loadSessionExportBundle` reading from `~/.freyja/projects/<sid>/memory.md`.
+**G6 — Deletion keeps the project directory.** `delete_session` removes only the transcript file. This keeps the data, which matches the rule to never lose data, but nothing tells the user the files are still there.
 
-**G5 — Concurrency race on parallel writes.** Two parallel tool calls can interleave on the read-modify-write of `append`. A `threading.Lock` keyed on the file path would close the race definitively. Practical impact is low (agents rarely parallelize memory writes) but worth noting.
+**G7 — The file's size is not tracked over time.** A growth trend would show an agent that writes too much.
 
-**G6 — Orphan files on session deletion.** `delete_session` unlinks only `transcript.json`. The `~/.freyja/projects/<sid>/` directory containing memory.md, raw_messages.jsonl, compactions.jsonl, and artifacts is orphaned. Over many deleted sessions this accumulates. Fix: have `delete_transcript` (or the bridge's `delete_session` handler) also `shutil.rmtree(project_output_dir(sid))` after the transcript file is removed. Should be guarded so it skips sessions that share a project_session_id (subagent / branch clones might).
+**G8 — One cap for the whole session.** Old notes from finished phases are cut first, and the agent cannot rotate the file. A `rotate` action could move it to `memory.<timestamp>.md` and start a new one.
 
-**G7 — No write/read latency or size tracked over time.** We track per-call duration via tool_call_metric but never the memory.md file's size over the session lifetime. A growth trend would tell us "this session's agent is being verbose in its notes" — useful for budgeting.
+**G9 — No cross-session import.** A user who branches a session for a related task has to copy the file by hand. This is a feature gap, not a correctness gap.
 
-**G8 — 64KB cap is shared across the session, not per-task.** A long session naturally accumulates notes; eventually old notes (from completed phases) get truncated from the head. The agent has no way to "checkpoint" or "rotate" memory when a phase finishes. Possible fix: a `rotate` action that moves the current file to `memory.<timestamp>.md` and starts fresh, with the agent able to `list_archives` and `read_archive`.
+### 10.7 Related tools
 
-**G9 — Cross-session is impossible by design, but that sometimes hurts.** The user might want to continue a prior session's notes in a new session (e.g. branching for a related follow-up task). Today they'd have to manually copy the file. A `session_memory(action="import", from_session_id=...)` would help, but it's a UX feature gap, not a correctness gap.
-
-### 10.7 Relationship to other tools
-
-| Tool | What it's for | When to use over session_memory |
+| Tool | What it is for | When to use it instead of session_memory |
 |---|---|---|
-| `memory` (action-based) | Persistent cross-session user/project preferences | Save anything that should outlive THIS session |
-| `record_user_preference` | Append-only shorthand for the above | Save a clearly-stated user preference |
-| `task_board` / `kanban` | Multi-agent task ledger | Track work items, assign to subagents |
-| `write_file` to project_output_dir | Long-form artifacts | When the content is a deliverable (report, code, doc) the user wants on disk |
-| `summarize_context(preserve_facts=...)` | Force-include literal strings in compaction summary | When you trust the summarizer to keep your facts but want belt-and-suspenders |
-| `pin_entries` on summarize_context | Keep specific messages verbatim across compactions | When a tool_result is the source of truth and you don't want to risk paraphrase |
+| `memory` | Cross-session user and project preferences | For anything that must outlive this session. |
+| `record_user_preference` | Short form of the above | For a preference the user stated clearly. |
+| `task_board` / `kanban` | Multi-agent task ledger | To track work items and assign them to sub-agents. |
+| `write_file` to the project output directory | Long artifacts | When the content is a deliverable the user wants on disk. |
+| `summarize_context(preserve_facts=...)` | Literal strings the summary must keep | When the summary should carry a fact verbatim. |
+| `pin_entries` on `summarize_context` | Messages kept word for word across compactions | When a tool result is the source of truth. |
 
 ### 10.8 In one line
 
-`session_memory` is the agent's in-session scratchpad. It's a markdown file on disk, outside the transcript, capped at 64KB, with read/write/append/clear actions. It survives every compaction by construction, gets rebuilt per-subagent so subagents don't clobber parent state, but is not visible in the UI or export bundle, has no auto-injection on compaction or restore, and orphans its file on session deletion.
+`session_memory` is the agent's notes file for one session: markdown on disk, outside the transcript, capped at 64 KB, with read, write, append and clear. It survives every compaction, each sub-agent has its own, and it is not in the UI or the export bundle.
 
 ## 11 — Implementation history
 
-See `COMPACTION-DECISION-DRAFT.md` Implementation log section for the full timeline. The major commits that shaped the current flow:
+`COMPACTION-DECISION-DRAFT.md` has the early log. The changes that shaped the current flow:
 
-- Phase 1 (2026-04-30): telemetry instrumentation, Channel 1, cheap pruning at 25%.
-- Metrics dashboard v2 (2026-05-07): squeeze drawer, sparklines, 6 stat tiles.
-- Cooperative Phase 2 (2026-05-12): `summarize_context` tool, three channels, iterative summary path.
-- Profiles view + raw transcript log + 3-view export (2026-05-12).
-- Cache normalization + cooperation tile (2026-05-12).
-- Channel 2 wire-level fix (2026-05-14): moved to last-user-message + `<system-reminder>` framing for cache friendliness.
-- Compaction flow audit + 7-gap fix (2026-05-14): unified emit surface, summarizer tagging, snapshot universality, immediate persistence, canonical token measure, summary_tokens. This doc.
+- Phase 1 (2026-04-30): telemetry, Channel 1, cheap pruning at 25%.
+- Metrics dashboard v2 (2026-05-07).
+- Cooperative phase 2 (2026-05-12): `summarize_context`, the three channels, the iterative summary.
+- Raw transcript log and the three-view export (2026-05-12).
+- Channel 2 moved to the last user message as a `<system-reminder>` (2026-05-14).
+- Compaction flow audit (2026-05-14): one set of events for every trigger, summarizer tagging, snapshots on every runtime path, immediate save, one token measure.
+- Phase 2.5 (May 2026): the runtime threshold dropped from 0.80 to 0.70, and the strong band from 0.60 to 0.55.
+- 2026-10-06 (9e0472b): restore compaction runs off the event loop.
+- 2026-10-13 (20c9371, 0820478): the summary continues the session's cached prompt; old tool results are halved once, and only while the cache is cold; Anthropic sessions keep their cache warm between turns.
+- 2026-10-27 (fdc1f00, 04d5bed): pre-request, overflow and agent compactions run off the event loop (`run_off_loop`); the summary deadline grows with the transcript.
+- 2026-11-06 (ca37eee to 8c4e96d): a turn keeps the last call's measure; summary costs count from every path; the advisories stop saying tool calls may be rejected.
+- 2026-11-06 (this round): a halved result is saved whole under `~/.freyja/truncated` and its marker names the file; halving rows carry the size before and after, and the 70% check after halving uses the smaller size; a manual compaction stops the keep-alive; restore compactions write telemetry and `compactions.jsonl`; a sub-agent's call reports move to the event loop; the accumulator takes a call's usage before the call is reported; the turn after a manual compaction keeps the size it left; the sync runner takes `on_llm_call`.

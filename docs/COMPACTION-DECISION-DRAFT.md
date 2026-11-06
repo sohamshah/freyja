@@ -1,5 +1,7 @@
 # Compaction Decision — Internal Draft
 
+> **Note, 2026-11-06.** This is a historical draft, kept as written. Its Channel 3 advisory text ("Tool calls beyond ~5 more may be rejected", in the Approach A section) is out of date. Nothing counts or rejects tool calls. Since 5f823b2 the advisory (`mark_channel3_crossing` in `engine/runner.py`) and the 70% tag (`_build_pressure_tag` in `bridge/freyja_bridge.py`) say that past 70% the runtime compacts the history before its next request. The thresholds here (0.80 halve, 0.90 summary) are old too. `docs/COMPACTION-FLOW.md` describes what the code does now.
+
 > **Status: DRAFT. Do NOT commit. Internal decision doc.**
 > Comparing Freyja's current context-compaction stack against Claude Code
 > and Hermes-Agent, deciding what (if anything) to port.
