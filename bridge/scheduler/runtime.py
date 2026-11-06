@@ -1011,6 +1011,22 @@ BACKGROUND_WORK_WAIT_CAP_S = 30 * 60
 # burning CPU on a stat call.
 _CANCEL_POLL_INTERVAL = 1.0
 
+# Runs of this process waiting on their turn, by run id. Resolving one's
+# future stops the run at once rather than at its next look at the flag.
+_stop_now: dict[str, asyncio.Future] = {}
+
+
+def stop_run_now(run_id: str) -> bool:
+    """Stop ``run_id`` at once when it runs in this process and waits on
+    its turn: it ends as cancelled, as if it saw its cancel flag. Returns
+    True if it does. Cancelling the run's task would end the run where it
+    stands, its record left "running" and the job's not updated."""
+    stop = _stop_now.get(run_id)
+    if stop is None or stop.done():
+        return False
+    stop.set_result(None)
+    return True
+
 
 async def _await_pending_with_cancel_poll(
     pending: asyncio.Future,
@@ -1040,59 +1056,63 @@ async def _await_pending_with_cancel_poll(
     from bridge.scheduler.persistence import read_run_cancel_requested
 
     started = time.time()
-    while True:
-        # If the turn finished while we slept, exit.
-        if pending.done():
-            return "completed"
-        # Wall-clock timeout check.
-        if timeout_seconds is not None and timeout_seconds > 0:
-            elapsed = time.time() - started
-            if elapsed >= timeout_seconds:
+    stop_now = _stop_now[run_id] = asyncio.get_running_loop().create_future()
+    try:
+        while True:
+            # If the turn finished while we slept, exit.
+            if pending.done():
+                return "completed"
+            # Wall-clock timeout check.
+            if timeout_seconds is not None and timeout_seconds > 0:
+                elapsed = time.time() - started
+                if elapsed >= timeout_seconds:
+                    _run_abort(on_abort)
+                    try:
+                        pending.cancel()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    # Give the cancellation a brief grace period before
+                    # returning, so the runner has a chance to clean up
+                    # its LLM stream before we mark the run timed_out.
+                    try:
+                        await asyncio.wait_for(asyncio.shield(pending), timeout=2.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                        pass
+                    return "timed_out"
+            # Cross-process cancel-flag check, or stop_run_now in this one.
+            if stop_now.done() or read_run_cancel_requested(job_id, run_id):
                 _run_abort(on_abort)
                 try:
                     pending.cancel()
                 except Exception:  # noqa: BLE001
                     pass
-                # Give the cancellation a brief grace period before
-                # returning, so the runner has a chance to clean up
-                # its LLM stream before we mark the run timed_out.
                 try:
                     await asyncio.wait_for(asyncio.shield(pending), timeout=2.0)
                 except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
                     pass
-                return "timed_out"
-        # Cross-process cancel-flag check.
-        if read_run_cancel_requested(job_id, run_id):
-            _run_abort(on_abort)
+                return "cancelled"
+            # Sleep until next poll OR the task completes OR stop_run_now
+            # — whichever comes first. ``asyncio.wait`` lets us race them.
+            poll_window = _CANCEL_POLL_INTERVAL
+            if timeout_seconds is not None and timeout_seconds > 0:
+                remaining = timeout_seconds - (time.time() - started)
+                poll_window = max(0.05, min(poll_window, remaining))
             try:
-                pending.cancel()
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                await asyncio.wait_for(asyncio.shield(pending), timeout=2.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-                pass
-            return "cancelled"
-        # Sleep until next poll OR the task completes — whichever
-        # comes first. ``asyncio.wait`` lets us race the two.
-        poll_window = _CANCEL_POLL_INTERVAL
-        if timeout_seconds is not None and timeout_seconds > 0:
-            remaining = timeout_seconds - (time.time() - started)
-            poll_window = max(0.05, min(poll_window, remaining))
-        try:
-            done, _pending = await asyncio.wait(
-                {pending},
-                timeout=poll_window,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if done:
-                return "completed"
-        except asyncio.CancelledError:
-            # OUR task got cancelled (e.g. service.stop()). Pass it
-            # on to the turn so the LLM stream stops cleanly.
-            _run_abort(on_abort)
-            try:
-                pending.cancel()
-            except Exception:  # noqa: BLE001
-                pass
-            raise
+                done, _pending = await asyncio.wait(
+                    {pending, stop_now},
+                    timeout=poll_window,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if pending in done:
+                    return "completed"
+            except asyncio.CancelledError:
+                # OUR task got cancelled (e.g. service.stop()). Pass it
+                # on to the turn so the LLM stream stops cleanly.
+                _run_abort(on_abort)
+                try:
+                    pending.cancel()
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
+    finally:
+        _stop_now.pop(run_id, None)

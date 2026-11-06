@@ -170,3 +170,32 @@ def test_a_run_record_from_a_newer_scheduler_still_reads():
     run = RunRecord.from_dict({**_running_run().to_dict(), "a_later_field": 1})
 
     assert run.run_id == "run_live"
+
+
+# ─── cancel_run stops a run of its own process at once ────────────────
+
+
+async def test_cancel_run_stops_a_run_of_this_process_at_once(monkeypatch):
+    import bridge.scheduler.runtime as runtime
+    from bridge.scheduler.persistence import load_run
+    from bridge.scheduler.service import SchedulerService
+
+    sess, delivered = _session_with_a_long_turn(monkeypatch)
+    # Left to the cancel flag, the run would stop at its next look at it.
+    monkeypatch.setattr(runtime, "_CANCEL_POLL_INTERVAL", 30.0)
+    service = SchedulerService(SimpleNamespace(permission_tier="low", sessions={"s1": sess}))
+    monkeypatch.setattr(service, "emit_event", lambda **_kw: None)
+    job = _report_job()
+    job.next_fire_at = time.time() - 1
+    save_job(job)
+    await service._try_claim_and_fire(job.id)
+    await asyncio.wait_for(sess.started.wait(), 5)
+    run_id = load_runs_for_job(job.id, limit=1)[0].run_id
+
+    assert await service.cancel_run(run_id)
+    await asyncio.wait_for(asyncio.gather(*service._in_flight_runs.values()), 5)
+
+    run = load_run(job.id, run_id)
+    assert (run.status, run.cancel_requested) == ("cancelled", True)
+    assert run.finished_at is not None
+    assert delivered == []

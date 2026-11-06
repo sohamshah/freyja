@@ -199,8 +199,8 @@ class SchedulerService:
       · ``cancel_run`` always works cross-process: it writes
         ``cancel_requested=true`` into the run JSON. The owning
         process polls during its agent turn and cancels the local
-        task. Same-process callers also get an immediate
-        ``Task.cancel()`` for speed.
+        task. A run of the same process also stops at once
+        (``runtime.stop_run_now``), without waiting for its next poll.
       · ``run_job_now`` flocks the job's run lock; if the job is
         already running, it raises ``RuntimeError`` instead of racing.
     """
@@ -212,10 +212,9 @@ class SchedulerService:
         max_concurrent_runs: int = _DEFAULT_MAX_CONCURRENT_RUNS,
     ) -> None:
         self.state = state
-        # In-flight runs owned by THIS process — used for same-process
-        # cancel and graceful shutdown. Peer-process runs are not
-        # visible here; they're cancelled via the cancel_requested
-        # flag on the run JSON.
+        # In-flight runs owned by THIS process — used for graceful
+        # shutdown. Peer-process runs are not visible here; they're
+        # cancelled via the cancel_requested flag on the run JSON.
         self._in_flight_runs: dict[str, asyncio.Task] = {}
         self._stopped = False
         self._loop_task: asyncio.Task | None = None
@@ -1021,18 +1020,16 @@ class SchedulerService:
 
     async def cancel_run(self, run_id: str) -> bool:
         """Cancel a run, possibly in another process. Mechanism:
-        1. If we have the run task in-process, cancel it directly
-           (fast path).
+        1. If the run waits on its turn in this process, stop it at
+           once (fast path).
         2. Always also write ``cancel_requested=true`` into the run
            JSON. The firing process (whichever one) polls this flag
            during its agent turn and cancels its local task.
         """
-        # Same-process fast path.
-        same_process_cancelled = False
-        for name, task in list(self._in_flight_runs.items()):
-            if run_id in name and not task.done():
-                task.cancel()
-                same_process_cancelled = True
+        # Same-process fast path. Fire tasks are named for their job, not
+        # the run, so looking the run id up in task names never matched.
+        from bridge.scheduler.runtime import stop_run_now
+        same_process_cancelled = stop_run_now(run_id)
         # Cross-process flag — we need the job_id to find the run
         # file. Scan recent runs across all jobs and find the match.
         try:
