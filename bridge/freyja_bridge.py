@@ -4725,7 +4725,12 @@ class _BridgeSession:
 
             journal = KanbanJournal(journal_path(self.id))
             existing_events = journal.read_all()
-            self.kanban_board = SessionKanbanBoard(journal=journal)
+            self.kanban_board = SessionKanbanBoard(
+                journal=journal,
+                on_child_changed=lambda child: self._emit_kanban_card(
+                    child, source="kanban_board"
+                ),
+            )
             if existing_events:
                 self.kanban_board.replay_events(existing_events)
                 # Repopulate the mission-root cache the bridge holds outside

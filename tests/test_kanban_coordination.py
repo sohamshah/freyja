@@ -142,6 +142,38 @@ async def test_cancelled_parent_emits_orphan_and_unblock_promotes_child() -> Non
 
 
 @pytest.mark.asyncio
+async def test_board_reports_each_child_a_write_changes_on_its_own() -> None:
+    """A write to one card can change its children: done promotes them out
+    of triage, a failure marks them orphaned. Whoever wrote the card sends
+    only that card, so the board reports each child it changed."""
+    changed: list[tuple[str, str, str]] = []
+    board = SessionKanbanBoard(
+        on_child_changed=lambda child: changed.append(
+            (child.id, child.status, child.events[-1].kind)
+        )
+    )
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+
+    async def create(title: str, parents: list[str] | None = None) -> str:
+        result = await tool.execute(
+            title, {"action": "create", "title": title, "parents": parents or []}
+        )
+        return json.loads(result.content)["task"]["id"]
+
+    passed = await create("passed")
+    dropped = await create("dropped")
+    promoted = await create("promoted", [passed])
+    orphaned = await create("orphaned", [dropped])
+
+    await _complete_through_review(tool, board, passed)
+    await tool.execute(
+        "cancel", {"action": "update", "task_id": dropped, "status": "cancelled"}
+    )
+
+    assert changed == [(promoted, "ready", "promoted"), (orphaned, "triage", "orphaned")]
+
+
+@pytest.mark.asyncio
 async def test_kanban_list_groups_by_status_then_sorts_by_priority() -> None:
     board = SessionKanbanBoard()
     tool = KanbanTool(board, actor_id="parent", actor_label="parent")

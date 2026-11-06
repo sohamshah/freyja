@@ -425,7 +425,11 @@ class KanbanTask:
 class SessionKanbanBoard:
     """Small in-memory board scoped to one Freyja session."""
 
-    def __init__(self, journal: Any | None = None) -> None:
+    def __init__(
+        self,
+        journal: Any | None = None,
+        on_child_changed: Callable[[KanbanTask], None] | None = None,
+    ) -> None:
         self._lock = asyncio.Lock()
         self._tasks: dict[str, KanbanTask] = {}
         self._counter = 0
@@ -444,6 +448,11 @@ class SessionKanbanBoard:
         # While replaying from a journal we don't want to re-emit the
         # exact same events back to the journal. Toggled by `replay_from`.
         self._replaying = False
+        # Called with each child an `update` changes on its own: promoted
+        # out of triage when its last parent is done, or marked orphaned
+        # when a parent fails. The caller sends only the card it wrote, so
+        # without this the app never sees the children move.
+        self._on_child_changed = on_child_changed
 
     def _journal_append(self, event: dict[str, Any]) -> None:
         if self._journal is None or self._replaying:
@@ -453,6 +462,16 @@ class SessionKanbanBoard:
         except Exception:  # noqa: BLE001
             # The journal is best-effort — never let a disk hiccup
             # corrupt the in-memory board.
+            pass
+
+    def _child_changed(self, child: KanbanTask) -> None:
+        if self._on_child_changed is None:
+            return
+        try:
+            self._on_child_changed(child)
+        except Exception:  # noqa: BLE001
+            # Best-effort like the journal: a failed send must not stop
+            # the write half-way.
             pass
 
     async def create(
@@ -947,6 +966,7 @@ class SessionKanbanBoard:
                 child.append_event(
                     KanbanEvent("promoted", actor, "All dependencies complete")
                 )
+                self._child_changed(child)
 
     def _mark_children_orphaned(self, parent_id: str, actor: str) -> None:
         """Surface an `orphaned` event on children of a terminal-failure
@@ -967,6 +987,7 @@ class SessionKanbanBoard:
                 )
             )
             child.updated_at = time.time()
+            self._child_changed(child)
 
     async def unblock(self, task_id: str, *, actor: str) -> tuple[KanbanTask | None, str]:
         """Operator-driven override that flips an orphaned `triage` child

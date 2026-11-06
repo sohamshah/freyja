@@ -521,6 +521,11 @@ _BOARD_WRITERS: dict[str, int] = {
     "operator_unblock": 1,
     "operator_unblock_orphan": 1,
     "operator_reassign": 1,
+    # A write that also moves the card's children: the judge's pass
+    # promotes them out of triage, a cancel marks them orphaned. Each
+    # drives a write counted above.
+    "verdict_done_promotes_child": 0,
+    "operator_cancel_orphans_child": 0,
 }
 
 
@@ -585,6 +590,10 @@ async def _set_up_writer(name: str, session: Any, board: SessionKanbanBoard, too
         sub_tool.spawn_programmatically = _spawn
         session._synthesize_judge_verdict = _synthesis_fails
         return lambda: session._run_kanban_judge_for_card(card, sub_tool=sub_tool)
+    if name == "verdict_done_promotes_child":
+        card = await _review_card(board, tool, worker=True)
+        await tool.execute("c4", {"action": "create", "title": "next", "parents": [card.id]})
+        return lambda: session._handle_kanban_verdict(card, GoalVerdict(done=True, reason="r"))
     if name.startswith("verdict_"):
         card = await _review_card(board, tool, worker=name != "verdict_requeued")
         if name == "verdict_blocked":
@@ -595,9 +604,11 @@ async def _set_up_writer(name: str, session: Any, board: SessionKanbanBoard, too
         create = await tool.execute("c1", {"action": "create", "title": "later"})
         child_id = json.loads(create.content)["task"]["id"]
         return _command(type="kanban_operator_create", title="first", children=[child_id])
-    if name == "operator_cancel":
+    if name.startswith("operator_cancel"):
         create = await tool.execute("c1", {"action": "create", "title": "stop me"})
         card_id = json.loads(create.content)["task"]["id"]
+        if name == "operator_cancel_orphans_child":
+            await tool.execute("c2", {"action": "create", "title": "next", "parents": [card_id]})
         await board.update(card_id, actor="worker", status="running", worker_session_id="sub_w")
         session.subagent_registry.kill = lambda _session_id: None
         return _command(type="kanban_operator_cancel", cardId=card_id)
@@ -635,7 +646,11 @@ async def test_every_bridge_board_write_sends_the_cards_it_changed(monkeypatch, 
 
     sent: list[dict[str, Any]] = []
     monkeypatch.setattr(freyja_bridge, "emit", sent.append)
-    board = SessionKanbanBoard()
+    # The board sends the children a write moves on its own, as the
+    # bridge wires it when it builds the board.
+    board = SessionKanbanBoard(
+        on_child_changed=lambda child: session._emit_kanban_card(child, source="kanban_board")
+    )
     session = _make_session(board=board, sub_tool=_StubSubAgentTool())
     # The parent's kanban tool sends through the bridge's emit, as
     # build_desktop_registry wires it.
