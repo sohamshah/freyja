@@ -95,6 +95,56 @@ async def test_a_cancelled_run_is_not_delivered(monkeypatch):
     assert time.time() - run.started_at < 10
 
 
+async def test_a_run_whose_queued_prompt_the_emergency_stop_dropped_is_cancelled(monkeypatch, tmp_path):
+    """A fire into a session that is busy waits in its queue. The emergency
+    stop drops that queue: the run never ran, and the last reply in the
+    transcript is the operator's stopped turn, not this run's output."""
+    import bridge.freyja_bridge as fb
+    import bridge.gateway.pid as gp
+    import bridge.scheduler.runtime as runtime
+    from bridge.scheduler.runtime import fire_job
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "_SESSION_EVENT_DIR", tmp_path / "events")
+    monkeypatch.setattr(gp, "holds_desktop_lock", lambda: True)  # this is the app's bridge
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("s1")
+    await sess.initialize()
+    ran: list[str] = []
+
+    async def run_turn(content, _attachments=None, **_kw):
+        ran.append(content)
+        transcript = sess.session.transcript
+        transcript.append_message(Message(role="user", content=content))
+        transcript.append_message(Message(role="assistant", content=f"Half an answer to {content}"))
+        if content == "the operator's question":
+            await asyncio.sleep(60)
+
+    sess.run_turn = run_turn
+    delivered: list[str] = []
+
+    async def deliver_all(job, run, output, ctx):
+        delivered.append(output.text)
+        return []
+
+    monkeypatch.setattr(runtime, "deliver_all", deliver_all)
+    fb._schedule_or_queue_turn(sess, "the operator's question")
+    job = _report_job()
+    fire = asyncio.create_task(fire_job(_Service({"s1": sess}), job))
+    for _ in range(200):
+        if sess.queued_messages:
+            break
+        await asyncio.sleep(0)
+    await fb._handle_command(state, {"type": "computer.emergency_stop", "reason": "user"})
+    run = await asyncio.wait_for(fire, 10)
+
+    assert ran == ["the operator's question"]
+    assert delivered == []
+    assert run.status == "cancelled"
+    assert "emergency stop" in run.error
+    assert load_runs_for_job(job.id, limit=1)[0].status == "cancelled"
+
+
 async def test_a_run_asked_to_stop_while_its_session_loads_stops(monkeypatch):
     import bridge.scheduler.runtime as runtime
     from bridge.scheduler.runtime import fire_job

@@ -314,11 +314,17 @@ async def fire_job(
                 run.status = "cancelled"
                 run.error = "cancel_requested by peer process or user"
 
-        # Read the most recent assistant message back out of the
-        # transcript. This is the cleanest capture point: by the time
-        # pending_task is done, the assistant's response has been
-        # written to the session.
-        output_text, iteration_count = _extract_last_assistant_text(sess)
+        if run_cost.dropped:
+            # Never ran: the last reply in the transcript is the stopped
+            # turn this fire waited behind.
+            run.status = "cancelled"
+            run.error = "not run: the emergency stop dropped its prompt from the session's queue"
+        else:
+            # Read the most recent assistant message back out of the
+            # transcript. This is the cleanest capture point: by the time
+            # pending_task is done, the assistant's response has been
+            # written to the session.
+            output_text, iteration_count = _extract_last_assistant_text(sess)
         still_running = getattr(sess, "_running_background_work", None)
         leftover = [
             w for w in (still_running() if callable(still_running) else [])
@@ -999,7 +1005,10 @@ class _RunCost:
     stops it. Checked only when the run ended, a run over its budget had
     spent the money by then. Its tokens were read from the transcript
     after its last user entry, which left out every turn before the last
-    (a sub-agent's report wakes the session with a user message)."""
+    (a sub-agent's report wakes the session with a user message).
+
+    ``dropped``: the emergency stop dropped the fire's prompt from the
+    session's queue before it ran."""
 
     def __init__(self, run_id: str, budget: BudgetSpec | None) -> None:
         self.cost = 0.0
@@ -1013,11 +1022,14 @@ class _RunCost:
         self._loop = asyncio.get_running_loop()
         self._turns: set[str] = set()
         self._next_turn_is_ours = False
+        self._prompt_left_queue = False
+        self.dropped = False
 
     def our_turn_starts(self) -> None:
         """The on_turn_start hook of the fire's prompt: the session's next
         turn is the fire's."""
         self._next_turn_is_ours = True
+        self._prompt_left_queue = True
 
     def on_event(self, event: dict[str, Any]) -> None:
         kind = event.get("type")
@@ -1025,6 +1037,9 @@ class _RunCost:
             if self._next_turn_is_ours or (self._turns and event.get("automatic")):
                 self._turns.add(event.get("turnId"))
             self._next_turn_is_ours = False
+        elif kind == "system_event" and event.get("subtype") == "queued_turns_dropped":
+            # The whole queue goes, so a prompt still in it went too.
+            self.dropped = self.dropped or not self._prompt_left_queue
         elif (
             (kind == "llm_call_metric" and event.get("turnId") in self._turns)
             or (kind == "subagent_llm_call"

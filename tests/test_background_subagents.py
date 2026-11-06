@@ -566,6 +566,39 @@ async def test_a_stop_of_a_queued_turn_still_runs_the_turns_queued_behind_it(mon
     assert ran == [("first", 0), ("second", 0), ("third", 0), ("fourth", 0), ("fifth", 0)]
 
 
+async def test_the_emergency_stop_drops_the_turns_queued_behind_the_running_one(monkeypatch, tmp_path):
+    """The emergency stop stops everything. It cancelled the running turn
+    only, and the drain then ran every turn queued behind it. The chat says
+    what was dropped; a wake prompt's items stay in the inbox."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    events: list[dict] = []
+    monkeypatch.setattr(fb, "emit", events.append)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    sess = await state.ensure_session("session-desktop")
+    ran: list[str] = []
+
+    async def run_turn(content, _attachments=None, **_kw):
+        ran.append(content)
+        if content == "first":
+            await asyncio.sleep(5)
+
+    sess.run_turn = run_turn
+    for text in ("first", "second", fb.MEMO_WAKE_PROMPT, "third"):
+        fb._schedule_or_queue_turn(sess, text)
+    for _ in range(200):
+        if ran:
+            break
+        await asyncio.sleep(0)
+    await fb._handle_command(state, {"type": "computer.emergency_stop", "reason": "user"})
+    await asyncio.wait_for(asyncio.gather(sess.pending_task, return_exceptions=True), timeout=2)
+    assert ran == ["first"]
+    assert sess.queued_messages == []
+    (note,) = [e for e in events if e.get("subtype") == "queued_turns_dropped"]
+    assert note["sessionId"] == sess.id
+    assert note["message"] == "Not run: the emergency stop dropped 2 queued messages."
+    assert note["details"] == {"count": 2, "chatVisible": True}
+
+
 class _CancellableTask:
     def __init__(self):
         self.cancelled = False

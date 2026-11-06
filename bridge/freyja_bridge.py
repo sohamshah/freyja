@@ -14398,6 +14398,36 @@ def _force_cancel_session(sess: "_BridgeSession", *, scope: str = "all") -> int:
     return fired
 
 
+def _drop_queued_turns(sess: "_BridgeSession") -> int:
+    """The emergency stop: the turns queued behind the running one do not
+    run either. None of them can go back to the composer (a harness
+    session's message is already in its chat, the rest came from Slack, a
+    scheduled job or /goal), so the chat says they did not run; a scheduled
+    run whose prompt was among them records itself as not run (_RunCost).
+    A wake prompt is left out of the count: the inbox items it would carry
+    stay unread. Returns how many were dropped."""
+    queued = getattr(sess, "queued_messages", None)
+    if not queued:
+        return 0
+    dropped = sum(1 for entry in queued if entry[0] not in SYNTHETIC_WAKE_PROMPTS)
+    queued.clear()
+    if dropped:
+        log("warn", f"emergency stop dropped {dropped} queued turn(s) on session={sess.id}")
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": sess.id,
+                "subtype": "queued_turns_dropped",
+                "message": (
+                    f"Not run: the emergency stop dropped {dropped} queued "
+                    f"message{'' if dropped == 1 else 's'}."
+                ),
+                "details": {"count": dropped, "chatVisible": True},
+            }
+        )
+    return dropped
+
+
 def _run_pre_turn_hook(hook: Any, sess: "_BridgeSession") -> None:
     """Run a turn's setup hook safely. The hook is the caller's chance
     to install per-turn state (gateway_source, stream consumer
@@ -17796,10 +17826,12 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
 
     if ctype == "computer.emergency_stop":
         # Global scope force-cancel: same mechanism as per-session
-        # cancel, applied to every session at once.
+        # cancel, applied to every session at once, and nothing queued
+        # behind the stopped turns runs.
         stopped = 0
         for sess in state.sessions.values():
             stopped += _force_cancel_session(sess)
+            _drop_queued_turns(sess)
         log("warn", f"emergency stop fired — signaled {stopped} tasks")
         emit(
             {
