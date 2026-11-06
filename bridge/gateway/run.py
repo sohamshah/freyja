@@ -1204,6 +1204,12 @@ class GatewayDaemon:
         adapter = self._adapter_for_platform(source.platform) if source is not None else None
         if adapter is None:
             return
+        # After the turn's reply: its stream consumer seals the message
+        # after the turn has ended, and a note posted first went above
+        # the reply's last part.
+        consumer = getattr(session, "_active_stream_consumer", None)
+        if consumer is not None:
+            await consumer.wait_until_handled()
         try:
             result = await adapter.send(  # type: ignore[attr-defined]
                 source.chat_id,

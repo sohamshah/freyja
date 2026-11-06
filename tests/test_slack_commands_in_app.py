@@ -525,6 +525,53 @@ async def test_a_held_change_is_posted_in_the_thread_when_the_turn_ends(gateway)
     assert "`claude-opus-5-5`" in post[3] and "`kanban`" in post[3]
 
 
+async def test_a_held_changes_note_is_posted_after_the_end_of_the_turns_reply(gateway):
+    # The turn's stream consumer seals its message (the last part of the
+    # reply rides on stopStream) after the turn has ended, and the note
+    # went out first.
+    from bridge.gateway.platforms.base import MessageSource, Platform
+    from bridge.gateway.stream_consumer import SlackStreamConsumer
+    from tests.slack_fakes import StreamingFakeAdapter
+
+    daemon, state, _events = gateway
+    calls: list[str] = []
+
+    class _Slack(StreamingFakeAdapter):
+        name = "slack"
+
+        async def send(self, chat_id, content, **kw):
+            calls.append("note" if content.startswith("_Switched") else content)
+            return await super().send(chat_id, content, **kw)
+
+        async def stop_stream(self, chat_id, ts, **kw):
+            await asyncio.sleep(0.05)  # Slack takes a moment to answer
+            calls.append("reply sealed")
+            return await super().stop_stream(chat_id, ts, **kw)
+
+    adapter = _Slack()
+    daemon.adapters = [adapter]
+    state.thread_notice = daemon._post_thread_notice
+    _thread_saved("bus")
+    thread = await state.ensure_session(SLACK)
+    turn = asyncio.get_running_loop().create_future()
+    thread.pending_task = turn
+    await daemon._on_set_model({"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5"})
+    source = MessageSource(
+        platform=Platform.SLACK, workspace_id="T1", chat_type="channel", chat_id="C1",
+        user_id="U0OPERATOR", thread_id="1.0", message_id="1.1",
+    )
+    consumer = SlackStreamConsumer(adapter, source, session_key=SLACK)
+    thread._active_stream_consumer = consumer  # as the turn's start attaches it
+    consumer.on_event({"type": "text_delta", "text": "Here is the plan."})
+    consumer.on_event({"type": "turn_complete"})
+
+    turn.set_result(None)
+    await fb._drain_after_turn(thread)
+    await asyncio.sleep(0.2)  # the consumer's work, had the drain not waited for it
+    assert calls == ["reply sealed", "note"]
+    assert "Here is the plan." in adapter.body
+
+
 # ── saved when made, and kept over a restart ─────────────────────────
 
 

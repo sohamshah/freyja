@@ -591,6 +591,17 @@ class SlackStreamConsumer:
             except Exception:  # noqa: BLE001
                 logger.exception("[slack] stream event %s failed", event.get("type"))
 
+    async def wait_until_handled(self) -> None:
+        """Return once the events emitted so far are handled: after the
+        turn ended, once its message is sealed (finalize). A post in the
+        thread after the turn waits for this, or it could land before the
+        end of the reply, which rides on stopStream."""
+        # An event emitted just now reaches the queue on the loop's next pass.
+        await asyncio.sleep(0)
+        worker = self._worker
+        if worker is not None and not worker.done():
+            await asyncio.shield(worker)
+
     async def _handle_event_async(self, event: dict[str, Any]) -> None:
         etype = event.get("type")
 
