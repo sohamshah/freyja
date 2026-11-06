@@ -4,7 +4,8 @@ Input events use one global space across displays (primary top-left at
 (0,0), others at offsets, often negative); a screenshot of display N is
 local to N. The spec's native_origin carries N's corner so api <-> native
 translation lands on the right monitor. A display id that is not connected
-is an error that names the displays that are. No screen is touched.
+is an error that names the displays that are. The screenshot after an action,
+and the frame-dump trim, are checked here too. No screen is touched.
 """
 
 from __future__ import annotations
@@ -211,6 +212,7 @@ class _Monitors(_Hands):
             del self.geometry[2]
         self.shots = []
         self.cursor = (0, 0)
+        self.windows = []
 
     def list_displays(self):
         return list(self.displays.values())
@@ -242,9 +244,11 @@ class _Monitors(_Hands):
     def focus_app(self, bundle_id):
         self.sent.append(("focus_app", bundle_id))
 
-    @staticmethod
-    def list_windows(include_helpers=False):
-        return []
+    def focus_window(self, window_id):
+        self.sent.append(("focus_window", window_id))
+
+    def list_windows(self, include_helpers=False):
+        return list(self.windows)
 
 
 def _session(monkeypatch, screens, default_display_id=None):
@@ -504,3 +508,85 @@ async def test_a_connected_display_whose_screenshot_fails_after_an_action_keeps_
         "Pressed return." + NO_SHOT + "capture failed. Likely missing Screen Recording permission "
         "— open System Settings → Privacy & Security → Screen Recording and enable it for this app."
     )
+
+
+def _window(wid, bundle, x, y, w=800, h=600):
+    """A window as list_windows reports it: global bounds in points."""
+    return SimpleNamespace(
+        id=wid, pid=100 + wid, bundle=bundle, title="", is_frontmost=False, layer=0,
+        bounds=SimpleNamespace(x=x, y=y, w=w, h=h),
+    )
+
+
+@pytest.mark.parametrize(
+    ("args", "label"),
+    [({"window_id": 5}, "window #5"), ({"bundle_id": "com.apple.notes"}, "com.apple.notes")],
+)
+@pytest.mark.parametrize("pinned", [None, 1])
+async def test_focus_window_shows_the_display_that_holds_the_window(monkeypatch, args, label, pinned):
+    # The model looked at display 1, and the window it focuses is on display 2.
+    # It wants to see that window, so the screenshot, and the coordinate space
+    # with it, move to display 2.
+    screens = _Monitors()
+    screens.windows = [_window(4, "com.apple.finder", 100, 100), _window(5, "com.apple.Notes", -2000, 200)]
+    tools, spec = _session(monkeypatch, screens, default_display_id=pinned)
+    await tools["screenshot"].execute("c1", {})
+    res = await tools["focus_window"].execute("c2", {**args, "settle_ms": 0})
+    assert not res.is_error
+    assert screens.shots == [pinned, 2]
+    assert (spec.frame_display_id, spec.api_dims, spec.native_origin) == (2, (1280, 720), (-2560, 0))
+    assert _text(res) == (
+        f"Focused {label}, which is on display 2. "
+        "The screenshot is of display 2 (1280x720); your next x,y refer to it."
+    )
+    await tools["click"].execute("c3", {"x": 640, "y": 360, "settle_ms": 0})
+    assert screens.sent[-1] == ("click", -1280, 720)
+
+
+async def test_focus_window_on_a_window_across_two_displays_shows_the_one_with_most_of_it(monkeypatch):
+    screens = _Monitors()
+    screens.windows = [_window(5, "com.apple.Notes", -300, 100)]  # 300 wide on 2, 500 on 1
+    tools, spec = _session(monkeypatch, screens)
+    await tools["screenshot"].execute("c1", {"display_id": 2})
+    res = await tools["focus_window"].execute("c2", {"window_id": 5, "settle_ms": 0})
+    assert screens.shots == [2, 1]
+    assert spec.frame_display_id == 1
+    assert _text(res).startswith("Focused window #5, which is on display 1. The screenshot is of display 1")
+
+
+async def test_focus_window_with_one_display_keeps_the_plain_summary(monkeypatch):
+    screens = _Monitors(only_primary=True)
+    screens.windows = [_window(5, "com.apple.Notes", 100, 100)]
+    tools, _ = _session(monkeypatch, screens)
+    res = await tools["focus_window"].execute("c1", {"window_id": 5, "settle_ms": 0})
+    assert _text(res) == "Focused window #5."
+    assert len(screens.shots) == 1
+
+
+@pytest.mark.parametrize(
+    "windows",
+    [
+        [],  # the window is gone from the list
+        [_window(5, "com.apple.Notes", 9000, 9000)],  # on no connected display
+    ],
+)
+async def test_focus_window_whose_display_is_unknown_shows_the_display_last_looked_at(monkeypatch, windows):
+    screens = _Monitors()
+    screens.windows = windows
+    tools, spec = _session(monkeypatch, screens)
+    await tools["screenshot"].execute("c1", {"display_id": 2})
+    res = await tools["focus_window"].execute("c2", {"window_id": 5, "settle_ms": 0})
+    assert screens.shots == [2, 2]
+    assert _text(res) == (
+        "Focused window #5. The screenshot is of display 2 (1280x720); your next x,y refer to it."
+    )
+
+
+async def test_focus_window_with_no_display_layout_shows_the_display_last_looked_at(monkeypatch):
+    screens = _Monitors()
+    screens.windows = [_window(5, "com.apple.Notes", 100, 100)]
+    tools, _ = _session(monkeypatch, screens)
+    monkeypatch.setattr(ct, "display_geometry", lambda: {})
+    await tools["screenshot"].execute("c1", {"display_id": 2})
+    await tools["focus_window"].execute("c2", {"window_id": 5, "settle_ms": 0})
+    assert screens.shots == [2, 2]

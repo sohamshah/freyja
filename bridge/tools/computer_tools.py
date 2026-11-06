@@ -476,7 +476,7 @@ async def _emit_frame(
 
 
 async def _post_action_frame(
-    spec: ComputerToolSpec, native: Any, reason: str
+    spec: ComputerToolSpec, native: Any, reason: str, *, display_id: int | None = None
 ) -> EmittedFrame | str:
     """The screenshot after an action, of the display the model last looked
     at (the one its coordinates belong to). Without a display_id the capture
@@ -486,9 +486,15 @@ async def _post_action_frame(
     moved there with it. A space that was cleared (dims None) names no
     display, and the default one is taken as before.
 
+    `display_id` shows that display instead; focus_window passes the one
+    that holds the window it focused. The coordinate space moves with the
+    screenshot, as for any display frame.
+
     When the capture fails, returns why instead (see `_capture_failed_text`),
     for `_result_with_frame` to put in the result."""
-    shown = spec.frame_display_id if spec.native_dims is not None else None
+    shown = display_id
+    if shown is None and spec.native_dims is not None:
+        shown = spec.frame_display_id
     frame = await _emit_frame(spec, native, display_id=shown, reason=reason)
     if frame is not None:
         return frame
@@ -517,6 +523,48 @@ async def _capture_failed_text(
                 coordinates=spec.native_dims is not None and display_id == spec.frame_display_id,
             )
     return _CAPTURE_FAILED_TEXT
+
+
+async def _window_display(
+    native: Any, *, window_id: int | None, bundle_id: str | None
+) -> tuple[int, int] | None:
+    """The display that holds the window focus_window focused, and how many
+    displays are connected. None when the window or its display cannot be
+    found: the window is not listed, the layout cannot be read, or the
+    window is on no connected display.
+
+    `window_id` names the window. For `bundle_id` it is the app's frontmost
+    window (windows are listed front to back, and the app was just
+    activated), skipping slivers 50 points wide or less as the voice
+    adapter does. A window across two displays belongs to the one that
+    holds most of it, the rule macOS uses for a window's screen."""
+    try:
+        if window_id:
+            windows = await asyncio.to_thread(native.list_windows, include_helpers=True)
+            window = next((w for w in windows if w.id == window_id), None)
+        else:
+            want = str(bundle_id or "").lower()
+            windows = await asyncio.to_thread(native.list_windows)
+            window = next(
+                (w for w in windows if str(w.bundle).lower() == want and w.bounds.w > 50),
+                None,
+            )
+        if window is None:
+            return None
+        connected = {int(d.id) for d in await asyncio.to_thread(native.list_displays)}
+    except Exception:  # noqa: BLE001 — no display found keeps the old screenshot
+        return None
+    b = window.bounds
+    best: int | None = None
+    best_area = 0.0
+    for did, geo in display_geometry().items():
+        if did not in connected:
+            continue
+        w = min(b.x + b.w, geo.x + geo.w) - max(b.x, geo.x)
+        h = min(b.y + b.h, geo.y + geo.h) - max(b.y, geo.y)
+        if w > 0 and h > 0 and w * h > best_area:
+            best, best_area = did, w * h
+    return (best, len(connected)) if best is not None else None
 
 
 async def _await_highlight_or_cancel(
@@ -1562,9 +1610,14 @@ action depending on the policy.
                 is_error=True,
             )
 
-        # Give the OS a beat to switch, then capture the new state.
+        # Give the OS a beat to switch, then capture the new state. The
+        # model focused the window to see it, so show the display that holds
+        # it, not the one last looked at; without one, keep the latter.
         await asyncio.sleep(settle_ms / 1000.0)
-        frame = await _post_action_frame(self._spec, native, "focus_window")
+        held = await _window_display(native, window_id=window_id, bundle_id=bundle_id)
+        frame = await _post_action_frame(
+            self._spec, native, "focus_window", display_id=held[0] if held else None
+        )
         await _fire(
             self._spec.emit_event,
             {
@@ -1575,11 +1628,10 @@ action depending on the policy.
                 "durationMs": ACTION_HIGHLIGHT_MS + settle_ms,
             },
         )
-        return _result_with_frame(
-            call_id,
-            f"Focused {bundle_id or f'window #{window_id}'}.",
-            frame,
-        )
+        summary = f"Focused {bundle_id or f'window #{window_id}'}"
+        if held is not None and held[1] > 1:
+            summary += f", which is on display {held[0]}"
+        return _result_with_frame(call_id, summary + ".", frame)
 
 
 class ClickTool:
