@@ -6660,17 +6660,12 @@ class _BridgeSession:
             return (0, 0, 0, 0, 0.0)
 
     def _mark_usage_compacted(self, context_tokens_after: int) -> None:
-        """Clear stale provider context counters after transcript compaction."""
-        if self.runner is None:
+        """Measure the context by its size after a compaction between turns,
+        until the next call reports (the next turn's first check included)."""
+        if self.runner is None or self.session is None:
             return
         try:
-            usage = self.runner.usage
-            usage.last_input = max(0, context_tokens_after)
-            usage.last_output = 0
-            usage.last_cache_read = 0
-            usage.last_cache_write = 0
-            usage.cache_read = 0
-            usage.cache_write = 0
+            self.runner.mark_context_compacted(self.session, context_tokens_after)
         except Exception:  # noqa: BLE001
             return
 

@@ -1299,6 +1299,9 @@ class AsyncAgentRunner:
             self.compaction.prompt_source = self.cached_prompt_prefix
         self.keep_cache_warm = keep_cache_warm
         self._cache_keeper: asyncio.Future | None = None
+        # The transcript a compaction between turns left, as (session,
+        # message count, signature): see mark_context_compacted.
+        self._compacted_prompt: tuple[Session, int, int] | None = None
 
     def _compute_truncation_budget(self, session: Session) -> int:
         """Compute a context-aware token budget for truncating a tool result."""
@@ -1563,11 +1566,13 @@ class AsyncAgentRunner:
         # out without the pressure note, a reply past 55% raised a crossing
         # "from band 0", and the pre-request check fell back to the tokenizer
         # estimate. A transcript rewritten since that call (an edit, a
-        # delete, a manual compaction) starts from zero.
-        if self._continues_sent_prompt(session):
+        # delete) starts from zero. After a compaction between turns the
+        # size it left stands, while the transcript starts with what it left.
+        if self._continues_sent_prompt(session) or self._continues_compacted(session):
             self.usage.start_turn()
         else:
             self.usage.reset()
+        self._compacted_prompt = None
         self._reminder_tailed = {}
         session.add_user_message(user_message)
 
@@ -2177,6 +2182,16 @@ class AsyncAgentRunner:
             len(messages) >= sent.message_count
             and message_signature(messages[:sent.message_count]) == sent.message_signature
         )
+
+    def _continues_compacted(self, session: Session) -> bool:
+        """Whether the session's messages still start with what a compaction
+        between turns left: the transcript only grew since."""
+        compacted = self._compacted_prompt
+        if compacted is None or compacted[0] is not session:
+            return False
+        _, count, signature = compacted
+        messages = session.get_messages()
+        return len(messages) >= count and message_signature(messages[:count]) == signature
 
     def _cached_prompt(self, session: Session) -> tuple[Any, list[Message], list | None] | None:
         """``(provider, messages, tools)`` while the last call's prompt is
@@ -3317,6 +3332,14 @@ class AsyncAgentRunner:
             will_compact=will_compact,
             prompt_cached=cached,
         )
+
+    def mark_context_compacted(self, session: Session, context_tokens_after: int) -> None:
+        """A compaction between turns (a manual one) rewrote the transcript:
+        measure the context by the size it left until the next call
+        reports, the next turn's first check included."""
+        self._mark_context_compacted(context_tokens_after)
+        messages = session.get_messages()
+        self._compacted_prompt = (session, len(messages), message_signature(messages))
 
     def _mark_context_compacted(self, context_tokens_after: int) -> None:
         """Drop stale last-call context counters after compaction."""

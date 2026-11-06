@@ -160,6 +160,57 @@ async def test_a_transcript_cut_since_the_last_call_is_measured_afresh():
     assert compactor.calls == 0
 
 
+async def test_the_turn_after_a_manual_compaction_starts_from_the_size_it_left(monkeypatch, tmp_path):
+    # A manual compaction runs between turns and sets the measure to the
+    # size it left. The next turn saw a rewritten transcript and zeroed it,
+    # so its first call read 0%, with no pressure note.
+    import bridge.freyja_bridge as fb
+    from bridge.freyja_bridge import _BridgeSession, _BridgeState
+    from engine.compaction import SummaryCompaction
+
+    monkeypatch.setenv("HOME", str(tmp_path))  # the session's project directory
+    monkeypatch.setattr(fb, "emit", lambda _e: None)
+    runner, provider = _runner([_end(38_000), _end(12_000)])
+    seen: list[int] = []
+    played = provider.stream_to_response
+
+    async def _measured_at_call(**kw):
+        seen.append(runner.usage.effective_context_tokens())
+        return await played(**kw)
+
+    provider.stream_to_response = _measured_at_call
+    session = Session.create(system_prompt="t")
+    await runner.run(session, "first task")
+
+    state = _BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    sess = _BridgeSession("test-manual", workspace=str(tmp_path), model_id="claude-sonnet-5-5",
+                          reasoning_level="auto", coordination_strategy="bus", state=state)
+
+    async def _initialize():
+        sess.session, sess.provider, sess.runner = session, provider, runner
+
+    sess.initialize = _initialize
+    sess._mirror_compaction_event = lambda *_a, **_k: None
+    sess._write_compaction_snapshot = lambda **_k: {}
+    sess._save_transcript = lambda: None
+    sess._ledger_ground_truth = lambda: None
+
+    def _compact(_self, transcript, _provider, **_kw):
+        transcript.append_compaction("We did the first task.", first_kept_id=transcript.entries[-1].id,
+                                     tokens_before=38_000)
+        return CompactionResult(success=True, summary="We did the first task.", tokens_before=38_000,
+                                tokens_after=100)
+
+    monkeypatch.setattr(SummaryCompaction, "compact", _compact)
+    await sess.force_compact()
+    left = session.estimate_tokens()
+
+    await runner.run(session, "second task")
+
+    assert seen == [0, left]
+    assert left > 0
+
+
 # ─── what the advisories promise ─────────────────────────────────────
 # Nothing counts or rejects tool calls. Past 70% of the usable window the
 # runtime compacts the history before its next request.
