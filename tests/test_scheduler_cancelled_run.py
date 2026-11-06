@@ -49,7 +49,7 @@ def _session_with_a_long_turn(monkeypatch):
         sess.started.set()
         await asyncio.sleep(60)
 
-    def schedule_turn(s, prompt, attachments=None):
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
         s.pending_task = asyncio.ensure_future(turn(prompt))
         return True
 

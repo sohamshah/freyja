@@ -10729,6 +10729,9 @@ class _BridgeSession:
             "sessionId": self.id,
             "turnId": self.current_turn_id,
             "at": turn_started * 1000 + 0.5,
+            # No message started it (a wake, a goal continuation): a
+            # scheduled run counts such turns after its own as its cost.
+            "automatic": synthetic_wake or is_goal_continuation,
         })
 
         if pre_formed_message is not None:

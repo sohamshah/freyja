@@ -68,7 +68,7 @@ async def test_a_run_s_tier_reaches_its_session_and_no_other(monkeypatch) -> Non
         transcript.append_message(Message(role="user", content=prompt))
         transcript.append_message(Message(role="assistant", content="Done."))
 
-    def schedule_turn(sess, prompt, attachments=None):
+    def schedule_turn(sess, prompt, attachments=None, on_turn_start=None):
         sess.pending_task = asyncio.ensure_future(turn(sess, prompt))
         return True
 

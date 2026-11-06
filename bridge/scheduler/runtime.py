@@ -180,6 +180,10 @@ async def fire_job(
     iteration_count = 0
     entries_before: set[str] | None = None
     abort_job = False
+    from bridge.freyja_bridge import register_session_listener, unregister_session_listener
+
+    run_cost = _RunCost()
+    register_session_listener(sess_id, run_cost.on_event)
     try:
         from bridge.freyja_bridge import _schedule_or_queue_turn
 
@@ -193,11 +197,10 @@ async def fire_job(
         preexisting = {
             w.id for w in (_running_work() if callable(_running_work) else [])
         }
-        # The session's spend so far: a fire into an existing session
-        # costs only what it adds on top.
-        cost_before = float(getattr(sess, "cumulative_cost", 0.0) or 0.0)
         entries_before = _entry_ids(sess)
-        _schedule_or_queue_turn(sess, prompt, attachments=None)
+        _schedule_or_queue_turn(
+            sess, prompt, attachments=None, on_turn_start=run_cost.our_turn_starts,
+        )
         pending = getattr(sess, "pending_task", None)
         # Detect the self-await trap. This fires when:
         #   (a) `run_now` is invoked from within a tool call — the
@@ -296,18 +299,18 @@ async def fire_job(
                 "This result may be incomplete.)"
             ).strip()
 
-        # Capture per-run usage telemetry (tokens + cost) from the
-        # session's recently-modified messages. This is what populates
-        # the dashboard Metrics view and the per-run cost in the
-        # filesystem sink's JSON output.
+        # Capture per-run usage telemetry (tokens + cost): tokens from the
+        # session's recently-modified messages, cost from the run's own
+        # calls. This is what populates the dashboard Metrics view and the
+        # per-run cost in the filesystem sink's JSON output.
         try:
-            in_tok, out_tok, cache_tok, cost = _extract_run_usage(sess, cost_before)
+            in_tok, out_tok, cache_tok = _extract_run_usage(sess)
             run.input_tokens = in_tok
             run.output_tokens = out_tok
             run.cache_read_tokens = cache_tok
-            run.cost_usd = cost
         except Exception:  # noqa: BLE001
             pass
+        run.cost_usd = run_cost.cost
 
         # Budget enforcement (post-hoc) — if a per-run cap was set and
         # the run blew through it, mark the run budget_exceeded and, if
@@ -333,6 +336,7 @@ async def fire_job(
         run.status = "failed"
         run.error = f"agent turn failed: {exc}"
     finally:
+        unregister_session_listener(sess_id, run_cost.on_event)
         # Clean up loop-control tools so they don't dangle. unregister()
         # drops the catalog entry too: the request's tool list is built
         # from the catalog, so popping only the tool table left them in
@@ -923,21 +927,48 @@ def _extract_last_assistant_text(sess: Any) -> tuple[str, int]:
     return final_text, assistant_count
 
 
-def _extract_run_usage(sess: Any, cost_before: float) -> tuple[int, int, int, float]:
+class _RunCost:
+    """What a run's own model calls cost, added up from its session's
+    llm_call_metric events: the calls of the turn that runs the fire's
+    prompt, and of the turns after it that no message started (the wakes
+    its sub-agents' reports start, a goal loop's continuations). A run's
+    cost was how much the session's total grew while it ran, so a fire
+    into the operator's session was billed the turns of the messages the
+    operator sent while it waited."""
+
+    def __init__(self) -> None:
+        self.cost = 0.0
+        self._turns: set[str] = set()
+        self._next_turn_is_ours = False
+
+    def our_turn_starts(self) -> None:
+        """The on_turn_start hook of the fire's prompt: the session's next
+        turn is the fire's."""
+        self._next_turn_is_ours = True
+
+    def on_event(self, event: dict[str, Any]) -> None:
+        kind = event.get("type")
+        if kind == "turn_start":
+            if self._next_turn_is_ours or (self._turns and event.get("automatic")):
+                self._turns.add(event.get("turnId"))
+            self._next_turn_is_ours = False
+        elif kind == "llm_call_metric" and event.get("turnId") in self._turns:
+            self.cost += float(event.get("costUsd") or 0.0)
+
+
+def _extract_run_usage(sess: Any) -> tuple[int, int, int]:
     """Walk back through the transcript adding up token counts on the
-    assistant messages after the fire's prompt. Cost is what the
-    session's cumulative_cost grew by since ``cost_before``, taken just
-    before the fire started its turn."""
+    assistant messages after the fire's prompt."""
     inner = getattr(sess, "session", None)
     if inner is None:
-        return 0, 0, 0, 0.0
+        return 0, 0, 0
     in_tok = 0
     out_tok = 0
     cache_tok = 0
     try:
         entries = list(inner.transcript.entries)
     except Exception:  # noqa: BLE001
-        return 0, 0, 0, 0.0
+        return 0, 0, 0
     for e in reversed(entries):
         msg = getattr(e, "message", None)
         if msg is None:
@@ -951,14 +982,7 @@ def _extract_run_usage(sess: Any, cost_before: float) -> tuple[int, int, int, fl
         in_tok += int(getattr(msg, "input_tokens", 0) or 0)
         out_tok += int(getattr(msg, "output_tokens", 0) or 0)
         cache_tok += int(getattr(msg, "cache_read_tokens", 0) or 0)
-    # The session's lifetime spend is not this run's: a fire into a
-    # session that had already spent more than the per-run cap was
-    # counted as over budget before it made a single call.
-    cost = 0.0
-    cumulative = getattr(sess, "cumulative_cost", None)
-    if isinstance(cumulative, (int, float)):
-        cost = max(0.0, float(cumulative) - cost_before)
-    return in_tok, out_tok, cache_tok, cost
+    return in_tok, out_tok, cache_tok
 
 
 def _entry_ids(sess: Any) -> set[str] | None:

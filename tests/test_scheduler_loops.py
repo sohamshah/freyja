@@ -95,9 +95,12 @@ def _drive_fire(
             name, args = loop_call
             await sess.tool_registry.get(name).execute("call-1", args)
         sess.cumulative_cost += cost
+        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-1"})
+        fb.emit({"type": "llm_call_metric", "sessionId": "s1", "turnId": "turn-1", "costUsd": cost})
         transcript.append_message(Message(role="assistant", content="Checked the queue."))
 
-    def schedule_turn(s, prompt, attachments=None):
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
+        on_turn_start()
         s.pending_task = asyncio.ensure_future(turn(prompt))
         return True
 

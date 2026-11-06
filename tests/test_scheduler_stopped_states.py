@@ -55,7 +55,7 @@ def service(monkeypatch):
         sess.session.transcript.append_message(Message(role="user", content=prompt))
         sess.session.transcript.append_message(Message(role="assistant", content="Done."))
 
-    def schedule_turn(s, prompt, attachments=None):
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
         s.pending_task = asyncio.ensure_future(turn(prompt))
         return True
 

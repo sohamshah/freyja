@@ -52,10 +52,12 @@ def service(monkeypatch):
 
     async def turn(prompt: str) -> None:
         sess.session.transcript.append_message(Message(role="user", content=prompt))
-        sess.cumulative_cost += 0.50
+        fb.emit({"type": "turn_start", "sessionId": "s1", "turnId": "turn-1"})
+        fb.emit({"type": "llm_call_metric", "sessionId": "s1", "turnId": "turn-1", "costUsd": 0.50})
         sess.session.transcript.append_message(Message(role="assistant", content="Done."))
 
-    def schedule_turn(s, prompt, attachments=None):
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
+        on_turn_start()
         s.pending_task = asyncio.ensure_future(turn(prompt))
         return True
 
