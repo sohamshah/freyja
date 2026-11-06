@@ -1316,7 +1316,11 @@ class Session:
         self.metadata = dict(restored_metadata) if isinstance(restored_metadata, dict) else {}
         transcript_d = data.get("transcript")
         if transcript_d:
+            # The restored transcript keeps the append callback: without it,
+            # nothing appended after a restart reached raw_messages.jsonl.
+            on_append = self.transcript.on_append
             self.transcript = TranscriptManager.from_dict(transcript_d)
+            self.transcript.on_append = on_append
 
     def strip_thinking_blocks(self) -> int:
         """Remove all thinking/redacted_thinking blocks from the transcript.

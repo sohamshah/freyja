@@ -175,7 +175,7 @@ Paths A and B reach the telemetry through the runner's `on_system_event`: `_Brid
 | Path | Written by | What it holds |
 |---|---|---|
 | `~/.freyja/sessions/<sid>.transcript.json` | `_save_transcript` | The live transcript: the compaction entry, the kept tail, halved results. A resume reads it. |
-| `~/.freyja/projects/<sid>/raw_messages.jsonl` | `_append_raw_message_log`, on every append | Every message as it was appended. Compaction and halving never touch it. Sub-agents have none. |
+| `~/.freyja/projects/<sid>/raw_messages.jsonl` | `_append_raw_message_log`, on every append | Every message as it was appended. Compaction and halving never touch it. A restored session keeps appending to it; before 2026-11-06 a restore stopped the log, so older logs end at the session's first restart. Sub-agents have none. |
 | `~/.freyja/projects/<sid>/compactions.jsonl` | `_append_compaction_log` | One row per compaction event, with the full summary. |
 | `~/.freyja/sessions/compactions/<sid>-<ms>-{before,after}.{md,json}` | `_write_compaction_snapshot` | The transcript before and after a compaction (every path). A fork at a message a summary folded in is cut from the newest `-before.json` that still holds it. |
 | `~/.freyja/telemetry/compaction.jsonl` | `bridge/compaction_telemetry.append_telemetry` | The cross-session rows the metrics dashboard reads (section 8). |
@@ -441,4 +441,4 @@ The tool returns a JSON body (`{action, path, bytes, content, ...}`). The agent 
 - 2026-10-27 (fdc1f00, 04d5bed): pre-request, overflow and agent compactions run off the event loop (`run_off_loop`); the summary deadline grows with the transcript.
 - 2026-11-06 (ca37eee to 8c4e96d): a turn keeps the last call's measure; summary costs count from every path; the advisories stop saying tool calls may be rejected.
 - 2026-11-06 (this round): a halved result is saved whole under `~/.freyja/truncated` and its marker names the file; halving rows carry the size before and after, and the 70% check after halving uses the smaller size; a manual compaction stops the keep-alive; restore compactions write telemetry and `compactions.jsonl`; a sub-agent's call reports move to the event loop; the accumulator takes a call's usage before the call is reported; the turn after a manual compaction keeps the size it left; the sync runner takes `on_llm_call`.
-- 2026-11-06 (pruning round): a cheap `summarize_context` scope saves each result whole before it condenses it, and the preview names the file.
+- 2026-11-06 (pruning round): a cheap `summarize_context` scope saves each result whole before it condenses it, and the preview names the file; a restored session keeps writing `raw_messages.jsonl`.
