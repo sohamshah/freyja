@@ -2958,6 +2958,13 @@ class GatewayDaemon:
         self._log_rotate_task = asyncio.create_task(
             self._rotate_logs_periodically(), name="gateway-log-rotate"
         )
+        # Messages other processes queue in the inbox files of sessions
+        # loaded here: a job's session while this process owns the tick.
+        # The scheduler daemon reads no control channel, so this is its
+        # only way to hear of them.
+        from bridge.freyja_bridge import _start_inbox_watch
+
+        _start_inbox_watch(self.state)
 
         # Bring up the desktop → daemon control channel last so it's
         # only servicing commands once the bridge state and adapters are

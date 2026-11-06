@@ -1271,6 +1271,75 @@ def _record_is_terminal(rec: Any) -> bool:
     )
 
 
+# How often a process looks for messages that other processes queued in the
+# inbox files of the sessions it has loaded.
+_INBOX_WATCH_SECONDS = 2.0
+
+
+def _take_in_queued_inbox_messages(state: Any) -> None:
+    """Take into this process's loaded sessions, and their running
+    sub-agents, the messages another process queued in their inbox files
+    since (queued_inbox_messages), and wake an idle root session for them.
+    A talk for a scheduled job's session from a process that does not hold
+    it goes to that file, and the tick owner keeps the session loaded
+    between runs: it read the file only when it loaded it. A file is read
+    only when its mtime changed since the last pass."""
+    from bridge.transcript_persistence import _inbox_path, queued_inbox_messages
+    from bridge.inbox import InboxMessage
+
+    last: dict[str, int] = getattr(state, "_inbox_mtimes", None) or {}
+    seen: dict[str, int] = {}
+    loaded: list[tuple[str, Any, Any]] = []
+    for sess in list((getattr(state, "sessions", None) or {}).values()):
+        loaded.append((sess.id, getattr(sess, "inbox", None), sess))
+        reg = getattr(sess, "subagent_registry", None)
+        try:
+            records = reg.list_all() if reg is not None else []
+        except Exception:  # noqa: BLE001
+            records = []
+        loaded.extend((r.id, getattr(r, "inbox", None), None) for r in records if not _record_is_terminal(r))
+    for sid, inbox, root in loaded:
+        if inbox is None:
+            continue
+        try:
+            mtime = _inbox_path(sid).stat().st_mtime_ns
+        except OSError:
+            continue
+        if last.get(sid) == mtime:
+            seen[sid] = mtime
+            continue
+        if _held_elsewhere(state, sid):
+            continue  # the file is the owner's mailbox
+        seen[sid] = mtime
+        queued = [m for m in map(InboxMessage.from_dict, queued_inbox_messages(sid, inbox.known_ids())) if m]
+        for msg in queued:
+            inbox.push(msg)
+        if queued and root is not None:
+            log("info", f"inbox watch: {len(queued)} message(s) queued in {sid}'s inbox file")
+            _install_talk_wake_hook(state, root)
+            root.wake_for_inbox()
+    state._inbox_mtimes = seen  # noqa: SLF001
+
+
+async def _watch_inbox_files(state: Any) -> None:
+    while True:
+        await asyncio.sleep(_INBOX_WATCH_SECONDS)
+        try:
+            _take_in_queued_inbox_messages(state)
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"inbox watch failed: {exc}")
+
+
+def _start_inbox_watch(state: Any) -> None:
+    """Run _take_in_queued_inbox_messages every _INBOX_WATCH_SECONDS: the
+    app's bridge, the gateway and the scheduler daemon each own sessions
+    another process queues messages for. Reference held on state so the
+    task is not GC'd."""
+    state._inbox_watch_task = asyncio.create_task(  # noqa: SLF001
+        _watch_inbox_files(state), name="inbox-watch",
+    )
+
+
 def _live_model_id(model_id: str, *, where: str) -> str:
     """``model_id`` itself, or — when the provider retired it — the model
     that stands in for it (engine.providers.RETIRED_MODEL_REPLACEMENTS).
@@ -2527,6 +2596,9 @@ async def _main() -> None:
     # cross-process wait_for_reply depends on it). Reference held on
     # state so the reader task isn't GC'd.
     state._desktop_control_reader = await _start_desktop_control_reader(state)  # noqa: SLF001
+    # Messages other processes queue in the inbox files of sessions loaded
+    # here: a job's session while this process owns the tick, for one.
+    _start_inbox_watch(state)
     # Offline working-memory backfill — hourly pass that summarizes idle
     # sessions whose working_memory.json is missing or older than the
     # transcript. This is the substrate the morning briefing reads; the
@@ -6910,8 +6982,12 @@ class _BridgeSession:
             return
         if self.inbox is None or self._held_elsewhere:
             return
+        inbox = self.inbox
         try:
-            save_inbox_state(self.id, self.inbox.to_dict())
+            # Keeps what another process queued in the file meanwhile; the
+            # inbox watch takes it in (_take_in_queued_inbox_messages).
+            save_inbox_state(self.id, inbox.to_dict(), known=inbox.known_ids())
+            inbox.on_disk = {m.id for m in inbox.unread}
         except Exception as exc:  # noqa: BLE001
             log("warn", f"failed to save inbox for {self.id}: {exc}")
 

@@ -23,7 +23,7 @@ import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Collection, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -147,14 +147,45 @@ def _inbox_lock() -> Iterator[None]:
         yield  # closing the file releases the lock
 
 
-def save_inbox_state(session_id: str, data: dict[str, Any]) -> None:
+def save_inbox_state(
+    session_id: str,
+    data: dict[str, Any],
+    *,
+    known: Collection[str] | None = None,
+) -> None:
     """Persist a session's inbox queue + recent delivered history.
 
     Schema mirrors SessionInbox.to_dict(); see bridge/inbox.py.
-    Writes atomically; safe across crashes.
+    Writes atomically; safe across crashes. With ``known``
+    (SessionInbox.known_ids), an unread message in the file outside it was
+    queued by another process after this one read the file, and is kept.
+    Written over, it was lost: the scheduler's tick owner keeps a job's
+    session loaded between runs while the app queues talks for it here.
     """
     with _inbox_lock():
+        if known is not None:
+            queued = _queued_in(_read_inbox(session_id), known)
+            if queued:
+                data = {**data, "unread": [*(data.get("unread") or []), *queued]}
         _write_inbox(session_id, data)
+
+
+def queued_inbox_messages(session_id: str, known: Collection[str]) -> list[dict[str, Any]]:
+    """The unread messages in a session's inbox file outside ``known``
+    (SessionInbox.known_ids): queued by another process since this one
+    last read or wrote the file."""
+    with _inbox_lock():
+        return _queued_in(_read_inbox(session_id), known)
+
+
+def _queued_in(data: dict[str, Any] | None, known: Collection[str]) -> list[dict[str, Any]]:
+    if not isinstance(data, dict):
+        return []
+    return [
+        u
+        for u in data.get("unread") or []
+        if isinstance(u, dict) and isinstance(u.get("id"), str) and u["id"] not in known
+    ]
 
 
 def load_inbox_state(session_id: str) -> dict[str, Any] | None:

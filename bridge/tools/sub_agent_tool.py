@@ -712,6 +712,9 @@ Parameters:
                         if seen and f"id {m.id}" in seen:
                             continue
                         record.inbox.push(m)
+                # Read from the file, so not new to the inbox watch, the
+                # skipped ones included.
+                record.inbox.on_disk = restored.on_disk if restored else set()
         except Exception:
             record.inbox = None
 
@@ -1931,10 +1934,12 @@ Parameters:
             # Write the drained state back. A re-wake rebuilds the inbox
             # from this file, and without the write every later re-wake
             # replayed all the messages earlier runs had already read.
+            # What another process queued there meanwhile is kept.
             try:
                 from bridge.transcript_persistence import save_inbox_state
 
-                save_inbox_state(record.id, sub_inbox_ref.to_dict())
+                save_inbox_state(record.id, sub_inbox_ref.to_dict(), known=sub_inbox_ref.known_ids())
+                sub_inbox_ref.on_disk = {m.id for m in sub_inbox_ref.unread}
             except Exception:
                 pass
             if items:

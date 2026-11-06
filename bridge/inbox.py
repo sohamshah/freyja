@@ -250,6 +250,12 @@ class SessionInbox:
     # Callback fired (sync) whenever a message is enqueued, drained, or
     # dropped. Bridge wires it to emit telemetry events.
     on_change: Optional[Callable[[str, InboxMessage], None]] = None
+    # The unread ids the session's inbox file held when this process last
+    # read or wrote it. Another process queues into that file while this
+    # one has the session loaded (append_inbox_messages), so an unread
+    # message there outside known_ids() is new: a save keeps it, and the
+    # owner takes it in (bridge._take_in_queued_inbox_messages).
+    on_disk: set[str] = field(default_factory=set)
 
     def push(self, msg: InboxMessage) -> Optional[InboxMessage]:
         """Enqueue a new message. Returns the dropped message if the
@@ -405,6 +411,11 @@ class SessionInbox:
     def remove_reply_waiter(self, message_id: str) -> None:
         self._reply_waiters.pop(message_id, None)
 
+    def known_ids(self) -> set[str]:
+        """Ids of the messages this inbox holds, and of those its file held
+        when this process last read or wrote it."""
+        return self.on_disk | {m.id for m in self.unread} | {m.id for m in self.delivered}
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "sessionId": self.session_id,
@@ -424,6 +435,7 @@ class SessionInbox:
             session_id=str(payload.get("sessionId") or ""),
             unread=unread,
             delivered=delivered,
+            on_disk={m.id for m in unread},
         )
 
     def _fire(self, action: str, msg: InboxMessage) -> None:
