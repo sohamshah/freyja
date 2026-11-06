@@ -282,7 +282,7 @@ async def test_gateway_teardown_closes_and_stops_owned_monitors(action, monkeypa
     stopped = []
     monkeypatch.setattr(background_shell, "stop_process_group", stopped.append)
     if action == "reset":
-        daemon._reset_session(sess.id)
+        await daemon._reset_session(sess.id)
         assert sess.id not in daemon.state.sessions
     else:
         await daemon.shutdown()

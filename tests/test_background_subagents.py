@@ -1195,7 +1195,11 @@ async def test_a_turn_stopped_with_a_closed_session_does_not_save_its_transcript
     if ctype == "delete_session":
         assert not path.exists()
     else:
-        assert "look into it" not in path.read_text()
+        # Set aside for the new session (set_transcript_aside): the turn
+        # saved nothing in its place, nor into the file set aside.
+        assert not path.exists()
+        (aside,) = tp.SESSIONS_DIR.glob("root-1.transcript.json.reset-*")
+        assert "look into it" not in aside.read_text()
 
 
 async def test_a_turn_stopped_by_a_shutdown_still_saves_its_transcript(tmp_path):

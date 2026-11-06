@@ -75,7 +75,7 @@ async def test_the_gateways_reset_session_runs_none_of_its_queued_turns(monkeypa
     state, sess, ran = await _busy_session(monkeypatch, tmp_path)
     gateway = GatewayDaemon()
     gateway.state = state
-    gateway._reset_session(sess.id)  # /reset
+    await gateway._reset_session(sess.id)  # /reset
     await asyncio.wait_for(asyncio.gather(sess.pending_task, return_exceptions=True), timeout=2)
 
     assert ran == ["first"]

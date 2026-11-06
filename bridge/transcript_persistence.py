@@ -572,15 +572,15 @@ def delete_transcript(session_id: str) -> None:
 def set_transcript_aside(session_id: str) -> Path | None:
     """Start a session's next load on an empty conversation, keeping the
     saved one: its file moves to ``<file>.reset-<ms>``, a name no load or
-    listing reads, and its model, reasoning level and mode stay in its
-    place in a file with no entries (as _save_settings_alone writes one).
-    The files a load reads back into the conversation go aside with it,
-    under the same name: its goal, its inbox, and its kanban and task
-    journals. Left, the next conversation took up the old one's board,
-    goal and unread messages. Its event log and its raw message and
-    compaction logs stay: they are traces, and no load reads them into
-    the conversation. Returns where the conversation went, or None when
-    none was saved."""
+    listing reads. The files a load reads back into the conversation go
+    aside with it, under the same name: its goal, its inbox, and its
+    kanban and task journals. Left, the next conversation took up the old
+    one's board, goal and unread messages. Its event log and its raw
+    message and compaction logs stay: they are traces, and no load reads
+    them into the conversation. Nothing is read, so the moves take no
+    time on an event loop, and a load after them finds no conversation;
+    keep_settings puts the model, reasoning level and mode back. Returns
+    where the conversation went, or None when none was saved."""
     stamp = int(time.time() * 1000)
     for sidecar in (
         _goal_path(session_id),
@@ -590,35 +590,69 @@ def set_transcript_aside(session_id: str) -> Path | None:
         _set_aside(sidecar, stamp)
     with _inbox_lock():  # another process queues into it under the lock
         _set_aside(_inbox_path(session_id), stamp)
-    data = load_transcript(session_id)
-    if data is None or not (data.get("transcript") or {}).get("entries"):
-        return None
+    return _set_aside(_transcript_path(session_id), stamp)
+
+
+def keep_settings(session_id: str, aside: Path) -> Path | None:
+    """Put the model, reasoning level and mode of a conversation that
+    set_transcript_aside set aside back in its place, in a file with no
+    entries (as _save_settings_alone writes one). A file set aside that
+    held no entries, only those, goes back as it was. Neither goes over a
+    file the session saved there since. The whole file is parsed: a
+    caller on an event loop runs this off the loop. Returns where the
+    conversation went, or None when the file held none."""
     path = _transcript_path(session_id)
-    aside = path.with_name(f"{path.name}.reset-{stamp}")
     try:
-        path.replace(aside)
-    except OSError:
-        logger.exception("Failed to set the transcript of %s aside", session_id)
+        data = json.loads(aside.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("Failed to read %s", aside.name)
+        return aside
+    if not isinstance(data, dict):
+        return aside
+    if not (data.get("transcript") or {}).get("entries"):
+        if _link_unless_there(aside, path):
+            aside.unlink()  # back under its own name only: a rename
         return None
     meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-    save_transcript(session_id, {
+    settings = {
         "version": 1,
         "session_id": session_id,
         "metadata": {
             k: meta[k] for k in ("model_id", "reasoning_level", "coordination_strategy") if k in meta
         },
         "transcript": {"entries": []},
-    })
+    }
+    tmp = aside.with_name(f"{aside.name}.tmp")
+    try:
+        tmp.write_text(json.dumps(settings, separators=(",", ":")), encoding="utf-8")
+        _link_unless_there(tmp, path)
+    except OSError:
+        logger.exception("Failed to keep the settings of %s", session_id)
+    finally:
+        tmp.unlink(missing_ok=True)
     return aside
 
 
-def _set_aside(path: Path, stamp: int) -> None:
-    if not path.exists():
-        return
+def _set_aside(path: Path, stamp: int) -> Path | None:
+    aside = path.with_name(f"{path.name}.reset-{stamp}")
     try:
-        path.replace(path.with_name(f"{path.name}.reset-{stamp}"))
+        path.replace(aside)
+    except FileNotFoundError:
+        return None
     except OSError:
         logger.exception("Failed to set %s aside", path.name)
+        return None
+    return aside
+
+
+def _link_unless_there(src: Path, dest: Path) -> bool:
+    """Give ``src`` the name ``dest`` too, unless a file has it: one a
+    session saved there is newer."""
+    try:
+        os.link(src, dest)
+    except FileExistsError:
+        return False
+    return True
 
 
 def remap_ids(obj: Any, id_remap: dict[str, str]) -> Any:

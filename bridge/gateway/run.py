@@ -1630,7 +1630,7 @@ class GatewayDaemon:
                 "[gateway] /reset dispatch: session_key=%s had_session=%s chat=%s thread=%s",
                 key, had_session, message.source.chat_id, message.source.thread_id,
             )
-            self._reset_session(key)
+            await self._reset_session(key)
             logger.info(
                 "[gateway] /reset complete: session_key=%s — next message starts fresh",
                 key,
@@ -2235,7 +2235,7 @@ class GatewayDaemon:
         except Exception:  # noqa: BLE001
             logger.debug("feedback emit failed", exc_info=True)
 
-    def _reset_session(self, session_key: str) -> None:
+    async def _reset_session(self, session_key: str) -> None:
         if self.state is None:
             return
         sessions = getattr(self.state, "sessions", {})
@@ -2256,10 +2256,15 @@ class GatewayDaemon:
             _stop_background_work(sessions[session_key])
             sessions.pop(session_key, None)
         # The thread's next message loaded the old conversation back from
-        # its file, loaded here or not. It stays on disk, set aside.
-        from bridge.transcript_persistence import set_transcript_aside
+        # its file, loaded here or not. It stays on disk, set aside, before
+        # anything here awaits: a message taken in meanwhile starts fresh.
+        from bridge.transcript_persistence import keep_settings, set_transcript_aside
 
         aside = set_transcript_aside(session_key)
+        if aside is not None:
+            # Off the loop: a long DM's file held every thread up while it
+            # was parsed for the thread's model and mode.
+            aside = await asyncio.to_thread(keep_settings, session_key, aside)
         if aside is not None:
             logger.info("[gateway] /reset: %s's conversation set aside at %s", session_key, aside.name)
 

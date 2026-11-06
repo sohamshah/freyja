@@ -69,7 +69,7 @@ async def test_the_next_message_after_reset_starts_a_fresh_conversation(monkeypa
         sess.pending_task = asyncio.create_task(sess.run_turn("a new question"))
         await asyncio.wait_for(asked.wait(), 1)
 
-    _gateway(state)._reset_session(KEY)  # /reset
+    await _gateway(state)._reset_session(KEY)  # /reset
     if turn_running:
         await asyncio.wait_for(asyncio.gather(sess.pending_task, return_exceptions=True), timeout=2)
     fresh = await state.ensure_session(KEY)  # the thread's next message
@@ -87,7 +87,7 @@ async def test_reset_of_a_thread_the_gateway_has_not_loaded_since_it_started(mon
     state, _sess = await _thread(monkeypatch, tmp_path)
     state.sessions.clear()  # the gateway restarted
 
-    _gateway(state)._reset_session(KEY)
+    await _gateway(state)._reset_session(KEY)
     fresh = await state.ensure_session(KEY)
 
     assert "old" not in _texts(fresh)
@@ -108,7 +108,7 @@ async def test_the_conversation_after_reset_starts_on_an_empty_board(monkeypatch
     state, sess = await _thread(monkeypatch, tmp_path, mode)
     await _board(sess).create(title="the old card")
 
-    _gateway(state)._reset_session(KEY)
+    await _gateway(state)._reset_session(KEY)
     fresh = await state.ensure_session(KEY)
     await fresh.initialize()  # its first turn
 
@@ -125,7 +125,7 @@ async def test_a_card_a_worker_the_reset_stopped_marks_stays_off_the_new_board(m
     card = await sess.kanban_board.create(title="the old card")
     await sess.kanban_board.update(card.id, actor="worker", status="running")
 
-    _gateway(state)._reset_session(KEY)
+    await _gateway(state)._reset_session(KEY)
     await sess.kanban_board.update(card.id, actor="worker", status="review")
     fresh = await state.ensure_session(KEY)
     await fresh.initialize()
@@ -143,7 +143,7 @@ async def test_the_conversation_after_reset_has_no_goal_of_the_old_one(monkeypat
     sess.goal_state = GoalState(goal="ship the old thing")
     sess._save_goal_state()
 
-    _gateway(state)._reset_session(KEY)
+    await _gateway(state)._reset_session(KEY)
     fresh = await state.ensure_session(KEY)
     await fresh.initialize()
     fresh.session.transcript.append_message(Message(role="user", content="a new question"))
@@ -167,7 +167,7 @@ async def test_a_message_the_old_conversation_left_unread_does_not_wake_the_new_
         content="the old report",
     ))
 
-    _gateway(state)._reset_session(KEY)
+    await _gateway(state)._reset_session(KEY)
     fresh = await state.ensure_session(KEY)
     woke: list[str] = []
     fresh.wake_for_inbox = lambda: woke.append(fresh.id) or "woke"
@@ -176,3 +176,74 @@ async def test_a_message_the_old_conversation_left_unread_does_not_wake_the_new_
     assert fresh.inbox.unread == [] and woke == []
     (aside,) = tp.SESSIONS_DIR.glob("*.inbox.json.reset-*")
     assert "the old report" in aside.read_text()
+
+
+@pytest.mark.parametrize("loaded", [True, False])
+async def test_reset_parses_no_transcript_on_the_gateways_loop(monkeypatch, tmp_path, loaded):
+    # /reset read the thread's settings from its saved transcript on the
+    # gateway's loop: a long DM's file held every thread up while it was
+    # parsed.
+    import json
+    import threading
+
+    from bridge.gateway.platforms.base import IncomingMessage
+    from bridge.gateway.session_router import source_from_session_key
+
+    state, _sess = await _thread(monkeypatch, tmp_path)
+    if not loaded:
+        state.sessions.clear()  # the gateway restarted
+    parsed_on: list[int] = []
+
+    class _Json:
+        def __getattr__(self, name):
+            return getattr(json, name)
+
+        def loads(self, *args, **kwargs):
+            parsed_on.append(threading.get_ident())
+            return json.loads(*args, **kwargs)
+
+    class _Adapter:
+        async def send(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(tp, "json", _Json())
+    reset = IncomingMessage(
+        source=source_from_session_key(KEY), text="/reset",
+        is_slash_command=True, slash_command_name="reset",
+    )
+    assert await _gateway(state)._handle_slash_in_gateway(reset, _Adapter())
+    loop_parsed = threading.get_ident() in parsed_on
+    monkeypatch.setattr(tp, "json", json)
+    fresh = await state.ensure_session(KEY)  # the thread's next message
+
+    assert not loop_parsed
+    assert "old" not in _texts(fresh)
+    assert (fresh.model_id, fresh.coordination_strategy) == ("claude-sonnet-5-5", "goal")
+
+
+async def test_reset_of_a_thread_with_no_message_yet_keeps_its_settings_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "emit", lambda _e: None)
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="kimi-k3-fast")
+    await state.ensure_session(KEY, model_id="claude-sonnet-5-5")  # /model before its first message
+
+    await _gateway(state)._reset_session(KEY)
+
+    assert list(tp.SESSIONS_DIR.glob("*.reset-*")) == []
+    assert tp.load_transcript(KEY)["metadata"]["model_id"] == "claude-sonnet-5-5"
+
+
+async def test_the_settings_kept_off_the_loop_go_over_no_conversation_saved_meanwhile(monkeypatch, tmp_path):
+    # The thread's next message came in while the old file was parsed,
+    # and its turn saved first.
+    state, _sess = await _thread(monkeypatch, tmp_path)
+    aside = tp.set_transcript_aside(KEY)
+    tp.save_transcript(KEY, {
+        "version": 1, "session_id": KEY, "metadata": {"model_id": "kimi-k3-fast"},
+        "transcript": {"entries": [{"id": "n1"}], "head_id": "n1"},
+    })
+
+    assert tp.keep_settings(KEY, aside) == aside
+
+    assert tp.load_transcript(KEY)["transcript"]["entries"] == [{"id": "n1"}]

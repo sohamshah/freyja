@@ -63,7 +63,7 @@ async def _reset_thread(state):
     sess = await state.ensure_session(KEY, model_id="claude-sonnet-5-5")
     gateway = GatewayDaemon()
     gateway.state = state
-    gateway._reset_session(KEY)  # /reset
+    await gateway._reset_session(KEY)  # /reset
     return sess
 
 
