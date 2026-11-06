@@ -38,6 +38,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -83,8 +84,11 @@ def append_command(cmd: dict[str, Any], *, path: Path | None = None) -> None:
 
 
 # The reader takes at most this much per read and dispatches whole lines
-# only, so a longer line is never read (see ControlChannelReader._drain).
+# only, so a longer line is skipped unread (see ControlChannelReader._drain).
 MAX_LINE_BYTES = 1024 * 1024
+
+# Where a skipped line names its command and session (see _report_skipped).
+_HEAD_FIELD = re.compile(rb'"(type|sessionId|to)"\s*:\s*"([^"\\]{1,200})"')
 
 
 CommandHandler = Callable[[dict[str, Any]], Any]
@@ -226,15 +230,39 @@ class ControlChannelReader:
 
     async def _drain(self, path: Path, size: int) -> None:
         # Read in a thread to avoid blocking the loop on a slow disk.
-        def _read_chunk(off: int, end: int) -> tuple[int, bytes]:
+        def _read_chunk(off: int, end: int) -> tuple[bytes, int]:
+            """The next batch from ``off``, and the length of its first line
+            when that line is longer than MAX_LINE_BYTES (0 when it is not,
+            -1 when its end has not been written yet)."""
             with path.open("rb") as fp:
                 fp.seek(off)
                 # Cap each batch to a sane upper bound so a runaway
                 # writer can't pin the loop for tens of MB.
                 chunk = fp.read(min(end - off, MAX_LINE_BYTES))
-            return off + len(chunk), chunk
+                if len(chunk) < MAX_LINE_BYTES or b"\n" in chunk:
+                    return chunk, 0
+                # A batch with no newline: the line goes on past it. Find
+                # its end a batch at a time, never holding all of it.
+                length = len(chunk)
+                while True:
+                    block = fp.read(min(end - off - length, MAX_LINE_BYTES))
+                    if not block:
+                        return chunk, -1
+                    nl = block.find(b"\n")
+                    if nl != -1:
+                        return chunk, length + nl + 1
+                    length += len(block)
 
-        new_offset, chunk = await asyncio.to_thread(_read_chunk, self._offset, size)
+        chunk, too_long = await asyncio.to_thread(_read_chunk, self._offset, size)
+        if too_long:
+            # Skip the line, so the commands after it still run. One that
+            # is still being written is waited for: the offset (saved by the
+            # loop) stays at its start until its end is known, so a restart
+            # never resumes inside it.
+            if too_long > 0:
+                self._offset += too_long
+                self._report_skipped(chunk, too_long)
+            return
         # If the chunk doesn't end on a newline, keep the trailing
         # partial bytes for the next cycle (writer hadn't flushed the
         # newline yet).
@@ -255,6 +283,40 @@ class ControlChannelReader:
                 logger.warning("control channel: dropping non-JSON line: %r", line[:200])
                 continue
             await self._dispatch(cmd)
+
+    def _report_skipped(self, head: bytes, length: int) -> None:
+        """Log a skipped line, and tell the session it names: its command
+        never ran. The desktop only shows gateway events that name a
+        session, so one that names none is only logged."""
+        fields: dict[str, str] = {}
+        for key, value in _HEAD_FIELD.findall(head[:4096]):
+            fields.setdefault(key.decode(), value.decode("utf-8", errors="replace"))
+        ctype = fields.get("type") or "unknown"
+        sid = fields.get("sessionId") or fields.get("to") or ""
+        logger.warning(
+            "control channel: skipped a %s command of %d bytes for %s (lines over %d bytes are not read)",
+            ctype, length, sid or "no session", MAX_LINE_BYTES,
+        )
+        if not sid:
+            return
+        try:
+            from bridge.freyja_bridge import emit
+
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": sid,
+                    "subtype": "control_command_skipped",
+                    "message": (
+                        f"A {ctype} command for this session was not run: it was "
+                        f"{length / MAX_LINE_BYTES:.1f} MiB, and the control channel "
+                        "reads lines up to 1 MiB."
+                    ),
+                    "details": {"command": ctype, "bytes": length, "chatVisible": True},
+                }
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("control channel: skip notice failed", exc_info=True)
 
     async def _dispatch(self, cmd: dict[str, Any]) -> None:
         ctype = str(cmd.get("type") or "")

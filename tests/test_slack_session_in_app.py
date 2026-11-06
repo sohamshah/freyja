@@ -121,8 +121,8 @@ async def test_a_message_for_a_slack_session_is_refused_when_no_gateway_runs(app
 
 
 async def test_a_message_too_large_for_the_control_channel_is_refused(app_bridge, monkeypatch):
-    # The gateway reads its control file a megabyte at a time, so a longer
-    # line would never be read and would hold up every command after it.
+    # The gateway reads its control file a megabyte at a time and skips a
+    # longer line, so the message would never run.
     state, events, _built = app_bridge
     _gateway_running(monkeypatch, os.getpid() + 1)
     image = {"type": "image", "mimeType": "image/png", "dataBase64": "A" * (2 * 1024 * 1024)}
