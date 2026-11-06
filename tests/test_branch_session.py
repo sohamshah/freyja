@@ -806,6 +806,62 @@ async def test_a_refused_pin_puts_the_renderer_toggle_back(sessions_dir, monkeyp
     assert [(e["sessionId"], e["pinned"]) for e in events if e["type"] == "entry_pin_changed"] == [(sid, False)]
 
 
+SLACK = "freyja:slack:T1:channel:C1:1.0"
+
+
+def _slack_copy(monkeypatch):
+    """The app's bridge holding a Slack session: opening one in the app
+    sends switch_session, which loads a copy of its transcript here. The
+    thread runs in the gateway, on the gateway's own copy."""
+    fb, sess, _state, events = _live(monkeypatch, AFTER)
+    sess.id = SLACK
+    saves: list[str] = []
+    sess._save_transcript = lambda: saves.append(SLACK)
+    sess._save_inbox = lambda: None
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: False)
+    state = SimpleNamespace(get=lambda sid: sess if sid == SLACK else None, sessions={})
+    return fb, sess, state, events, saves
+
+
+@pytest.mark.parametrize("cmd", [*REWINDS, {"type": "toggle_entry_pin", "pinned": True}])
+async def test_commands_on_a_slack_session_are_refused_outside_the_gateway(sessions_dir, monkeypatch, cmd):
+    # Acting on the copy would save a history the gateway does not have
+    # over its file, and the gateway's next save would drop it again.
+    fb, sess, state, events, saves = _slack_copy(monkeypatch)
+    await fb._handle_command(
+        state, {**cmd, "sessionId": SLACK, "messageOrdinal": 1, "messageCreatedAt": ON_U2 * 1000, "requestId": "r1"}
+    )
+    if sess.pending_task is not None:
+        await sess.pending_task
+    assert sess.turns == [] and saves == []
+    assert [e.id for e in sess.session.transcript.entries] == ["c1", "u2", "a2", "u3"]
+    assert not any(e.compaction_excluded for e in sess.session.transcript.entries)
+    if cmd["type"] == "toggle_entry_pin":
+        assert [e["pinned"] for e in events if e["type"] == "entry_pin_changed"] == [False]
+    else:
+        assert [e["type"] for e in events if e["type"] == "rewind_refused"] == ["rewind_refused"]
+    (err,) = [e for e in events if e["type"] == "error"]
+    assert "gateway" in err["message"]
+
+
+async def test_a_fork_of_a_slack_session_is_cut_from_the_gateways_transcript(sessions_dir, monkeypatch):
+    # Not from the copy the app loaded when the session was opened, which
+    # misses what the thread did since: saving it first would also write
+    # it over the gateway's file.
+    import bridge.project_paths as pp
+
+    monkeypatch.setattr(pp, "project_output_dir", lambda sid: sessions_dir / "projects" / str(sid))
+    fb, sess, state, events, saves = _slack_copy(monkeypatch)
+    later = [*AFTER, _entry("a3", "assistant", 161.0)]
+    tp.save_transcript(SLACK, _transcript(SLACK, later))
+    await fb._handle_command(state, {"type": "branch_session", "sessionId": SLACK, "messageOrdinal": -1})
+    assert saves == []
+    assert [e["id"] for e in tp.load_transcript(SLACK)["transcript"]["entries"]] == ["c1", "u2", "a2", "u3", "a3"]
+    (branched,) = [e for e in events if e["type"] == "session_branched"]
+    fork = tp.load_transcript(branched["newSessionId"])
+    assert [e["id"] for e in fork["transcript"]["entries"]] == ["c1", "u2", "a2", "u3", "a3"]
+
+
 async def test_live_commands_still_act_on_the_first_kept_message(sessions_dir, monkeypatch):
     fb, sess, state, events = _live(monkeypatch, AFTER)
     await _send(fb, sess, state, {"type": "toggle_entry_pin", "pinned": True, "messageCreatedAt": ON_U2 * 1000})

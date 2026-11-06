@@ -12973,6 +12973,19 @@ def _refuse_summarized_anchor(sess: Any, cmd: dict[str, Any], verb: str) -> bool
 _REWIND_NO_SESSION = "Can't {verb} this message: its session is not loaded in the agent."
 _REWIND_TURN_RUNNING = "Can't {verb} this message while a turn is running."
 _REWIND_NOT_FOUND = "Can't {verb} this message: the agent has no entry for it."
+_REWIND_GATEWAY = (
+    "Can't {verb} this message here: its Slack thread runs in the gateway, "
+    "and the app only has a copy of it."
+)
+
+
+def _gateway_holds(session_id: str) -> bool:
+    """A Slack (gateway) session this process does not run. Opening one in
+    the app loads a copy of it here (switch_session), but its thread runs
+    on the gateway's copy, which saves over the same transcript file: an
+    edit, rerun, delete or pin made on this copy would be written over the
+    gateway's newer history, then dropped at the gateway's next save."""
+    return _is_gateway_session_id(session_id) and not _process_owns_gateway()
 
 
 def _refuse_rewind(session_id: str, cmd: dict[str, Any], reason: str | None = None) -> None:
@@ -15185,6 +15198,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "pinned": not pinned,
             })
 
+        if _gateway_holds(session_id):
+            _undo_pin(_REWIND_GATEWAY.format(verb=verb))
+            return
         sess = state.get(session_id)
         if sess is None or sess.session is None:
             _undo_pin(_REWIND_NO_SESSION.format(verb=verb))
@@ -15234,6 +15250,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         new_content = str(cmd.get("content", "") or "").strip()
         if ordinal < 0 or not new_content:
             return
+        if _gateway_holds(session_id):
+            _refuse_rewind(session_id, cmd, _REWIND_GATEWAY.format(verb="edit"))
+            return
         sess = state.get(session_id)
         if sess is None or sess.session is None:
             log("warn", "edit_user_message: session not initialized")
@@ -15279,6 +15298,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             return
         ordinal = int(cmd.get("messageOrdinal", -1))
         if ordinal < 0:
+            return
+        if _gateway_holds(session_id):
+            _refuse_rewind(session_id, cmd, _REWIND_GATEWAY.format(verb="rerun"))
             return
         sess = state.get(session_id)
         if sess is None or sess.session is None:
@@ -15423,7 +15445,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sess = state.get(session_id)
         if sess is not None:
             old_project_id = sess.project_session_id or session_id
-            if sess.session is not None:
+            # A Slack session's copy here is the one the app loaded when it
+            # was opened: the gateway's file has what the thread did since.
+            if sess.session is not None and not _gateway_holds(session_id):
                 try:
                     sess._save_transcript()  # noqa: SLF001
                 except Exception:  # noqa: BLE001
@@ -15604,6 +15628,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             return
         ordinal = int(cmd.get("messageOrdinal", -1))
         if ordinal < 0:
+            return
+        if _gateway_holds(session_id):
+            _refuse_rewind(session_id, cmd, _REWIND_GATEWAY.format(verb="delete from"))
             return
         sess = state.get(session_id)
         if sess is None or sess.session is None:
