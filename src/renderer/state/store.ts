@@ -2082,6 +2082,10 @@ function settleUnfinishedTools(
   return out
 }
 
+/** When main received `ev` (see BridgeEvent's `receivedAt`): the time a
+ *  reducer stamps the event with, rather than its own Date.now(). */
+const receivedAt = (ev: BridgeEvent): number => ev.receivedAt ?? Date.now()
+
 function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
   const next: SessionSlice = { ...slice }
 
@@ -2095,7 +2099,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       // createdAt is the turn start). Memos and talk messages are already
       // on screen as inbox chips; the split puts them in the right place
       // too.
-      const at = ev.at || Date.now()
+      const at = ev.at || receivedAt(ev)
       const followups = ev.items.filter((i) => i.kind === 'followup')
       const streamingId = slice.currentStreamingMessageId
       let messages = slice.messages
@@ -2136,7 +2140,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       // the next turn's user message. Show them as ordinary messages just
       // ahead of that turn (whose turn_start follows this event).
       let messages = slice.messages
-      let t = (ev.at || Date.now()) - ev.items.length
+      let t = (ev.at || receivedAt(ev)) - ev.items.length
       for (const item of ev.items) {
         const id = item.clientId || item.messageId
         if (id && messages.some((m) => m.id === id)) {
@@ -2169,7 +2173,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         parts: [],
         // Past the turn's user entry, so an anchor on the reply (branch,
         // pin, delete) resolves to the reply's own entries.
-        createdAt: ev.at ?? Date.now(),
+        createdAt: ev.at ?? receivedAt(ev),
       }
       next.messages = [...slice.messages, newMessage]
       next.currentStreamingMessageId = msgId
@@ -2201,7 +2205,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       // Append to the current streaming message as a thinking part
       // so it renders inline, not as a detached block at the bottom.
       if (!slice.currentStreamingMessageId) return next
-      const now = Date.now()
+      const now = receivedAt(ev)
       next.messages = slice.messages.map((m) => {
         if (m.id !== slice.currentStreamingMessageId) return m
         const parts = [...m.parts]
@@ -2293,7 +2297,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         id: ev.id,
         name: ev.name,
         status: 'running',
-        startedAt: Date.now(),
+        startedAt: receivedAt(ev),
         partialJson: '',
         groupId,
       }
@@ -2375,7 +2379,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           mimeType: image.mimeType || 'image/png',
           width: image.width || 0,
           height: image.height || 0,
-          takenAt: Date.now(),
+          takenAt: receivedAt(ev),
           reason: image.label || `result image ${index + 1}`,
         }, `tool_${ev.id}`)
         retainFrame(frame)
@@ -2410,7 +2414,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
             filename,
             creator: 'parent',
             creatorLabel: 'Main agent',
-            createdAt: Date.now(),
+            createdAt: receivedAt(ev),
             fileType: ext,
             operation: existing.name.includes('edit') ? 'edit' : 'write',
           }
@@ -2424,7 +2428,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
               a.path === filePath
                 ? {
                     ...a,
-                    createdAt: Date.now(),
+                    createdAt: receivedAt(ev),
                     operation: a.changeSetId ? a.operation : artifact.operation,
                   }
                 : a,
@@ -2436,7 +2440,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
     }
 
     case 'bus_message': {
-      const rawTimestamp = ev.message.timestamp || Date.now()
+      const rawTimestamp = ev.message.timestamp || receivedAt(ev)
       const timestamp = rawTimestamp < 1_000_000_000_000 ? rawTimestamp * 1000 : rawTimestamp
       next.busMessages = [
         ...slice.busMessages.slice(-100),
@@ -2505,7 +2509,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           id: sysEventId,
           subtype: ev.subtype,
           message: ev.message,
-          at: Date.now(),
+          at: receivedAt(ev),
           details: ev.details,
         },
       ]
@@ -2698,7 +2702,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
             id: nextId('msg'),
             role: 'assistant',
             parts: [systemPart],
-            createdAt: Date.now(),
+            createdAt: receivedAt(ev),
           },
         ]
       }
@@ -2797,7 +2801,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         // a duplicate turn_complete can't stretch the reported duration.
         const streamingId = slice.currentStreamingMessageId
         if (streamingId) {
-          const endedAt = Date.now()
+          const endedAt = receivedAt(ev)
           next.messages = slice.messages.map((m) =>
             m.id === streamingId
               ? { ...m, completedAt: m.completedAt ?? endedAt, attemptMark: undefined }
@@ -2826,7 +2830,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         id,
         role: ev.role,
         parts: ev.content ? [{ type: 'text', text: ev.content }] : [],
-        createdAt: ev.createdAt || Date.now(),
+        createdAt: ev.createdAt || receivedAt(ev),
       }
       next.messages = [...slice.messages, newMessage]
       return next
@@ -3143,7 +3147,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       if (ev.type === 'log') {
         return {
           ...prev,
-          logs: [...prev.logs.slice(-200), { level: ev.level, message: ev.message, at: Date.now() }],
+          logs: [...prev.logs.slice(-200), { level: ev.level, message: ev.message, at: receivedAt(ev) }],
         }
       }
       if (ev.type === 'mcp_status') {
@@ -3263,7 +3267,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           } else {
             messages = [
               ...prev.messages,
-              { id: nextId('msg'), role: 'assistant', parts: [part], createdAt: Date.now() },
+              { id: nextId('msg'), role: 'assistant', parts: [part], createdAt: receivedAt(ev) },
             ]
           }
         }
@@ -3387,7 +3391,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       }
       if (ev.type === 'error') {
         const notice = {
-          logs: [...prev.logs.slice(-200), { level: 'error' as const, message: ev.message, at: Date.now() }],
+          logs: [...prev.logs.slice(-200), { level: 'error' as const, message: ev.message, at: receivedAt(ev) }],
           toast: {
             id: nextId('toast'),
             message: ev.message,
@@ -3600,7 +3604,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           workspace: ev.workspace || prev.sessions[0]?.workspace || '~/',
           model: childModel,
           reasoningLevel: childReasoning,
-          createdAt: ev.createdAt || Date.now(),
+          createdAt: ev.createdAt || receivedAt(ev),
           updatedAt: Date.now(),
           messageCount: 0,
           totalInputTokens: 0,
@@ -3647,7 +3651,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
               id: userMsgId,
               role: 'user',
               parts: [{ type: 'text', text: ev.task }],
-              createdAt: ev.createdAt || Date.now(),
+              createdAt: ev.createdAt || receivedAt(ev),
             },
           ]
         }

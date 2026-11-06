@@ -1077,7 +1077,14 @@ export interface ToolCatalogEntry {
  */
 type SessionId = { sessionId?: string }
 
-export type BridgeEvent =
+/**
+ * When main received the event from the bridge or the gateway log (ms). The
+ * renderer applies events at its next animation frame, which a hidden window
+ * can hold back for minutes: a reducer that stamps an event uses this.
+ */
+type Received = { receivedAt?: number }
+
+export type BridgeEvent = Received & (
   | ({ type: 'ready'; mode: BridgeMode; capabilities: Record<string, unknown> } & SessionId)
   // With a sessionId the error ends that session's live turn; without one
   // it is only a notice.
@@ -1751,6 +1758,7 @@ export type BridgeEvent =
         height: number
       } | null
     }
+)
 
 // --- ⌘K palette intent (Jev) ---
 

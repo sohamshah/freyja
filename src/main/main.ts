@@ -400,6 +400,11 @@ function forwardBridgeEvent(event: any): void {
   if (event?.type === 'appshot_captured' && event.ok === true && event.source === 'hotkey') {
     raiseMainWindow()
   }
+  // The renderer stamps events with this, not with the time it applies
+  // them: that is its next animation frame, minutes later in a hidden window.
+  if (event && typeof event === 'object' && typeof event.receivedAt !== 'number') {
+    event.receivedAt = Date.now()
+  }
   if (rendererReady) {
     mainWindow?.webContents.send(IPC.bridgeEvent, event)
   } else {
