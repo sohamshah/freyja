@@ -8824,6 +8824,7 @@ class _BridgeSession:
         if not attachments:
             return ""
         refs: list[str] = []
+        latest = ""
         for index, attachment in enumerate(attachments, start=1):
             if attachment.get("type") != "image":
                 continue
@@ -8831,25 +8832,41 @@ class _BridgeSession:
             if not data:
                 continue
             media_type = str(attachment.get("mimeType") or "image/png")
+            # An earlier Slack image someone else posted gets a ref but no
+            # alias: use_latest_user_image must mean the operator's image.
+            theirs = attachment.get("from_operator") is False
             try:
                 asset = self.image_store.add_base64(
                     data,
                     media_type,
                     label=f"user attachment {index}",
                     source="user_attachment",
-                    aliases=("latest_user_image", "latest_image"),
+                    aliases=() if theirs else ("latest_user_image", "latest_image"),
                 )
             except Exception as exc:  # noqa: BLE001
                 log("warn", f"failed to register image attachment: {exc}")
                 continue
             refs.append(asset.ref)
+            if not theirs:
+                latest = asset.ref
 
         if not refs:
             return ""
         refs_text = ", ".join(f"`{ref}`" for ref in refs)
+        if not latest:
+            return (
+                "Image references available to tools: "
+                f"{refs_text}. None of them is the operator's own, so none is "
+                "`latest_user_image`. To transform one, call generate_image "
+                "with input_images using the ref."
+            )
+        newest = (
+            "The newest attachment" if latest == refs[-1]
+            else f"`{latest}`, the operator's latest image,"
+        )
         return (
             "Image references available to tools: "
-            f"{refs_text}. The newest attachment is also "
+            f"{refs_text}. {newest} is also "
             "`latest_user_image` and `latest_image`. To transform one, call "
             "generate_image with input_images using the ref or set "
             "use_latest_user_image=true."

@@ -1240,7 +1240,8 @@ class GatewayDaemon:
             ``slack._download_file``) ready to be merged with the
             current message's attachments and handed to the model. An
             image not from the operator or Freyja carries a ``label``
-            the model reads right before it.
+            the model reads right before it, and each one says in
+            ``from_operator`` whether the operator posted it.
 
         Adapter-aware: uses ``fetch_thread_context`` for threads
         and ``fetch_dm_history`` for DMs. Both gracefully return []
@@ -1363,6 +1364,9 @@ class GatewayDaemon:
                     logger.exception("prior-context image download failed")
                     saved = None
                 if saved and saved.get("type") == "image":
+                    # Only the operator's own images may become the
+                    # session's latest_user_image.
+                    saved["from_operator"] = m.get("trust") == "operator"
                     prior_attachments.append(saved)
                     images_by_ts.setdefault(ts, []).append(saved)
         # Restore chronological order.
