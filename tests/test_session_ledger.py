@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from bridge.session_ledger import (
     SessionLedger,
     classify_bash_command,
@@ -15,6 +17,7 @@ from bridge.session_ledger import (
 )
 
 # ── classification ────────────────────────────────────────────────────────
+
 
 def test_classify_tool_effect_vs_observation():
     assert classify_tool("write_file") == "effect"
@@ -29,7 +32,7 @@ def test_classify_tool_effect_vs_observation():
     assert classify_tool("some_random_tool") == "neither"
 
 
-def test_classify_bash_command_effects():
+def test_classify_bash_command_tells_writes_from_reads():
     for cmd in [
         "git commit -m 'x'",
         "git checkout -b feat/widget-tools",
@@ -43,11 +46,13 @@ def test_classify_bash_command_effects():
         "uv pip install pymupdf",
         "sed -i 's/a/b/' f.py",
         "alembic upgrade head",
+        # A real redirect into a file still counts, even next to a harmless one.
+        "pytest -q > out.txt 2>&1",
+        "grep -rn foo . 2>/dev/null > hits.txt",
+        "date >> log 2>/dev/null",
+        "jq '.x' in.json > out.json",
     ]:
         assert classify_bash_command(cmd) == "effect", cmd
-
-
-def test_classify_bash_command_observations():
     for cmd in [
         "git status",
         "git diff HEAD",
@@ -58,14 +63,8 @@ def test_classify_bash_command_observations():
         "python script.py 2>&1",  # stderr redirect only, not a file
         "rg pattern",
         "",
-    ]:
-        assert classify_bash_command(cmd) == "observation", cmd
-
-
-def test_classify_bash_command_ignores_discard_and_fd_redirects():
-    # Discarding or merging output writes no file — these were most of one
-    # session's shell "actions".
-    for cmd in [
+        # Discarding or merging output writes no file — these were most of one
+        # session's shell "actions".
         "ls missing 2>/dev/null",
         "find . -name '*.py' 2> /dev/null | head",
         "curl -s localhost:8080 >/dev/null",
@@ -73,33 +72,21 @@ def test_classify_bash_command_ignores_discard_and_fd_redirects():
         "echo 'bad input' >&2",
         "curl -s x 1>/dev/null 2>&1",
         "python check.py 2>&1 | tail -5",
-    ]:
-        assert classify_bash_command(cmd) == "observation", cmd
-    # A real redirect into a file still counts, even next to a harmless one.
-    for cmd in [
-        "pytest -q > out.txt 2>&1",
-        "grep -rn foo . 2>/dev/null > hits.txt",
-        "date >> log 2>/dev/null",
-    ]:
-        assert classify_bash_command(cmd) == "effect", cmd
-
-
-def test_classify_bash_command_ignores_arrows_and_comparisons():
-    # These tripped the redirect pattern and turned read-only commands into
-    # "actions", which is what still made two denials look like forgetting.
-    for cmd in [
+        # Arrows and comparisons tripped the redirect pattern and turned
+        # read-only commands into "actions", which is what still made two
+        # denials look like forgetting.
         "gcloud logging read 'timestamp>=\"2026-09-01\"' --limit 5",
         "jq '.items[] | select(.n >= 3)' data.json",
         "echo 'a -> b'",
         "rg 'x => y' src",
     ]:
         assert classify_bash_command(cmd) == "observation", cmd
-    assert classify_bash_command("jq '.x' in.json > out.json") == "effect"
 
 
 # ── negative self-claim detection ─────────────────────────────────────────
 
-def test_detect_negative_self_claim_positive():
+
+def test_negative_self_claim_detection_and_its_false_alarms():
     for txt in [
         "I have no recollection of making changes to agent-harness this session.",
         "Everything in our conversation so far has been read-only exploration.",
@@ -107,11 +94,10 @@ def test_detect_negative_self_claim_positive():
         "I haven't made any edits.",
         "I have not written any files so far.",
         "Nothing has been written so far.",
+        # Scoped to the session, a report on "nothing written" does fire.
+        "nothing was written or created this session",
     ]:
         assert detect_negative_self_claim(txt) is True, txt
-
-
-def test_detect_negative_self_claim_negative():
     for txt in [
         "I created widget_tools.py with the show_widget tool.",
         "Let me make some changes to the file.",
@@ -125,14 +111,16 @@ def test_detect_negative_self_claim_negative():
         "Nothing changed. Next I'll read the Automation page's accessibility structure.",
         "The script didn't make any changes.",
         "no changes were made to the file because the pattern didn't match",
+        # Unscoped "nothing was written" is how the agent reports on one
+        # command or run.
+        "nothing was written or created",
+        # "nothing written about X" is documentation talk, not a self-claim.
         "There is nothing written about this in the docs.",
         # First-person, but narrowed to one place rather than the session.
         "I haven't changed anything in prod.",
     ]:
         assert detect_negative_self_claim(txt) is False, txt
-
-
-def test_find_negative_self_claim_returns_sentence():
+    # The triggering sentence is what the correction quotes back.
     txt = (
         "I checked the build. Everything in our conversation so far has been "
         "read-only exploration. Want me to start?"
@@ -145,45 +133,30 @@ def test_find_negative_self_claim_returns_sentence():
 
 # ── ledger recording + dedup ──────────────────────────────────────────────
 
+
 def _mk(tmp_path):
     led = SessionLedger(session_id="s1", project_dir=tmp_path)
     led.ensure()
     return led
 
 
-def test_record_file_effect_parses_lines(tmp_path):
-    led = _mk(tmp_path)
-    row = led.record_from_tool(
-        tool_name="write_file",
-        tool_args={"path": "/repo/agent_harness/cli/tools/widget_tools.py"},
-        result_text="Created file: /repo/.../widget_tools.py\nWrote 24000 characters (680 lines)",
-        result_chars=70,
-        is_error=False,
-        tool_call_id="t1",
+def _create(led, path, *, lines, call_id="t1", **kw):
+    return led.record_from_tool(
+        tool_name="write_file", tool_args={"path": path},
+        result_text=f"Created file: {path.rsplit('/', 1)[-1]}\nWrote 10 characters ({lines} lines)",
+        result_chars=40, is_error=False, tool_call_id=call_id, **kw,
     )
-    assert row is not None
-    assert row["class"] == "effect"
-    assert row["operation"] == "create"
-    assert "widget_tools.py" in row["summary"]
-    assert "680 lines" in row["summary"]
 
 
-def test_error_results_not_recorded(tmp_path):
+def test_record_from_tool_keeps_successful_effects_only(tmp_path):
     led = _mk(tmp_path)
-    row = led.record_from_tool(
-        tool_name="write_file",
-        tool_args={"path": "/repo/x.py"},
+    # A failed write is not an action.
+    assert led.record_from_tool(
+        tool_name="write_file", tool_args={"path": "/repo/x.py"},
         result_text="Error writing file: permission denied",
-        result_chars=40,
-        is_error=True,
-        tool_call_id="t1",
-    )
-    assert row is None
-    assert led.has_effects() is False
-
-
-def test_observations_not_in_effects(tmp_path):
-    led = _mk(tmp_path)
+        result_chars=40, is_error=True, tool_call_id="t0",
+    ) is None
+    # Observations are recorded but are not effects.
     led.record_from_tool(
         tool_name="read_file", tool_args={"path": "/repo/a.py"},
         result_text="x" * 5000, result_chars=5000, is_error=False, tool_call_id="r1",
@@ -195,63 +168,53 @@ def test_observations_not_in_effects(tmp_path):
     assert led.effects() == []
     assert led.has_effects() is False
 
+    row = led.record_from_tool(
+        tool_name="write_file",
+        tool_args={"path": "/repo/agent_harness/cli/tools/widget_tools.py"},
+        result_text="Created file: /repo/.../widget_tools.py\nWrote 24000 characters (680 lines)",
+        result_chars=70, is_error=False, tool_call_id="t1",
+    )
+    assert row is not None
+    assert row["class"] == "effect" and row["operation"] == "create"
+    assert "widget_tools.py" in row["summary"] and "680 lines" in row["summary"]
+    assert led.has_effects() is True
 
-def test_effects_dedup_keeps_created_verb(tmp_path):
+
+def test_effects_collapse_to_one_row_per_path(tmp_path):
     led = _mk(tmp_path)
     p = "/repo/foo.py"
-    led.record_from_tool(
-        tool_name="write_file", tool_args={"path": p},
-        result_text="Created file: foo.py\nWrote 10 characters (3 lines)",
-        result_chars=40, is_error=False, tool_call_id="t1",
-    )
+    _create(led, p, lines=3, call_id="t1")
     led.record_from_tool(
         tool_name="edit_file", tool_args={"path": p},
         result_text="Edited file: foo.py\nReplaced lines 1-2 (5 lines)",
         result_chars=40, is_error=False, tool_call_id="t2",
     )
-    effs = led.effects()
-    assert len(effs) == 1  # collapsed to one row per path
-    assert effs[0]["operation"] == "create"  # creation verb preserved
+    [row] = led.effects()
+    assert row["operation"] == "create"  # the creation verb is preserved
 
-
-def test_effects_aggregates_repeated_edits(tmp_path):
-    # 23 edits to one file should collapse to ONE row carrying the edit count
-    # and summed diff — not 23 rows, and not a misleading "(1 lines)".
-    led = _mk(tmp_path)
-    p = "/repo/v2/index.html"
+    # 23 edits to one file collapse to ONE row carrying the edit count and the
+    # summed diff, not 23 rows and not a misleading "(1 lines)".
+    q = "/repo/v2/index.html"
     for i in range(3):
         led.record_from_tool(
-            tool_name="edit_file", tool_args={"path": p},
+            tool_name="edit_file", tool_args={"path": q},
             result_text="Edited file: index.html\nReplaced lines 1-1 (1 lines)",
-            result_chars=40, is_error=False, tool_call_id=f"t{i}", creator_id="s1",
+            result_chars=40, is_error=False, tool_call_id=f"e{i}", creator_id="s1",
             extra={"additions": 10, "deletions": 4},
         )
-    effs = led.effects(creator_id="s1")
-    assert len(effs) == 1
-    row = effs[0]
-    assert row["editCount"] == 3
-    assert row["additions"] == 30  # summed
-    assert row["deletions"] == 12
-    assert "×3" in row["summary"]
-    assert "(1 lines)" not in row["summary"]  # the misleading per-edit count is gone
-    assert "+30" in row["summary"] and "−12" in row["summary"]
+    [edited] = [e for e in led.effects(creator_id="s1") if e["path"] == q]
+    assert edited["editCount"] == 3
+    assert (edited["additions"], edited["deletions"]) == (30, 12)
+    assert "×3" in edited["summary"] and "(1 lines)" not in edited["summary"]
+    assert "+30" in edited["summary"] and "−12" in edited["summary"]
 
-
-def test_single_create_keeps_line_count(tmp_path):
     # A lone create with no diff keeps its meaningful "(N lines)" file size.
-    led = _mk(tmp_path)
-    led.record_from_tool(
-        tool_name="write_file", tool_args={"path": "/repo/new.py"},
-        result_text="Created file: new.py\nWrote 9000 characters (680 lines)",
-        result_chars=40, is_error=False, tool_call_id="t1", creator_id="s1",
-    )
-    effs = led.effects(creator_id="s1")
-    assert len(effs) == 1
-    assert "(680 lines)" in effs[0]["summary"]
-    assert "×" not in effs[0]["summary"]
+    _create(led, "/repo/new.py", lines=680, call_id="t3", creator_id="s1")
+    [created] = [e for e in led.effects(creator_id="s1") if e["path"] == "/repo/new.py"]
+    assert "(680 lines)" in created["summary"] and "×" not in created["summary"]
 
 
-def test_bash_effect_vs_observation_recording(tmp_path):
+def test_bash_effects_are_told_from_observations_by_their_command(tmp_path):
     led = _mk(tmp_path)
     led.record_from_tool(
         tool_name="bash", tool_args={"command": "git commit -m 'widget tools'"},
@@ -263,54 +226,63 @@ def test_bash_effect_vs_observation_recording(tmp_path):
         result_text="On branch feat/widget-tools", result_chars=40,
         is_error=False, tool_call_id="b2",
     )
-    effs = led.effects()
-    assert len(effs) == 1
-    assert effs[0]["kind"] == "shell_effect"
+    [row] = led.effects()
+    assert row["kind"] == "shell_effect"
     assert led.shell_effect_count == 1
 
 
-def test_pinned_facts(tmp_path):
+def test_pinned_facts_dedup_and_filter_by_creator(tmp_path):
     led = _mk(tmp_path)
-    led.record_pinned_fact("agent-harness backend is DONE on branch feat/widget-tools")
-    led.record_pinned_fact("agent-harness backend is DONE on branch feat/widget-tools")  # dup
-    assert led.pinned_facts() == ["agent-harness backend is DONE on branch feat/widget-tools"]
-    # pinned facts are not in effects()
-    assert led.effects() == []
+    fact = "agent-harness backend is DONE on branch feat/widget-tools"
+    led.record_pinned_fact(fact)
+    led.record_pinned_fact(fact)  # dup
+    assert led.pinned_facts() == [fact]
+    assert led.effects() == []  # pinned facts are not effects
+    led.record_pinned_fact("parent note", creator_id="s1")
+    led.record_pinned_fact("child note", creator_id="sub-9")
+    assert led.pinned_facts(creator_id="sub-9") == ["child note"]
+    assert "parent note" in led.pinned_facts(creator_id="s1")
+    assert "child note" not in led.pinned_facts(creator_id="s1")
+    assert len(led.pinned_facts()) == 3
 
 
-def test_digest_changes_on_new_effect(tmp_path):
+def test_digest_changes_on_a_new_effect_or_coincident_row(tmp_path):
     led = _mk(tmp_path)
     d0 = led.digest()
-    led.record_from_tool(
-        tool_name="write_file", tool_args={"path": "/repo/a.py"},
-        result_text="Created file: a.py\nWrote 1 characters (1 lines)",
-        result_chars=40, is_error=False, tool_call_id="t1",
-    )
+    _create(led, "/repo/a.py", lines=1)
     d1 = led.digest()
     assert d0 != d1
-
-
-def test_persistence_roundtrip(tmp_path):
-    led = _mk(tmp_path)
-    led.record_from_tool(
-        tool_name="write_file", tool_args={"path": "/repo/a.py"},
-        result_text="Created file: a.py\nWrote 1 characters (1 lines)",
-        result_chars=40, is_error=False, tool_call_id="t1",
+    led.record_shell_git_effect(
+        command="sleep 30", delta=[{"op": "modified", "path": "b.py"}], repo="/r",
     )
+    assert led.digest() != d1
+
+
+def test_ledger_persists_rows_and_hydrates_them_on_resume(tmp_path):
+    led1 = _mk(tmp_path)
+    _create(led1, "/repo/widget_tools.py", lines=680)
     lines = (tmp_path / "action_ledger.jsonl").read_text().strip().splitlines()
     assert len(lines) == 1
     row = json.loads(lines[0])
-    assert row["class"] == "effect"
-    assert row["sessionId"] == "s1"
+    assert row["class"] == "effect" and row["sessionId"] == "s1"
+    led1.record_from_tool(
+        tool_name="bash", tool_args={"command": "git commit -m x"},
+        result_text="committed", result_chars=10, is_error=False, tool_call_id="b1",
+    )
+    # Simulate resume: a brand-new ledger over the same project dir must see
+    # the prior run's effects (the forgetting incident happened on resume).
+    led2 = SessionLedger(session_id="s1", project_dir=tmp_path)
+    led2.ensure()
+    assert any("widget_tools.py" in (e.get("summary") or "") for e in led2.effects())
+    assert led2.has_effects() is True
+    assert led2.shell_effect_count == 1
 
 
 # ── reminder rendering ────────────────────────────────────────────────────
 
-def test_render_reminder_none_when_empty():
+
+def test_render_reminder_lists_effects_and_pinned_facts_without_shouting():
     assert render_ledger_reminder([], [], memory_present=False) is None
-
-
-def test_render_reminder_lists_effects_no_shouting_caps():
     effects = [
         {"summary": "created widget_tools.py (680 lines)", "repo": "agent_harness/cli/tools"},
         {"summary": "edited runner_factory.py", "repo": "agent_harness/server"},
@@ -324,184 +296,94 @@ def test_render_reminder_lists_effects_no_shouting_caps():
     # Style guard: no gratuitous all-caps words like GROUND TRUTH / YOU.
     assert "GROUND TRUTH" not in block
     assert "YOU " not in block
-
-
-def test_render_reminder_just_compacted_framing():
-    effects = [{"summary": "created a.py (3 lines)"}]
-    block = render_ledger_reminder(effects, [], just_compacted=True)
-    assert "just compacted" in block.lower()
-
-
-def test_render_reminder_caps_long_lists():
-    effects = [{"summary": f"edited file_{i}.py"} for i in range(20)]
-    block = render_ledger_reminder(effects, [], cap=12)
-    assert "and 8 more" in block
-
-
-# ── resume / hydration (C1) ────────────────────────────────────────────────
-
-def test_ledger_hydrates_from_disk_on_resume(tmp_path):
-    led1 = _mk(tmp_path)
-    led1.record_from_tool(
-        tool_name="write_file", tool_args={"path": "/repo/widget_tools.py"},
-        result_text="Created file: widget_tools.py\nWrote 1 characters (680 lines)",
-        result_chars=40, is_error=False, tool_call_id="t1",
-    )
-    led1.record_from_tool(
-        tool_name="bash", tool_args={"command": "git commit -m x"},
-        result_text="committed", result_chars=10, is_error=False, tool_call_id="b1",
-    )
-    # Simulate resume: a brand-new ledger over the same project dir must see
-    # the prior run's effects (the forgetting incident happened on resume).
-    led2 = SessionLedger(session_id="s1", project_dir=tmp_path)
-    led2.ensure()
-    effs = led2.effects()
-    assert any("widget_tools.py" in (e.get("summary") or "") for e in effs)
-    assert led2.has_effects() is True
-    assert led2.shell_effect_count == 1
+    # Long lists are capped.
+    many = [{"summary": f"edited file_{i}.py"} for i in range(20)]
+    assert "and 8 more" in render_ledger_reminder(many, [], cap=12)
 
 
 # ── creator attribution (H1) ───────────────────────────────────────────────
+
 
 def test_effects_filtered_by_creator(tmp_path):
     led = _mk(tmp_path)  # ledger session_id = "s1"
     # Parent (s1) writes one file; a sub-agent (sub-7) writes another into the
     # same shared ledger.
-    led.record_from_tool(
-        tool_name="write_file", tool_args={"path": "/repo/parent.py"},
-        result_text="Created file: parent.py\nWrote 1 characters (5 lines)",
-        result_chars=40, is_error=False, tool_call_id="t1", creator_id="s1",
-    )
-    led.record_from_tool(
-        tool_name="write_file", tool_args={"path": "/repo/child.py"},
-        result_text="Created file: child.py\nWrote 1 characters (9 lines)",
-        result_chars=40, is_error=False, tool_call_id="t2", creator_id="sub-7",
-    )
+    _create(led, "/repo/parent.py", lines=5, call_id="t1", creator_id="s1")
+    _create(led, "/repo/child.py", lines=9, call_id="t2", creator_id="sub-7")
     # The parent's reminder/seed filters to its own id — no sub-agent flooding.
-    parent_effs = led.effects(creator_id="s1")
-    assert len(parent_effs) == 1
-    assert "parent.py" in parent_effs[0]["summary"]
+    [parent_eff] = led.effects(creator_id="s1")
+    assert "parent.py" in parent_eff["summary"]
     assert led.has_effects(creator_id="s1") is True
     # Unfiltered still sees everything (e.g. for a global view).
     assert len(led.effects()) == 2
     assert led.digest(creator_id="s1") != led.digest(creator_id="sub-7")
 
 
-def test_detect_negative_claim_excludes_nothing_about():
-    # M1: "nothing written about X" is documentation talk, not a self-claim.
-    assert detect_negative_self_claim("There is nothing written about this in the docs.") is False
-    # Unscoped "nothing was written" is how the agent reports on one command
-    # or run, so it no longer fires; scoped to the session, it does.
-    assert detect_negative_self_claim("nothing was written or created") is False
-    assert detect_negative_self_claim("nothing was written or created this session") is True
-
-
 # ── diff stats on file effects (chunk 2 / diff-aware artifact) ─────────────
 
-def test_record_from_tool_lands_diff_stats_on_effect_row(tmp_path):
+
+def test_diff_stats_land_on_effect_rows_only_and_persist(tmp_path):
     led = _mk(tmp_path)
     row = led.record_from_tool(
         tool_name="edit_file",
         tool_args={"path": "/repo/widget_tools.py"},
         result_text="Edited file: widget_tools.py\nReplaced lines 1-2 (5 lines)",
-        result_chars=40,
-        is_error=False,
-        tool_call_id="t1",
-        extra={
-            "additions": 12,
-            "deletions": 3,
-            "diff": "@@ -1,2 +1,2 @@\n-old\n+new\n",
-            "diffTruncated": False,
-        },
+        result_chars=40, is_error=False, tool_call_id="t1",
+        extra={"additions": 12, "deletions": 3, "diff": "@@ -1,2 +1,2 @@\n-old\n+new\n", "diffTruncated": False},
     )
     assert row is not None
-    assert row["additions"] == 12
-    assert row["deletions"] == 3
-    assert "+new" in row["diff"]
-    assert row["diffTruncated"] is False
-    # Diff never leaks into the standing-reminder summary.
+    assert (row["additions"], row["deletions"]) == (12, 3)
+    assert "+new" in row["diff"] and row["diffTruncated"] is False
+    # The diff never leaks into the standing-reminder summary.
     assert "@@" not in row["summary"]
+    saved = json.loads((tmp_path / "action_ledger.jsonl").read_text().strip())
+    assert saved["additions"] == 12 and "+new" in saved["diff"]
 
-
-def test_record_from_tool_diff_stats_persist(tmp_path):
-    led = _mk(tmp_path)
+    # Without extra there are no diff fields.
+    plain = _create(led, "/repo/a.py", lines=1, call_id="t2")
+    assert plain is not None
+    assert "additions" not in plain and "diff" not in plain
+    # An observation must not carry diff stats even if extra is passed.
     led.record_from_tool(
-        tool_name="write_file",
-        tool_args={"path": "/repo/a.py"},
-        result_text="Created file: a.py\nWrote 1 characters (9 lines)",
-        result_chars=40,
-        is_error=False,
-        tool_call_id="t1",
-        extra={"additions": 9, "deletions": 0, "diff": "+x", "diffTruncated": False},
-    )
-    row = json.loads((tmp_path / "action_ledger.jsonl").read_text().strip())
-    assert row["additions"] == 9
-    assert row["diff"] == "+x"
-
-
-def test_record_from_tool_without_extra_is_unaffected(tmp_path):
-    led = _mk(tmp_path)
-    row = led.record_from_tool(
-        tool_name="write_file",
-        tool_args={"path": "/repo/a.py"},
-        result_text="Created file: a.py\nWrote 1 characters (1 lines)",
-        result_chars=40,
-        is_error=False,
-        tool_call_id="t1",
-    )
-    assert row is not None
-    assert "additions" not in row
-    assert "diff" not in row
-
-
-def test_observation_ignores_diff_extra(tmp_path):
-    # A web_search observation must not carry diff stats even if extra is passed.
-    led = _mk(tmp_path)
-    led.record_from_tool(
-        tool_name="web_search",
-        tool_args={"query": "mcp apps spec"},
-        result_text="results",
-        result_chars=900,
-        is_error=False,
-        tool_call_id="r1",
+        tool_name="web_search", tool_args={"query": "mcp apps spec"},
+        result_text="results", result_chars=900, is_error=False, tool_call_id="r1",
         extra={"additions": 5, "deletions": 5, "diff": "+x", "diffTruncated": False},
     )
-    obs = [r for r in led._snapshot() if r.get("class") == "observation"]
-    assert len(obs) == 1
-    assert "additions" not in obs[0]
-    assert "diff" not in obs[0]
+    [obs] = [r for r in led._snapshot() if r.get("class") == "observation"]
+    assert "additions" not in obs and "diff" not in obs
 
 
 # ── git-status-delta bash capture (C4) ─────────────────────────────────────
 
-def test_git_status_delta_new_and_modified():
-    before = " M existing.py\n"
-    after = " M existing.py\n?? new.txt\n M another.py\n"
-    delta = git_status_delta(before, after)
-    paths = {d["path"]: d["op"] for d in delta}
-    assert paths == {"new.txt": "created", "another.py": "modified"}
+
+@pytest.mark.parametrize(
+    ("before", "after", "expected"),
+    [
+        (
+            " M existing.py\n",
+            " M existing.py\n?? new.txt\n M another.py\n",
+            [{"op": "created", "path": "new.txt"}, {"op": "modified", "path": "another.py"}],
+        ),
+        # After `git commit`, the staged files are clean.
+        (
+            "M  staged_a.py\nA  staged_b.py\n",
+            "",
+            [{"op": "committed", "path": "staged_a.py"}, {"op": "committed", "path": "staged_b.py"}],
+        ),
+        (" M a.py\n?? b.txt\n", " M a.py\n?? b.txt\n", []),
+        ("", "R  old.py -> new.py\n", [{"op": "renamed", "path": "new.py"}]),
+    ],
+    ids=["new_and_modified", "commit_clears_dirty_set", "unchanged", "rename"],
+)
+def test_git_status_delta(before, after, expected):
+    by_path = sorted(git_status_delta(before, after), key=lambda d: d["path"])
+    assert by_path == sorted(expected, key=lambda d: d["path"])
 
 
-def test_git_status_delta_commit_clears_dirty_set():
-    before = "M  staged_a.py\nA  staged_b.py\n"
-    after = ""  # after `git commit`, the staged files are clean
-    delta = git_status_delta(before, after)
-    ops = {d["path"]: d["op"] for d in delta}
-    assert ops == {"staged_a.py": "committed", "staged_b.py": "committed"}
-
-
-def test_git_status_delta_empty_when_unchanged():
-    s = " M a.py\n?? b.txt\n"
-    assert git_status_delta(s, s) == []
-
-
-def test_git_status_delta_rename():
-    delta = git_status_delta("", 'R  old.py -> new.py\n')
-    assert delta == [{"op": "renamed", "path": "new.py"}]
-
-
-def test_record_shell_git_effect(tmp_path):
+def test_record_shell_git_effect_summarizes_the_delta_and_skips_empty_ones(tmp_path):
     led = _mk(tmp_path)
+    assert led.record_shell_git_effect(command="git status", delta=[]) is None
+    assert led.has_effects() is False
     row = led.record_shell_git_effect(
         command="git commit -m 'widget tools'",
         delta=[{"op": "committed", "path": "/repo/widget_tools.py"},
@@ -510,16 +392,9 @@ def test_record_shell_git_effect(tmp_path):
     )
     assert row is not None
     assert row["kind"] == "shell_effect"
-    assert "widget_tools.py" in row["summary"]
-    assert "__init__.py" in row["summary"]
+    assert "widget_tools.py" in row["summary"] and "__init__.py" in row["summary"]
     assert row["gitDelta"][0]["path"] == "/repo/widget_tools.py"
     assert led.shell_effect_count == 1
-
-
-def test_record_shell_git_effect_empty_delta_is_noop(tmp_path):
-    led = _mk(tmp_path)
-    assert led.record_shell_git_effect(command="git status", delta=[]) is None
-    assert led.has_effects() is False
 
 
 def test_git_capture_inflight_guard(tmp_path):
@@ -533,7 +408,8 @@ def test_git_capture_inflight_guard(tmp_path):
 
 # ── manifest backfill (B3) ─────────────────────────────────────────────────
 
-def test_backfill_from_manifest(tmp_path):
+
+def test_backfill_from_manifest_skips_legacy_rows_and_does_not_duplicate(tmp_path):
     # Simulate an old session: a manifest exists but no ledger file yet.
     manifest = tmp_path / "manifest.jsonl"
     manifest.write_text(
@@ -546,43 +422,28 @@ def test_backfill_from_manifest(tmp_path):
     )
     led = SessionLedger(session_id="s1", project_dir=tmp_path)
     led.ensure()  # hydrate (no ledger file) + backfill from manifest
-    effs = led.effects(creator_id="s1")
-    summaries = " ".join(e["summary"] for e in effs)
+    summaries = " ".join(e["summary"] for e in led.effects(creator_id="s1"))
     assert "widget_tools.py (680 lines)" in summaries
     assert "foo.py" in summaries
     # subagent_artifact / legacy imports are skipped.
     assert "legacy.md" not in summaries
 
-
-def test_backfill_does_not_duplicate_existing_ledger_rows(tmp_path):
-    led = _mk(tmp_path)
-    led.record_from_tool(
-        tool_name="write_file", tool_args={"path": "/repo/a.py"},
-        result_text="Created file: a.py\nWrote 1 characters (5 lines)",
-        result_chars=40, is_error=False, tool_call_id="t1", creator_id="s1",
-    )
-    # A manifest row for the SAME path must not double-count after re-ensure.
-    (tmp_path / "manifest.jsonl").write_text(
-        json.dumps({"path": "/repo/a.py", "operation": "write",
-                    "lines": 5, "creatorId": "s1", "createdAt": 1}) + "\n"
+    # A manifest row for a path the ledger already holds must not double-count
+    # after re-ensure.
+    _create(led, "/repo/a.py", lines=5, creator_id="s1")
+    manifest.write_text(
+        manifest.read_text()
+        + json.dumps({"path": "/repo/a.py", "operation": "write",
+                      "lines": 5, "creatorId": "s1", "createdAt": 1}) + "\n"
     )
     led2 = SessionLedger(session_id="s1", project_dir=tmp_path)
     led2.ensure()
     assert len([e for e in led2.effects() if e["path"] == "/repo/a.py"]) == 1
-
-
-# ── pinned-fact creator filter (C6) ────────────────────────────────────────
-
-def test_pinned_facts_creator_filter(tmp_path):
-    led = _mk(tmp_path)
-    led.record_pinned_fact("parent note", creator_id="s1")
-    led.record_pinned_fact("child note", creator_id="sub-9")
-    assert led.pinned_facts(creator_id="s1") == ["parent note"]
-    assert led.pinned_facts(creator_id="sub-9") == ["child note"]
-    assert len(led.pinned_facts()) == 2
+    assert len([e for e in led2.effects() if e["path"] == "/repo/widget_tools.py"]) == 1
 
 
 # ── coincident changes (passive commands) + fork marker ───────────────────
+
 
 def test_passive_command_delta_is_coincident_not_an_effect(tmp_path):
     # The incident: a fork's agent read "ran `sleep 100…` → changed
@@ -609,17 +470,15 @@ def test_passive_command_delta_is_coincident_not_an_effect(tmp_path):
     assert led2.has_effects() is False
     assert len(led2.coincident()) == 1
 
-
-def test_mutating_command_delta_is_still_an_effect(tmp_path):
-    led = _mk(tmp_path)
-    row = led.record_shell_git_effect(
+    # A command with a mutating verb owns its delta.
+    row = led2.record_shell_git_effect(
         command="sed -i '' 's/a/b/' bridge/x.py && sleep 5",
         delta=[{"op": "modified", "path": "bridge/x.py"}],
         repo="/r", creator_id="s1",
     )
     assert row["class"] == "effect" and row["kind"] == "shell_effect"
-    assert led.shell_effect_count == 1
-    assert led.coincident() == []
+    assert led2.shell_effect_count == 1
+    assert len(led2.coincident()) == 1
 
 
 def test_render_reminder_lists_coincident_changes_as_not_yours():
@@ -658,13 +517,3 @@ def test_fork_marker_is_a_note_not_an_effect(tmp_path):
     led2 = _mk(tmp_path)
     assert any(r.get("kind") == "fork" for r in led2._snapshot())
     assert len(led2.effects()) == 1
-
-
-def test_digest_changes_when_a_coincident_row_lands(tmp_path):
-    led = _mk(tmp_path)
-    led.record_effect(kind="file_edit", operation="edit", summary="edited a.py", path="/r/a.py")
-    before = led.digest()
-    led.record_shell_git_effect(
-        command="sleep 30", delta=[{"op": "modified", "path": "b.py"}], repo="/r",
-    )
-    assert led.digest() != before

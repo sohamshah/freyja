@@ -46,89 +46,60 @@ def _add_write(led, path, lines):
     )
 
 
-def test_reminder_none_when_empty(tmp_path):
-    fake, _ = _fake(tmp_path)
-    assert fake._build_write_ledger_reminder() is None
-
-
-def test_reminder_emits_then_debounces(tmp_path):
+def test_reminder_debounces_and_reemits_on_change_floor_or_compaction(tmp_path):
     fake, led = _fake(tmp_path)
+    assert fake._build_write_ledger_reminder() is None  # nothing recorded yet
+
     _add_write(led, "/repo/widget_tools.py", 680)
     first = fake._build_write_ledger_reminder()
-    assert first is not None
-    assert "widget_tools.py (680 lines)" in first
-    # Same digest, within floor → suppressed on the next few turns.
+    assert first is not None and "widget_tools.py (680 lines)" in first
+    # Same digest, within the floor: suppressed on the next turns.
     assert fake._build_write_ledger_reminder() is None
     assert fake._build_write_ledger_reminder() is None
 
+    # A new effect changes the digest, so it goes out again.
+    _add_write(led, "/repo/b.py", 9)
+    changed = fake._build_write_ledger_reminder()
+    assert changed is not None and "b.py" in changed
 
-def test_reminder_reemits_after_floor(tmp_path):
-    fake, led = _fake(tmp_path)
-    _add_write(led, "/repo/a.py", 3)
-    assert fake._build_write_ledger_reminder() is not None
     # Floor is 4: after enough suppressed turns it re-emits even if unchanged.
     outs = [fake._build_write_ledger_reminder() for _ in range(5)]
     assert any(o is not None for o in outs)
 
+    # A compaction just fired: the next reminder says so.
+    fake.session.compaction_count = 1
+    after = fake._build_write_ledger_reminder()
+    assert after is not None
+    assert "just compacted" in after.lower()
 
-def test_reminder_changes_on_new_effect(tmp_path):
+
+def test_forgetting_correction_fires_once_on_a_disowning_claim(tmp_path):
     fake, led = _fake(tmp_path)
-    _add_write(led, "/repo/a.py", 3)
-    assert fake._build_write_ledger_reminder() is not None
-    _add_write(led, "/repo/b.py", 9)  # digest changes
-    out = fake._build_write_ledger_reminder()
-    assert out is not None and "b.py" in out
 
+    def last_says(text: str) -> None:
+        fake.session.transcript.entries = [
+            SimpleNamespace(message=SimpleNamespace(role="assistant", content=text)),
+        ]
 
-def test_just_compacted_framing(tmp_path):
-    fake, led = _fake(tmp_path)
-    _add_write(led, "/repo/a.py", 3)
-    fake._build_write_ledger_reminder()  # initial emit
-    fake.session.compaction_count = 1   # a compaction just fired
-    out = fake._build_write_ledger_reminder()
-    assert out is not None
-    assert "just compacted" in out.lower()
+    # Nothing in the ledger: a denial is not a false one.
+    last_says("No changes were made.")
+    assert fake._build_forgetting_correction() is None
 
-
-def test_forgetting_correction_fires_once(tmp_path):
-    fake, led = _fake(tmp_path)
     _add_write(led, "/repo/widget_tools.py", 680)
-    # Last assistant message disowns the work.
-    fake.session.transcript.entries = [
-        SimpleNamespace(message=SimpleNamespace(
-            role="assistant",
-            content="I have no recollection of making changes; everything was read-only.",
-        )),
-    ]
-    out = fake._build_forgetting_correction()
+    # An accurate report is left alone.
+    last_says("I created widget_tools.py and will continue.")
+    assert fake._build_forgetting_correction() is None
+
+    # The last assistant message disowns the work.
     claim = "I have no recollection of making changes; everything was read-only."
+    last_says(claim)
+    out = fake._build_forgetting_correction()
     assert out is not None
     assert "ledger records" in out
     # The triggering sentence is quoted to the agent and carried to the card.
     assert f'"{claim}"' in out
     assert fake.forgetting_calls == [(1, claim)]
-    # Same tool-call index → flagged only once.
-    assert fake._build_forgetting_correction() is None
-
-
-def test_no_correction_without_negative_claim(tmp_path):
-    fake, led = _fake(tmp_path)
-    _add_write(led, "/repo/a.py", 3)
-    fake.session.transcript.entries = [
-        SimpleNamespace(message=SimpleNamespace(
-            role="assistant", content="I created a.py and will continue.",
-        )),
-    ]
-    assert fake._build_forgetting_correction() is None
-
-
-def test_no_correction_when_ledger_empty(tmp_path):
-    fake, led = _fake(tmp_path)
-    fake.session.transcript.entries = [
-        SimpleNamespace(message=SimpleNamespace(
-            role="assistant", content="No changes were made.",
-        )),
-    ]
+    # Same tool-call index: flagged only once.
     assert fake._build_forgetting_correction() is None
 
 

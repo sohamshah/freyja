@@ -10,14 +10,12 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import bridge.wm_backfill as wb
 from bridge.working_memory import WorkingMemory, apply_wm_result
-
 
 # ─── Fixtures ──────────────────────────────────────────────────────────
 
@@ -167,7 +165,7 @@ def test_scan_reason_missing_vs_stale_vs_fresh(home):
     assert report.skipped_fresh == 1
 
 
-def test_scan_respects_failure_marker_until_retry_window(home):
+def test_scan_honours_a_failure_marker_until_the_retry_window_or_a_transcript_change(home):
     tpath = _write_transcript(home, "desktop-marked")
     data = json.loads(tpath.read_text())
     proj = home.projects / "desktop-marked"
@@ -187,32 +185,24 @@ def test_scan_respects_failure_marker_until_retry_window(home):
         "status": "failed",
         "transcript_last_activity": data["last_activity"],
     })
-    report = wb.scan_sessions()
-    assert [c.session_id for c in report.candidates] == ["desktop-marked"]
+    assert [c.session_id for c in wb.scan_sessions().candidates] == ["desktop-marked"]
 
-
-def test_scan_transcript_change_overrides_marker(home):
-    tpath = _write_transcript(home, "desktop-moved")
-    proj = home.projects / "desktop-moved"
-    proj.mkdir(parents=True, exist_ok=True)
+    # So does a transcript that moved on since the attempt, window or not.
     wb._write_marker(proj, {
         "attempted_at": time.time() - 60,
         "status": "failed",
         "transcript_last_activity": 12345.0,          # ≠ current
     })
-    report = wb.scan_sessions()
-    assert [c.session_id for c in report.candidates] == ["desktop-moved"]
+    assert [c.session_id for c in wb.scan_sessions().candidates] == ["desktop-marked"]
 
 
 # ─── Shared apply projection ───────────────────────────────────────────
 
 
-def test_apply_wm_result_dict_shape(tmp_path):
+def test_apply_wm_result_projects_a_dict_and_tolerates_legacy_lists_and_garbage(tmp_path):
     wm = WorkingMemory(session_id="s", project_dir=tmp_path)
     wm.ensure()
-    counts = apply_wm_result(wm, WM_RESULT)
-    assert counts["overview"] == 1
-    assert counts["upserts"] == 3
+    assert apply_wm_result(wm, WM_RESULT) == {"overview": 1, "upserts": 3}
     ov = wm.overview()
     assert ov["summary"] == "Built the scheduler flock layer."
     assert ov["actionsCompleted"] == ["added FileLock", "wired owner lock"]
@@ -221,17 +211,15 @@ def test_apply_wm_result_dict_shape(tmp_path):
     threads = wm.list(type="open_thread")
     assert threads and threads[0]["workstreamId"] == ws[0]["id"]
 
-
-def test_apply_wm_result_legacy_list_and_garbage(tmp_path):
-    wm = WorkingMemory(session_id="s", project_dir=tmp_path)
-    wm.ensure()
-    counts = apply_wm_result(
-        wm, [{"type": "workstream", "title": "Legacy"}, "noise", 42],
-    )
-    assert counts == {"overview": 0, "upserts": 1}
-    assert wm.overview() is None
-    assert apply_wm_result(wm, None) == {"overview": 0, "upserts": 0}
-    assert apply_wm_result(wm, "garbage") == {"overview": 0, "upserts": 0}
+    (tmp_path / "legacy").mkdir()
+    legacy = WorkingMemory(session_id="s2", project_dir=tmp_path / "legacy")
+    legacy.ensure()
+    assert apply_wm_result(
+        legacy, [{"type": "workstream", "title": "Legacy"}, "noise", 42],
+    ) == {"overview": 0, "upserts": 1}
+    assert legacy.overview() is None
+    assert apply_wm_result(legacy, None) == {"overview": 0, "upserts": 0}
+    assert apply_wm_result(legacy, "garbage") == {"overview": 0, "upserts": 0}
 
 
 # ─── Per-session round trip ────────────────────────────────────────────
@@ -265,28 +253,22 @@ def test_backfill_session_roundtrip(home):
     assert not report2.candidates
 
 
-def test_backfill_session_empty_result_writes_marker(home):
+@pytest.mark.parametrize(
+    "result",
+    [None, {"summary": "", "actions_completed": [], "entities": []}],
+    ids=["none", "vacuous"],
+)
+def test_a_result_that_applies_nothing_writes_an_empty_marker_not_ok(home, result):
+    """A Call B result that applies nothing (None, or an empty summary with
+    inapplicable entities) gets a marker that says 'empty' (retryable after
+    the window), never 'ok' (which would strand the session forever)."""
     _write_transcript(home, "desktop-empty")
     [cand] = wb.scan_sessions().candidates
-    res = wb.backfill_session(cand, FakeStructuredProvider(None))
+    res = wb.backfill_session(cand, FakeStructuredProvider(result))
     assert res["status"] == "empty"
-    marker = wb._read_marker(home.projects / "desktop-empty")
-    assert marker["status"] == "empty"
-    # Marker suppresses an immediate retry.
+    assert wb._read_marker(home.projects / "desktop-empty")["status"] == "empty"
+    # The marker suppresses an immediate retry.
     assert not wb.scan_sessions().candidates
-
-
-def test_vacuous_result_writes_empty_marker_not_ok(home):
-    """A Call B result with empty summary + inapplicable entities applies
-    nothing — the marker must say 'empty' (retryable after the window),
-    never 'ok' (which would strand the session forever)."""
-    _write_transcript(home, "desktop-vacuous")
-    [cand] = wb.scan_sessions().candidates
-    vacuous = {"summary": "", "actions_completed": [], "entities": []}
-    res = wb.backfill_session(cand, FakeStructuredProvider(vacuous))
-    assert res["status"] == "empty"
-    marker = wb._read_marker(home.projects / "desktop-vacuous")
-    assert marker["status"] == "empty"
 
 
 def test_ok_marker_not_trusted_when_wm_missing(home):
@@ -349,26 +331,17 @@ def test_live_session_deferred_at_fire_time(home):
     assert wb._read_marker(home.projects / "desktop-wentlive") is None
 
 
-def test_backfill_session_dry_run_makes_no_calls(home):
-    _write_transcript(home, "desktop-dry")
-    [cand] = wb.scan_sessions().candidates
-    provider = FakeStructuredProvider(WM_RESULT)
-    res = wb.backfill_session(cand, provider, dry_run=True)
-    assert res["status"] == "dry_run"
-    assert provider.calls == 0
-    assert not (home.projects / "desktop-dry" / "working_memory.json").exists()
-
-
 # ─── Pass runner ───────────────────────────────────────────────────────
 
 
-def test_run_backfill_pass_dry_run_reports_scan(home):
+def test_run_backfill_pass_dry_run_reports_the_scan_and_writes_nothing(home):
     _write_transcript(home, "desktop-a")
     _write_transcript(home, "desktop-b")
     report = wb.run_backfill_pass(limit=10, dry_run=True)
     assert report["status"] == "ok"
     assert report["scan"]["candidates"] == 2
     assert all(r["status"] == "dry_run" for r in report["results"])
+    assert not (home.projects / "desktop-a" / "working_memory.json").exists()
 
 
 def test_run_backfill_pass_respects_limit(home, monkeypatch):

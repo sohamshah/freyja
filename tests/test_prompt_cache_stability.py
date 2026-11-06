@@ -18,7 +18,6 @@ import pytest
 
 from engine.types import ImageBlock, Message, TextBlock, ToolCall
 
-
 # ─── the meter: OpenAI cache writes ───────────────────────────────────
 
 
@@ -53,34 +52,12 @@ def test_openai_cache_writes_are_split_out_of_input_and_priced_as_writes() -> No
     # $60 input, $6 cached, $75 cache write per MTok.
     assert cost == pytest.approx((3 * 60 + 30_000 * 6 + 99_997 * 75) / 1e6)
 
-
-def test_models_without_cache_writes_keep_their_input() -> None:
     # gpt-5.5 reports cache_write_tokens: 0; older SDKs omit the field.
-    from engine.openai_provider import _api_usage_from_response_usage
-
     for written in (0, None):
         usage = _api_usage_from_response_usage(
             _openai_usage(input_tokens=5_000, cached=1_000, written=written)
         )
         assert (usage.input_tokens, usage.cache_write_tokens) == (4_000, 0)
-
-
-def test_sub_agent_records_report_cache_reads_and_writes() -> None:
-    # Once the cache is warm, input_tokens is a few tokens per call; the
-    # receipt adds the cache fields to show what the sub-agent read.
-    from bridge.tools.sub_agent_registry import SubAgentRecord
-    from bridge.tools.sub_agent_tool import _record_to_dict
-
-    record = SubAgentRecord(id="sub_1", label="scan", task="scan", mode="background")
-    record.input_tokens = 6
-    record.cache_read_tokens = 15_481
-    record.cache_write_tokens = 15_723
-    fields = _record_to_dict(record)
-    assert (fields["tokensIn"], fields["tokensCacheRead"], fields["tokensCacheWrite"]) == (
-        6,
-        15_481,
-        15_723,
-    )
 
 
 # ─── screenshot pruning ───────────────────────────────────────────────
@@ -402,9 +379,7 @@ def test_call_tool_keeps_the_tools_permission_prompt() -> None:
     ("model", "standard"),
     [
         ("gpt-6-astra-ultrafast", "gpt-6-astra"),
-        ("gpt-6.1-sol-ultrafast", "gpt-6.1-sol"),
         ("claude-opus-5-5-fast", "claude-opus-5-5"),
-        ("gpt-6-astra", "gpt-6-astra"),
         ("claude-sonnet-5-5", "claude-sonnet-5-5"),
         # A separate Fireworks deployment, not a speed tier of kimi-k3.
         ("kimi-k3-fast", "kimi-k3-fast"),

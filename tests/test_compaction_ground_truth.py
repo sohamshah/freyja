@@ -40,13 +40,11 @@ def _big_transcript(n: int = 24) -> TranscriptManager:
     return tm
 
 
-def test_compact_accepts_and_embeds_ground_truth():
-    tm = _big_transcript()
+def test_compact_embeds_ground_truth_only_when_given():
     provider = _FakeProvider()
-    compactor = SummaryCompaction()
     ground_truth = "- created widget_tools.py (680 lines)\n- edited runner_factory.py"
 
-    result = compactor.compact(tm, provider, ground_truth=ground_truth)
+    result = SummaryCompaction().compact(_big_transcript(), provider, ground_truth=ground_truth)
 
     assert result.success, result.error
     assert provider.last_prompt is not None
@@ -56,14 +54,10 @@ def test_compact_accepts_and_embeds_ground_truth():
     # …and the template now asks for a first-person actions section.
     assert "Actions I performed" in provider.last_prompt
 
-
-def test_compact_still_works_without_ground_truth():
-    tm = _big_transcript()
-    provider = _FakeProvider()
-    compactor = SummaryCompaction()
-    result = compactor.compact(tm, provider)  # no ground_truth
-    assert result.success, result.error
-    assert "Confirmed actions (ground truth" not in (provider.last_prompt or "")
+    # Without a seed there is no ground-truth section.
+    bare = _FakeProvider()
+    assert SummaryCompaction().compact(_big_transcript(), bare).success
+    assert "Confirmed actions (ground truth" not in (bare.last_prompt or "")
 
 
 class _StructuredProvider(_FakeProvider):

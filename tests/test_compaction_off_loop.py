@@ -21,12 +21,14 @@ import pytest
 
 from engine.compaction import SummaryCompaction
 from engine.providers import APIUsage, ContextOverflowError, ProviderResponse, ToolCallResponse
-from engine.runner import AsyncAgentRunner, RunnerContext
+from engine.runner import AsyncAgentRunner
 from engine.session import Session
 from engine.tools import ToolDefinition, ToolRegistry, ToolResult
 from engine.types import AgentConfig, ThinkingConfig
 
-SUMMARY_DELAY_S = 0.5
+# How long a summary call blocks its thread in the tests that watch the event
+# loop. The gap assertions scale with it.
+SUMMARY_DELAY_S = 0.2
 LONG_RESULT = "line of output\n" * 400
 
 
@@ -57,16 +59,19 @@ def _end(text: str, *, input_tokens: int = 1_000) -> ProviderResponse:
 
 class _SlowSummaryProvider:
     """Plays back the main calls. The summary requests compaction sends
-    through the synchronous complete() take SUMMARY_DELAY_S, like a real
-    blocking HTTP call."""
+    through the synchronous complete() block their thread like a real HTTP
+    call: for ``delay`` seconds, or until ``release`` is set."""
 
     name = "anthropic"
     model_id = "claude-sonnet-5-5"
     prompt_cache_ttl_s = 300.0
 
-    def __init__(self, steps, *, context_window: int = 100_000):
+    def __init__(self, steps, *, context_window: int = 100_000, delay: float = SUMMARY_DELAY_S,
+                 release: threading.Event | None = None):
         self.steps = list(steps)
         self.context_window = context_window
+        self.delay = delay
+        self.release = release
         self.summary_requests: list[list] = []
         self.summary_started = threading.Event()
         self.summary_threads: list[str] = []
@@ -83,7 +88,10 @@ class _SlowSummaryProvider:
         self.summary_requests.append(list(messages))
         self.summary_threads.append(threading.current_thread().name)
         self.summary_started.set()
-        time.sleep(SUMMARY_DELAY_S)
+        if self.release is not None:
+            self.release.wait(5)
+        else:
+            time.sleep(self.delay)
         usage = APIUsage(input_tokens=40, output_tokens=500)
         if "JSON Schema" in messages[-1].get_text():
             return ProviderResponse(content='{"summary": "wm", "actions_completed": [], "entities": []}',
@@ -140,6 +148,17 @@ async def _with_ticker(aw):
     return result, max(b - a for a, b in zip(ticks, ticks[1:]))
 
 
+async def _once_the_summary_is_in_flight(turn: asyncio.Task, provider: _SlowSummaryProvider) -> None:
+    while not provider.summary_started.is_set():
+        assert not turn.done(), "the turn ended without a summary call"
+        await asyncio.sleep(0.01)
+
+
+async def _let_the_loop_run(steps: int = 20) -> None:
+    for _ in range(steps):
+        await asyncio.sleep(0)
+
+
 def _types(events: list, kind: str) -> list:
     return [e for e in events if getattr(e, "type", "") == kind]
 
@@ -172,7 +191,16 @@ async def test_pre_request_compaction_keeps_the_event_loop_running(with_working_
     assert "MainThread" not in provider.summary_threads
 
 
-async def test_overflow_compaction_keeps_the_event_loop_running():
+async def test_overflow_compaction_keeps_the_event_loop_running(monkeypatch):
+    # After the cascade the runner backs off 0.5 s before it retries the
+    # request, as after any provider error. That wait is not what this
+    # measures: clamp every sleep to the ticker's 10 ms.
+    real_sleep = asyncio.sleep
+
+    async def quick_sleep(delay, *args, **kwargs):
+        return await real_sleep(min(delay, 0.01), *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "sleep", quick_sleep)
     events: list = []
     steps = [_tools("c1"), _tools("c2"), _tools("c3"), _end("first done"),
              ContextOverflowError("prompt is too long: 210000 tokens > 200000 maximum"),
@@ -196,15 +224,20 @@ async def test_a_stop_during_compaction_waits_for_the_worker_before_the_turn_end
     # can't cut a thread short, so the turn must not end (and hand the
     # transcript to the next turn, a save or a fork) while it still works.
     events: list = []
-    provider = _SlowSummaryProvider(_PRE_REQUEST_STEPS)
+    release = threading.Event()
+    provider = _SlowSummaryProvider(_PRE_REQUEST_STEPS, release=release)
     runner = _runner(provider, events)
     session = Session.create(system_prompt="t")
     await runner.run(session, "first task")
 
     turn = asyncio.create_task(runner.run(session, "second task"))
-    while not provider.summary_started.is_set():
-        await asyncio.sleep(0.01)
-    turn.cancel()
+    try:
+        await _once_the_summary_is_in_flight(turn, provider)
+        turn.cancel()
+        await _let_the_loop_run()
+        assert not turn.done(), "the stop did not wait for the worker"
+    finally:
+        release.set()
     with pytest.raises(asyncio.CancelledError):
         await turn
 
@@ -221,7 +254,9 @@ async def test_an_interrupt_during_compaction_injects_the_message_after_it():
     # is in: the message goes in after the compaction, and the turn goes on.
     events: list = []
     queued: list[str] = []
-    provider = _SlowSummaryProvider(_PRE_REQUEST_STEPS[:3] + [_end("took the follow-up"), _end("spare")])
+    release = threading.Event()
+    provider = _SlowSummaryProvider(_PRE_REQUEST_STEPS[:3] + [_end("took the follow-up"), _end("spare")],
+                                    release=release)
 
     async def _inject(session, iteration):
         while queued:
@@ -232,10 +267,12 @@ async def test_an_interrupt_during_compaction_injects_the_message_after_it():
     await runner.run(session, "first task")
 
     turn = asyncio.create_task(runner.run(session, "second task"))
-    while not provider.summary_started.is_set():
-        await asyncio.sleep(0.01)
-    queued.append("also check the tests")
-    assert runner.request_interrupt()
+    try:
+        await _once_the_summary_is_in_flight(turn, provider)
+        queued.append("also check the tests")
+        assert runner.request_interrupt()
+    finally:
+        release.set()
     result = await turn
 
     assert result.success
@@ -282,7 +319,7 @@ async def test_summarize_context_keeps_the_event_loop_running():
 
 async def test_two_summarize_context_calls_in_one_batch_run_one_after_the_other():
     events: list = []
-    provider = _SlowSummaryProvider([])
+    provider = _SlowSummaryProvider([], delay=0.05)
     in_flight = {"now": 0, "most": 0}
     complete = provider.complete
 
@@ -317,13 +354,14 @@ async def test_an_interrupt_during_summarize_context_waits_for_its_worker():
     events: list = []
     tool_events: list = []
     queued: list[str] = []
+    release = threading.Event()
     summarize_call = ProviderResponse(
         content="", stop_reason="tool_use", usage=APIUsage(input_tokens=1_000),
         tool_calls=[ToolCallResponse(id="sc1", name="summarize_context", arguments={"scope": "all"})],
     )
     provider = _SlowSummaryProvider(
         [_tools("c1"), _tools("c2"), _tools("c3"), _end("first done"), summarize_call, _end("took the follow-up")],
-        context_window=1_000_000,
+        context_window=1_000_000, release=release,
     )
 
     async def _inject(session, iteration):
@@ -341,10 +379,12 @@ async def test_an_interrupt_during_summarize_context_waits_for_its_worker():
     await runner.run(session, "first task")
 
     turn = asyncio.create_task(runner.run(session, "now compact"))
-    while not provider.summary_started.is_set():
-        await asyncio.sleep(0.01)
-    queued.append("also check the tests")
-    assert runner.request_interrupt()
+    try:
+        await _once_the_summary_is_in_flight(turn, provider)
+        queued.append("also check the tests")
+        assert runner.request_interrupt()
+    finally:
+        release.set()
     result = await turn
 
     assert result.success
@@ -362,12 +402,14 @@ async def test_an_interrupt_during_summarize_context_waits_for_its_worker():
 
 class _Worker:
     """Stands in for SummaryCompaction.compact: blocks its thread like the
-    summary call, then rewrites the transcript, and notes whether the bridge
-    still counted a compaction as running when it finished."""
+    summary call until released, then rewrites the transcript, and notes
+    whether the bridge still counted a compaction as running when it
+    finished."""
 
     def __init__(self, sess):
         self.sess = sess
         self.started = threading.Event()
+        self.release = threading.Event()
         self.finished = threading.Event()
         self.in_flight_at_finish: list[bool] = []
 
@@ -375,7 +417,7 @@ class _Worker:
         from engine.compaction import CompactionResult
 
         self.started.set()
-        time.sleep(SUMMARY_DELAY_S)
+        self.release.wait(5)
         transcript.append_compaction(summary="We read the files.", first_kept_id=transcript.entries[-1].id,
                                      tokens_before=10_000)
         self.in_flight_at_finish.append(self.sess._compaction_in_flight)
@@ -416,18 +458,24 @@ def _bridge_session(monkeypatch, tmp_path):
 
 async def _stop_while_compacting(aw, worker: _Worker) -> None:
     task = asyncio.create_task(aw)
-    while not worker.started.is_set():
-        assert not task.done(), "returned without compacting"
-        await asyncio.sleep(0.01)
-    task.cancel()
+    try:
+        while not worker.started.is_set():
+            assert not task.done(), "returned without compacting"
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await _let_the_loop_run()
+        # A thread can't be cut short: the stop waits for the worker to
+        # write the transcript, and the flag holds off the mid-session
+        # extraction until then.
+        assert not task.done(), "the stop did not wait for the worker"
+    finally:
+        worker.release.set()
     try:
         with pytest.raises(asyncio.CancelledError):
             await task
-        # The stop lands once the worker has written the transcript, and the
-        # flag held off the mid-session extraction until then.
-        assert worker.finished.is_set(), "the stop did not wait for the worker"
     finally:
         worker.finished.wait(5)
+    assert worker.finished.is_set()
     assert worker.in_flight_at_finish == [True]
 
 

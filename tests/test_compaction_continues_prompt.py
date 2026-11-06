@@ -21,9 +21,9 @@ import json
 import pytest
 
 from engine.compaction import (
+    _NOT_RUN_YET,
     PromptPrefix,
     SummaryCompaction,
-    _NOT_RUN_YET,
     _effort_at_most,
     _results_for_open_tool_calls,
     message_signature,
@@ -167,7 +167,7 @@ async def test_the_prefix_is_the_last_call_unchanged_plus_its_reply():
 
 
 async def test_no_prefix_once_the_cache_has_expired_or_the_prompt_changed():
-    _, runner, session = await _ran([_tools("c1"), _end("done")])
+    provider, runner, session = await _ran([_tools("c1"), _end("done")])
     assert runner.cached_prompt_prefix(session.transcript) is not None
 
     # A rewrite of an earlier message (pruning, halving) breaks the match.
@@ -183,6 +183,11 @@ async def test_no_prefix_once_the_cache_has_expired_or_the_prompt_changed():
     session.system_prompt = "you are terse"
 
     runner._sent_prompt.sent_at -= 300.0
+    assert runner.cached_prompt_prefix(session.transcript) is None
+    runner._sent_prompt.sent_at += 300.0
+
+    # A provider without a known cache lifetime never has one.
+    provider.prompt_cache_ttl_s = None
     assert runner.cached_prompt_prefix(session.transcript) is None
 
 
@@ -204,15 +209,6 @@ async def test_no_prefix_when_the_summary_request_would_not_fit():
         [_tools("c1", input_tokens=48_000), _end("done", input_tokens=48_000)],
         context_window=100_000,
     )
-    assert runner.cached_prompt_prefix(session.transcript) is None
-
-
-async def test_no_prefix_for_a_provider_without_a_known_cache_lifetime():
-    provider = _CachingProvider([_tools("c1"), _end("done")])
-    provider.prompt_cache_ttl_s = None
-    runner = _runner(provider)
-    session = Session.create(system_prompt="t")
-    await runner.run(session, "go")
     assert runner.cached_prompt_prefix(session.transcript) is None
 
 

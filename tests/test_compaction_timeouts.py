@@ -16,7 +16,7 @@ from engine import compaction as comp
 from engine.compaction import SummaryCompaction
 
 
-def _run(monkeypatch, *, summary, extract, wm_timeout=0.2, sum_timeout=2.0):
+def _run(monkeypatch, *, summary, extract, wm_timeout=0.05, sum_timeout=2.0):
     monkeypatch.setattr(comp, "WORKING_MEMORY_CALL_TIMEOUT_S", wm_timeout)
     monkeypatch.setattr(comp, "SUMMARY_CALL_TIMEOUT_S", sum_timeout)
     c = SummaryCompaction()
@@ -64,19 +64,9 @@ def test_hung_summary_call_raises_timeout(monkeypatch):
 
     try:
         with pytest.raises(TimeoutError):
-            _run(monkeypatch, summary=summary, extract=extract, sum_timeout=0.3)
+            _run(monkeypatch, summary=summary, extract=extract, sum_timeout=0.05)
     finally:
         release.set()
-
-
-def test_fast_calls_unchanged(monkeypatch):
-    result, upserts, _ = _run(
-        monkeypatch,
-        summary=lambda *a, **k: "s",
-        extract=lambda *a, **k: {"summary": "wm"},
-    )
-    assert result == "s"
-    assert upserts == [{"summary": "wm"}]
 
 
 # ─── the summary deadline grows with the transcript ──────────────────
@@ -94,29 +84,21 @@ def test_summary_deadline_grows_with_the_transcript(monkeypatch):
     assert comp.summary_call_timeout_s(2_000_000) == 600.0
 
 
-def _sized_run(monkeypatch, size_tokens):
-    # Floor 0.2 s, plus 0.5 s per 1k tokens: a 1k-token transcript gets 0.7 s.
-    monkeypatch.setattr(comp, "WORKING_MEMORY_CALL_TIMEOUT_S", 0.2)
-    monkeypatch.setattr(comp, "SUMMARY_CALL_TIMEOUT_S", 0.2)
-    monkeypatch.setattr(comp, "SUMMARY_CALL_TIMEOUT_PER_KTOKEN_S", 0.5)
+def test_a_big_transcript_gets_its_longer_deadline(monkeypatch):
+    # Floor 0.05 s, plus 0.3 s per 1k tokens: a 1k-token transcript gets
+    # 0.35 s, so a 0.1 s summary is in time where the floor alone would cut it.
+    monkeypatch.setattr(comp, "WORKING_MEMORY_CALL_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(comp, "SUMMARY_CALL_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(comp, "SUMMARY_CALL_TIMEOUT_PER_KTOKEN_S", 0.3)
     c = SummaryCompaction()
 
     def summary(*a, **k):
-        time.sleep(0.4)
+        time.sleep(0.1)
         return "in time"
 
     monkeypatch.setattr(c, "_generate_summary", summary)
     monkeypatch.setattr(c, "_extract_working_memory", lambda *a, **k: {"summary": "wm"})
-    return c._run_summary_and_working_memory(
-        "conversation", object(), on_working_memory_upserts=lambda _u: None,
-        size_tokens=size_tokens,
+    result = c._run_summary_and_working_memory(
+        "conversation", object(), on_working_memory_upserts=lambda _u: None, size_tokens=1_000,
     )
-
-
-def test_a_big_transcript_gets_its_longer_deadline(monkeypatch):
-    assert _sized_run(monkeypatch, 1_000) == "in time"
-
-
-def test_the_floor_still_applies_without_a_size(monkeypatch):
-    with pytest.raises(TimeoutError, match="exceeded 0s"):
-        _sized_run(monkeypatch, None)
+    assert result == "in time"

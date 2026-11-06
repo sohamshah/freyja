@@ -14,6 +14,7 @@ most twice, so a reply within about 13 minutes finds it cached.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -116,13 +117,17 @@ async def test_the_keepalive_moves_the_conversation_breakpoint_onto_the_reply(mo
 
 # ─── the runner's keep-alive schedule ────────────────────────────────
 
+# A 0.16 s "cache": the keep-alive goes out 0.12 s before it would expire,
+# 0.04 s after the turn, and the cache counts as gone 0.01 s before the end.
+TTL_S = 0.16
+
 
 class _PlainProvider:
     name = "anthropic"
     model_id = "claude-sonnet-5-5"
     context_window = 1_000_000
 
-    def __init__(self, steps, *, ttl=0.6):
+    def __init__(self, steps, *, ttl=TTL_S):
         self.steps = list(steps)
         self.prompt_cache_ttl_s = ttl
         self.pings: list[list[Message]] = []
@@ -157,9 +162,8 @@ def _steps():
 
 @pytest.fixture
 def quick_cache(monkeypatch):
-    # A 0.6 s "cache": keep-alives 0.3 s before it would expire.
-    monkeypatch.setattr(runner_module, "CACHE_KEEPALIVE_LEAD_S", 0.3)
-    monkeypatch.setattr(runner_module, "PROMPT_CACHE_TTL_MARGIN_S", 0.1)
+    monkeypatch.setattr(runner_module, "CACHE_KEEPALIVE_LEAD_S", 0.12)
+    monkeypatch.setattr(runner_module, "PROMPT_CACHE_TTL_MARGIN_S", 0.01)
 
 
 def _runner(provider, *, keep=True, calls=None):
@@ -173,6 +177,14 @@ def _runner(provider, *, keep=True, calls=None):
     )
 
 
+async def _until(condition, *, timeout=2.0):
+    """Poll ``condition`` every 5 ms until it holds."""
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "timed out waiting on the keep-alive"
+        await asyncio.sleep(0.005)
+
+
 async def test_two_keepalives_follow_a_turn_then_stop(quick_cache):
     calls: list[dict] = []
     provider = _Provider(_steps())
@@ -180,18 +192,18 @@ async def test_two_keepalives_follow_a_turn_then_stop(quick_cache):
     session = Session.create(system_prompt="t")
     await runner.run(session, "read it")
 
-    while not provider.pings:
-        await asyncio.sleep(0.02)
+    await _until(lambda: provider.pings)
     # The keep-alive's prompt ends with the reply: a summary can still continue it.
     assert runner.cached_prompt_prefix(session.transcript) is not None
-    await asyncio.sleep(1.4)
+    keeper = runner._cache_keeper
+    await asyncio.wait_for(keeper, timeout=2.0)
 
     assert len(provider.pings) == 2
     for sent in provider.pings:
         assert sent[-1].role == "assistant" and sent[-1].content == "All done."
     assert [c.get("call_kind") for c in calls if c.get("call_kind")] == ["cache_keepalive"] * 2
     # After the last one the cache runs out as usual.
-    assert runner.cached_prompt_prefix(session.transcript) is None
+    await _until(lambda: runner.cached_prompt_prefix(session.transcript) is None)
 
 
 async def test_a_new_turn_cancels_the_pending_keepalive(quick_cache):
@@ -199,9 +211,12 @@ async def test_a_new_turn_cancels_the_pending_keepalive(quick_cache):
     runner = _runner(provider)
     session = Session.create(system_prompt="t")
     await runner.run(session, "read it")
+    first = runner._cache_keeper
     await runner.run(session, "again")
+    second = runner._cache_keeper
     runner.stop_keeping_cache()
-    await asyncio.sleep(0.5)
+    await asyncio.gather(first, second, return_exceptions=True)
+    assert first.cancelled() and second.cancelled()
     assert provider.pings == []
 
 
@@ -210,7 +225,7 @@ async def test_no_keepalive_unless_asked_and_supported(quick_cache):
         runner = _runner(provider, keep=keep)
         await runner.run(Session.create(system_prompt="t"), "read it")
         assert runner._cache_keeper is None
-    await asyncio.sleep(0.7)
+        assert provider.pings == []
 
 
 async def test_no_keepalive_once_the_transcript_changed(quick_cache):
@@ -219,5 +234,5 @@ async def test_no_keepalive_once_the_transcript_changed(quick_cache):
     session = Session.create(system_prompt="t")
     await runner.run(session, "read it")
     session.add_user_message("a message that has not been sent yet")
-    await asyncio.sleep(0.6)
+    await asyncio.wait_for(runner._cache_keeper, timeout=2.0)
     assert provider.pings == []

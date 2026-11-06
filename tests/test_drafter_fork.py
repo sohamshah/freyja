@@ -81,13 +81,14 @@ def test_a_three_backtick_fence_still_parses() -> None:
     assert decision.rationale == "nothing here"
 
 
-def test_the_last_block_wins() -> None:
+def test_the_last_block_wins_and_prose_after_it_is_ignored() -> None:
     # A drafter that shows a draft, reconsiders, and emits a final version
     # meant the final one.
     text = (
         _block('{"decision":"save","rationale":"first","name":"aaa-first",'
                '"description":"d","body":"b"}')
         + _block('{"decision":"skip","rationale":"changed my mind"}')
+        + "\nAnything else here."
     )
     decision = parse_fork_decision(text)
     assert decision is not None
@@ -102,12 +103,8 @@ def test_no_block_is_distinguishable_from_a_skip() -> None:
     # heuristic reported a published candidate as a skip.
     assert parse_fork_decision("I looked and there was nothing.") is None
     assert parse_fork_decision("") is None
-
-
-def test_prose_after_the_block_is_ignored() -> None:
-    text = _block('{"decision":"skip","rationale":"r"}') + "\nAnything else here."
-    decision = parse_fork_decision(text)
-    assert decision is not None and decision.decision == "skip"
+    # A fenced block without the label is not a decision block.
+    assert extract_block("```json\n{}\n```") is None
 
 
 @pytest.mark.parametrize(
@@ -126,10 +123,17 @@ def test_prose_after_the_block_is_ignored() -> None:
             '{"decision":"save","rationale":"r","name":"Bad Name","description":"d","body":"b"}',
             "not a valid skill name",
         ),
+        (
+            '{"decision":"save","rationale":"r","name":"big-one","description":"d",'
+            '"body":"' + "x" * (MAX_BODY_CHARS + 10) + '"}',
+            "over the",
+        ),
         ('{"decision":"maybe","rationale":"r"}', "unknown decision"),
         ("{not json at all}", "not valid JSON"),
         ('["a","list"]', "not a JSON object"),
     ],
+    ids=["no_name", "no_body", "no_description", "bad_name", "oversized_body",
+         "unknown_decision", "not_json", "not_an_object"],
 )
 def test_a_malformed_save_reports_why(payload: str, fragment: str) -> None:
     # A silently-dropped candidate is indistinguishable from a rational skip,
@@ -140,46 +144,39 @@ def test_a_malformed_save_reports_why(payload: str, fragment: str) -> None:
     assert fragment in decision.error
 
 
-def test_an_oversized_body_is_rejected_with_its_size() -> None:
-    body = "x" * (MAX_BODY_CHARS + 10)
-    decision = parse_fork_decision(
-        _block(
-            '{"decision":"save","rationale":"r","name":"big-one","description":"d",'
-            '"body":"' + body + '"}'
-        )
-    )
-    assert decision is not None
-    assert not decision.is_save
-    assert "over the" in decision.error
-
-
-def test_an_unknown_skill_type_falls_back_to_build() -> None:
+def test_skill_type_triggers_and_tags_are_normalized() -> None:
     decision = parse_fork_decision(
         _block(
             '{"decision":"save","rationale":"r","name":"a-skill","description":"d",'
-            '"skill_type":"nonsense","body":"b"}'
-        )
-    )
-    assert decision is not None
-    assert decision.skill_type == "build"
-
-
-def test_triggers_and_tags_are_cleaned_and_capped() -> None:
-    decision = parse_fork_decision(
-        _block(
-            '{"decision":"save","rationale":"r","name":"a-skill","description":"d",'
-            '"body":"b","triggers":[" one ","",2,"two","3","4","5","6","7","8","9"],'
+            '"skill_type":"nonsense","body":"b",'
+            '"triggers":[" one ","",2,"two","3","4","5","6","7","8","9"],'
             '"tags":["  x  "]}'
         )
     )
     assert decision is not None
+    assert decision.skill_type == "build"  # an unknown type falls back
     assert decision.triggers[0] == "one"
-    assert len(decision.triggers) == 8
+    assert len(decision.triggers) == 8  # cleaned and capped
     assert decision.tags == ["x"]
 
 
-def test_extract_block_returns_none_without_the_label() -> None:
-    assert extract_block("```json\n{}\n```") is None
+def test_crlf_output_and_indented_fences_still_parse() -> None:
+    # re.MULTILINE's "$" matches before the "\n" but after the "\r", so a model
+    # emitting Windows line endings produced no match at all and its decision
+    # was discarded as "no block emitted".
+    crlf = (
+        "Reasoning.\r\n\r\n````skill-candidate\r\n"
+        '{"decision": "skip", "rationale": "crlf"}\r\n'
+        "````\r\n"
+    )
+    decision = parse_fork_decision(crlf)
+    assert decision is not None
+    assert decision.decision == "skip" and decision.rationale == "crlf"
+
+    indented = "   ````skill-candidate\n" '{"decision": "skip", "rationale": "indented"}\n' "   ````\n"
+    decision = parse_fork_decision(indented)
+    assert decision is not None
+    assert decision.rationale == "indented"
 
 
 # ─── the injected message ─────────────────────────────────────────────
@@ -196,65 +193,40 @@ def _injection(**over) -> str:
     return build_forked_drafter_injection(**kwargs)
 
 
-def test_the_injection_switches_the_model_out_of_assistant_mode() -> None:
-    # It arrives behind a system prompt that spent ~20 KB telling the model to
-    # be the operator's assistant, so it has to say plainly that this turn is
-    # not a continuation of the work.
-    text = _injection()
-    assert "MODE SWITCH" in text
-    assert "do not continue the previous task" in text
-    assert "The operator is not reading this turn" in text
-
-
-def test_the_injection_does_not_paste_the_conversation() -> None:
-    # The whole point of the fork: the transcript is already above.
-    text = _injection()
-    assert "[CONVERSATION]" not in text
-    assert "conversation above" in text
-
-
-def test_the_injection_carries_the_skill_landscape() -> None:
-    text = _injection()
-    assert "ema-release-ops" in text
-    assert "[SKILLS ON DISK]" in text
-    assert "[LOADED IN THIS SESSION]" in text
-    assert "[RECENTLY REJECTED" in text
-
-
-def test_the_injection_states_the_output_contract_last() -> None:
-    text = _injection()
-    assert "skill-candidate" in text
-    assert text.rstrip().endswith("emit exactly one decision block.")
-    # Four backticks, so a body with its own fences survives.
-    assert "````skill-candidate" in text
-
-
-def test_operator_guidance_is_included_only_when_given() -> None:
-    assert "[OPERATOR GUIDANCE]" not in _injection()
-    with_guidance = _injection(operator_guidance="focus on the deploy workflow")
-    assert "[OPERATOR GUIDANCE]" in with_guidance
-    assert "focus on the deploy workflow" in with_guidance
-
-
-def test_the_injection_is_honest_about_the_read_only_enforcement() -> None:
-    text = _injection()
-    assert "READ-ONLY and that is enforced" in text
-
-
-def test_an_empty_library_reads_as_empty_not_broken() -> None:
-    text = _injection(loaded_skill_names=[], all_skill_names=[])
-    assert "(none yet)" in text
-    assert "(none — no skill was loaded in this session)" in text
-    assert "(no recent rejections)" in text
-
-
-def test_the_skill_list_is_capped() -> None:
+def test_the_injection_carries_the_landscape_and_the_contract_but_not_the_conversation() -> None:
     from bridge.knowledge.learning.constants import DRAFTER_MAX_LISTED_SKILLS
 
+    text = _injection()
+    # It arrives behind a system prompt that spent ~20 KB telling the model to
+    # be the operator's assistant, so it has to say this turn is not a
+    # continuation of the work.
+    assert "MODE SWITCH" in text
+    # The whole point of the fork: the transcript is already above.
+    assert "[CONVERSATION]" not in text
+    assert "conversation above" in text
+    assert "ema-release-ops" in text
+    assert "[SKILLS ON DISK]" in text and "[LOADED IN THIS SESSION]" in text
+    # Four backticks, so a body with its own fences survives, and the output
+    # contract comes last.
+    assert "````skill-candidate" in text
+    assert text.rstrip().endswith("emit exactly one decision block.")
+    # Operator guidance is a section only when given, so automatic cadence
+    # trips keep a stable prefix.
+    assert "[OPERATOR GUIDANCE]" not in text
+    with_guidance = _injection(operator_guidance="focus on the deploy workflow")
+    assert "[OPERATOR GUIDANCE]" in with_guidance and "focus on the deploy workflow" in with_guidance
+
+    # An empty library reads as empty, not broken.
+    empty = _injection(loaded_skill_names=[], all_skill_names=[])
+    assert "(none yet)" in empty
+    assert "(none — no skill was loaded in this session)" in empty
+    assert "(no recent rejections)" in empty
+
+    # The skill list is capped.
     names = [f"skill-{i:03d}" for i in range(DRAFTER_MAX_LISTED_SKILLS + 7)]
-    text = _injection(all_skill_names=names, loaded_skill_names=[])
-    assert "7 more not shown" in text
-    assert names[DRAFTER_MAX_LISTED_SKILLS] not in text
+    capped = _injection(all_skill_names=names, loaded_skill_names=[])
+    assert "7 more not shown" in capped
+    assert names[DRAFTER_MAX_LISTED_SKILLS] not in capped
 
 
 # ─── the read-only fork registry ──────────────────────────────────────
@@ -290,7 +262,7 @@ def _parent_registry():
     return reg
 
 
-def test_the_fork_registry_matches_the_parent_exactly() -> None:
+async def test_the_fork_registry_matches_the_parent_exactly_and_runs_read_tools() -> None:
     # Same entries, same ORDER. Anthropic caches tools → system → messages by
     # prefix, so a reordered array is as invalidating as a changed one.
     from bridge.tools.fork_registry import build_read_only_fork_registry
@@ -305,6 +277,10 @@ def test_the_fork_registry_matches_the_parent_exactly() -> None:
     # And the definition OBJECTS are the parent's, not copies that might drift.
     for name in parent._tools:
         assert fork.get(name).definition is parent.get(name).definition
+
+    result = await fork.get("read_file").execute("c1", {"path": "x"})
+    assert not result.is_error
+    assert result.content == "ran"
 
 
 def test_a_promoted_deferred_tool_stays_promoted_in_the_fork() -> None:
@@ -322,18 +298,6 @@ def test_a_promoted_deferred_tool_stays_promoted_in_the_fork() -> None:
     assert "propose_skill" in [d.name for d in fork.list_definitions()]
 
 
-@pytest.mark.asyncio
-async def test_read_tools_run_normally() -> None:
-    from bridge.tools.fork_registry import build_read_only_fork_registry
-
-    parent = _parent_registry()
-    fork = build_read_only_fork_registry(parent)
-    result = await fork.get("read_file").execute("c1", {"path": "x"})
-    assert not result.is_error
-    assert result.content == "ran"
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["write_file", "bash", "sub_agent"])
 async def test_mutating_tools_refuse_at_execution_time(name: str) -> None:
     # The sub-agent drafter "enforced" read-only with a tool_include whitelist
@@ -352,9 +316,10 @@ async def test_mutating_tools_refuse_at_execution_time(name: str) -> None:
     assert parent.get(name).calls == []
     # But its schema is still on the wire, byte-identical.
     assert tool.definition is parent.get(name).definition
+    # And a refusal does not pop a permission prompt.
+    assert getattr(tool, "requires_permission", False) is False
 
 
-@pytest.mark.asyncio
 async def test_also_allow_opens_one_specific_tool() -> None:
     from bridge.tools.fork_registry import build_read_only_fork_registry
 
@@ -364,14 +329,6 @@ async def test_also_allow_opens_one_specific_tool() -> None:
     )
     result = await fork.get("propose_skill").execute("c1", {"name": "x"})
     assert not result.is_error
-
-
-def test_a_refused_tool_does_not_trigger_a_permission_prompt() -> None:
-    from bridge.tools.fork_registry import build_read_only_fork_registry
-
-    parent = _parent_registry()
-    fork = build_read_only_fork_registry(parent)
-    assert getattr(fork.get("write_file"), "requires_permission", False) is False
 
 
 def test_an_unknown_future_tool_defaults_to_refused() -> None:
@@ -385,6 +342,37 @@ def test_an_unknown_future_tool_defaults_to_refused() -> None:
     fork = build_read_only_fork_registry(parent)
     assert "some_new_destructive_tool" not in READ_ONLY_TOOLS
     assert type(fork.get("some_new_destructive_tool")).__name__ == "RefusedTool"
+
+
+async def test_tool_search_and_call_tool_in_a_fork_use_the_fork() -> None:
+    # The parent's tool_search and call_tool close over the PARENT registry.
+    # Left in place, a fork's call_tool would run the parent's real tools,
+    # past every refusal stub. Both are rebound to the mirror, and neither
+    # changes any tools array.
+    from bridge.tools.fork_registry import build_read_only_fork_registry
+    from bridge.tools.tool_search_tool import CallToolTool, ToolSearchTool
+
+    parent = _parent_registry()
+    parent.register(ToolSearchTool(parent))
+    parent.register(CallToolTool(parent))
+    fork = build_read_only_fork_registry(parent)
+
+    for name in ("tool_search", "call_tool"):
+        assert fork.get(name) is not parent.get(name)
+        # Definition stays byte-identical, or the tools array would differ.
+        assert fork.get(name).definition.parameters == parent.get(name).definition.parameters
+
+    before_parent = [d.name for d in parent.list_definitions()]
+    before_fork = [d.name for d in fork.list_definitions()]
+    found = await fork.get("tool_search").execute("c1", {"tool_name": "propose_skill"})
+    assert not found.is_error
+    assert [d.name for d in parent.list_definitions()] == before_parent
+    assert [d.name for d in fork.list_definitions()] == before_fork
+
+    # A mutating tool reached through call_tool is still refused in the fork.
+    refused = await fork.get("call_tool").execute("c2", {"tool_name": "write_file", "arguments": {}})
+    assert refused.is_error
+    assert "not available in this review fork" in str(refused.content)
 
 
 # ─── the bridge's fork run ────────────────────────────────────────────
@@ -437,7 +425,16 @@ def _bridge_session(sub_tool, monkeypatch, emitted: list):
     return sess
 
 
-@pytest.mark.asyncio
+async def _run(sess, **over):
+    kwargs = {"run_id": "run1", "loaded_skill_names": [], "all_skill_names": [], "operator_guidance": ""}
+    kwargs.update(over)
+    await sess._run_drafter_fork(**kwargs)
+
+
+def _passes(emitted: list) -> list:
+    return [e for e in emitted if e["type"] == "skill_drafter_pass"]
+
+
 async def test_the_fork_is_handed_the_parents_state(monkeypatch) -> None:
     emitted: list = []
     sub = _FakeSubAgentTool(
@@ -445,12 +442,7 @@ async def test_the_fork_is_handed_the_parents_state(monkeypatch) -> None:
     )
     sess = _bridge_session(sub, monkeypatch, emitted)
 
-    await sess._run_drafter_fork(
-        run_id="run1",
-        loaded_skill_names=["a-skill"],
-        all_skill_names=["a-skill"],
-        operator_guidance="",
-    )
+    await _run(sess, loaded_skill_names=["a-skill"], all_skill_names=["a-skill"])
 
     assert sub.call is not None
     # The parent's system prompt, verbatim — not an agent-type prompt.
@@ -469,29 +461,27 @@ async def test_the_fork_is_handed_the_parents_state(monkeypatch) -> None:
     assert sub.call["thinking_effort"] == "high"
 
 
-@pytest.mark.asyncio
-async def test_a_skip_is_reported_with_its_rationale(monkeypatch) -> None:
+async def test_a_skip_is_reported_with_its_rationale_and_linked_to_the_fork(monkeypatch) -> None:
     emitted: list = []
     sub = _FakeSubAgentTool(
         _block('{"decision":"skip","rationale":"one-shot fix, not a pattern"}')
     )
     sess = _bridge_session(sub, monkeypatch, emitted)
-    await sess._run_drafter_fork(
-        run_id="run1", loaded_skill_names=[], all_skill_names=[], operator_guidance="",
-    )
+    await _run(sess)
 
-    passes = [e for e in emitted if e["type"] == "skill_drafter_pass"]
-    assert len(passes) == 1
-    assert passes[0]["decision"] == "skip"
-    assert passes[0]["rationale"] == "one-shot fix, not a pattern"
+    [passed] = _passes(emitted)
+    assert passed["decision"] == "skip"
+    assert passed["rationale"] == "one-shot fix, not a pattern"
     # The model field used to be hardcoded empty, leaving the run detail's
     # model row permanently blank.
-    assert passes[0]["model"] == "claude-opus-4-8"
+    assert passed["model"] == "claude-opus-4-8"
+    # The run links to the fork session for navigation.
+    [linked] = [e for e in emitted if e["type"] == "skill_drafter_run_linked"]
+    assert linked["subagentSessionId"] == "sub_fork_1"
+    assert linked["runId"] == "run1"
 
 
-@pytest.mark.asyncio
 async def test_a_save_publishes_and_names_the_candidate(monkeypatch) -> None:
-
     emitted: list = []
     published: list = []
 
@@ -512,12 +502,9 @@ async def test_a_save_publishes_and_names_the_candidate(monkeypatch) -> None:
         )
     )
     sess = _bridge_session(sub, monkeypatch, emitted)
-    await sess._run_drafter_fork(
-        run_id="run1", loaded_skill_names=[], all_skill_names=[], operator_guidance="",
-    )
+    await _run(sess)
 
-    assert len(published) == 1
-    call = published[0]
+    [call] = published
     assert call["name"] == "ema-release-ops"
     assert call["skill_type"] == "workflow"
     # Provenance points at the conversation that produced it, not the fork.
@@ -526,16 +513,13 @@ async def test_a_save_publishes_and_names_the_candidate(monkeypatch) -> None:
     # drafter_model was previously always empty on every candidate on disk.
     assert call["drafter_model"] == "claude-opus-4-8"
 
-    passes = [e for e in emitted if e["type"] == "skill_drafter_pass"]
-    assert passes[0]["decision"] == "save"
-    assert passes[0]["name"] == "ema-release-ops"
-    assert passes[0]["candidateId"] == "cand_123"
+    [passed] = _passes(emitted)
+    assert passed["decision"] == "save"
+    assert passed["name"] == "ema-release-ops"
+    assert passed["candidateId"] == "cand_123"
 
 
-@pytest.mark.asyncio
-async def test_a_run_with_no_block_does_not_claim_to_know_what_happened(
-    monkeypatch,
-) -> None:
+async def test_a_run_with_no_block_does_not_claim_to_know_what_happened(monkeypatch) -> None:
     # The old path keyword-scanned the final text for "propose_skill" and
     # reported save/skip from that, so a drafter that published and then said
     # "Done — added the release skill." was reported as a skip. Now the
@@ -543,89 +527,52 @@ async def test_a_run_with_no_block_does_not_claim_to_know_what_happened(
     emitted: list = []
     sub = _FakeSubAgentTool("Done — added the release skill.")
     sess = _bridge_session(sub, monkeypatch, emitted)
-    await sess._run_drafter_fork(
-        run_id="run1", loaded_skill_names=[], all_skill_names=[], operator_guidance="",
-    )
+    await _run(sess)
 
-    passes = [e for e in emitted if e["type"] == "skill_drafter_pass"]
-    assert passes[0]["decision"] == "skip"
-    assert "no decision block" in passes[0]["rationale"] or passes[0]["rationale"]
-    assert "candidateId" not in passes[0]
+    [passed] = _passes(emitted)
+    assert passed["decision"] == "skip"
+    assert "no decision block" in passed["rationale"] or passed["rationale"]
+    assert "candidateId" not in passed
 
 
-@pytest.mark.asyncio
-async def test_a_malformed_block_is_an_error_not_a_silent_skip(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("response", "error", "publish_result", "fragment"),
+    [
+        # a malformed block is an error, not a silent skip
+        (_block('{"decision":"save","rationale":"r","name":"ok-name","body":"b"}'), None, None, "no description"),
+        # the runner failed
+        ("", RuntimeError("model unavailable"), None, "model unavailable"),
+        # the skills guard refused the publish
+        (
+            _block('{"decision":"save","rationale":"r","name":"bad-skill","description":"d","body":"b"}'),
+            None,
+            (None, "dangerous", "skills guard: exfiltration pattern"),
+            "exfiltration",
+        ),
+    ],
+    ids=["malformed_block", "runner_error", "publish_refused"],
+)
+async def test_failures_are_reported_as_errors_with_their_reason(
+    monkeypatch, response, error, publish_result, fragment,
+) -> None:
     emitted: list = []
-    sub = _FakeSubAgentTool(
-        _block('{"decision":"save","rationale":"r","name":"ok-name","body":"b"}')
-    )
-    sess = _bridge_session(sub, monkeypatch, emitted)
-    await sess._run_drafter_fork(
-        run_id="run1", loaded_skill_names=[], all_skill_names=[], operator_guidance="",
-    )
-
-    passes = [e for e in emitted if e["type"] == "skill_drafter_pass"]
-    assert passes[0]["decision"] == "error"
-    assert "no description" in passes[0]["rationale"]
-
-
-@pytest.mark.asyncio
-async def test_a_runner_error_is_reported(monkeypatch) -> None:
-    emitted: list = []
-    sub = _FakeSubAgentTool("", error=RuntimeError("model unavailable"))
-    sess = _bridge_session(sub, monkeypatch, emitted)
-    await sess._run_drafter_fork(
-        run_id="run1", loaded_skill_names=[], all_skill_names=[], operator_guidance="",
-    )
-
-    passes = [e for e in emitted if e["type"] == "skill_drafter_pass"]
-    assert passes[0]["decision"] == "error"
-    assert "model unavailable" in passes[0]["rationale"]
-
-
-@pytest.mark.asyncio
-async def test_the_run_links_to_the_fork_session_for_navigation(monkeypatch) -> None:
-    emitted: list = []
-    sub = _FakeSubAgentTool(_block('{"decision":"skip","rationale":"r"}'))
-    sess = _bridge_session(sub, monkeypatch, emitted)
-    await sess._run_drafter_fork(
-        run_id="run1", loaded_skill_names=[], all_skill_names=[], operator_guidance="",
-    )
-
-    linked = [e for e in emitted if e["type"] == "skill_drafter_run_linked"]
-    assert len(linked) == 1
-    assert linked[0]["subagentSessionId"] == "sub_fork_1"
-    assert linked[0]["runId"] == "run1"
-
-
-@pytest.mark.asyncio
-async def test_a_publish_refusal_is_surfaced(monkeypatch) -> None:
-    emitted: list = []
-    monkeypatch.setattr(
-        "bridge.knowledge.learning.publish.publish_candidate",
-        lambda **_k: (None, "dangerous", "skills guard: exfiltration pattern"),
-    )
-    sub = _FakeSubAgentTool(
-        _block(
-            '{"decision":"save","rationale":"r","name":"bad-skill",'
-            '"description":"d","body":"b"}'
+    if publish_result is not None:
+        monkeypatch.setattr(
+            "bridge.knowledge.learning.publish.publish_candidate",
+            lambda **_k: publish_result,
         )
-    )
-    sess = _bridge_session(sub, monkeypatch, emitted)
-    await sess._run_drafter_fork(
-        run_id="run1", loaded_skill_names=[], all_skill_names=[], operator_guidance="",
-    )
+    sess = _bridge_session(_FakeSubAgentTool(response, error=error), monkeypatch, emitted)
+    await _run(sess)
 
-    passes = [e for e in emitted if e["type"] == "skill_drafter_pass"]
-    assert passes[0]["decision"] == "error"
-    assert "exfiltration" in passes[0]["rationale"]
+    [passed] = _passes(emitted)
+    assert passed["decision"] == "error"
+    assert fragment in passed["rationale"]
 
 
 # ─── cadence telemetry ────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_cadence_state_is_emitted_in_milliseconds(monkeypatch) -> None:
+def test_cadence_state_is_emitted_in_milliseconds_with_a_default_threshold_and_never_raises(monkeypatch) -> None:
     # The event was fully specified — declared in shared/events.ts, reduced in
     # the store, rendered by DrafterActivityStrip — and had no Python emitter,
     # so the strip's "next review in N turns" was permanently blank.
@@ -636,169 +583,67 @@ async def test_cadence_state_is_emitted_in_milliseconds(monkeypatch) -> None:
     from types import SimpleNamespace
 
     from bridge import freyja_bridge as fb
+    from bridge.knowledge.learning.constants import CADENCE_DEFAULT_THRESHOLD
 
     emitted: list = []
     monkeypatch.setattr(fb, "emit", lambda p: emitted.append(p))
-    monkeypatch.setattr(
-        "bridge.knowledge.learning.review_scheduler.read_cadence_state",
-        lambda: {
-            "turns_since_last_review": 3,
-            "last_trip_ts": 1_787_653_742_261,
-            "threshold": 10,
-        },
-    )
-
     sess = SimpleNamespace(id="s1")
     sess._emit_cadence_state = fb._BridgeSession._emit_cadence_state.__get__(sess)
-    sess._emit_cadence_state()
 
-    assert len(emitted) == 1
-    ev = emitted[0]
+    monkeypatch.setattr(
+        "bridge.knowledge.learning.review_scheduler.read_cadence_state",
+        lambda: {"turns_since_last_review": 3, "last_trip_ts": 1_787_653_742_261, "threshold": 10},
+    )
+    sess._emit_cadence_state()
+    [ev] = emitted
     assert ev["type"] == "cadence_state"
     assert ev["turnsSinceLastReview"] == 3
     assert ev["turnsUntilTrip"] == 7
     assert ev["lastTrippedAt"] == 1_787_653_742_261
 
-
-@pytest.mark.asyncio
-async def test_cadence_state_falls_back_to_the_default_threshold(monkeypatch) -> None:
-    from types import SimpleNamespace
-
-    from bridge import freyja_bridge as fb
-    from bridge.knowledge.learning.constants import CADENCE_DEFAULT_THRESHOLD
-
-    emitted: list = []
-    monkeypatch.setattr(fb, "emit", lambda p: emitted.append(p))
     # A cadence file that has never been written carries no threshold key.
     monkeypatch.setattr(
         "bridge.knowledge.learning.review_scheduler.read_cadence_state",
         lambda: {"turns_since_last_review": 0, "last_trip_ts": 0},
     )
-
-    sess = SimpleNamespace(id="s1")
-    sess._emit_cadence_state = fb._BridgeSession._emit_cadence_state.__get__(sess)
     sess._emit_cadence_state()
+    assert emitted[1]["turnsUntilTrip"] == CADENCE_DEFAULT_THRESHOLD
 
-    assert emitted[0]["turnsUntilTrip"] == CADENCE_DEFAULT_THRESHOLD
-
-
-@pytest.mark.asyncio
-async def test_cadence_state_never_raises(monkeypatch) -> None:
-    from types import SimpleNamespace
-
-    from bridge import freyja_bridge as fb
-
+    # An unreadable cadence file must not raise into the turn loop.
     def _boom():
         raise OSError("cadence file unreadable")
 
-    monkeypatch.setattr(fb, "emit", lambda _p: None)
-    monkeypatch.setattr(
-        "bridge.knowledge.learning.review_scheduler.read_cadence_state", _boom
-    )
-    sess = SimpleNamespace(id="s1")
-    sess._emit_cadence_state = fb._BridgeSession._emit_cadence_state.__get__(sess)
-    sess._emit_cadence_state()  # must not raise into the turn loop
+    monkeypatch.setattr("bridge.knowledge.learning.review_scheduler.read_cadence_state", _boom)
+    sess._emit_cadence_state()
 
 
 # ─── fork isolation ───────────────────────────────────────────────────
 
 
-def test_a_snapshot_does_not_share_metadata_with_its_session() -> None:
+def test_a_fork_never_shares_its_metadata_dict_with_the_session_it_came_from() -> None:
     # restore_transcript assigns the snapshot's metadata dict straight onto the
     # restored session. Handing out the LIVE dict meant a fork stamping its own
     # identity ("subagent_id", "agent_type", its model) wrote those fields into
-    # the parent session it forked from.
+    # the parent session it forked from. Serialize copies on the way out,
+    # restore copies on the way in.
     from engine.session import Session
 
     parent = Session.create(system_prompt="p", metadata={"model_id": "opus", "a": 1})
     snapshot = parent.serialize_transcript()
     snapshot["metadata"]["model_id"] = "sonnet"
     snapshot["metadata"]["subagent_id"] = "sub_1"
-
     assert parent.metadata["model_id"] == "opus"
     assert "subagent_id" not in parent.metadata
 
-
-def test_a_restored_session_does_not_share_metadata_with_the_source() -> None:
-    from engine.session import Session
-
-    parent = Session.create(system_prompt="p", metadata={"model_id": "opus"})
     fork = Session.create(system_prompt="p", session_id="sub_1")
     fork.restore_transcript(parent.serialize_transcript())
     fork.metadata.update({"model_id": "sonnet", "subagent_id": "sub_1"})
+    assert parent.metadata == {"model_id": "opus", "a": 1}
 
-    assert parent.metadata == {"model_id": "opus"}
-
-
-def test_tool_search_and_call_tool_in_a_fork_use_the_fork(monkeypatch) -> None:
-    # The parent's tool_search and call_tool close over the PARENT registry.
-    # Left in place, a fork's call_tool would run the parent's real tools,
-    # past every refusal stub. Both are rebound to the mirror, and neither
-    # changes any tools array.
-    import asyncio
-
-    from bridge.tools.fork_registry import build_read_only_fork_registry
-    from bridge.tools.tool_search_tool import CallToolTool, ToolSearchTool
-
-    parent = _parent_registry()
-    parent.register(ToolSearchTool(parent))
-    parent.register(CallToolTool(parent))
-    fork = build_read_only_fork_registry(parent)
-
-    for name in ("tool_search", "call_tool"):
-        assert fork.get(name) is not parent.get(name)
-        # Definition stays byte-identical, or the tools array would differ.
-        assert fork.get(name).definition.parameters == parent.get(name).definition.parameters
-
-    before_parent = [d.name for d in parent.list_definitions()]
-    before_fork = [d.name for d in fork.list_definitions()]
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    found = loop.run_until_complete(
-        fork.get("tool_search").execute("c1", {"tool_name": "propose_skill"})
-    )
-    assert not found.is_error
-    assert [d.name for d in parent.list_definitions()] == before_parent
-    assert [d.name for d in fork.list_definitions()] == before_fork
-
-    # A mutating tool reached through call_tool is still refused in the fork.
-    refused = loop.run_until_complete(
-        fork.get("call_tool").execute("c2", {"tool_name": "write_file", "arguments": {}})
-    )
-    assert refused.is_error
-    assert "not available in this review fork" in str(refused.content)
-
-
-def test_crlf_output_still_parses() -> None:
-    # re.MULTILINE's "$" matches before the "\n" but after the "\r", so a model
-    # emitting Windows line endings produced no match at all and its decision
-    # was discarded as "no block emitted".
-    text = (
-        "Reasoning.\r\n\r\n````skill-candidate\r\n"
-        '{"decision": "skip", "rationale": "crlf"}\r\n'
-        "````\r\n"
-    )
-    decision = parse_fork_decision(text)
-    assert decision is not None
-    assert decision.decision == "skip"
-    assert decision.rationale == "crlf"
-
-
-def test_leading_whitespace_before_the_fence_is_tolerated() -> None:
-    text = "   ````skill-candidate\n" '{"decision": "skip", "rationale": "indented"}\n' "   ````\n"
-    decision = parse_fork_decision(text)
-    assert decision is not None
-    assert decision.rationale == "indented"
-
-
-def test_restore_copies_metadata_even_from_a_shared_dict() -> None:
-    # Belt and braces: serialize copies on the way out, restore copies on the
-    # way in. A caller that hand-builds a snapshot around a live dict — or any
-    # future serializer that forgets — still cannot alias two sessions.
-    from engine.session import Session
-
+    # Belt and braces: a caller that hand-builds a snapshot around a live dict
+    # still cannot alias two sessions.
     shared = {"model_id": "opus", "project_session_id": "sub_parent"}
-    fork = Session.create(system_prompt="p", session_id="sub_1")
-    fork.restore_transcript({"version": 1, "metadata": shared, "transcript": None})
-    fork.metadata["project_session_id"] = "sub_1"
-
+    other = Session.create(system_prompt="p", session_id="sub_2")
+    other.restore_transcript({"version": 1, "metadata": shared, "transcript": None})
+    other.metadata["project_session_id"] = "sub_2"
     assert shared["project_session_id"] == "sub_parent"

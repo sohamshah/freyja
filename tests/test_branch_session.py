@@ -77,22 +77,15 @@ def sessions_dir(tmp_path, monkeypatch):
 # ── truncation ─────────────────────────────────────────────────────────
 
 
-def test_truncate_entries_before_keeps_everything_older_than_cutoff():
-    # Renderer user message #2 was stamped at 4.99s; the engine appended
-    # its entry at 5.0s. Everything strictly before is kept, compaction
-    # entry included, and head_id lands on the last kept entry.
-    kept, head = tp.truncate_entries_before(ENTRIES, 4.99)
-    assert [e["id"] for e in kept] == ["c0", "u1", "a1", "t1", "a2"]
-    assert head == "a2"
-
-
 @pytest.mark.parametrize(
     "anchor", [e["id"] for e in ENTRIES if "message" in e]
 )
 def test_truncate_entries_before_keeps_compaction_summary_at_every_anchor(anchor):
     # The renderer stamps a message just before the engine appends its
-    # entry. Branching at any message keeps the summary and every entry
-    # before the anchor, though the summary is stamped after most of them.
+    # entry (user message #2 at 4.99 s, its entry at 5.0 s). Branching at
+    # any message keeps the summary and every entry before the anchor,
+    # though the summary is stamped after most of them, and head_id lands
+    # on the last kept entry.
     idx = next(i for i, e in enumerate(ENTRIES) if e["id"] == anchor)
     kept, head = tp.truncate_entries_before(ENTRIES, ENTRIES[idx]["timestamp"] - 0.01)
     assert [e["id"] for e in kept] == [e["id"] for e in ENTRIES[:idx]]
@@ -149,6 +142,12 @@ def test_clone_transcript_cutoff_beats_legacy_ordinal(sessions_dir):
     assert dst["transcript"]["head_id"] == "a2"
     assert dst["session_id"] == "dst"
     assert dst["metadata"]["forked_from"] == "src"
+    # Without a cutoff the legacy ordinal still works, for old renderers.
+    assert tp.clone_transcript("src", "dst-legacy", truncate_to_message_ordinal=3)
+    assert [e["id"] for e in tp.load_transcript("dst-legacy")["transcript"]["entries"]] == ["c0", "u1", "a1", "t1"]
+    # A missing source clones nothing.
+    assert tp.clone_transcript("nope", "dst-none") is False
+    assert tp.load_transcript("dst-none") is None
 
 
 def test_clone_transcript_whole_copy_and_remap(sessions_dir):
@@ -187,19 +186,6 @@ def test_clone_transcript_whole_copy_and_remap(sessions_dir):
     src = tp.load_transcript("session-src")
     assert src is not None and src["session_id"] == "session-src"
     assert "forked_from" not in src["metadata"]
-
-
-def test_clone_transcript_legacy_ordinal_still_works(sessions_dir):
-    tp.save_transcript("src", _transcript("src", ENTRIES))
-    assert tp.clone_transcript("src", "dst", truncate_to_message_ordinal=3)
-    dst = tp.load_transcript("dst")
-    assert dst is not None
-    assert [e["id"] for e in dst["transcript"]["entries"]] == ["c0", "u1", "a1", "t1"]
-
-
-def test_clone_transcript_missing_source(sessions_dir):
-    assert tp.clone_transcript("nope", "dst") is False
-    assert tp.load_transcript("dst") is None
 
 
 # ── remap ──────────────────────────────────────────────────────────────
@@ -311,9 +297,7 @@ def test_clone_session_sidecars_remaps_and_truncates(sessions_dir):
     # Sources untouched.
     assert tp.load_goal_state(old)["goalState"]["owner"] == old
     assert len(tp.load_inbox_state(old)["unread"]) == 2
-
-
-def test_clone_session_sidecars_with_nothing_on_disk(sessions_dir):
+    # A session with nothing on disk clones nothing.
     assert tp.clone_session_sidecars("ghost", "ghost-2", id_remap={"ghost": "ghost-2"}) == []
 
 
@@ -369,13 +353,8 @@ def test_clone_project_dir_copies_tree_and_rewrites_ledgers(tmp_path):
     assert json.loads((src / "working_memory.json").read_text())["sessionId"] == old
     assert len((src / "manifest.jsonl").read_text().splitlines()) == 2
 
-
-def test_clone_project_dir_refuses_missing_or_existing(tmp_path):
-    assert tp.clone_project_dir(tmp_path / "missing", tmp_path / "dst", id_remap={}) is False
-    src = tmp_path / "src"
-    _write(src / "a.txt", "x")
-    dst = tmp_path / "dst"
-    dst.mkdir()
+    # A missing source, or a destination that already exists, is refused.
+    assert tp.clone_project_dir(tmp_path / "missing", tmp_path / "other", id_remap={}) is False
     assert tp.clone_project_dir(src, dst, id_remap={}) is False
 
 
@@ -436,35 +415,32 @@ def test_find_message_entry_index_after_compaction_at_every_anchor(anchor):
     assert _find_message_entry_index(entries, 0, ENTRIES[idx]["timestamp"] - 0.01) == idx
 
 
-def test_truncate_session_by_cutoff_drops_the_whole_later_turn():
+def test_truncate_session_by_cutoff_or_legacy_ordinal():
+    # A cutoff drops the whole later turn.
     sess = _fake_session()
     ok, target = _truncate_session_at_message_ordinal(sess, 2, cutoff_ts=4.99)
     assert ok and target.id == "u2" and target.message.role == "user"
     assert [e.id for e in sess.transcript.entries] == ["c0", "u1", "a1", "t1", "a2"]
     assert sess.transcript.branched_from == "a2"
 
-
-def test_truncate_session_by_cutoff_at_first_message_wipes_everything():
+    # A cutoff before the first message entry (u1) wipes everything but the
+    # compaction entry, which has no message.
     sess = _fake_session()
     ok, target = _truncate_session_at_message_ordinal(sess, 0, cutoff_ts=1.99)
-    # Cutoff before the first message entry (u1); the compaction entry
-    # has no message so the first message-bearing entry is index 1.
     assert ok and target.id == "u1"
     assert [e.id for e in sess.transcript.entries] == ["c0"]
 
-
-def test_truncate_session_legacy_ordinal_unchanged():
-    sess = _fake_session()
-    ok, target = _truncate_session_at_message_ordinal(sess, 2)
-    assert ok and target.id == "t1"
-    assert [e.id for e in sess.transcript.entries] == ["c0", "u1", "a1"]
-
-
-def test_truncate_session_cutoff_after_everything_is_a_noop_failure():
+    # A cutoff after everything is a no-op failure.
     sess = _fake_session()
     ok, target = _truncate_session_at_message_ordinal(sess, 0, cutoff_ts=100.0)
     assert not ok and target is None
     assert len(sess.transcript.entries) == len(ENTRIES)
+
+    # Without a cutoff the legacy ordinal is unchanged.
+    sess = _fake_session()
+    ok, target = _truncate_session_at_message_ordinal(sess, 2)
+    assert ok and target.id == "t1"
+    assert [e.id for e in sess.transcript.entries] == ["c0", "u1", "a1"]
 
 
 # ── event mirror stamps + cutoff, compaction snapshots ─────────────────
@@ -995,25 +971,11 @@ def _rows(path: Path) -> list[dict]:
     return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
 
 
-def test_fork_drops_compaction_log_rows_written_after_the_branch_point(tmp_path):
-    # compactions.jsonl stamps its rows in seconds, the cutoff is in ms.
-    src = tmp_path / "projects" / "src"
-    _write(
-        src / "compactions.jsonl",
-        json.dumps({"ts": 1.0, "subtype": "context_pruning"})
-        + "\n"
-        + json.dumps({"ts": 9.0, "subtype": "context_pruning"})
-        + "\n",
-    )
-    dst = tmp_path / "projects" / "dst"
-    assert tp.clone_project_dir(src, dst, id_remap={}, cutoff_ms=5000)
-    assert [r["ts"] for r in _rows(dst / "compactions.jsonl")] == [1.0]
-
-
 async def test_fork_keeps_the_records_of_the_summary_it_keeps(sessions_dir, monkeypatch):
     # The source compacted at 150 s and kept u2 a2. A fork before a2
     # keeps that summary, so it keeps that compaction's snapshots, log
-    # rows and events, and none of the compaction that started at 170 s.
+    # rows and events, and none of the compaction that started at 170 s
+    # (compactions.jsonl stamps its rows in seconds, the cutoff is in ms).
     import bridge.project_paths as pp
 
     projects = sessions_dir / "projects"

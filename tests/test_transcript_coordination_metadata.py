@@ -15,34 +15,10 @@ import bridge.transcript_persistence as tp
 from bridge.freyja_bridge import _BridgeSession
 
 
-def test_save_transcript_stamps_coordination_strategy(monkeypatch):
+def test_save_transcript_stamps_coordination_strategy_and_keeps_existing_metadata(monkeypatch):
     captured: dict = {}
     # The import is `from bridge.transcript_persistence import save_transcript`
     # inside the method, so patching the module attribute intercepts it.
-    monkeypatch.setattr(tp, "save_transcript", lambda sid, data: captured.update(data))
-
-    stub = SimpleNamespace(
-        session=SimpleNamespace(serialize_transcript=lambda: {"version": 1, "metadata": {}}),
-        model_id="claude-opus-4-8",
-        reasoning_level="high",
-        coordination_strategy="goal",
-        id="freyja-slack-T0-channel-C0-1781025596.714409",
-        _save_goal_state=lambda: None,
-    )
-
-    # Call the unbound method against the stub — exercises exactly the stamping
-    # logic without standing up a full _BridgeSession.
-    _BridgeSession._save_transcript(stub)
-
-    md = captured.get("metadata", {})
-    assert md.get("coordination_strategy") == "goal"  # the fix
-    # The pre-existing stamps still land (no regression).
-    assert md.get("model_id") == "claude-opus-4-8"
-    assert md.get("reasoning_level") == "high"
-
-
-def test_save_transcript_preexisting_metadata_preserved(monkeypatch):
-    captured: dict = {}
     monkeypatch.setattr(tp, "save_transcript", lambda sid, data: captured.update(data))
 
     stub = SimpleNamespace(
@@ -52,16 +28,20 @@ def test_save_transcript_preexisting_metadata_preserved(monkeypatch):
                 "metadata": {"last_inbound_platform_ts": "1781039968.261729"},
             }
         ),
-        model_id="claude-sonnet-4-6",
-        reasoning_level="auto",
-        coordination_strategy="kanban",
-        id="sess-2",
+        model_id="claude-opus-4-8",
+        reasoning_level="high",
+        coordination_strategy="goal",
+        id="freyja-slack-T0-channel-C0-1781025596.714409",
         _save_goal_state=lambda: None,
     )
 
+    # Call the unbound method against the stub: exactly the stamping logic,
+    # without standing up a full _BridgeSession.
     _BridgeSession._save_transcript(stub)
 
     md = captured.get("metadata", {})
-    assert md.get("coordination_strategy") == "kanban"
-    # Existing metadata keys aren't clobbered.
+    assert md.get("coordination_strategy") == "goal"  # the fix
+    # The pre-existing stamps still land, and existing keys are not clobbered.
+    assert md.get("model_id") == "claude-opus-4-8"
+    assert md.get("reasoning_level") == "high"
     assert md.get("last_inbound_platform_ts") == "1781039968.261729"
