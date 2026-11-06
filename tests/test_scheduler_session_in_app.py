@@ -378,6 +378,34 @@ async def test_a_process_that_takes_the_tick_drops_the_copies_of_job_sessions_it
     await state.scheduler.stop()
 
 
+async def test_a_process_that_takes_the_tick_stops_the_sub_agents_under_a_copy_it_drops(
+    app_bridge, monkeypatch, tmp_path
+):
+    # A run here past its wait on background work left one running. It
+    # went on under the dropped copy, and its memo saved the copy's stale
+    # inbox over the new owner's file.
+    from bridge.tools.sub_agent_registry import SubAgentRegistry, SubAgentState
+
+    _owner_saved()
+    tp.save_inbox_state(SCHED, {"session_id": SCHED, "unread": [], "delivered": []})
+    sess = _copy(tmp_path, owns_tick=False)
+    sess.subagent_registry = SubAgentRegistry()
+    child = sess.subagent_registry.register(SCHED_SUB, "worker", "t", "general")
+    child.notify_parent = True
+    state = sess.state
+    state.sessions[SCHED] = sess
+    before = tp._inbox_path(SCHED).read_bytes()
+
+    await _take_the_tick(state.scheduler, monkeypatch)
+    child.state = SubAgentState.CANCELLED  # it saw its cancel event
+    await sess._on_child_terminal(child)
+
+    assert SCHED not in state.sessions
+    assert child.cancel_event.is_set()
+    assert tp._inbox_path(SCHED).read_bytes() == before
+    await state.scheduler.stop()
+
+
 async def test_a_process_that_takes_the_tick_keeps_a_job_session_its_own_run_holds(
     app_bridge, monkeypatch, tmp_path
 ):

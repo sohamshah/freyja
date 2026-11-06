@@ -13914,7 +13914,11 @@ def _drop_job_session_copies(state: Any) -> None:
     since it was loaded. The job's next run went on it, as did a talk the
     inbox watch took in, and each saved it over those runs. Dropped, the
     session loads from its files when next needed. A copy with a turn
-    going on is left alone."""
+    going on is left alone, with its sub-agents. A dropped copy's running
+    sub-agents (a run here that outlived its wait on background work
+    leaves some) are stopped as its own kill stops them, so they send no
+    memo: one reached the dropped copy, and saved the copy's inbox over
+    the new owner's file."""
     sessions = getattr(state, "sessions", None) or {}
     for sid, sess in list(sessions.items()):
         if not _scheduler_runs_elsewhere(state, sid):
@@ -13923,6 +13927,10 @@ def _drop_job_session_copies(state: Any) -> None:
         if pending is not None and not pending.done():
             continue
         sess._background_closed = True
+        registry = getattr(sess, "subagent_registry", None)
+        for rec in registry.running() if registry is not None else []:
+            rec.cancel_origin = "parent"
+            registry.kill(rec.id)
         try:
             sess.shutdown_skill_learning()
         except Exception:  # noqa: BLE001
