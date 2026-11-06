@@ -232,7 +232,7 @@ async def fire_job(
     abort_job = False
     from bridge.freyja_bridge import register_session_listener, unregister_session_listener
 
-    run_cost = _RunCost(run.run_id, job.budget)
+    run_cost = _RunCost(run.run_id, job.budget, sess)
     register_session_listener(sess_id, run_cost.on_event)
     try:
         from bridge.freyja_bridge import _schedule_or_queue_turn
@@ -370,11 +370,11 @@ async def fire_job(
             # Never ran either: stopped while its prompt waited in the queue.
             run.error = f"{run.error or run.status}, while its prompt was still queued: it never ran"
         else:
-            # Read the most recent assistant message back out of the
-            # transcript. This is the cleanest capture point: by the time
-            # pending_task is done, the assistant's response has been
-            # written to the session.
-            output_text, iteration_count = _extract_last_assistant_text(sess)
+            # The reply of the run's last turn, read as that turn ended. Read
+            # once the session was quiet, it was the reply of a turn queued
+            # behind the run's, which ran in the run's wait. Read now only
+            # when no turn of the run said it ended.
+            output_text, iteration_count = run_cost.reply or _extract_last_assistant_text(sess)
         still_running = getattr(sess, "_running_background_work", None)
         leftover = [
             w for w in (still_running() if callable(still_running) else [])
@@ -1143,9 +1143,11 @@ class _RunCost:
     session's queue before it ran. ``unqueued``: the run was stopped while
     its prompt was queued, and took it back out (take_prompt_back).
     ``stopped``: a turn of the run was stopped (the app's Stop, Slack's,
-    /stop), which ends the run cancelled."""
+    /stop), which ends the run cancelled. ``reply``: the reply of the last
+    turn of the run to end in ``sess``, and how many assistant messages it
+    had, read as that turn ended."""
 
-    def __init__(self, run_id: str, budget: BudgetSpec | None) -> None:
+    def __init__(self, run_id: str, budget: BudgetSpec | None, sess: Any = None) -> None:
         self.cost = 0.0
         self.input_tokens = 0
         self.output_tokens = 0
@@ -1161,6 +1163,8 @@ class _RunCost:
         self.dropped = False
         self.unqueued = False
         self.stopped = False
+        self._sess = sess
+        self.reply: tuple[str, int] | None = None
 
     def our_turn_starts(self) -> None:
         """The on_turn_start hook of the fire's prompt: the session's next
@@ -1206,6 +1210,8 @@ class _RunCost:
             # task, the run sees its stop before it sees its turn end.
             self.stopped = True
             stop_run_now(self._run_id)
+        elif kind == "turn_complete" and event.get("turnId") in self._turns:
+            self.reply = _extract_last_assistant_text(self._sess)
         elif kind == "system_event" and event.get("subtype") == "queued_turns_dropped":
             # The whole queue goes, so a prompt still in it went too.
             self.dropped = self.dropped or not self._prompt_left_queue
