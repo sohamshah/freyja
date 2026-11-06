@@ -139,6 +139,9 @@ async def fire_job(
         run.finished_at = time.time()
         run.duration_seconds = run.finished_at - run.started_at
         save_run(run)
+        # A fire, as every run that ends is: uncounted, a job with max_fires
+        # fired past it.
+        await update_job_record(job.id, lambda fresh: count_fire(fresh, run))
         append_event({
             "type": "scheduler_run_failed",
             "job_id": job.id,
