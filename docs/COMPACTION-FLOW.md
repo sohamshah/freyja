@@ -28,7 +28,8 @@ Thresholds:
 
 | Constant | Value | What happens past it |
 |---|---|---|
-| `CONTEXT_PRESSURE_THRESHOLD` (`AgentConfig.compaction_threshold`) | 0.25 | On a cold cache, old tool results are halved and old appshot text is removed. The Channel 1 tag starts. |
+| `CONTEXT_AWARENESS_THRESHOLD` | 0.25 | The Channel 1 tag starts. |
+| `CONTEXT_PRESSURE_THRESHOLD` (`AgentConfig.compaction_threshold`) | 0.40 | On a cold cache, old tool results are halved and old appshot text is removed. |
 | `CONTEXT_SOFT_SUGGEST_THRESHOLD` | 0.40 | The Channel 2 note starts. The tag suggests `summarize_context` at the next break. |
 | `CONTEXT_STRONG_SUGGEST_THRESHOLD` | 0.55 | The tag and the note recommend `summarize_context` before more tool calls. A rise into this band during a turn raises the Channel 3 advisory. |
 | `CONTEXT_COMPACTION_THRESHOLD` | 0.70 | The runtime compacts before its next request (path A). `CONTEXT_FALLBACK_THRESHOLD` has the same value. |
@@ -38,12 +39,12 @@ Thresholds:
 `_ensure_context_room` in `engine/runner.py` runs before every provider call. In order:
 
 1. `_ensure_media_room` drops old computer-use screenshots beyond the newest 4 (`KEEP_RECENT_COMPUTER_IMAGES`), 8 at a time (`SCREENSHOT_PRUNE_BATCH`). It also fits images to the provider's size limit. It emits `media_pruning`.
-2. Halving, when the context is past 25% and the last call's prompt is not in the provider's cache (`_cached_prompt` returns None). On a warm cache a rewrite of history makes the provider write everything after it to the cache again, which costs more than halving saves. So on a warm cache only compaction relieves the pressure.
+2. Halving, when the context is past 40% and the last call's prompt is not in the provider's cache (`_cached_prompt` returns None). On a warm cache a rewrite of history makes the provider write everything after it to the cache again, which costs more than halving saves. So on a warm cache only compaction relieves the pressure.
 3. Compaction (path A), when the context is past 70%.
 
 How halving works (`TranscriptManager.prune_old_tool_results` in `engine/session.py`):
 
-- Every tool result except the newest 3 (`KEEP_RECENT_TOOL_RESULTS`) that is text longer than 500 characters is halved once. It keeps about the first 35% and the last 12.5%.
+- Every tool result except the newest 10 (`KEEP_RECENT_TOOL_RESULTS`) that is text of 2,000 characters or more (`MIN_TOOL_RESULT_CHARS_TO_HALVE`) is halved once. It keeps about the first 35% and the last 12.5%.
 - Before it halves a result, it saves the whole text through the truncator (`ToolResultTruncator.write_full_content` in `engine/tools.py`) to `~/.freyja/truncated/<tool>_<time>.txt`. The marker in the halved text names that file and says to read the removed part from it with grep or sed.
 - A result whose text could not be saved stays whole. A result that the marker would not make shorter stays whole.
 - A result that already carries a halving marker, the old one or the new one, is not halved again.
@@ -52,7 +53,9 @@ How halving works (`TranscriptManager.prune_old_tool_results` in `engine/session
 
 Halving rewrites only the live transcript. `raw_messages.jsonl` holds each result as it was appended, so exports still have the whole result.
 
-The sync `AgentRunner` (`_handle_context_pressure`) halves after each call past 25%, with no cache check, and compacts past 70%. The app does not use it.
+Why these numbers (2026-11-06). Until then halving started at 25%, kept the newest 3 results and halved anything over 500 characters. Before fcb23f1 a turn's first check read the tokenizer's count, about 0.67 of the measured size, so halving effectively started near 37% measured; that commit made it 25% measured. Over 21 days of transcripts, halving cut 2,587 results, median 1,200 characters, and removed about 1.9M tokens. It cut about 11 results per pass, at a median pressure of 34-40%. Results of 2,000 characters or more were 54% of the cuts but 92% of the characters removed. The savings were at most tens of dollars over the three weeks. So halving now starts at 40% measured, back near where it effectively started, keeps the newest 10 results whole, and leaves results under 2,000 characters alone.
+
+The sync `AgentRunner` (`_handle_context_pressure`) halves after each call past 40%, with no cache check, and compacts past 70%. The app does not use it.
 
 ## 3 — Paths to an LLM summary
 
@@ -442,4 +445,4 @@ The tool returns a JSON body (`{action, path, bytes, content, ...}`). The agent 
 - 2026-10-27 (fdc1f00, 04d5bed): pre-request, overflow and agent compactions run off the event loop (`run_off_loop`); the summary deadline grows with the transcript.
 - 2026-11-06 (ca37eee to 8c4e96d): a turn keeps the last call's measure; summary costs count from every path; the advisories stop saying tool calls may be rejected.
 - 2026-11-06 (this round): a halved result is saved whole under `~/.freyja/truncated` and its marker names the file; halving rows carry the size before and after, and the 70% check after halving uses the smaller size; a manual compaction stops the keep-alive; restore compactions write telemetry and `compactions.jsonl`; a sub-agent's call reports move to the event loop; the accumulator takes a call's usage before the call is reported; the turn after a manual compaction keeps the size it left; the sync runner takes `on_llm_call`.
-- 2026-11-06 (pruning round): a cheap `summarize_context` scope saves each result whole before it condenses it, and the preview names the file; a restored session keeps writing `raw_messages.jsonl`; a sub-agent writes the same log beside its sidecars, and its export reads each result whole from it.
+- 2026-11-06 (pruning round): a cheap `summarize_context` scope saves each result whole before it condenses it, and the preview names the file; a restored session keeps writing `raw_messages.jsonl`; a sub-agent writes the same log beside its sidecars, and its export reads each result whole from it; halving starts at 40% measured, keeps the newest 10 results whole and leaves results under 2,000 characters alone.

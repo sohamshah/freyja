@@ -361,9 +361,12 @@ def test_an_old_tool_result_is_halved_once_not_on_every_call():
 
 
 async def test_tool_results_are_not_halved_while_the_prompt_is_cached():
-    # 100k window, 50k reserved for output: 20k is 40%, past the 25% where
-    # halving starts and short of the 70% where compaction starts.
-    steps = [_tools(f"c{i}", input_tokens=20_000) for i in range(6)] + [_end("done", input_tokens=20_000)]
+    # 100k window, 50k reserved for output: 22.5k is 45%, past the 40% where
+    # halving starts and short of the 70% where compaction starts. Thirteen
+    # results: halving keeps the newest ten whole. After that many tool calls
+    # the runner asks the model to check its work once more.
+    steps = [_tools(f"c{i}", input_tokens=22_500) for i in range(13)] + [
+        _end("done", input_tokens=22_500), _end("checked", input_tokens=22_500)]
     provider, runner, session = await _ran(steps, context_window=100_000)
     assert _halved(session) == 0
 

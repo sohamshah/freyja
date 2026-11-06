@@ -1,7 +1,7 @@
 """After halving old tool results, the pre-request check reads pressure
 against the same usable window as before it.
 
-The thresholds (CONTEXT_PRESSURE_THRESHOLD 0.25, CONTEXT_COMPACTION_THRESHOLD
+The thresholds (CONTEXT_PRESSURE_THRESHOLD 0.40, CONTEXT_COMPACTION_THRESHOLD
 0.70) are fractions of the EFFECTIVE window: the context window minus the
 output reserved for the reply, since the provider rejects a request whose
 input plus max_tokens exceeds the window. The recompute after halving divided
@@ -107,9 +107,9 @@ async def test_a_halving_reports_the_size_before_and_after_it():
 
 
 async def test_halving_that_brings_a_measured_context_under_70_percent_does_not_compact(tmp_path):
-    # The last call measured 37k of the 50k usable (74%). Halving three old
-    # results takes off far more than 2k, but the check after it read the
-    # last call's size again, unchanged, and compacted anyway.
+    # The last call measured 37k of the 50k usable (74%). Halving the three
+    # results older than the newest ten takes off more than 2k, but the check
+    # after it read the last call's size again, unchanged, and compacted anyway.
     from engine.types import Message, ToolCall
 
     events: list = []
@@ -117,12 +117,12 @@ async def test_halving_that_brings_a_measured_context_under_70_percent_does_not_
                               compaction_strategy=_Compactor(), on_system_event=events.append)
     runner.truncator._output_dir = tmp_path / "truncated"
     session = Session.create(system_prompt="t")
-    for i in range(6):
+    for i in range(13):
         call = ToolCall(id=f"c{i}", name="read", arguments={})
         session.transcript.append_message(Message(role="assistant", content="", tool_calls=[call]))
         session.transcript.append_message(Message(
             role="tool_result", tool_call_id=call.id,
-            content="".join(f"{i}.{n} some output on this line\n" for n in range(500)),
+            content="".join(f"{i}.{n} some output on this line\n" for n in range(250)),
         ))
     runner.usage.last_input = 37_000
     before = session.estimate_tokens()

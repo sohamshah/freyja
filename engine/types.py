@@ -14,6 +14,8 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from engine.constants import CONTEXT_PRESSURE_THRESHOLD
+
 # ============================================================================
 # Failover Reason
 # ============================================================================
@@ -1050,12 +1052,11 @@ class AgentConfig:
     probe_interval_seconds: float = 30.0
 
     # Compaction settings
-    compaction_threshold: float = 0.25
+    compaction_threshold: float = CONTEXT_PRESSURE_THRESHOLD
     """Fraction of effective context window that triggers cheap pruning
-    (tool-result halving). Lowered from 0.8 as part of the cooperative
-    early-trigger architecture — pruning at 25% is silent and cheap.
-    The companion CONTEXT_COMPACTION_THRESHOLD (0.40) triggers the
-    LLM summary path."""
+    (tool-result halving) on a cold cache: 0.40, see
+    CONTEXT_PRESSURE_THRESHOLD. The companion CONTEXT_COMPACTION_THRESHOLD
+    (0.70) triggers the LLM summary path."""
 
     # Token limits
     max_tokens_per_turn: int = 50000

@@ -23,7 +23,7 @@ from engine.constants import (
     MAX_SESSION_EVENTS,
     MAX_REQUEST_IMAGES_SAFETY,
     MESSAGE_TOKEN_OVERHEAD,
-    MIN_CONTENT_LENGTH_FOR_TRUNCATION,
+    MIN_TOOL_RESULT_CHARS_TO_HALVE,
 )
 from engine.tools import Tool
 from engine.types import (
@@ -444,12 +444,13 @@ class TranscriptManager:
         """
         Halve old tool results to reduce context size.
 
-        Keeps the most recent tool results intact, halves older ones. Each
-        result's whole text first goes to ``save_original(text, tool_name)``,
-        which returns the file it wrote, and the marker in the halved text
-        names that file. A result whose text could not be saved stays whole.
+        Keeps the most recent tool results intact, halves older ones of
+        ``MIN_TOOL_RESULT_CHARS_TO_HALVE`` characters or more. Each result's
+        whole text first goes to ``save_original(text, tool_name)``, which
+        returns the file it wrote, and the marker in the halved text names
+        that file. A result whose text could not be saved stays whole.
         """
-        min_content_length = MIN_CONTENT_LENGTH_FOR_TRUNCATION
+        min_content_length = MIN_TOOL_RESULT_CHARS_TO_HALVE
 
         tool_name_by_id: dict[str, str] = {}
         tool_result_indices = []
@@ -482,7 +483,7 @@ class TranscriptManager:
             # rewriting history from the oldest one each time.
             if _HALVED_MARKER_RE.search(content):
                 continue
-            if len(content) <= min_content_length:
+            if len(content) < min_content_length:
                 continue
 
             half_point = len(content) // 2

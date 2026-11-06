@@ -115,12 +115,19 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 # Context Pressure & Compaction
 # ============================================================================
 
-CONTEXT_PRESSURE_THRESHOLD = 0.25
-"""Fraction of EFFECTIVE context window (window minus reserved output) that
-triggers cheap pruning — tool-result halving, image trim, dedup. Silent
-to the agent. Lowered from 0.80 to 0.25 as part of the cooperative
-early-trigger compaction architecture (see docs/COMPACTION-DECISION-DRAFT.md).
-"""
+CONTEXT_PRESSURE_THRESHOLD = 0.40
+"""Fraction of EFFECTIVE context window (window minus reserved output) past
+which, while the prompt is not cached, old tool results are halved and old
+appshot text is removed (``AgentConfig.compaction_threshold``). Silent to the
+agent. Lowered from 0.80 to 0.25 as part of the cooperative early-trigger
+compaction architecture (see docs/COMPACTION-DECISION-DRAFT.md).
+
+Raised to 0.40 on 2026-11-06. Until fcb23f1 a turn's first check read the
+tokenizer's count, about 0.67 of the measured size, so halving effectively
+started near 37% measured; that commit made it 25% measured. Over 21 days of
+transcripts halving cut 2,587 results at a median pressure of 34-40%, about
+11 per pass, removing about 1.9M tokens: at most tens of dollars over three
+weeks. 0.40 puts it back near where it effectively started."""
 
 CONTEXT_COMPACTION_THRESHOLD = 0.70
 """Fraction of EFFECTIVE context window that triggers *runtime-driven*
@@ -143,9 +150,8 @@ chain in a near-full context. See docs/COMPACTION-DECISION-DRAFT.md."""
 
 CONTEXT_AWARENESS_THRESHOLD = 0.25
 """Fraction at which we start appending per-observation token-usage
-tags so the agent has continuous pressure visibility. Same as
-CONTEXT_PRESSURE_THRESHOLD by design — pruning and awareness fire
-together at the same band."""
+tags so the agent has continuous pressure visibility. It was the same as
+CONTEXT_PRESSURE_THRESHOLD until halving moved to 0.40 (2026-11-06)."""
 
 CONTEXT_SOFT_SUGGEST_THRESHOLD = 0.40
 """Fraction at which the observation tag escalates from informational
@@ -163,8 +169,16 @@ compaction and forces it. Logged as 'fallback fired' for the training
 corpus — every fallback is a label for 'the agent missed the cue'.
 Kept in sync with CONTEXT_COMPACTION_THRESHOLD."""
 
-KEEP_RECENT_TOOL_RESULTS = 3
-"""Number of recent tool results preserved during pruning."""
+KEEP_RECENT_TOOL_RESULTS = 10
+"""Number of recent tool results preserved during pruning. Was 3 until
+2026-11-06, when halving cut about 11 results per pass (21 days of
+transcripts); see CONTEXT_PRESSURE_THRESHOLD."""
+
+MIN_TOOL_RESULT_CHARS_TO_HALVE = 2_000
+"""Halving leaves a tool result shorter than this whole. Of the 2,587 results
+halved in 21 days (median 1,200 characters), those of 2,000 characters or
+more were 54% of the cuts and 92% of the characters removed. The floor was
+MIN_CONTENT_LENGTH_FOR_TRUNCATION (500) until 2026-11-06."""
 
 KEEP_RECENT_COMPUTER_IMAGES = 4
 """Recent computer-use screenshots kept as image blocks in model history."""
