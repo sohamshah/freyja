@@ -204,3 +204,46 @@ async def test_fire_all_drops_slots_older_than_a_week(fired):
     [dropped] = _events("scheduler_missed_slots_dropped")
     assert dropped["until"] == pytest.approx(now - 6.5 * DAY, abs=2)
     assert dropped["catch_up_runs"] == 7
+
+
+# ─── a slot that waited for the Mac was not missed ────────────────────
+
+
+async def test_a_skip_job_waiting_for_the_mac_keeps_its_run_through_a_restart(fired, monkeypatch):
+    reason = ["the Mac is in DarkWake"]
+    monkeypatch.setattr(service_mod, "why_runs_wait", lambda: reason[0])
+    gateway = SchedulerService(SimpleNamespace())
+    await gateway.start()
+    # 09:00 comes while the Mac is in DarkWake: the run waits.
+    job = _missed_daily("skip")
+    job.next_fire_at = time.time() - 1
+    save_job(job)
+    await asyncio.sleep(0.1)
+    # The gateway restarts during the wait.
+    await gateway.stop()
+    gateway = SchedulerService(SimpleNamespace())
+    await gateway.start()
+    try:
+        await asyncio.sleep(0.1)
+        assert load_job(job.id).next_fire_at == job.next_fire_at
+
+        reason[0] = None
+        await _settled(fired, 1)
+    finally:
+        await gateway.stop()
+
+    assert fired == [job.id]
+    assert load_job(job.id).next_fire_at > time.time()
+
+
+async def test_a_slot_that_waited_for_the_mac_and_then_moved_is_not_brought_back(fired):
+    # It waited at 09:00 yesterday, then was paused and resumed: its next
+    # fire is a new slot, missed while no scheduler ran.
+    job = _missed_daily("skip")
+    job.waiting_slot = job.next_fire_at - DAY
+    save_job(job)
+
+    await _run_owner(fired, 0)
+
+    assert fired == []
+    assert load_job(job.id).next_fire_at > time.time()

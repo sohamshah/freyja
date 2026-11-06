@@ -441,6 +441,10 @@ class JobRecord:
     fire_count: int = 0
     next_fire_at: float | None = None
     last_fire_at: float | None = None
+    # The slot a due run of the job waits on because the Mac cannot run
+    # it (DarkWake, offline). It was not missed: when the next fire is
+    # still this slot, a restart leaves it due, whatever the misfire policy.
+    waiting_slot: float | None = None
 
     # Execution
     prompt: str = ""
@@ -495,6 +499,7 @@ class JobRecord:
             "fire_count": self.fire_count,
             "next_fire_at": self.next_fire_at,
             "last_fire_at": self.last_fire_at,
+            "waiting_slot": self.waiting_slot,
             "prompt": self.prompt,
             "execution": self.execution.to_dict(),
             "permission_snapshot": self.permission_snapshot,
@@ -529,6 +534,7 @@ class JobRecord:
             fire_count=int(d.get("fire_count", 0)),
             next_fire_at=d.get("next_fire_at"),
             last_fire_at=d.get("last_fire_at"),
+            waiting_slot=d.get("waiting_slot"),
             prompt=d.get("prompt", ""),
             execution=execution_from_dict(d.get("execution") or {}),
             permission_snapshot=d.get("permission_snapshot", "low"),

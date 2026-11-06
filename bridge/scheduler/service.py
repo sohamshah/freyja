@@ -350,7 +350,8 @@ class SchedulerService:
         # self-paced job's chosen delay on every change of owner.
         # A slot missed while no process ticked is left due when the
         # job's misfire policy catches up, so the tick fires it; under
-        # "skip" the recompute moves past it.
+        # "skip" the recompute moves past it. A slot that waited for the
+        # Mac was not missed and stays due.
         boot_count = 0
         now = time.time()
         for job in load_all_jobs():
@@ -375,7 +376,7 @@ class SchedulerService:
                         "type": "scheduler_job_resumed_after_passing_failures",
                         "job_id": fresh.id,
                     })
-                if not _catches_up(fresh, now):
+                if not _catches_up(fresh, now) and not _waits_for_the_mac(fresh, now):
                     self._recompute_next_fire(fresh)
                 save_job(fresh)
                 boot_count += 1
@@ -463,6 +464,7 @@ class SchedulerService:
         now = time.time()
         # Cheap read: enumerate file paths only. No JSON parse yet.
         candidates: list[str] = []
+        due: list[JobRecord] = []
         for job_id, _path, _mtime in iter_job_files():
             # We could optimise by stat-only checks here, but the
             # parsed JobRecord is needed to know next_fire_at anyway.
@@ -473,6 +475,7 @@ class SchedulerService:
             if job.next_fire_at is None or job.next_fire_at > now:
                 continue
             candidates.append(job_id)
+            due.append(job)
         if not candidates:
             self._waiting_since.clear()
             return
@@ -490,6 +493,7 @@ class SchedulerService:
                     "job_ids": candidates,
                 })
             self._runs_wait_for = reason
+            _note_waiting_slots(due)
             candidates = self._waited_too_long(candidates)
             if not candidates:
                 return
@@ -555,6 +559,7 @@ class SchedulerService:
             # says how late it is.
             slot = job.next_fire_at
             # Pre-advance + persist BEFORE firing — at-most-once.
+            job.waiting_slot = None
             self._recompute_next_fire(job, force=True, after_fire=True)
             save_job(job)
             touch_wake()
@@ -1194,6 +1199,36 @@ def _catches_up(job: JobRecord, now: float) -> bool:
         and job.next_fire_at is not None
         and job.next_fire_at <= now
     )
+
+
+def _waits_for_the_mac(job: JobRecord, now: float) -> bool:
+    """True when ``job`` is due on a slot that came due while a scheduler
+    ran and waited for the Mac (``waiting_slot``), so it was not missed."""
+    return (
+        job.enabled
+        and job.status == "active"
+        and job.next_fire_at is not None
+        and job.next_fire_at <= now
+        and job.waiting_slot == job.next_fire_at
+    )
+
+
+def _note_waiting_slots(jobs: list[JobRecord]) -> None:
+    """Note on each due job's record that its slot waits for the Mac. A
+    gateway restart during the wait recomputed a "skip" job's next fire
+    from now, and that day's run was dropped as missed."""
+    for job in jobs:
+        if job.waiting_slot == job.next_fire_at:
+            continue
+        with FileLock(job_lock_path(job.id)) as got:
+            if not got:
+                # Being claimed or edited; the next tick looks again.
+                continue
+            fresh = load_job(job.id)
+            if fresh is None or fresh.next_fire_at != job.next_fire_at:
+                continue
+            fresh.waiting_slot = fresh.next_fire_at
+            save_job(fresh)
 
 
 def _failed_for_a_passing_reason(run: RunRecord) -> bool:
