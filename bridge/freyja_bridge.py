@@ -5102,6 +5102,15 @@ class _BridgeSession:
             project_dir=self.project_output_dir,
         )
 
+    def _tool_filter_allowlist(self) -> frozenset[str] | None:
+        """The tools this session's gateway tool filter allows, or None
+        when no filter limits it."""
+        if self.tool_filter is None:
+            return None
+        from bridge.gateway.capabilities import tools_allowed_for_gateway
+
+        return frozenset(tools_allowed_for_gateway(self.tool_filter))
+
     async def initialize(self) -> None:
         """Lazily build the runner + tool registry for this session."""
         if self.runner is not None or (
@@ -5388,6 +5397,8 @@ class _BridgeSession:
             subagent_gateway_source_getter=lambda: getattr(
                 self, "gateway_source", None,
             ),
+            # Under a gateway tool filter, sub-agents get only its tools.
+            subagent_tool_allowlist_getter=self._tool_filter_allowlist,
             # Background children report back through the inbox: a memo
             # that slides into the running turn or wakes an idle session.
             subagent_on_child_terminal=self._on_child_terminal,

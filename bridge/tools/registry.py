@@ -128,6 +128,9 @@ def build_desktop_registry(
     # ship files back. Callable rather than a snapshot so children
     # always see the current source as the user moves between threads.
     subagent_gateway_source_getter: Any | None = None,
+    # Live read of the tools the session's gateway tool filter allows, or
+    # None with no filter. Sub-agents then get only those tools.
+    subagent_tool_allowlist_getter: Any | None = None,
     # Called when a model-spawned sub-agent reaches a terminal state; the
     # bridge turns it into an inbox memo on the parent (and wakes it).
     subagent_on_child_terminal: Any | None = None,
@@ -412,6 +415,7 @@ def build_desktop_registry(
             session_ledger=session_ledger,
             talk_router=talk_router,
             parent_gateway_source_getter=subagent_gateway_source_getter,
+            tool_allowlist_getter=subagent_tool_allowlist_getter,
             on_child_terminal=subagent_on_child_terminal,
         )
         tools.append(SubAgentTool(sub_spec))

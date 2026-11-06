@@ -305,6 +305,9 @@ class SubAgentSpec:
     # the child's system prompt. Callable so we always read the
     # parent's current source, not a stale snapshot.
     parent_gateway_source_getter: Any | None = None
+    # Live read of the tools the parent's gateway tool filter allows, or
+    # None when no filter limits the parent. A child then gets only these.
+    tool_allowlist_getter: Callable[[], frozenset[str] | None] | None = None
     # Called once when a child with ``record.notify_parent`` reaches a
     # terminal state (done / failed / cancelled). The bridge turns it
     # into an inbox memo on the parent session and wakes the parent if
@@ -1280,6 +1283,19 @@ Parameters:
                     get_tool_call_index=self._spec.task_tool_call_index_getter,
                 )
             )
+
+        # A child of a session under a gateway tool filter gets only the
+        # filter's tools. None of the tools added above is on its list, and
+        # talk can wake any session, a desktop one with every tool included.
+        tool_allowlist = (
+            self._spec.tool_allowlist_getter()
+            if self._spec.tool_allowlist_getter is not None
+            else None
+        )
+        if tool_allowlist is not None:
+            for name in child_registry.list_names():
+                if name not in tool_allowlist:
+                    child_registry.unregister(name)
 
         if fork_context is not None:
             # Everything above may have added tools to the child registry
