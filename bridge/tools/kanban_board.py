@@ -464,7 +464,13 @@ class SessionKanbanBoard:
             # corrupt the in-memory board.
             pass
 
-    def _child_changed(self, child: KanbanTask) -> None:
+    def _child_changed(self, child: KanbanTask, actor: str) -> None:
+        # Journal the child too: replay applies snapshots and never
+        # re-runs the promotion, so without this line a restart puts a
+        # promoted child back in triage.
+        self._journal_append(
+            {"kind": "update", "id": child.id, "actor": actor, "task": child.to_dict()}
+        )
         if self._on_child_changed is None:
             return
         try:
@@ -689,10 +695,6 @@ class SessionKanbanBoard:
             task.append_event(
                 KanbanEvent("updated", actor, f"Updated {task.id}", details=changes)
             )
-            if task.status == "done":
-                self._promote_unblocked_children(task.id, actor)
-            elif task.status in TERMINAL_FAILURE_STATUSES:
-                self._mark_children_orphaned(task.id, actor)
             # Snapshot the full task state on update. Replay applies the
             # snapshot directly, which is simpler than reconstructing per-
             # field deltas and identical in outcome.
@@ -704,6 +706,10 @@ class SessionKanbanBoard:
                     "task": task.to_dict(),
                 }
             )
+            if task.status == "done":
+                self._promote_unblocked_children(task.id, actor)
+            elif task.status in TERMINAL_FAILURE_STATUSES:
+                self._mark_children_orphaned(task.id, actor)
             return task
 
     async def link(self, parent_id: str, child_id: str, *, actor: str) -> tuple[KanbanTask | None, str]:
@@ -966,7 +972,7 @@ class SessionKanbanBoard:
                 child.append_event(
                     KanbanEvent("promoted", actor, "All dependencies complete")
                 )
-                self._child_changed(child)
+                self._child_changed(child, actor)
 
     def _mark_children_orphaned(self, parent_id: str, actor: str) -> None:
         """Surface an `orphaned` event on children of a terminal-failure
@@ -987,7 +993,7 @@ class SessionKanbanBoard:
                 )
             )
             child.updated_at = time.time()
-            self._child_changed(child)
+            self._child_changed(child, actor)
 
     async def unblock(self, task_id: str, *, actor: str) -> tuple[KanbanTask | None, str]:
         """Operator-driven override that flips an orphaned `triage` child

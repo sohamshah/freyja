@@ -225,3 +225,43 @@ async def test_replayed_cards_carry_the_judges_verdict(tmp_path, monkeypatch) ->
     assert card["status"] == "done"
     moves = [(e["actor"], e["details"].get("status")) for e in card["events"]]
     assert moves[-1] == ("kanban-judge", "done")
+
+
+@pytest.mark.asyncio
+async def test_replay_keeps_the_children_a_write_moved(tmp_path) -> None:
+    """A parent's write can move its children: done promotes them out of
+    triage, a failure marks them orphaned. Replay must restore both, or
+    after a restart the promoted child is back in triage and the
+    dispatcher sends it a specifier instead of a worker."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    tool = KanbanTool(live, actor_id="parent", actor_label="parent")
+
+    async def create(title: str, parents: list[str] | None = None) -> str:
+        result = await tool.execute(
+            title, {"action": "create", "title": title, "parents": parents or []}
+        )
+        return json.loads(result.content)["task"]["id"]
+
+    passed = await create("passed")
+    dropped = await create("dropped")
+    promoted = await create("promoted", [passed])
+    orphaned = await create("orphaned", [dropped])
+    await tool.execute("claim", {"action": "claim", "task_id": passed})
+    await tool.execute("complete", {"action": "complete", "task_id": passed})
+    await live.update(passed, actor="kanban-judge", status="done")
+    await tool.execute(
+        "cancel", {"action": "update", "task_id": dropped, "status": "cancelled"}
+    )
+
+    journal = KanbanJournal(tmp_path / "kanban.jsonl")
+    restored = SessionKanbanBoard(journal=journal)
+    restored.replay_events(journal.read_all())
+
+    for card_id in (promoted, orphaned):
+        live_card = await live.get(card_id)
+        card = await restored.get(card_id)
+        assert card is not None and live_card is not None
+        assert card.status == live_card.status
+        assert [e.kind for e in card.events] == [e.kind for e in live_card.events]
+    assert (await restored.get(promoted)).status == "ready"
+    assert (await restored.get(orphaned)).events[-1].kind == "orphaned"
