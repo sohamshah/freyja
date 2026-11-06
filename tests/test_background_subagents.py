@@ -1116,6 +1116,33 @@ async def test_quiescence_ignores_work_that_was_already_running():
     )
 
 
+@pytest.mark.parametrize("ctype", ["delete_session", "new_session"])
+async def test_children_stopped_with_a_closed_session_write_nothing_to_its_inbox_file(ctype):
+    # Each stopped child's notice went into the closed session's inbox,
+    # which saved it to the session id's file: after a delete, or into
+    # the file of the new session that took the id.
+    import bridge.transcript_persistence as tp
+
+    sess, child = _cancel_session()
+    sess.inbox.on_change = sess._on_inbox_change
+    fresh = SimpleNamespace(reasoning_level="auto", coordination_strategy="bus", runtime="native")
+
+    async def ensure_session(_sid, **_kw):
+        return fresh
+
+    state = SimpleNamespace(
+        sessions={"root-1": sess}, active_session_id="root-1",
+        default_model="fake-model", ensure_session=ensure_session,
+    )
+    await fb._handle_command(state, {"type": ctype, "sessionId": "root-1"})
+    assert child.cancel_event.is_set() and not tp._inbox_path("root-1").exists()
+    # What the child's runner does once it sees the cancel.
+    sess.subagent_registry.mark_done(child.id, "Cancelled", SubAgentState.CANCELLED)
+    await sess._on_child_terminal(child)
+
+    assert not tp._inbox_path("root-1").exists()
+
+
 # ─── what the renderer settles its sub-agent records against ──────────
 
 

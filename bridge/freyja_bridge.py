@@ -6926,10 +6926,15 @@ class _BridgeSession:
         if we are idle, a wake turn runs shortly — debounced so siblings
         that finish together are handled in one turn. A child the operator
         stopped with the session stop queues its memo without waking: they
-        just asked for quiet.
+        just asked for quiet. A closed session (deleted, or replaced by a
+        new session with its id) takes nothing, as with background
+        commands: the notice of each child stopped with it saved its inbox
+        to the id's file after the delete, or into the new session's.
         """
         from bridge.tools.sub_agent_tool import build_subagent_memo
 
+        if getattr(self, "_background_closed", False):
+            return
         if record.cancel_origin == "parent":
             return  # the parent killed it itself; nothing to report
         still_running = []
