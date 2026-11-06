@@ -312,7 +312,7 @@ await check("a Slack session's linked kanban card is in the lane link() gave it,
   // mission root counts as done), else ready, but its row has only the ids.
   // create() adds the new card to its parents' children, but its row is
   // the new card's alone. card_004's create row was cut short, so card_005
-  // names a parent nobody can see: its lane stays as it was.
+  // names a parent nobody can see, which is not done.
   const sessionsDir = path.join(home, '.freyja', 'sessions')
   const card = (id, status, parents, children = [], metadata = {}) => ({ id, title: id, status, parents, children, metadata, events: [] })
   fs.writeFileSync(
@@ -342,7 +342,7 @@ await check("a Slack session's linked kanban card is in the lane link() gave it,
   const app = lanes(kanbanCards)
   assert.deepEqual(
     Object.fromEntries(Object.entries(app).map(([id, c]) => [id, c.status])),
-    { card_001: 'running', card_002: 'done', card_003: 'triage', card_005: 'ready', card_006: 'ready', card_007: 'triage' },
+    { card_001: 'running', card_002: 'done', card_003: 'triage', card_005: 'triage', card_006: 'ready', card_007: 'triage' },
   )
   assert.deepEqual(app.card_001.children, ['card_002', 'card_003', 'card_006'])
   assert.deepEqual(app.card_003.children, ['card_005', 'card_007'])

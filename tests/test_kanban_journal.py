@@ -378,8 +378,9 @@ async def test_a_live_update_survives_a_child_whose_parent_create_row_was_lost(
 async def test_a_live_link_survives_a_child_whose_parent_create_row_was_lost(
     tmp_path,
 ) -> None:
-    """Linking a card that names a parent the board never saw leaves its
-    lane alone, as replaying the link row does, so a restart keeps it."""
+    """Linking a card that names a parent the board never saw sends it
+    to triage while its new parent is pending, as replaying the link row
+    does, so a restart keeps it."""
     live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
     lost = (await live.create(title="lost")).id
     await live.update(lost, actor="kanban-judge", status="done")
@@ -387,6 +388,7 @@ async def test_a_live_link_survives_a_child_whose_parent_create_row_was_lost(
     other = (await live.create(title="other")).id
     restored = await _restore_without(tmp_path, lost)
     tool = KanbanTool(restored, actor_id="parent", actor_label="parent")
+    assert (await restored.get(child)).status == "ready"
 
     result = await tool.execute(
         "link", {"action": "link", "parent_id": other, "child_id": child}
@@ -395,7 +397,7 @@ async def test_a_live_link_survives_a_child_whose_parent_create_row_was_lost(
     assert not result.is_error, result.content
     card = await restored.get(child)
     assert card.parents == [lost, other]
-    assert card.status == "ready"
+    assert card.status == "triage"
     journal = KanbanJournal(tmp_path / "kanban.jsonl")
     again = SessionKanbanBoard(journal=journal)
     again.replay_events(journal.read_all())
@@ -419,4 +421,31 @@ async def test_replay_gives_a_parent_the_children_made_after_it(tmp_path) -> Non
     assert (await restored.get(parent)).children == [child]
     await restored.update(parent, actor="worker", status="running")
     await restored.update(parent, actor="kanban-judge", status="done")
+    assert (await restored.get(child)).status == "ready"
+
+
+@pytest.mark.asyncio
+async def test_unblock_releases_a_child_whose_parent_create_row_was_lost(
+    tmp_path,
+) -> None:
+    """A parent the board does not hold never finishes, like a failed
+    one: its child is not promoted, and unblock releases it once its
+    other parents are done. The digest names the missing parent so the
+    agent knows."""
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    lost = (await live.create(title="lost")).id
+    first = (await live.create(title="first")).id
+    child = (await live.create(title="child", parents=[lost, first])).id
+    restored = await _restore_without(tmp_path, lost)
+    await restored.update(first, actor="worker", status="running")
+    await restored.update(first, actor="kanban-judge", status="done")
+    assert (await restored.get(child)).status == "triage"
+
+    [waiting] = (await restored.digest())["waiting"]
+    assert waiting["unresolvedParents"] == [lost]
+    assert waiting["missingParents"] == [lost]
+    tool = KanbanTool(restored, actor_id="parent", actor_label="parent")
+    result = await tool.execute("unblock", {"action": "unblock", "task_id": child})
+
+    assert not result.is_error, result.content
     assert (await restored.get(child)).status == "ready"

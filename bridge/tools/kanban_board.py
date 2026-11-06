@@ -731,10 +731,7 @@ class SessionKanbanBoard:
                 parent.children.append(child_id)
             if parent_id not in child.parents:
                 child.parents.append(parent_id)
-            # A parent whose create row was lost leaves the status alone,
-            # as replaying this link row does.
-            if all(pid in self._tasks for pid in child.parents):
-                child.status = "ready" if self._parents_done(child) else "triage"
+            child.status = "ready" if self._parents_done(child) else "triage"
             parent.updated_at = child.updated_at = time.time()
             parent.append_event(KanbanEvent("linked", actor, f"Linked to {child_id}"))
             child.append_event(KanbanEvent("linked", actor, f"Depends on {parent_id}"))
@@ -838,14 +835,18 @@ class SessionKanbanBoard:
                         if (parent := self._tasks.get(pid)) is None
                         or parent.status != "done"
                     ]
-                    waiting.append(
-                        {
-                            "id": task.id,
-                            "title": task.title,
-                            "priority": task.priority,
-                            "unresolvedParents": unresolved,
-                        }
-                    )
+                    entry: dict[str, Any] = {
+                        "id": task.id,
+                        "title": task.title,
+                        "priority": task.priority,
+                        "unresolvedParents": unresolved,
+                    }
+                    # A parent whose create row was lost never finishes;
+                    # `unblock` releases the card, as for a failed parent.
+                    missing = [pid for pid in task.parents if pid not in self._tasks]
+                    if missing:
+                        entry["missingParents"] = missing
+                    waiting.append(entry)
                 elif task.status == "done":
                     done.append(
                         {
@@ -963,8 +964,8 @@ class SessionKanbanBoard:
     def _parents_done(self, task: KanbanTask) -> bool:
         # Mission root counts as "always satisfied" so it can stay `running`
         # as the mission container without blocking its children from
-        # entering `ready`. A parent whose create row was lost is not done,
-        # so its child stays where it is.
+        # entering `ready`. A parent whose create row was lost is not done:
+        # it never finishes, so `unblock` treats it as a failed parent.
         return all(
             parent_id == self._mission_root_id
             or (
@@ -1010,7 +1011,8 @@ class SessionKanbanBoard:
     async def unblock(self, task_id: str, *, actor: str) -> tuple[KanbanTask | None, str]:
         """Operator-driven override that flips an orphaned `triage` child
         to `ready`. Only legal when at least one of the card's parents is
-        in a terminal-failure state and all *other* parents are done."""
+        in a terminal-failure state or missing (its create row was lost,
+        so it never finishes) and all *other* parents are done."""
         async with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
@@ -1020,8 +1022,8 @@ class SessionKanbanBoard:
             if not task.parents:
                 return task, "card has no parents to unblock"
             has_failure_parent = any(
-                (parent := self._tasks.get(pid)) is not None
-                and parent.status in TERMINAL_FAILURE_STATUSES
+                (parent := self._tasks.get(pid)) is None
+                or parent.status in TERMINAL_FAILURE_STATUSES
                 for pid in task.parents
             )
             if not has_failure_parent:
@@ -1155,9 +1157,7 @@ class SessionKanbanBoard:
         if parent_id not in child.parents:
             child.parents.append(parent_id)
         # The journal row carries only the ids; link() also moved the child.
-        # A parent whose create row was lost leaves the status alone.
-        if all(pid in self._tasks for pid in child.parents):
-            child.status = "ready" if self._parents_done(child) else "triage"
+        child.status = "ready" if self._parents_done(child) else "triage"
 
     def _task_from_snapshot(self, snapshot: dict[str, Any]) -> KanbanTask:
         # `to_dict()` emits timestamps in milliseconds and a few field
