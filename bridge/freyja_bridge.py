@@ -15636,6 +15636,32 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         force = bool(cmd.get("force") or False)
         if not target_id or not content:
             return
+        from bridge.inbox import InboxMessage, new_message_id
+        msg = InboxMessage(
+            id=new_message_id(),
+            from_session="operator",
+            from_label="operator",
+            from_role="operator",
+            content=content,
+            force=force,
+        )
+
+        def _not_delivered(reason: str) -> None:
+            log("warn", f"operator_talk → {target_id[:24]}: {reason}")
+            emit_error(f"Message to {target_id} not delivered: {reason}", recoverable=True)
+
+        if _gateway_holds(target_id):
+            # A Slack thread or a sub-agent under one: the gateway runs it.
+            # On its first run a sub-agent has saved nothing here to
+            # resolve it by, and its pane names its parent (noted above).
+            from bridge.tools.talk_tool import send_to_gateway
+
+            result = send_to_gateway(target_id, msg)
+            if "failed" in result:
+                _not_delivered(result)
+            else:
+                log("info", f"operator_talk → {target_id[:24]}: {result}")
+            return
         # Find the TalkRouter from whichever root session is active.
         # All root sessions share the same router instance (built once
         # per BridgeState) — we just need any handle to it.
@@ -15646,17 +15672,8 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 router = r
                 break
         if router is None:
-            log("warn", "operator_talk: no TalkRouter available")
+            _not_delivered("no session is loaded here to route it")
             return
-        from bridge.inbox import InboxMessage, new_message_id
-        msg = InboxMessage(
-            id=new_message_id(),
-            from_session="operator",
-            from_label="operator",
-            from_role="operator",
-            content=content,
-            force=force,
-        )
         # Resolve and deliver. The router handles root vs sub-agent vs
         # archived all in one shot.
         # Build a synthetic context so resolve_ref doesn't gate on a
@@ -15674,7 +15691,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 # Not loaded here — still routable to its owner process.
                 resolved_id = target_id
             else:
-                log("warn", f"operator_talk: unresolved recipient '{target_id}'")
+                _not_delivered("no such session here")
                 return
         try:
             # Same routing as agent talk(): a session owned by another
@@ -15687,9 +15704,8 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 archived_state=archived,
             )
             if fwd is not None:
-                log("info", f"operator_talk → {resolved_id[:24]}: {fwd}")
-                return
-            if live_root is None and sub_rec is None and archived is None:
+                result = fwd
+            elif live_root is None and sub_rec is None and archived is None:
                 result = await deliver_talk_message_locally(
                     state, resolved_id, msg
                 )
@@ -15697,9 +15713,13 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 result = await router.deliver(
                     resolved_id, live_root, sub_rec, archived, msg
                 )
-            log("info", f"operator_talk → {resolved_id[:8]}: {result}")
         except Exception as exc:  # noqa: BLE001
-            log("warn", f"operator_talk delivery failed: {exc}")
+            _not_delivered(f"delivery failed: {exc}")
+            return
+        if "failed" in result:
+            _not_delivered(result)
+        else:
+            log("info", f"operator_talk → {resolved_id[:24]}: {result}")
         return
 
     if ctype == "toggle_entry_pin":

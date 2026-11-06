@@ -4810,11 +4810,14 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     if (!sessionId || !text) return
     const api = (window as any).harness
     if (!api) return
+    // A sub-agent names its parent (see send_message).
+    const parentSessionId = get().sessions.find((s) => s.id === sessionId)?.parentSessionId
     await api.sendCommand({
       type: 'operator_talk',
       sessionId,
       content: text,
       force: !!force,
+      ...(parentSessionId ? { parentSessionId } : {}),
     })
   },
 

@@ -342,6 +342,23 @@ await check("a sub-agent pane's message and switch name its parent", async () =>
   assert.equal(sw.parentSessionId, slack)
 })
 
+await check("a message typed into a sub-agent pane's dock names its parent", async () => {
+  // The dock talks to a session that is not the active one. A gateway
+  // sub-agent's first run has saved nothing the bridge could resolve it
+  // by, so the message was dropped.
+  const slack = 'freyja:slack:T1:channel:C1:4.0'
+  const sub = 'sub_19f0first_2'
+  const S = useHarness.getState()
+  useHarness.setState({
+    sessions: [...S.sessions, { ...S.sessions[0], id: sub, title: 'worker', parentSessionId: slack }],
+  })
+  await useHarness.getState().operatorTalk(sub, 'focus on X')
+  const cmd = sent.at(-1)
+  assert.equal(cmd.type, 'operator_talk')
+  assert.equal(cmd.sessionId, sub)
+  assert.equal(cmd.parentSessionId, slack)
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

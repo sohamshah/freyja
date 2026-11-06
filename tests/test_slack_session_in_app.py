@@ -577,6 +577,34 @@ async def test_a_slack_sub_agents_first_run_pane_builds_no_copy_and_its_messages
     assert tp.load_transcript(sub) is None
 
 
+async def test_operator_talk_to_a_slack_sub_agent_on_its_first_run_goes_to_the_gateway(app_bridge, monkeypatch):
+    # Typed into its pane's dock while another session was active: the app
+    # could not resolve it (no record, sidecar or transcript here), and
+    # dropped the message with a log line. The pane names its parent.
+    state, _events, built = app_bridge
+    monkeypatch.setattr(fb, "_SUBAGENT_PARENTS", {})
+    _gateway_running(monkeypatch, os.getpid() + 1)
+    sub = "sub_19f0first_2"
+
+    await fb._handle_command(
+        state, {"type": "operator_talk", "sessionId": sub, "parentSessionId": SLACK, "content": "focus on X"},
+    )
+
+    assert built == [] and state.sessions == {}
+    (cmd,) = _forwarded()
+    assert (cmd["type"], cmd["to"], cmd["message"]["content"]) == ("talk_deliver", sub, "focus on X")
+
+
+async def test_operator_talk_that_reaches_no_one_says_so(app_bridge, monkeypatch):
+    state, events, _built = app_bridge
+    monkeypatch.setattr(fb, "_SUBAGENT_PARENTS", {})
+
+    await fb._handle_command(state, {"type": "operator_talk", "sessionId": "sub_19f0gone_1", "content": "hello?"})
+
+    assert _forwarded() == []
+    assert [e for e in events if e.get("type") == "error"]
+
+
 async def test_a_copy_of_a_slack_sub_agent_saves_nothing_over_its_files(app_bridge, tmp_path):
     # compact, set_model, goal_control and the like build a root session
     # on the id they are given, here a Slack thread's sub-agent.
