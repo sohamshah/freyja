@@ -422,9 +422,11 @@ def emit(event: dict[str, Any]) -> None:
         traceback.print_exc(file=sys.stderr)
     # Per-session JSONL persistence — keep the file handle open across
     # events on the same session to avoid open/close overhead on every
-    # text_delta during a streaming response.
+    # text_delta during a streaming response. A Slack session's file is
+    # the gateway's: a copy of it here (the app, the scheduler daemon)
+    # writes nothing to it. An open handle means this process owned it.
     sid = event.get("sessionId")
-    if sid:
+    if sid and (sid in _SESSION_EVENT_FILES or not _gateway_holds(sid)):
         _append_session_event_jsonl(sid, event)
     # Per-session listener fan-out (best-effort; never let a listener
     # take down the bridge).
