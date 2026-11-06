@@ -3486,6 +3486,18 @@ class AsyncAgentRunner:
                     "Pre-request compaction failed | session=%s: %s",
                     session.id, compaction_result.error,
                 )
+                # Say so, as the overflow path does: the bridge holds its
+                # compaction-in-flight flag from compaction_start until it
+                # hears how the compaction ended.
+                await self._emit_system_event(SystemEvent(
+                    type="compaction_skipped",
+                    message=f"Pre-request compaction failed: {compaction_result.error or 'unknown'}",
+                    details={
+                        "trigger": "pre_request",
+                        "reason": compaction_result.error or "unknown",
+                        "tokens_before": tokens_before,
+                    },
+                ))
             ctx.state = RunnerState.RUNNING
 
 

@@ -12360,11 +12360,13 @@ class _BridgeSession:
         # mutation that lands while the tool's compactor is running could
         # fire a duplicate Call B concurrently with the one the tool is
         # running internally.
+        # The cheap scopes (tool_results_only, exploration_only) end with
+        # context_pruning instead of compaction_complete.
         try:
             subtype = event.get("subtype")
             if subtype == "compaction_start":
                 self._compaction_in_flight = True
-            elif subtype in ("compaction_complete", "compaction_skipped"):
+            elif subtype in ("compaction_complete", "compaction_skipped", "context_pruning"):
                 self._compaction_in_flight = False
         except Exception:  # noqa: BLE001
             pass
