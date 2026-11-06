@@ -30,16 +30,21 @@ import os from 'node:os'
  *   resume cleanly so a brief restart doesn't miss in-flight events.
  *
  * Rotation:
- *   If the file shrinks below our offset (truncated externally, or a
- *   ``> gateway.log`` from the operator) we reset to 0 and resume. Inode
- *   change detection (e.g. logrotate moving the file) is a follow-up —
- *   launchd's stdout redirect today writes to a stable path forever.
+ *   The gateway rotates its log in place (rotate_log_if_large in
+ *   bridge/gateway/pid.py): it copies the whole log to gateway.log.1, each
+ *   byte at the offset it had, then empties the log. A new .1 and a log
+ *   shorter than it is a rotation: the tail reads on in .1 from where it
+ *   was, then reads the log from its start. Read from its start alone, the
+ *   log lost the events written since the last read. A log that shrinks
+ *   below our offset with no new .1 (a ``> gateway.log`` from the operator)
+ *   is read again from its start.
  */
 
 export type BridgeEventForwarder = (event: any) => void
 
 const HOME = os.homedir()
 const GATEWAY_LOG = path.join(HOME, '.freyja', 'logs', 'gateway.log')
+const GATEWAY_LOG_SEGMENT = `${GATEWAY_LOG}.1`
 const OFFSET_FILE = path.join(HOME, '.freyja', 'control', 'desktop-tail.offset')
 
 const POLL_INTERVAL_MS = 250
@@ -52,6 +57,9 @@ export class GatewayLogTailer {
   private timer: NodeJS.Timeout | null = null
   private stopped = false
   private partial = '' // Accumulator for the trailing partial line.
+  // The inode of the .1 the tail has read to its end, or that was there
+  // when it started.
+  private segment: number | null = null
   // Every sessionId we've seen emit a daemon-side event. Includes both
   // gateway root sessions (``freyja:<platform>:...``) and sub-agents
   // spawned beneath them (``sub_<hex>_<n>``). Used by the desktop main
@@ -94,6 +102,7 @@ export class GatewayLogTailer {
     this.stopped = false
     this.ensureControlDir()
     this.loadOffset()
+    this.segment = statOf(GATEWAY_LOG_SEGMENT)?.ino ?? null
     // Schedule the first poll inline so we drain anything new on the
     // very next tick, then enter the polling cadence.
     queueMicrotask(() => this.tick())
@@ -158,27 +167,37 @@ export class GatewayLogTailer {
   }
 
   private drain(): void {
-    let stat: fs.Stats
-    try {
-      stat = fs.statSync(GATEWAY_LOG)
-    } catch {
-      // Log doesn't exist yet (daemon hasn't started). Wait for it.
-      return
-    }
-    if (stat.size < this.offset) {
-      // Rotation / truncation. Reset.
+    const size = statOf(GATEWAY_LOG)?.size
+    // Log doesn't exist yet (daemon hasn't started). Wait for it.
+    if (size === undefined) return
+    const segment = statOf(GATEWAY_LOG_SEGMENT)
+    if (segment && segment.ino !== this.segment && size < segment.size) {
+      // Rotated: the rest of .1, whatever the batch cap, then the log. Seen
+      // while .1 was new but the log not yet emptied, the log was read on as
+      // usual: the same bytes, at the same offsets.
+      while (this.offset < segment.size) {
+        if (this.read(GATEWAY_LOG_SEGMENT, segment.size) === 0) break
+      }
+      this.segment = segment.ino
+      this.offset = 0
+    } else if (size < this.offset) {
+      // Truncated by hand: read it again from its start.
       this.offset = 0
       this.partial = ''
     }
-    if (stat.size === this.offset) return
+    if (size > this.offset) this.read(GATEWAY_LOG, size)
+  }
 
-    const wantBytes = Math.min(stat.size - this.offset, MAX_BATCH_BYTES)
+  /** Read ``file`` on from the offset, up to ``size`` and at most a batch,
+   *  pass on its events, and return how many bytes it read. */
+  private read(file: string, size: number): number {
+    const wantBytes = Math.min(size - this.offset, MAX_BATCH_BYTES)
     const buf = Buffer.alloc(wantBytes)
     let fd: number
     try {
-      fd = fs.openSync(GATEWAY_LOG, 'r')
+      fd = fs.openSync(file, 'r')
     } catch {
-      return
+      return 0
     }
     let read = 0
     try {
@@ -186,7 +205,7 @@ export class GatewayLogTailer {
     } finally {
       try { fs.closeSync(fd) } catch {}
     }
-    if (read <= 0) return
+    if (read <= 0) return 0
 
     const chunk = buf.toString('utf8', 0, read)
     this.offset += read
@@ -232,6 +251,15 @@ export class GatewayLogTailer {
       this.forward(event)
     }
     this.persistOffset()
+    return read
+  }
+}
+
+function statOf(file: string): fs.Stats | null {
+  try {
+    return fs.statSync(file)
+  } catch {
+    return null
   }
 }
 
