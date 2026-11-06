@@ -47,8 +47,8 @@ class _Compactor:
 
 
 def _runner(events: list, tokens: tuple[int, int]) -> tuple[AsyncAgentRunner, Session]:
-    """A runner whose context measures ``tokens[0]`` before halving and
-    ``tokens[1]`` after it. 100k window, 50k reserved for output."""
+    """A runner whose last call measured ``tokens[0]``, and whose halving
+    takes the context to ``tokens[1]``. 100k window, 50k reserved for output."""
     runner = AsyncAgentRunner(_Provider(), config=AgentConfig(max_tokens_per_turn=50_000),
                               compaction_strategy=_Compactor(), on_system_event=events.append)
     session = Session.create(system_prompt="t")
@@ -60,7 +60,8 @@ def _runner(events: list, tokens: tuple[int, int]) -> tuple[AsyncAgentRunner, Se
 
     session.transcript.prune_old_tool_results = _halve
     session.transcript.prune_old_appshot_text = lambda: 0
-    runner._current_context_tokens = lambda _s: tokens[1] if halved else tokens[0]
+    runner._current_context_tokens = lambda _s: tokens[0]
+    session.estimate_tokens = lambda: tokens[1] if halved else tokens[0]
     return runner, session
 
 
@@ -88,6 +89,50 @@ async def test_halving_that_brings_the_context_under_70_percent_does_not_compact
     await runner._ensure_context_room(session, RunnerContext())
 
     assert _types(events, "context_pruning")
+    assert not _types(events, "compaction_start")
+
+
+async def test_a_halving_reports_the_size_before_and_after_it():
+    # The pruning rows in telemetry read tokens_before and tokens_after; both
+    # were 0 on every row, so what halving saved was never measured.
+    events: list = []
+    runner, session = _runner(events, (45_000, 30_000))
+
+    await runner._ensure_context_room(session, RunnerContext())
+
+    details = _types(events, "context_pruning")[0].details
+    assert (details["tokens_before"], details["tokens_after"]) == (45_000, 30_000)
+    assert (details["pressure_pct_before"], details["pressure_pct_after"]) == (90.0, 60.0)
+    assert details["effective_window"] == 50_000
+
+
+async def test_halving_that_brings_a_measured_context_under_70_percent_does_not_compact(tmp_path):
+    # The last call measured 37k of the 50k usable (74%). Halving three old
+    # results takes off far more than 2k, but the check after it read the
+    # last call's size again, unchanged, and compacted anyway.
+    from engine.types import Message, ToolCall
+
+    events: list = []
+    runner = AsyncAgentRunner(_Provider(), config=AgentConfig(max_tokens_per_turn=50_000),
+                              compaction_strategy=_Compactor(), on_system_event=events.append)
+    runner.truncator._output_dir = tmp_path / "truncated"
+    session = Session.create(system_prompt="t")
+    for i in range(6):
+        call = ToolCall(id=f"c{i}", name="read", arguments={})
+        session.transcript.append_message(Message(role="assistant", content="", tool_calls=[call]))
+        session.transcript.append_message(Message(
+            role="tool_result", tool_call_id=call.id,
+            content="".join(f"{i}.{n} some output on this line\n" for n in range(500)),
+        ))
+    runner.usage.last_input = 37_000
+    before = session.estimate_tokens()
+
+    await runner._ensure_context_room(session, RunnerContext())
+
+    removed = before - session.estimate_tokens()
+    assert before < 37_000 and removed > 2_000
+    details = _types(events, "context_pruning")[0].details
+    assert details["tokens_after"] == 37_000 - removed
     assert not _types(events, "compaction_start")
 
 

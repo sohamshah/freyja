@@ -3489,12 +3489,16 @@ class AsyncAgentRunner:
             usage_fraction > self.config.compaction_threshold
             and self._cached_prompt(session) is None
         ):
+            estimate_before = session.estimate_tokens()
             pruned = session.transcript.prune_old_tool_results(
                 keep_recent=KEEP_RECENT_TOOL_RESULTS,
                 save_original=self.truncator.write_full_content,
             )
             pruned += session.transcript.prune_old_appshot_text()
             if pruned > 0:
+                # The last call measured the context before the halving, so
+                # re-reading it would not see what the halving took off.
+                tokens_after = max(0, used_tokens - (estimate_before - session.estimate_tokens()))
                 logger.info(
                     "Pre-request pressure (%.1f%%): halved %d old tool results | session=%s",
                     usage_fraction * 100, pruned, session.id,
@@ -3506,9 +3510,14 @@ class AsyncAgentRunner:
                         "pruned_count": pruned,
                         "usage_fraction": usage_fraction,
                         "trigger": "pre_request",
+                        "tokens_before": used_tokens,
+                        "tokens_after": tokens_after,
+                        "effective_window": effective_window,
+                        "pressure_pct_before": round(used_tokens / effective_window * 100, 1),
+                        "pressure_pct_after": round(tokens_after / effective_window * 100, 1),
                     },
                 ))
-                used_tokens = self._current_context_tokens(session)
+                used_tokens = tokens_after
                 usage_fraction = used_tokens / effective_window
 
         if usage_fraction > CONTEXT_COMPACTION_THRESHOLD:
