@@ -787,8 +787,10 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
   // tool calls out as first-class records.
   const eventsPath = resolveSessionPath(id, '.events.jsonl')
   const gatewayEvents: any[] = []
+  let eventsWrittenAt = 0
   try {
     const raw = fs.readFileSync(eventsPath, 'utf8')
+    eventsWrittenAt = fs.statSync(eventsPath).mtimeMs
     for (const line of raw.split('\n')) {
       const trimmed = line.trim()
       if (!trimmed) continue
@@ -818,7 +820,22 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
   }> = []
   const SYSTEM_EVENT_CAP = 200
   let systemEventSeq = 0
-  for (const ev of gatewayEvents) {
+  // When each line happened. The gateway stamps each line in ms
+  // (_append_session_event_jsonl) since 2026-09-21, and some events carry
+  // their own `at`. A line with neither, from an older file, takes the time
+  // of the line before it, or else of the line after it (the file is in
+  // the order things happened); in a file with no time at all, the time
+  // the file was last written. Never the time it was loaded: that put every
+  // such line after the newest message.
+  const lineTimes = gatewayEvents.map((ev): number | undefined => {
+    const t = Number(ev?._t ?? ev?.at)
+    return Number.isFinite(t) && t > 0 ? t : undefined
+  })
+  let near: number | undefined
+  for (let i = 0; i < lineTimes.length; i++) lineTimes[i] = near = lineTimes[i] ?? near
+  near = undefined
+  for (let i = lineTimes.length - 1; i >= 0; i--) lineTimes[i] = near = lineTimes[i] ?? near
+  for (const [i, ev] of gatewayEvents.entries()) {
     if (!ev || typeof ev !== 'object') continue
     const t = String(ev.type || '')
     let subtype = ''
@@ -851,8 +868,7 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
       id: `gw-${systemEventSeq++}`,
       subtype,
       message,
-      // The gateway stamps each line in ms (_append_session_event_jsonl).
-      at: Number(ev._t ? ev._t : Date.now()),
+      at: lineTimes[i] ?? eventsWrittenAt,
       ...(details ? { details } : {}),
     })
   }

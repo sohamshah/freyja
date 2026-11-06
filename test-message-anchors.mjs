@@ -239,6 +239,44 @@ await check("a Slack session shown from its transcript has the cards its kanban 
   assert.equal(kanbanCards.card_002.status, 'ready')
 })
 
+await check("a Slack session's events the gateway did not stamp take their neighbours' times, not the time it was loaded", async () => {
+  // Lines from before the gateway stamped them (2026-09-21) have no `_t`.
+  // The file is in the order things happened.
+  const sessionsDir = path.join(home, '.freyja', 'sessions')
+  const line = (ev) => JSON.stringify({ sessionId: 'freyja:slack:T1:channel:C1:1.0', ...ev })
+  fs.writeFileSync(
+    path.join(sessionsDir, 'freyja_slack_T1_channel_C1_1.0.events.jsonl'),
+    [
+      line({ type: 'log', level: 'info', message: 'before any stamp' }),
+      line({ type: 'text_delta', text: 'hi', _t: 1788996000000 }),
+      line({ type: 'system_event', subtype: 'note', message: 'after a stamp' }),
+      line({ type: 'followup_queued', clientId: 'c1', at: 1788996002000 }),
+      line({ type: 'error', message: 'after its own time field' }),
+      line({ type: 'system_event', subtype: 'note', message: 'stamped', _t: 1788996005000 }),
+    ].join('\n') + '\n',
+  )
+  const { loadSession } = await import('./src/main/persistence.ts')
+  const { systemEvents } = loadSession('freyja:slack:T1:channel:C1:1.0').slice
+  assert.deepEqual(systemEvents.map((e) => [e.message, e.at]), [
+    ['before any stamp', 1788996000000],
+    ['after a stamp', 1788996000000],
+    ['after its own time field', 1788996002000],
+    ['stamped', 1788996005000],
+  ])
+})
+
+await check("a Slack session's events file with no stamp at all takes the time it was last written", async () => {
+  const sessionsDir = path.join(home, '.freyja', 'sessions')
+  const file = path.join(sessionsDir, 'freyja_slack_T1_channel_C1_1.0.events.jsonl')
+  const line = (message) => JSON.stringify({ type: 'log', level: 'info', sessionId: 'freyja:slack:T1:channel:C1:1.0', message })
+  fs.writeFileSync(file, [line('one'), line('two')].join('\n') + '\n')
+  const written = new Date('2026-06-04T21:04:00Z')
+  fs.utimesSync(file, written, written)
+  const { loadSession } = await import('./src/main/persistence.ts')
+  const { systemEvents } = loadSession('freyja:slack:T1:channel:C1:1.0').slice
+  assert.deepEqual(systemEvents.map((e) => e.at), [written.getTime(), written.getTime()])
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)
