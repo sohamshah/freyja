@@ -1208,9 +1208,13 @@ class ListAgentSessionsTool:
         """Walk the on-disk sub-agent sidecars to find addressable
         completed sessions. Lightweight — only reads files matching
         *.subagent.json under the sessions dir."""
-        from bridge.transcript_persistence import SESSIONS_DIR
+        from bridge.transcript_persistence import SESSIONS_DIR, predates_reset, reset_at
 
         out: list[dict[str, Any]] = []
+        # The sub-agents saved before a reset of the caller's conversation,
+        # or of its parent's (Slack's /reset, new_session), belong to the
+        # conversation that reset set aside.
+        resets = {sid: reset_at(sid) for sid in {caller_id, caller_parent} if sid}
         try:
             for path in SESSIONS_DIR.glob("*.subagent.json"):
                 try:
@@ -1222,6 +1226,8 @@ class ListAgentSessionsTool:
                 if not sess_id or sess_id == caller_id:
                     continue
                 parent_id = data.get("parentSessionId") or None
+                if parent_id in resets and predates_reset(data, resets[parent_id]):
+                    parent_id = None
                 # Relationship classification mirrors the live path
                 if sess_id == caller_parent:
                     rel = "parent"

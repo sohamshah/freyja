@@ -655,6 +655,30 @@ def _link_unless_there(src: Path, dest: Path) -> bool:
     return True
 
 
+def reset_at(session_id: str) -> int:
+    """When set_transcript_aside last set the session's conversation aside,
+    in ms: the stamp in the names it gave its transcript and inbox. 0 when
+    it never did."""
+    names = {_transcript_path(session_id).name, _inbox_path(session_id).name}
+    stamps = [0]
+    try:
+        for name in os.listdir(SESSIONS_DIR):
+            head, sep, stamp = name.rpartition(".reset-")
+            if sep and head in names and stamp.isdigit():
+                stamps.append(int(stamp))
+    except OSError:
+        pass
+    return max(stamps)
+
+
+def predates_reset(sidecar: dict[str, Any], reset: int) -> bool:
+    """A sub-agent's saved state (save_subagent_state) is from before its
+    parent's reset at ``reset`` (reset_at): it belongs to the conversation
+    the reset set aside, not to the one now under the parent's id. A
+    discarded parent's sub-agents save nothing after it."""
+    return reset > 0 and int(sidecar.get("savedAt") or 0) <= reset
+
+
 def remap_ids(obj: Any, id_remap: dict[str, str]) -> Any:
     """Return a deep copy of ``obj`` with every string that exactly equals
     an old session id replaced by its new id.

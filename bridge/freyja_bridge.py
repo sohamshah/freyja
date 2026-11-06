@@ -2007,6 +2007,8 @@ async def _wake_archived_subagent(
         from bridge.transcript_persistence import (
             append_inbox_messages,
             load_subagent_state,
+            predates_reset,
+            reset_at,
         )
     except Exception:
         return False
@@ -2060,6 +2062,12 @@ async def _wake_archived_subagent(
     # Step 3: find a host root session whose SubAgentTool we can call.
     # The original parent (loaded from disk if it is closed), else any root.
     preferred_parent = str(sidecar.get("parentSessionId") or "")
+    if preferred_parent and predates_reset(sidecar, reset_at(preferred_parent)):
+        # Its parent's conversation was reset since (Slack's /reset,
+        # new_session). Hosted by the fresh one under that id, it became
+        # that one's child, and its memo woke it. The message waits.
+        log("info", f"_wake_archived_subagent: {session_id}'s parent was reset since it ran — not woken")
+        return False
     host_sess = await _host_for_subagent_wake(state, preferred_parent)
     if host_sess is None or host_sess.tool_registry is None:
         log("warn", f"_wake_archived_subagent: no host root running for {session_id}")

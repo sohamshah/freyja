@@ -178,6 +178,72 @@ async def test_a_message_the_old_conversation_left_unread_does_not_wake_the_new_
     assert "the old report" in aside.read_text()
 
 
+def _subagent(parent: str, sub_id: str) -> str:
+    """A sub-agent of ``parent`` that ran and ended, as its files hold it."""
+    import time
+
+    tp.save_subagent_state(sub_id, {
+        "sessionId": sub_id, "parentSessionId": parent, "agentType": "general",
+        "label": sub_id, "task": "a task", "transcript": {"entries": []},
+        "savedAt": int(time.time() * 1000),
+    })
+    return sub_id
+
+
+@pytest.mark.parametrize("reset", ["/reset", "new_session"])
+async def test_the_conversation_after_reset_lists_none_of_the_old_sub_agents(monkeypatch, tmp_path, reset):
+    # The old sub-agents' files still name the thread as their parent: the
+    # fresh conversation's list showed them as its archived children.
+    import json
+
+    monkeypatch.setattr(fb, "_SUBAGENT_PARENTS", {})
+    state, _sess = await _thread(monkeypatch, tmp_path)
+    old = _subagent(KEY, "sub_old_1")
+
+    if reset == "/reset":
+        await _gateway(state)._reset_session(KEY)
+    else:  # the app's new session under a loaded id
+        await fb._handle_command(state, {"type": "new_session", "sessionId": KEY})
+    await asyncio.sleep(0.01)
+    new = _subagent(KEY, "sub_new_1")  # one the fresh conversation started
+    fresh = await state.ensure_session(KEY)
+    await fresh.initialize()
+    listing = fresh.tool_registry._tools["list_agent_sessions"]
+    out = json.loads((await listing.execute("c1", {})).content)
+
+    assert [(s["id"], s["relationship"]) for s in out["sessions"]] == [(new, "child")]
+    assert tp.load_subagent_state(old)["parentSessionId"] == KEY  # its own files stay
+
+
+async def test_a_talk_to_an_old_sub_agent_does_not_wake_it_under_the_fresh_conversation(monkeypatch, tmp_path):
+    # It was resumed under the conversation now under the thread's id,
+    # became its child, and its report woke that conversation.
+    from bridge.inbox import InboxMessage, new_message_id
+
+    monkeypatch.setattr(fb, "_SUBAGENT_PARENTS", {})
+    state, _sess = await _thread(monkeypatch, tmp_path)
+    old = _subagent(KEY, "sub_old_1")
+    await _gateway(state)._reset_session(KEY)
+    fresh = await state.ensure_session(KEY)
+    await fresh.initialize()
+    resumed: list[str] = []
+
+    async def _resume(sidecar, **_kwargs):
+        resumed.append(sidecar["sessionId"])
+        return sidecar["sessionId"]
+
+    monkeypatch.setattr(fresh.tool_registry._tools["sub_agent"], "resume_archived", _resume)
+    msg = InboxMessage(
+        id=new_message_id(), from_session="operator", from_label="operator", from_role="operator",
+        content="one more thing",
+    )
+
+    assert await fb._wake_archived_subagent(state, old, msg) is False
+    assert resumed == []
+    # The message waits in its own inbox file.
+    assert [m["content"] for m in tp.load_inbox_state(old)["unread"]] == ["one more thing"]
+
+
 @pytest.mark.parametrize("loaded", [True, False])
 async def test_reset_parses_no_transcript_on_the_gateways_loop(monkeypatch, tmp_path, loaded):
     # /reset read the thread's settings from its saved transcript on the
