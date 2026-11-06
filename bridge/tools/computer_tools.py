@@ -655,23 +655,24 @@ def _compute_api_dims(native_w: int, native_h: int) -> tuple[int, int]:
 
 
 async def _ensure_dims(spec: ComputerToolSpec, native: Any) -> str | None:
-    """Populate `spec.native_dims` and `spec.api_dims` if missing.
+    """Populate `spec.native_dims` and `spec.api_dims` if missing, and check
+    that saved ones still match their display.
 
     Called at the top of every coordinate-handling tool so translation
     never sees a None dimension pair. Uses the session's pinned display
-    (or the primary display) as the reference. Does nothing if dims
-    are already set — the most recent `_emit_frame` call is the source
-    of truth, so we only fall back to `list_displays` when no frame has
-    been emitted yet.
+    (or the primary display) as the reference. The most recent
+    `_emit_frame` call is the source of truth, so we only size from
+    `list_displays` when no frame has been emitted yet.
 
     Returns the reason, and leaves the dims unset, when the session is
     pinned to a display that is not connected. The primary display's size
     and corner would map every coordinate onto the wrong screen, so the
     caller fails with that reason, as a capture of that display does.
-    None otherwise.
+    Saved dims are checked against the display they belong to (see
+    `_stale_dims`). None otherwise.
     """
     if spec.native_dims is not None and spec.api_dims is not None:
-        return None
+        return await _stale_dims(spec, native)
     try:
         displays = await asyncio.to_thread(native.list_displays)
     except Exception:  # noqa: BLE001
@@ -701,6 +702,58 @@ async def _ensure_dims(spec: ComputerToolSpec, native: Any) -> str | None:
         )
         spec.native_origin = (0, 0) if target.is_primary else _display_origin(target.id)
         spec.frame_display_id = int(target.id)
+    return None
+
+
+async def _stale_dims(spec: ComputerToolSpec, native: Any) -> str | None:
+    """Why the saved coordinate space no longer fits its display, or None.
+
+    The dims and corner are saved when a frame is taken and then reused.
+    If that display is unplugged, or changes resolution, a click mapped
+    with them lands where the display used to be, or at the wrong scale.
+    Both fail with the reason, until a new screenshot sets the space
+    again. A display that only moved in the arrangement still shows what
+    the screenshot showed (the frame is local to the display), so its new
+    corner is taken and the call goes ahead. None when the displays
+    cannot be listed, or when no display is recorded for the dims."""
+    shown = spec.frame_display_id
+    if shown is None:
+        return None
+    try:
+        displays = await asyncio.to_thread(native.list_displays)
+    except Exception:  # noqa: BLE001
+        return None
+    if not displays:
+        return None
+    target = next((d for d in displays if d.id == shown), None)
+    hint = (
+        "Take a screenshot with one of those ids as display_id first; "
+        "coordinates then refer to that screenshot."
+    )
+    if target is None:
+        return _display_gone_text(
+            shown,
+            displays,
+            pinned=shown == spec.default_display_id,
+            hint=hint,
+            coordinates=True,
+        )
+    size = (int(target.width), int(target.height))
+    if size != spec.native_dims:
+        old_w, old_h = spec.native_dims
+        return (
+            f"display {shown} changed size from {old_w}x{old_h} to {size[0]}x{size[1]} "
+            "since your last screenshot of it, so your coordinates no longer match "
+            "the screen. Take a new screenshot first; coordinates then refer to "
+            "that screenshot."
+        )
+    if target.is_primary:
+        spec.native_origin = (0, 0)
+    else:
+        geo = display_geometry().get(int(target.id))
+        # No geometry (off macOS, or the read failed): keep the saved corner.
+        if geo is not None:
+            spec.native_origin = (int(round(geo.x)), int(round(geo.y)))
     return None
 
 
@@ -848,15 +901,20 @@ async def _missing_display_result(
     )
 
 
-def _display_gone_text(display_id: int, displays: list[Any], *, pinned: bool, hint: str) -> str:
+def _display_gone_text(
+    display_id: int, displays: list[Any], *, pinned: bool, hint: str, coordinates: bool = False
+) -> str:
     """Why a display cannot be used: it is not connected. Names the ids
-    that are. `pinned` means the id is the session's default display."""
+    that are. `pinned` means the id is the session's default display;
+    `coordinates` means it is the display the session's coordinates
+    refer to (the last one looked at)."""
     connected = ", ".join(f"{d.id} (primary)" if d.is_primary else str(d.id) for d in displays)
-    where = (
-        f"this session is pinned to display {display_id}, which is not connected"
-        if pinned
-        else f"display {display_id} is not connected"
-    )
+    if pinned:
+        where = f"this session is pinned to display {display_id}, which is not connected"
+    elif coordinates:
+        where = f"display {display_id}, the one your coordinates refer to, is not connected"
+    else:
+        where = f"display {display_id} is not connected"
     return (
         f"{where} (it may have been unplugged, or the id is from an old list). "
         f"Connected displays: {connected}. {hint}"

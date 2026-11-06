@@ -313,3 +313,85 @@ async def test_one_display_keeps_the_plain_action_summary(monkeypatch):
     assert _text(res) == "Clicked at (640, 360) with left."
     assert screens.shots == [None, 1]
 
+
+STALE_ARGS = [
+    ("click", {"x": 640, "y": 360}),
+    ("move_mouse", {"x": 640, "y": 360}),
+    ("scroll", {"x": 640, "y": 360, "dy": 3}),
+    ("cursor_position", {}),
+    ("list_windows", {}),
+]
+
+
+@pytest.mark.parametrize(("name", "args"), STALE_ARGS)
+async def test_a_pinned_display_unplugged_after_its_screenshot_fails_instead_of_using_its_old_place(
+    monkeypatch, name, args
+):
+    screens = _Monitors()
+    tools, spec = _session(monkeypatch, screens, default_display_id=2)
+    await tools["screenshot"].execute("c1", {})
+    del screens.displays[2], screens.geometry[2]
+    res = await tools[name].execute("c2", {**args, "settle_ms": 0})
+    assert res.is_error
+    assert res.content == (
+        f"{name}: this session is pinned to display 2, which is not connected (it may have been "
+        "unplugged, or the id is from an old list). Connected displays: 1 (primary). Take a "
+        "screenshot with one of those ids as display_id first; coordinates then refer to that screenshot."
+    )
+    assert screens.sent == []
+
+
+async def test_a_display_looked_at_and_then_unplugged_fails_the_click(monkeypatch):
+    screens = _Monitors()
+    tools, _ = _session(monkeypatch, screens)
+    await tools["screenshot"].execute("c1", {"display_id": 2})
+    del screens.displays[2], screens.geometry[2]
+    res = await tools["click"].execute("c2", {"x": 640, "y": 360, "settle_ms": 0})
+    assert res.is_error
+    assert res.content.startswith(
+        "click: display 2, the one your coordinates refer to, is not connected (it may have been unplugged"
+    )
+    assert screens.sent == []
+    # a new screenshot of the main display makes its coordinates usable again
+    await tools["screenshot"].execute("c3", {})
+    res = await tools["click"].execute("c4", {"x": 640, "y": 360, "settle_ms": 0})
+    assert not res.is_error
+    assert screens.sent == [("click", 1512, 851)]
+
+
+async def test_a_display_moved_in_the_arrangement_takes_the_click_to_its_new_place(monkeypatch):
+    # The screenshot is local to the display, so it still matches the screen;
+    # only the display's corner in the global layout changed.
+    screens = _Monitors()
+    tools, spec = _session(monkeypatch, screens, default_display_id=2)
+    await tools["screenshot"].execute("c1", {})
+    screens.geometry[2] = ct.DisplayGeometry(3024, -200, 2560, 1440, False)
+    res = await tools["click"].execute("c2", {"x": 640, "y": 360, "settle_ms": 0})
+    assert not res.is_error
+    assert screens.sent == [("click", 4304, 520)]
+    assert spec.native_origin == (3024, -200)
+    # with no layout to read, the saved corner stays
+    screens.geometry.clear()
+    await tools["click"].execute("c3", {"x": 640, "y": 360, "settle_ms": 0})
+    assert screens.sent[-1] == ("click", 4304, 520)
+
+
+@pytest.mark.parametrize(("name", "args"), STALE_ARGS)
+async def test_a_display_that_changed_resolution_asks_for_a_new_screenshot(monkeypatch, name, args):
+    screens = _Monitors()
+    tools, _ = _session(monkeypatch, screens, default_display_id=2)
+    await tools["screenshot"].execute("c1", {})
+    screens.displays[2] = SimpleNamespace(id=2, width=1920, height=1080, scale=1.0, is_primary=False)
+    screens.geometry[2] = ct.DisplayGeometry(-1920, 0, 1920, 1080, False)
+    res = await tools[name].execute("c2", {**args, "settle_ms": 0})
+    assert res.is_error
+    assert res.content == (
+        f"{name}: display 2 changed size from 2560x1440 to 1920x1080 since your last screenshot "
+        "of it, so your coordinates no longer match the screen. Take a new screenshot first; "
+        "coordinates then refer to that screenshot."
+    )
+    assert screens.sent == []
+    await tools["screenshot"].execute("c3", {})
+    res = await tools["click"].execute("c4", {"x": 640, "y": 360, "settle_ms": 0})
+    assert not res.is_error
+    assert screens.sent == [("click", -960, 540)]
