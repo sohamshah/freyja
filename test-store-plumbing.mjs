@@ -146,6 +146,38 @@ await check('usage that moves the cost updates the row', async () => {
   assert.ok(kid.totalCost > 0, `cost ${kid.totalCost}`)
 })
 
+console.log('\nkanban cards')
+const { deriveSnapshotFromTask } = await import('./src/renderer/lib/kanbanSnapshot.ts')
+const kanbanEvent = (subtype, details) =>
+  H().handleEvent({ type: 'system_event', sessionId: 'root', subtype, message: subtype, details })
+await check("an agent's kanban list keeps the history the app has for a card the judge passed", async () => {
+  useHarness.setState({ activeSessionId: 'root', kanbanCards: {} })
+  // The bridge's shapes: a verdict sends task.to_dict(), a list sends
+  // to_dict(include_history=False), which has no events or comments.
+  const judged = {
+    id: 'card_002', title: 'Write the parser', status: 'done', summary: 'Meets the spec.',
+    events: [
+      { kind: 'updated', actor: 'code card_002 (sub_w)', message: 'Updated card_002', timestamp: 1, details: { status: 'review' } },
+      { kind: 'updated', actor: 'kanban-judge', message: 'Updated card_002', timestamp: 2, details: { status: 'done', summary: true } },
+    ],
+    comments: [{ author: 'code card_002 (sub_w)', body: 'Parser written.', timestamp: 1 }],
+  }
+  kanbanEvent('kanban_update', { action: 'update', task: judged })
+  const { events, comments, ...listed } = judged
+  kanbanEvent('kanban_list', { action: 'list', tasks: [{ ...listed, title: 'Write the parser (v2)' }], count: 1 })
+  const card = H().kanbanCards.card_002
+  assert.equal(card.title, 'Write the parser (v2)', 'the list still updates the card')
+  assert.deepEqual(card.events, events)
+  assert.deepEqual(card.comments, comments)
+  assert.equal(deriveSnapshotFromTask(card).verifierActor, 'kanban-judge')
+})
+await check('a card sent with its history replaces the history the app had', async () => {
+  const fresh = [{ kind: 'updated', actor: 'kanban-judge', message: 'Updated card_002', timestamp: 3, details: { status: 'running' } }]
+  kanbanEvent('kanban_update', { action: 'update', task: { id: 'card_002', status: 'running', events: fresh, comments: [] } })
+  assert.deepEqual(H().kanbanCards.card_002.events, fresh)
+  assert.deepEqual(H().kanbanCards.card_002.comments, [])
+})
+
 console.log('\ncoalesced saves')
 await check('repeated schedules for one session become one save', async () => {
   useHarness.setState({ activeSessionId: 'root', sessions: [row('root'), row('s2')], messages: [{ id: 'm', role: 'user', parts: [{ type: 'text', text: 'hi' }], createdAt: 1 }] })

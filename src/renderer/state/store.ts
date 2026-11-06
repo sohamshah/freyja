@@ -35,6 +35,7 @@ import {
   type FrameRef,
 } from '../lib/frameMedia'
 import { extractConversationSummary } from '../lib/conversationSummary'
+import { mergeKanbanTask } from '../lib/kanbanSnapshot'
 import {
   addAppshotAttachment,
   appshotToAttachment,
@@ -234,7 +235,8 @@ export interface SessionSlice {
    *  parent moves on to a new batch of work. The bridge keeps the
    *  authoritative state in memory + on the journal; this is the
    *  renderer's copy so card-state reconstruction never depends on
-   *  ephemeral events being present. */
+   *  ephemeral events being present. When that event sent the card
+   *  without its history, the card keeps the history it had. */
   kanbanCards: Record<string, Record<string, unknown>>
   busMessages: Array<import('@shared/events').BusMessageRecord>
   /** Inbox events — every inter-agent or operator→agent message that
@@ -2537,7 +2539,8 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       // a parent that builds a second batch of cards in the same
       // session pushes the first batch's create events out of the
       // ring buffer, and `collectKanbanCards` rebuilds with the
-      // older cards missing.
+      // older cards missing. A card sent without its history (the
+      // kanban tool's `list`) keeps the history already here.
       if (ev.subtype.startsWith('kanban_')) {
         const details = (ev.details ?? {}) as Record<string, unknown>
         const taskPayload = details.task
@@ -2548,7 +2551,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           const task = taskPayload as Record<string, unknown>
           const id = typeof task.id === 'string' ? task.id : null
           if (id) {
-            mergedKanban = { ...existing, [id]: task }
+            mergedKanban = { ...existing, [id]: mergeKanbanTask(existing[id], task) }
           }
         }
         if (Array.isArray(tasksList) && tasksList.length > 0) {
@@ -2557,7 +2560,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
             if (!entry || typeof entry !== 'object') continue
             const task = entry as Record<string, unknown>
             const id = typeof task.id === 'string' ? task.id : null
-            if (id) merged[id] = task
+            if (id) merged[id] = mergeKanbanTask(merged[id], task)
           }
           mergedKanban = merged
         }

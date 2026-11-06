@@ -29,6 +29,19 @@ function isReviewerActor(actor: string): boolean {
   return actor === 'kanban-judge' || actor.includes('verify')
 }
 
+/** A newer copy of a card, keeping the history of the older copy when
+ *  the newer one carries none. The kanban tool's `list` sends cards
+ *  without `events` and `comments`; the judge's verdict is read from
+ *  the events, so taking such a copy whole turns a card the judge
+ *  passed or sent back into a plain one. */
+export function mergeKanbanTask(
+  previous: Record<string, unknown> | null | undefined,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!previous || Array.isArray(next.events) || !Array.isArray(previous.events)) return next
+  return { ...next, events: previous.events, comments: previous.comments }
+}
+
 export function deriveKanbanCardSnapshot(
   events: SystemEventRecord[],
   taskId: string,
