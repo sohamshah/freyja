@@ -1621,10 +1621,11 @@ def test_a_hung_ax_read_times_out_and_the_run_ends_blocked(tmp_path, monkeypatch
     import time as _time
 
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-    release = threading.Event()
+    entered, release = threading.Event(), threading.Event()
 
     class Hung(FakeCalculator):
         def read_ax_tree(self, pid, max_depth=8):
+            entered.set()
             release.wait(30)
             return super().read_ax_tree(pid, max_depth)
 
@@ -1634,16 +1635,21 @@ def test_a_hung_ax_read_times_out_and_the_run_ends_blocked(tmp_path, monkeypatch
 
     async def timed():
         t0 = _time.monotonic()
-        res = await op.run()
+        try:
+            # Without the read timeout the run would wait out every hung read;
+            # this bound turns that into a failure here.
+            res = await asyncio.wait_for(op.run(), 10.0)
+        finally:
+            # Free the abandoned read inside the loop. asyncio.run() joins the
+            # executor's threads before it returns, so a release after it came
+            # only when the read gave up after 30 s: a silent 30 s stall that
+            # looked like a hang in the full suite.
+            release.set()
         return res, _time.monotonic() - t0
 
-    # asyncio.run() joins the abandoned worker thread when the loop closes, so
-    # the elapsed time is taken inside the loop. In the bridge the loop lives on.
-    try:
-        res, took = asyncio.run(timed())
-    finally:
-        release.set()
-    assert res.status == "blocked"
+    res, took = asyncio.run(timed())
+    assert entered.is_set()
+    assert res.status == "blocked" and res.code == "ax_unreadable"
     assert "accessibility" in res.summary
     assert took < 5.0
 
