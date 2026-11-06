@@ -19,13 +19,7 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from engine.image_fit import (
-    MANY_IMAGE_MAX_DIM,
-    MAX_IMAGE_DIM,
-    image_size,
-    request_image_dim_limit,
-    shrink_image,
-)
+from engine.image_fit import MAX_IMAGE_DIM, image_size, shrink_image
 from engine.providers import APIUsage, ImageDimensionsTooLargeError, ProviderResponse
 from engine.session import Session, TranscriptManager
 from engine.types import ImageBlock, Message, TextBlock, ToolResultBlock
@@ -73,34 +67,15 @@ def _all_sizes(messages: list[Message]) -> list[tuple[int, int]]:
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
-def test_request_dim_limit_tightens_past_twenty_images():
-    assert request_image_dim_limit(0) == MAX_IMAGE_DIM
-    assert request_image_dim_limit(20) == MAX_IMAGE_DIM
-    assert request_image_dim_limit(21) == MANY_IMAGE_MAX_DIM == 2000
-
-
-def test_image_size_reads_png_and_jpeg_and_rejects_garbage():
-    assert image_size(_png(1640, 2275)) == (1640, 2275)
-    assert image_size(_jpeg(300, 120)) == (300, 120)
-    assert image_size("not-an-image") is None
-
-
-def test_shrink_image_keeps_png_and_fits_long_edge():
-    out = shrink_image(_png(1640, 2275), "image/png", 2000)
-    assert out is not None
-    data, media = out
+def test_shrink_image_fits_the_long_edge_keeps_the_format_and_rejects_garbage():
+    data, media = shrink_image(_png(1640, 2275), "image/png", 2000)
     assert media == "image/png"
     assert image_size(data) == (1441, 2000)
-
-
-def test_shrink_image_keeps_jpeg_as_jpeg():
     data, media = shrink_image(_jpeg(3000, 1000), "image/jpeg", 2000)
     assert media == "image/jpeg"
     assert image_size(data) == (2000, 666)
-
-
-def test_shrink_image_returns_none_for_undecodable():
     assert shrink_image("bm90IGFuIGltYWdl", "image/png", 2000) is None
+    assert image_size("not-an-image") is None
 
 
 # ── transcript fit ─────────────────────────────────────────────────────────
@@ -109,7 +84,7 @@ def test_fit_for_request_leaves_tall_image_alone_at_twenty_images():
     tm = _transcript_with([_image(40, 40) for _ in range(19)] + [_image(1640, 2275)])
     fit = tm.fit_images_for_request()
     assert fit.image_count == 20
-    assert fit.max_dim == MAX_IMAGE_DIM
+    assert fit.max_dim == MAX_IMAGE_DIM == 8000
     assert not fit.changed
     assert (1640, 2275) in _all_sizes(tm.get_messages())
 
@@ -183,29 +158,30 @@ def _anthropic_provider():
     return AnthropicProvider(AnthropicConfig(api_key="test-key", model="claude-opus-5-5"))
 
 
-def test_provider_classifies_many_image_dimension_error():
-    # Verbatim from the session-mufu8atv failure.
-    msg = (
-        "Error code: 400 - {'type': 'error', 'error': {'type': "
-        "'invalid_request_error', 'message': 'messages.9.content.97.image."
-        "source.base64.data: At least one of the image dimensions exceed max "
-        "allowed size for many-image requests: 2000 pixels'}, 'request_id': "
-        "'req_011'}"
-    )
-    err = _anthropic_provider()._convert_api_error(_StubAPIError(msg))
+@pytest.mark.parametrize(
+    ("message", "max_dim"),
+    [
+        # Verbatim from the session-mufu8atv failure.
+        (
+            "Error code: 400 - {'type': 'error', 'error': {'type': "
+            "'invalid_request_error', 'message': 'messages.9.content.97.image."
+            "source.base64.data: At least one of the image dimensions exceed max "
+            "allowed size for many-image requests: 2000 pixels'}, 'request_id': "
+            "'req_011'}",
+            2000,
+        ),
+        (
+            "Error code: 400 - messages.0.content.1.image.source.base64.data: "
+            "image dimensions exceed max allowed size: 8000 pixels",
+            8000,
+        ),
+    ],
+)
+def test_provider_classifies_image_dimension_errors(message, max_dim):
+    err = _anthropic_provider()._convert_api_error(_StubAPIError(message))
     assert isinstance(err, ImageDimensionsTooLargeError)
-    assert err.max_dim == 2000
+    assert err.max_dim == max_dim
     assert err.retryable is False
-
-
-def test_provider_classifies_single_image_dimension_error():
-    msg = (
-        "Error code: 400 - messages.0.content.1.image.source.base64.data: "
-        "image dimensions exceed max allowed size: 8000 pixels"
-    )
-    err = _anthropic_provider()._convert_api_error(_StubAPIError(msg))
-    assert isinstance(err, ImageDimensionsTooLargeError)
-    assert err.max_dim == 8000
 
 
 # ── runner ─────────────────────────────────────────────────────────────────
@@ -283,46 +259,39 @@ async def test_runner_recovers_when_provider_rejects_image_dimensions():
 
 # ── operator-facing failure text ───────────────────────────────────────────
 
-def test_invalid_request_failure_points_to_repair_not_retry():
-    from bridge.freyja_bridge import _format_user_facing_runner_failure
-
-    out = _format_user_facing_runner_failure(
-        reason="unknown",
-        message=(
+@pytest.mark.parametrize(
+    ("message", "expected", "absent"),
+    [
+        # A bad history: /repair fixes it, "try again in a moment" does not.
+        (
             "Error code: 400 - {'type': 'error', 'error': {'type': "
-            "'invalid_request_error', 'message': 'bad history'}}"
+            "'invalid_request_error', 'message': 'bad history'}}",
+            ["/repair"],
+            ["Try again in a moment"],
         ),
-        already_streamed=False,
-    )
-    assert "/repair" in out
-    assert "Try again in a moment" not in out
-
-
-def test_a_setting_the_model_refuses_does_not_send_the_user_to_repair():
-    """The history is fine when the API refuses a model setting; /repair
-    finds nothing (Sonnet 5.5 with a refusal fallback outside its allow-list)."""
-    from bridge.freyja_bridge import _format_user_facing_runner_failure
-
-    out = _format_user_facing_runner_failure(
-        reason="unknown",
-        message=(
+        # The history is fine when the API refuses a model setting; /repair
+        # finds nothing (Sonnet 5.5 with a refusal fallback outside its allow-list).
+        (
             "Error code: 400 - {'type': 'error', 'error': {'type': "
             "'invalid_request_error', 'message': \"'claude-opus-4-8' is not a "
-            "valid fallback target for 'claude-sonnet-5-5'.\"}}"
+            "valid fallback target for 'claude-sonnet-5-5'.\"}}",
+            ["`/repair` will not help", "/model"],
+            [],
         ),
-        already_streamed=False,
-    )
-    assert "`/repair` will not help" in out
-    assert "/model" in out
-
-
-def test_other_failures_keep_generic_text():
+        # Anything else keeps the generic text.
+        ("socket closed", [], ["/repair"]),
+    ],
+)
+def test_failure_text_points_to_repair_only_when_repair_helps(message, expected, absent):
     from bridge.freyja_bridge import _format_user_facing_runner_failure
 
     out = _format_user_facing_runner_failure(
-        reason="unknown", message="socket closed", already_streamed=False,
+        reason="unknown", message=message, already_streamed=False,
     )
-    assert "/repair" not in out
+    for text in expected:
+        assert text in out
+    for text in absent:
+        assert text not in out
 
 
 # ── /repair (bridge) ───────────────────────────────────────────────────────

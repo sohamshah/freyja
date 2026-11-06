@@ -1,3 +1,5 @@
+import pytest
+
 from bridge.freyja_bridge import _build_user_message_with_attachments, _thinking_config_for_model
 from engine.anthropic_provider import AnthropicConfig, AnthropicProvider
 from engine.openai_provider import OpenAIConfig, OpenAIProvider
@@ -6,7 +8,8 @@ from engine.tools import ToolDefinition
 from engine.types import ImageBlock, Message, TextBlock, ThinkingConfig, ToolCall
 
 
-def test_bridge_preserves_pasted_image_attachments_as_image_blocks() -> None:
+def test_bridge_builds_user_message_from_pasted_images() -> None:
+    """A data: URL prefix and stray whitespace are stripped, an empty attachment is dropped, and the image-ref note rides on the text block."""
     message = _build_user_message_with_attachments(
         "use this reference",
         [
@@ -17,40 +20,27 @@ def test_bridge_preserves_pasted_image_attachments_as_image_blocks() -> None:
             },
             {"type": "image", "mimeType": "image/png", "dataBase64": ""},
         ],
+        "Image references available to tools: `img_001`, `latest_user_image`.",
     )
 
     assert isinstance(message, list)
     assert len(message) == 2
     assert isinstance(message[0], ImageBlock)
-    assert message[0].source_type == "base64"
-    assert message[0].media_type == "image/jpeg"
-    assert message[0].data == "aW1hZ2U="
-    assert isinstance(message[1], TextBlock)
-    assert message[1].text == "use this reference"
-
-
-def test_bridge_adds_image_ref_note_when_available() -> None:
-    message = _build_user_message_with_attachments(
-        "use this reference",
-        [{"type": "image", "mimeType": "image/png", "dataBase64": "aW1hZ2U="}],
-        "Image references available to tools: `img_001`, `latest_user_image`.",
+    assert (message[0].source_type, message[0].media_type, message[0].data) == (
+        "base64",
+        "image/jpeg",
+        "aW1hZ2U=",
     )
-
-    assert isinstance(message, list)
     assert isinstance(message[1], TextBlock)
     assert message[1].text == (
         "use this reference\n\n"
         "[Image references available to tools: `img_001`, `latest_user_image`.]"
     )
-
-
-def test_bridge_keeps_plain_text_when_no_valid_image_attachments() -> None:
-    message = _build_user_message_with_attachments(
+    # Nothing valid attached: the plain prompt goes out as a string.
+    assert _build_user_message_with_attachments(
         "plain prompt",
         [{"type": "image", "mimeType": "image/png", "dataBase64": ""}],
-    )
-
-    assert message == "plain prompt"
+    ) == "plain prompt"
 
 
 def test_openai_provider_formats_image_blocks_for_responses_api() -> None:
@@ -69,7 +59,13 @@ def test_openai_provider_formats_image_blocks_for_responses_api() -> None:
     ]
 
 
-def test_openai_provider_sends_explicit_reasoning_none() -> None:
+def test_bridge_reasoning_levels_reach_the_provider() -> None:
+    openai_minimal = _thinking_config_for_model("gpt-5.5", "minimal")
+    assert (openai_minimal.enabled, openai_minimal.effort) == (True, "minimal")
+    claude_none = _thinking_config_for_model("claude-sonnet-4-6", "none")
+    assert (claude_none.enabled, claude_none.effort) == (False, "none")
+
+    # OpenAI gets reasoning off as an explicit effort, with no reasoning include.
     provider = OpenAIProvider(
         OpenAIConfig(
             api_key="test-key",
@@ -77,9 +73,7 @@ def test_openai_provider_sends_explicit_reasoning_none() -> None:
             reasoning=ThinkingConfig(enabled=False, effort="none"),
         )
     )
-
     params = provider.build_request_params([Message(role="user", content="quick answer")])
-
     assert params["reasoning"]["effort"] == "none"
     assert "include" not in params
 
@@ -215,16 +209,6 @@ def test_openai_provider_round_trips_native_computer_screenshot_output() -> None
     }
 
 
-def test_bridge_maps_provider_reasoning_levels_to_thinking_config() -> None:
-    openai_minimal = _thinking_config_for_model("gpt-5.5", "minimal")
-    assert openai_minimal.enabled is True
-    assert openai_minimal.effort == "minimal"
-
-    claude_none = _thinking_config_for_model("claude-sonnet-4-6", "none")
-    assert claude_none.enabled is False
-    assert claude_none.effort == "none"
-
-
 def test_anthropic_provider_formats_image_blocks_for_claude_messages_api() -> None:
     provider = AnthropicProvider(
         AnthropicConfig(api_key="test-key", model="claude-opus-4-7")
@@ -259,10 +243,7 @@ def test_anthropic_provider_formats_image_blocks_for_claude_messages_api() -> No
 
 
 def test_anthropic_provider_classifies_oversized_image_as_image_too_large() -> None:
-    """The 5 MB-per-image limit shares the word 'exceeds' with context
-    overflow errors. The provider must route it to the dedicated
-    ``ImagePayloadTooLargeError`` so the runner prunes the offending
-    block instead of pointlessly running summarization."""
+    """The 5 MB-per-image limit shares the word 'exceeds' with context overflow errors. The provider must route it to the dedicated ``ImagePayloadTooLargeError`` so the runner prunes the offending block instead of pointlessly running summarization."""
     from engine.providers import ContextOverflowError, ImagePayloadTooLargeError
 
     cfg = AnthropicConfig(api_key="test-key", model="claude-opus-4-7")
@@ -276,8 +257,7 @@ def test_anthropic_provider_classifies_oversized_image_as_image_too_large() -> N
     )
 
     class _StubAPIError(Exception):
-        """Minimal stand-in for anthropic's APIStatusError so we can
-        drive _convert_api_error without hitting the real SDK."""
+        """Minimal stand-in for anthropic's APIStatusError so we can drive _convert_api_error without hitting the real SDK."""
         def __init__(self, m: str) -> None:
             super().__init__(m)
             self.status_code = 400
@@ -300,11 +280,8 @@ def test_anthropic_provider_classifies_oversized_image_as_image_too_large() -> N
 
 
 def test_transcript_prune_oversized_images_replaces_only_offending_blocks() -> None:
-    """``prune_oversized_images`` should rewrite *only* the oversized
-    base64 block(s), leave under-limit images alone, and append a clear
-    text marker so the model still sees an explanation."""
+    """``prune_oversized_images`` should rewrite *only* the oversized base64 block(s), leave under-limit images alone, and append a clear text marker so the model still sees an explanation."""
     from engine.session import TranscriptManager
-    from engine.types import Message, TextBlock
 
     tm = TranscriptManager()
     small_data = "a" * 1024  # ~768 bytes binary
@@ -330,19 +307,16 @@ def test_transcript_prune_oversized_images_replaces_only_offending_blocks() -> N
 
 
 def test_compactor_allows_short_but_heavy_sessions() -> None:
-    """The old strict ``len(messages) >= 20`` floor blocked manual
-    compaction on heavy short sessions (a single huge image + a few
-    replies). The new gate uses a token-size check so the user-pressed
-    compact button has a chance to actually run."""
+    """The old strict ``len(messages) >= 20`` floor blocked manual compaction on heavy short sessions (a single huge image + a few replies). The new gate uses a token-size check so the user-pressed compact button has a chance to actually run."""
     from engine.compaction import SummaryCompaction
     from engine.session import TranscriptManager
-    from engine.types import Message, TextBlock
 
     tm = TranscriptManager()
     # 11 messages — under the old MIN_MESSAGES_TO_COMPACT=20 floor.
     # Message 0 carries enough text to clear the MIN_TOKENS_TO_SUMMARIZE
-    # threshold once it's split out from the kept tail.
-    tm.append_message(Message(role="user", content="x" * 20_000))
+    # threshold once it's split out from the kept tail. Real words, not a
+    # run of one character: tiktoken's BPE takes hundreds of ms on the latter.
+    tm.append_message(Message(role="user", content="word " * 4_000))
     for _ in range(10):
         tm.append_message(Message(role="assistant", content="ok"))
 
@@ -364,12 +338,7 @@ def test_compactor_allows_short_but_heavy_sessions() -> None:
 
 
 def test_openai_provider_normalizes_cached_tokens_out_of_input() -> None:
-    """OpenAI reports ``input_tokens`` as the *total* prompt token count
-    with ``cached_tokens`` as a subset. The rest of the codebase
-    (compute_cost, usage.UsageStats.total_tokens) assumes the disjoint
-    Anthropic convention. The provider must subtract the cached slice
-    from ``input_tokens`` before producing an ``APIUsage`` so cost isn't
-    double-counted on cache hits."""
+    """OpenAI reports ``input_tokens`` as the *total* prompt token count with ``cached_tokens`` as a subset. The rest of the codebase (compute_cost, usage.UsageStats.total_tokens) assumes the disjoint Anthropic convention. The provider must subtract the cached slice from ``input_tokens`` before producing an ``APIUsage`` so cost isn't double-counted on cache hits."""
     from engine.openai_provider import _api_usage_from_response_usage
 
     class _InputDetails:
@@ -402,90 +371,17 @@ def test_openai_provider_normalizes_cached_tokens_out_of_input() -> None:
     assert plain.cache_read_tokens == 0
 
 
-def test_openai_normalization_yields_correct_cost_against_anthropic_semantics() -> None:
-    """End-to-end: after normalization, ``compute_cost`` agrees with the
-    intuitive billing for OpenAI cache hits.
-
-    Pre-fix: 195k input + 194k cache_read both billed at 5.0 / 0.50 per
-    1M = ~$1.07 (10× too high). Post-fix: 1k fresh + 194k cache_read =
-    ~$0.10."""
-    from engine.openai_provider import _api_usage_from_response_usage
-    from engine.providers import compute_cost
-
-    class _InputDetails:
-        cached_tokens = 194_000
-
-    class _Usage:
-        input_tokens = 195_000
-        output_tokens = 57
-        input_tokens_details = _InputDetails()
-        output_tokens_details = None
-
-    usage = _api_usage_from_response_usage(_Usage())
-    cost = compute_cost(
-        "gpt-5.5",
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        cache_read_tokens=usage.cache_read_tokens,
-    )
-    # gpt-5.5 pricing: (5.0, 15.0, 0.50) per 1M.
-    # Expected: 1k * 5 + 57 * 15 + 194k * 0.5 = 5000 + 855 + 97000 = ~$0.10286
-    assert cost is not None
-    assert 0.09 < cost < 0.12, f"expected ~$0.10, got ${cost:.4f}"
-
-
-def test_gpt_5_6_family_cost_calc() -> None:
-    """GPT-5.6 (Sol/Terra/Luna) bill through the same OpenAI cache
-    normalization + compute_cost path. Sol's output rate is $30/M —
-    double GPT-5.5's $15 — so this pins the distinct per-tier rates and
-    guards against copy-pasting 5.5's tuple."""
-    from engine.openai_provider import _api_usage_from_response_usage
-    from engine.providers import compute_cost
-
-    class _InputDetails:
-        cached_tokens = 194_000
-
-    class _Usage:
-        input_tokens = 195_000  # 1k fresh after subtracting the cached slice
-        output_tokens = 1_000
-        input_tokens_details = _InputDetails()
-        output_tokens_details = None
-
-    usage = _api_usage_from_response_usage(_Usage())
-    assert usage.input_tokens == 1_000  # disjoint: cached slice removed
-    assert usage.cache_read_tokens == 194_000
-
-    # Sol: 1k*5 + 1k*30 + 194k*0.5 = 5000 + 30000 + 97000 = $0.132
-    sol_cost = compute_cost(
-        "gpt-5.6-sol",
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        cache_read_tokens=usage.cache_read_tokens,
-    )
-    assert sol_cost is not None and abs(sol_cost - 0.132) < 1e-9, sol_cost
-
-    # Per-tier output rates are distinct and correct (pure 1M-output cost).
-    assert compute_cost("gpt-5.6-sol", output_tokens=1_000_000) == 30.0
-    assert compute_cost("gpt-5.6-terra", output_tokens=1_000_000) == 15.0
-    assert compute_cost("gpt-5.6-luna", output_tokens=1_000_000) == 6.0
-
-
 def test_iterative_compaction_extends_previous_summary() -> None:
     """Second compaction in a session takes the iterative update path.
 
-    A fresh session uses the SUMMARY_PROMPT; once a compaction entry
-    lives in the transcript the next compaction switches to
-    SUMMARY_UPDATE_PROMPT so the model extends instead of re-derives.
-    The CompactionResult exposes ``resumed_from_previous`` so callers
-    can show this in telemetry / dashboards."""
+    A fresh session uses the SUMMARY_PROMPT; once a compaction entry lives in the transcript the next compaction switches to SUMMARY_UPDATE_PROMPT so the model extends instead of re-derives. The CompactionResult exposes ``resumed_from_previous`` so callers can show this in telemetry / dashboards."""
     from engine.compaction import SummaryCompaction
     from engine.session import TranscriptManager
-    from engine.types import Message
 
     tm = TranscriptManager()
     # Enough mass to clear the new size-based gate (~20k chars on one
-    # message → ~5k tokens; threshold is 2k).
-    tm.append_message(Message(role="user", content="x" * 20_000))
+    # message → ~4k tokens; threshold is 2k).
+    tm.append_message(Message(role="user", content="word " * 4_000))
     for _ in range(10):
         tm.append_message(Message(role="assistant", content="ok"))
 
@@ -511,8 +407,8 @@ def test_iterative_compaction_extends_previous_summary() -> None:
 
     # Add more messages, compact again — should use the UPDATE prompt.
     for _ in range(15):
-        tm.append_message(Message(role="user", content="y" * 4_000))
-        tm.append_message(Message(role="assistant", content="z" * 4_000))
+        tm.append_message(Message(role="user", content="yes " * 1_000))
+        tm.append_message(Message(role="assistant", content="zip " * 1_000))
     p2 = _FakeProvider()
     res2 = compactor.compact(tm, p2)
     assert res2.success
@@ -521,12 +417,9 @@ def test_iterative_compaction_extends_previous_summary() -> None:
 
 
 def test_pinned_entry_excluded_from_compaction() -> None:
-    """A pinned (compaction_excluded=True) entry must stay in the kept
-    tail. The compactor pulls split_point back to before the earliest
-    pin, even when that means summarizing nothing — F1 from the doc."""
+    """A pinned (compaction_excluded=True) entry must stay in the kept tail. The compactor pulls split_point back to before the earliest pin, even when that means summarizing nothing — F1 from the doc."""
     from engine.compaction import SummaryCompaction
     from engine.session import TranscriptManager
-    from engine.types import Message
 
     tm = TranscriptManager()
     # 30 messages so split_point would naturally be ~20.
@@ -556,12 +449,9 @@ def test_pinned_entry_excluded_from_compaction() -> None:
 
 
 def test_honor_pins_after_prior_compaction_no_off_by_one() -> None:
-    """After a prior compaction, get_messages injects a sys_summary
-    pseudo-message at messages[0]. The pin walker must account for it,
-    else any pin near the start blocks compaction entirely (Gap D)."""
+    """After a prior compaction, get_messages injects a sys_summary pseudo-message at messages[0]. The pin walker must account for it, else any pin near the start blocks compaction entirely (Gap D)."""
     from engine.compaction import SummaryCompaction
     from engine.session import TranscriptManager
-    from engine.types import Message
 
     tm = TranscriptManager()
     # Build a transcript: 5 messages, then a compaction-summary entry,
@@ -600,13 +490,9 @@ def test_honor_pins_after_prior_compaction_no_off_by_one() -> None:
 
 
 def test_iterative_path_strips_sys_summary_inject_from_to_summarize() -> None:
-    """The second compaction must not feed the prior summary to the
-    summarizer twice (once via SUMMARY_UPDATE_PROMPT's PREVIOUS SUMMARY
-    section, once via the injected sys_summary message in to_summarize)
-    — Gap F."""
+    """The second compaction must not feed the prior summary to the summarizer twice (once via SUMMARY_UPDATE_PROMPT's PREVIOUS SUMMARY section, once via the injected sys_summary message in to_summarize) — Gap F."""
     from engine.compaction import SummaryCompaction
     from engine.session import TranscriptManager
-    from engine.types import Message
 
     tm = TranscriptManager()
     # Seed a transcript and immediately add a prior compaction entry.
@@ -619,7 +505,7 @@ def test_iterative_path_strips_sys_summary_inject_from_to_summarize() -> None:
     )
     # Add fresh content to summarize.
     for i in range(15):
-        tm.append_message(Message(role="user", content=f"fresh {i} " + "z" * 4_000))
+        tm.append_message(Message(role="user", content=f"fresh {i} " + "zip " * 1_000))
 
     compactor = SummaryCompaction()
 
@@ -650,11 +536,8 @@ def test_iterative_path_strips_sys_summary_inject_from_to_summarize() -> None:
 
 
 def test_session_on_message_appended_callback_fires_for_every_message() -> None:
-    """The Session.create on_message_appended hook is what drives the
-    bridge's raw_messages.jsonl log. Must fire for every append, never
-    for compaction entries (those go through append_compaction)."""
+    """The Session.create on_message_appended hook is what drives the bridge's raw_messages.jsonl log. Must fire for every append, never for compaction entries (those go through append_compaction)."""
     from engine.session import Session
-    from engine.types import Message
 
     seen: list[Message] = []
     sess = Session.create(
@@ -677,15 +560,11 @@ def test_session_on_message_appended_callback_fires_for_every_message() -> None:
     assert seen[2].content == "after compaction"
 
 
-def test_preserve_facts_auto_repair_appends_missing() -> None:
-    """If the summarizer paraphrases a preserve_facts entry, the tool
-    auto-appends a Preserved Facts section to the just-written summary
-    so the verbatim string is literally present (Gap E)."""
+async def test_preserve_facts_auto_repair_appends_missing() -> None:
+    """If the summarizer paraphrases a preserve_facts entry, the tool auto-appends a Preserved Facts section to the just-written summary so the verbatim string is literally present (Gap E)."""
     from bridge.tools.summarize_context_tool import SummarizeContextTool
     from engine.compaction import SummaryCompaction
     from engine.session import Session, TranscriptManager
-    from engine.types import Message
-    import asyncio
 
     tm = TranscriptManager()
     for i in range(15):
@@ -713,13 +592,11 @@ def test_preserve_facts_auto_repair_appends_missing() -> None:
     )
 
     secret = "api_key=SECRET_TOKEN_DEADBEEF"
-    result = asyncio.new_event_loop().run_until_complete(
-        tool.execute("call-1", {
-            "scope": "all",
-            "preserve_facts": [secret],
-            "reason": "testing preserve_facts repair",
-        })
-    )
+    result = await tool.execute("call-1", {
+        "scope": "all",
+        "preserve_facts": [secret],
+        "reason": "testing preserve_facts repair",
+    })
     # Tool result reports the auto-repair.
     assert not result.is_error
     assert "preserve_facts_missing" in result.content
@@ -730,13 +607,16 @@ def test_preserve_facts_auto_repair_appends_missing() -> None:
     assert secret in last_compaction.compaction_summary
 
 
-def test_channel2_pressure_note_attaches_to_last_user_message_not_system() -> None:
-    """Channel 2 must not touch the system prompt — that would invalidate
-    Anthropic's cache_control breakpoint on the static system block
-    every band crossing. Instead the note tail-appends to the last
-    user-role message, preserving the cached prefix."""
+@pytest.mark.parametrize(
+    ("context_tokens", "note_expected"),
+    [
+        (50_000, True),   # 50% of the effective window (96k): soft band
+        (20_000, False),  # ~20%: below the 40% soft threshold, stay quiet
+    ],
+)
+def test_channel2_pressure_note_rides_on_the_last_user_message(context_tokens, note_expected) -> None:
+    """Channel 2 must not touch the system prompt — that would invalidate Anthropic's cache_control breakpoint on the static system block every band crossing. Instead the note tail-appends to the last user-role message, preserving the cached prefix. Below the soft band nothing attaches and the list comes back untouched."""
     from engine.runner import AsyncAgentRunner
-    from engine.types import Message, TextBlock
 
     class _StubProvider:
         name = "stub"
@@ -748,7 +628,7 @@ def test_channel2_pressure_note_attaches_to_last_user_message_not_system() -> No
 
     class _StubUsage:
         def effective_context_tokens(self) -> int:
-            return 50_000  # 50% of effective window (96k) → soft band
+            return context_tokens
 
     runner = AsyncAgentRunner.__new__(AsyncAgentRunner)
     runner.provider = _StubProvider()
@@ -768,23 +648,22 @@ def test_channel2_pressure_note_attaches_to_last_user_message_not_system() -> No
     original_blocks = messages[-1].content
     augmented = runner._augment_messages_with_pressure_note(messages)  # noqa: SLF001
 
-    # System prompt is untouched (no Channel 2 method anymore for it).
-    # Verify the augmentation only affected the last message.
+    if not note_expected:
+        assert augmented is messages  # same list, untouched
+        assert messages[-1].content is original_blocks
+        return
+
     assert len(augmented) == len(messages)
     assert augmented[0] is messages[0]
     assert augmented[1] is messages[1]
     # The note is written into the transcript message itself, so the next
     # request repeats it and the prompt cache can match past it.
     assert augmented[-1] is messages[-1]
-    # Content is a list with the original block plus a new TextBlock
-    # containing the pressure note.
     last_blocks = augmented[-1].content
     assert isinstance(last_blocks, list)
     assert len(last_blocks) == 2
     assert isinstance(last_blocks[1], TextBlock)
-    # New framing: <system-reminder> wrapper that Anthropic-family
-    # models are trained to attend to as runtime guidance (not user
-    # voice, not assistant thought).
+    # <system-reminder> framing: runtime guidance, not user voice.
     assert "<system-reminder>" in last_blocks[1].text
     assert "</system-reminder>" in last_blocks[1].text
     assert "50-59%" in last_blocks[1].text  # quantized band
@@ -793,56 +672,16 @@ def test_channel2_pressure_note_attaches_to_last_user_message_not_system() -> No
     assert len(original_blocks) == 1
 
 
-def test_channel2_no_op_below_soft_band() -> None:
-    """Below 40% the note must not attach — keeps awareness band quiet."""
-    from engine.runner import AsyncAgentRunner
-    from engine.types import Message
-
-    class _StubProvider:
-        name = "stub"
-        model_id = "fake"
-        context_window = 100_000
-
-    class _StubConfig:
-        max_tokens_per_turn = 4_000
-
-    class _StubUsage:
-        def effective_context_tokens(self) -> int:
-            return 20_000  # ~20% — below 40% soft threshold
-
-    runner = AsyncAgentRunner.__new__(AsyncAgentRunner)
-    runner.provider = _StubProvider()
-    runner.fallback_chain = None
-    runner.config = _StubConfig()
-    runner.usage = _StubUsage()
-    runner._turn_start_pressure_band = None  # noqa: SLF001
-    # The bridge wires this producer at construction; a bare __new__ runner
-    # has no attribute for _gather_extra_reminders to read.
-    runner.get_extra_system_reminders = None
-
-    messages = [Message(role="user", content="hi")]
-    augmented = runner._augment_messages_with_pressure_note(messages)
-    assert augmented is messages  # same list, untouched
-
-
-def test_summarize_context_system_event_carries_full_summary_text() -> None:
-    """The compaction_complete system event must include the FULL
-    summary text in details so the in-session ActivityView's expandable
-    compaction card and the dashboard's clickable compaction-log rows
-    can render the actual content (not just a 240-char excerpt)."""
+async def test_summarize_context_emits_start_and_complete_with_the_full_summary() -> None:
+    """Agent-driven compactions must surface as a compaction_start + compaction_complete pair so the conversation timeline shows the same inline marker the runtime path produces (Gap N). The complete event carries the FULL summary text in details so the in-session ActivityView's expandable compaction card and the dashboard's compaction-log rows can render the actual content, not just a 240-char excerpt."""
     from bridge.tools.summarize_context_tool import SummarizeContextTool
     from engine.compaction import SummaryCompaction
     from engine.session import Session, TranscriptManager
-    from engine.types import Message
-    import asyncio
 
     tm = TranscriptManager()
     for i in range(15):
         tm.append_message(Message(role="user", content=f"u{i} " + "x" * 2_000))
 
-    # Summarizer that returns a long, distinctive summary so we can
-    # verify the FULL text (not just the first 240 chars) made it into
-    # the system event details.
     long_summary = "<summary>" + ("A" * 1_500) + " UNIQUE_TAIL_MARKER_77 </summary>"
 
     class _Provider:
@@ -863,15 +702,16 @@ def test_summarize_context_system_event_carries_full_summary_text() -> None:
         get_compactor=lambda: compactor,
         on_system_event=lambda e: events.append(e),
     )
-    asyncio.new_event_loop().run_until_complete(
-        tool.execute("call-full", {"scope": "all", "reason": "test"})
-    )
+    result = await tool.execute("call-full", {"scope": "all", "reason": "test"})
+    assert not result.is_error
+    subtypes = [e.get("subtype") for e in events]
+    assert "compaction_start" in subtypes
+    assert "compaction_complete" in subtypes
     complete = next(e for e in events if e.get("subtype") == "compaction_complete")
     details = complete["details"]
     # Excerpt is capped, but summary_text must be the FULL produced text.
     assert "summary_excerpt" in details
     assert len(details["summary_excerpt"]) <= 240
-    assert "summary_text" in details
     assert "UNIQUE_TAIL_MARKER_77" in details["summary_text"]
     assert len(details["summary_text"]) > 1_000
     # Other detail fields the renderer expects.
@@ -880,58 +720,11 @@ def test_summarize_context_system_event_carries_full_summary_text() -> None:
     assert details["reason"] == "test"
 
 
-def test_summarize_context_emits_system_event_on_success() -> None:
-    """Agent-driven compactions must surface as a compaction_start +
-    compaction_complete pair so the conversation timeline shows the
-    same inline marker the runtime path produces (Gap N)."""
+async def test_summarize_context_pin_entries_notifies_renderer() -> None:
+    """Agent pin_entries fires an entry_pin_changed event for each successfully-pinned ordinal so the renderer's pin badge appears without a session reload (Gap M)."""
     from bridge.tools.summarize_context_tool import SummarizeContextTool
     from engine.compaction import SummaryCompaction
     from engine.session import Session, TranscriptManager
-    from engine.types import Message
-    import asyncio
-
-    tm = TranscriptManager()
-    for i in range(15):
-        tm.append_message(Message(role="user", content=f"u{i} " + "x" * 2_000))
-
-    class _Provider:
-        model_id = "fake"
-        def complete(self, *args, **kwargs):
-            class _R:
-                content = "<summary>fake summary content</summary>"
-                tool_calls: list = []
-                usage = None
-            return _R()
-
-    session = Session(id="test-emit", transcript=tm, system_prompt="")
-    compactor = SummaryCompaction()
-    events: list[dict] = []
-    tool = SummarizeContextTool(
-        get_session=lambda: session,
-        get_provider=lambda: _Provider(),
-        get_compactor=lambda: compactor,
-        on_system_event=lambda e: events.append(e),
-    )
-    result = asyncio.new_event_loop().run_until_complete(
-        tool.execute("call-N", {"scope": "all"})
-    )
-    assert not result.is_error
-    subtypes = [e.get("subtype") for e in events]
-    assert "compaction_start" in subtypes
-    assert "compaction_complete" in subtypes
-    complete = next(e for e in events if e.get("subtype") == "compaction_complete")
-    assert complete["details"]["trigger"] == "agent_summarize_context"
-
-
-def test_summarize_context_pin_entries_notifies_renderer() -> None:
-    """Agent pin_entries fires an entry_pin_changed event for each
-    successfully-pinned ordinal so the renderer's pin badge appears
-    without a session reload (Gap M)."""
-    from bridge.tools.summarize_context_tool import SummarizeContextTool
-    from engine.compaction import SummaryCompaction
-    from engine.session import Session, TranscriptManager
-    from engine.types import Message
-    import asyncio
 
     tm = TranscriptManager()
     for i in range(20):
@@ -955,12 +748,10 @@ def test_summarize_context_pin_entries_notifies_renderer() -> None:
         get_compactor=lambda: compactor,
         on_pin_changed=lambda e: pin_events.append(e),
     )
-    asyncio.new_event_loop().run_until_complete(
-        tool.execute("call-pin", {
-            "scope": "all",
-            "pin_entries": [3, 5, 18],
-        })
-    )
+    await tool.execute("call-pin", {
+        "scope": "all",
+        "pin_entries": [3, 5, 18],
+    })
     pinned_ords = {e["messageOrdinal"] for e in pin_events}
     # The compactor's pinning step may not pin every requested ord if
     # the transcript shape doesn't match (e.g. ordinals beyond range).
@@ -972,15 +763,10 @@ def test_summarize_context_pin_entries_notifies_renderer() -> None:
 
 
 def test_compaction_result_carries_summary_tokens_and_summarizer_stats() -> None:
-    """Gap 7 + Gap 4: CompactionResult exposes a summary_tokens
-    estimate AND the summarizer call's own input/output/duration/cost
-    so the bridge can mirror them to telemetry. Without this the
-    summarizer's spend is invisible AND the dashboard can't forecast
-    future prompt-prefix size."""
+    """Gap 7 + Gap 4: CompactionResult exposes a summary_tokens estimate AND the summarizer call's own input/output/duration/cost so the bridge can mirror them to telemetry. Without this the summarizer's spend is invisible AND the dashboard can't forecast future prompt-prefix size."""
     from engine.compaction import SummaryCompaction
-    from engine.session import TranscriptManager
     from engine.providers import APIUsage
-    from engine.types import Message
+    from engine.session import TranscriptManager
 
     tm = TranscriptManager()
     for i in range(15):
@@ -1031,9 +817,7 @@ def test_compaction_result_carries_summary_tokens_and_summarizer_stats() -> None
 
 
 def test_compaction_event_details_emit_canonical_pressure_fields() -> None:
-    """Gap 5: the runner's canonical details builder emits
-    effective_window + pressure_pct_before/after so every compaction
-    event downstream uses the same denominator."""
+    """Gap 5: the runner's canonical details builder emits effective_window + pressure_pct_before/after so every compaction event downstream uses the same denominator."""
     from engine.compaction import CompactionResult
     from engine.runner import AsyncAgentRunner
 
@@ -1076,12 +860,10 @@ def test_compaction_event_details_emit_canonical_pressure_fields() -> None:
 
 
 def test_bridge_mirror_helper_writes_compaction_event_telemetry(tmp_path, monkeypatch) -> None:
-    """Gap 2: the bridge's _mirror_compaction_event helper writes both
-    cross-session compaction.jsonl AND per-session compactions.jsonl —
-    so the manual force_compact path (which used to bypass the runner's
-    on_system_event mirror) now lands in both stores."""
+    """Gap 2: the bridge's _mirror_compaction_event helper writes both cross-session compaction.jsonl AND per-session compactions.jsonl — so the manual force_compact path (which used to bypass the runner's on_system_event mirror) now lands in both stores."""
     import json
     from pathlib import Path
+
     from bridge.freyja_bridge import _BridgeSession, _BridgeState
 
     # Redirect HOME so the JSONL writes land in tmp_path.

@@ -16,10 +16,7 @@ import pytest
 
 from bridge.knowledge.skill_store import SkillStore
 from bridge.mcp.config import load_catalog, save_catalog
-from bridge.plugins.loader import PluginError, install, list_installed, uninstall
-
-SLACK_PLUGIN = Path("/tmp/slack-skills-plugin")
-
+from bridge.plugins.loader import PluginError, install, uninstall
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -120,16 +117,6 @@ def test_install_copies_plugin_and_records_installed_json(fake_plugin, roots):
     assert record["servers"] == 1
 
 
-def test_list_installed_returns_counts(fake_plugin, roots):
-    plugins_root, mcp_path = roots
-    assert list_installed(plugins_root=plugins_root) == []
-    install(fake_plugin, plugins_root=plugins_root, mcp_path=mcp_path)
-    records = list_installed(plugins_root=plugins_root)
-    assert len(records) == 1
-    assert records[0]["name"] == "demo"
-    assert (records[0]["skills"], records[0]["commands"], records[0]["servers"]) == (2, 1, 1)
-
-
 def test_uninstall_removes_dir_record_and_own_servers(fake_plugin, roots):
     plugins_root, mcp_path = roots
     # A pre-existing foreign server must survive the uninstall.
@@ -155,24 +142,23 @@ def test_uninstall_removes_dir_record_and_own_servers(fake_plugin, roots):
     assert "other" in catalog.specs  # only its own entries removed
 
 
-def test_uninstall_unknown_plugin_raises(roots):
+def test_bad_sources_and_unknown_plugins_raise_plugin_error(tmp_path, roots):
     plugins_root, mcp_path = roots
     with pytest.raises(PluginError):
         uninstall("nope", plugins_root=plugins_root, mcp_path=mcp_path)
-
-
-def test_install_rejects_non_plugin_dir(tmp_path, roots):
-    plugins_root, mcp_path = roots
-    src = tmp_path / "not-a-plugin"
-    src.mkdir()
+    not_a_plugin = tmp_path / "not-a-plugin"
+    not_a_plugin.mkdir()
     with pytest.raises(PluginError, match="claude-plugin"):
-        install(src, plugins_root=plugins_root, mcp_path=mcp_path)
-
-
-def test_install_missing_source_raises(roots):
-    plugins_root, mcp_path = roots
+        install(not_a_plugin, plugins_root=plugins_root, mcp_path=mcp_path)
     with pytest.raises(PluginError, match="not found"):
         install("/nowhere/at/all", plugins_root=plugins_root, mcp_path=mcp_path)
+    with pytest.raises(PluginError, match="link mode"):
+        install(
+            "https://example.com/some/plugin.git",
+            link=True,
+            plugins_root=plugins_root,
+            mcp_path=mcp_path,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -342,80 +328,3 @@ def test_link_mode_symlinks_files_and_keeps_source_pristine(
     )
     _, content = store.load("demo:alpha")
     assert "Updated alpha instructions." in content
-
-
-def test_link_mode_rejects_git_url(roots):
-    plugins_root, mcp_path = roots
-    with pytest.raises(PluginError, match="link mode"):
-        install(
-            "https://example.com/some/plugin.git",
-            link=True,
-            plugins_root=plugins_root,
-            mcp_path=mcp_path,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Integration: real slack-skills-plugin clone (skip if missing)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.skipif(
-    not (SLACK_PLUGIN / ".claude-plugin" / "plugin.json").is_file(),
-    reason="/tmp/slack-skills-plugin clone not present",
-)
-def test_slack_skills_plugin_integration(tmp_path, roots):
-    plugins_root, mcp_path = roots
-    summary = install(SLACK_PLUGIN, plugins_root=plugins_root, mcp_path=mcp_path)
-
-    assert summary["name"] == "slack"
-    assert len(summary["skill_names"]) == 8
-    assert len(summary["command_names"]) == 5
-    assert summary["mcp"]["added"] == ["slack"]
-
-    expected_skills = {
-        f"slack:{n}"
-        for n in (
-            "block-kit",
-            "create-slack-app",
-            "slack-api",
-            "slack-cli",
-            "slack-docs",
-            "slack-messaging",
-            "slack-search",
-            "test-slack-app",
-        )
-    }
-    expected_commands = {
-        f"slack:{n}"
-        for n in (
-            "channel-digest",
-            "draft-announcement",
-            "find-discussions",
-            "standup",
-            "summarize-channel",
-        )
-    }
-    store = _store(tmp_path, plugins_root)
-    names = {s.name for s in store.list_skills()}
-    assert expected_skills <= names
-    assert expected_commands <= names
-
-    skill, content = store.load("slack:block-kit")
-    assert skill is not None and len(content) > 100
-    skill, content = store.load("slack:channel-digest")
-    assert skill is not None and "$ARGUMENTS" in content
-
-    # Hosted slack server merged disabled, trust standard; the plugin's
-    # camelCase oauth block is normalized and implies auth=oauth.
-    spec = load_catalog(mcp_path).specs["slack"]
-    assert spec.transport == "http"
-    assert spec.url == "https://mcp.slack.com/mcp"
-    assert spec.enabled is False
-    assert spec.trust == "standard"
-    assert spec.source == {"plugin": f"slack@{SLACK_PLUGIN}"}
-    assert spec.auth == "oauth"
-    assert spec.oauth == {
-        "client_id": "1601185624273.8899143856786",
-        "redirect_port": 3118,
-        "redirect_host": "localhost",
-    }

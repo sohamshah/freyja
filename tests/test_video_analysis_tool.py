@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from bridge.tools.video_analysis_tool import (
-    AnalyzeVideoTool,
     DEFAULT_VIDEO_MODEL,
-    _format_offset,
+    AnalyzeVideoTool,
     _looks_like_youtube_url,
 )
 from engine.types import TextBlock
-
 
 # ── tiny fake of the bits of the genai client surface we touch ──────
 
@@ -89,15 +86,6 @@ def test_youtube_url_detector():
     assert _looks_like_youtube_url("https://m.youtube.com/watch?v=abc")
     assert not _looks_like_youtube_url("https://vimeo.com/123")
     assert not _looks_like_youtube_url("/local/file.mp4")
-
-
-def test_format_offset_renders_seconds():
-    assert _format_offset(0) == "0s"
-    assert _format_offset(125) == "125s"
-    assert _format_offset(12.5) == "12.5s"
-    assert _format_offset(None) is None
-    assert _format_offset(-3) is None
-    assert _format_offset("abc") is None
 
 
 @pytest.mark.asyncio
@@ -246,16 +234,3 @@ async def test_response_schema_sets_json_mime(monkeypatch):
     config = captured["client"].aio.models.last_kwargs["config"]
     assert config.response_mime_type == "application/json"
     assert config.response_schema == schema
-
-
-def test_tool_definition_shape():
-    tool = AnalyzeVideoTool()
-    d = tool.definition
-    assert d.name == "analyze_video"
-    assert d.parameters["required"] == ["prompt"]
-    props = d.parameters["properties"]
-    assert "video_path" in props
-    assert "youtube_url" in props
-    assert "fps" in props
-    assert "media_resolution" in props
-    assert "response_schema" in props

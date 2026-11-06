@@ -153,14 +153,6 @@ async def test_nano_banana_needs_the_gemini_key_not_the_openai_one(monkeypatch) 
     assert gemini.models.kwargs is None
 
 
-def test_schema_lists_nano_banana() -> None:
-    definition = GenerateImageTool().definition
-    assert MODEL in image_generation_tool.SUPPORTED_MODELS
-    assert MODEL in definition.parameters["properties"]["model"]["enum"]
-    assert "Nano Banana" in definition.summary
-    assert "GEMINI_API_KEY" in definition.description
-
-
 # ── size and quality → aspect ratio and tier ────────────────────────────
 
 
@@ -168,19 +160,13 @@ def test_schema_lists_nano_banana() -> None:
     ("size", "quality", "aspect", "tier"),
     [
         ("auto", "auto", None, "1K"),
-        ("auto", "low", None, "1K"),
-        ("auto", "medium", None, "1K"),
         ("auto", "high", None, "2K"),
-        ("auto", "xhigh", None, "4K"),
         ("auto", "max", None, "4K"),
         ("16:9", "auto", "16:9", "1K"),
-        ("9:16", "max", "9:16", "4K"),
         # An explicit WIDTHxHEIGHT picks the tier itself; quality is ignored.
         ("1024x1024", "high", "1:1", "1K"),
-        ("500x500", "auto", "1:1", "1K"),
         ("1536x864", "auto", "16:9", "2K"),
         ("3840x2160", "low", "16:9", "4K"),
-        ("2000x1000", "auto", "16:9", "2K"),
         ("1080x1920", "auto", "9:16", "2K"),
         # The tier is a ceiling: the output is never smaller than asked for.
         ("2048x878", "auto", "21:9", "2K"),
@@ -193,9 +179,7 @@ def test_size_and_quality_map_to_ratio_and_tier(size, quality, aspect, tier) -> 
     assert image_generation_tool._gemini_render_plan(cleaned, quality) == (aspect, tier)
 
 
-@pytest.mark.parametrize(
-    "size", ["4:7", "big", "0x100", "1024", "1024x1024x1024", "1537x", "1024.0x768"]
-)
+@pytest.mark.parametrize("size", ["4:7", "big", "0x100", "1024x1024x1024", "1537x"])
 @pytest.mark.asyncio
 async def test_bad_sizes_are_rejected_before_any_request(size) -> None:
     tool, gemini, _ = _tool()

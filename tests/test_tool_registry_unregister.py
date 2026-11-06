@@ -1,8 +1,6 @@
-"""Tests for ToolRegistry.unregister() (design doc section 1.6).
+"""ToolRegistry.unregister() (design doc section 1.6).
 
-unregister(name) must remove BOTH the tool object and its catalog entry
-(everything register() populates), return True if anything was removed,
-and be a safe no-op (returning False) for never-registered names.
+unregister(name) must remove BOTH the tool object and its catalog entry (everything register() populates), return True if anything was removed, and be a safe no-op (returning False) for never-registered names.
 """
 
 from engine.tools import ToolDefinition, ToolRegistry, ToolTier
@@ -32,67 +30,31 @@ def _registry_with(*tools: _DummyTool) -> ToolRegistry:
     return reg
 
 
-# ─── basic removal ────────────────────────────────────────────────────
-
-
-def test_unregister_returns_true_for_registered_tool() -> None:
-    reg = _registry_with(_DummyTool("alpha"))
-    assert reg.unregister("alpha") is True
-
-
-def test_unregister_returns_false_for_unknown_name() -> None:
+def test_unregister_reports_whether_anything_was_removed() -> None:
     reg = _registry_with(_DummyTool("alpha"))
     assert reg.unregister("never_registered") is False
-    # The registered tool is untouched.
-    assert reg.get("alpha") is not None
-
-
-def test_unregister_on_empty_registry_is_safe() -> None:
-    reg = ToolRegistry()
-    assert reg.unregister("anything") is False
-
-
-def test_unregister_twice_returns_false_second_time() -> None:
-    reg = _registry_with(_DummyTool("alpha"))
+    assert reg.get("alpha") is not None  # the registered tool is untouched
     assert reg.unregister("alpha") is True
     assert reg.unregister("alpha") is False
+    assert ToolRegistry().unregister("anything") is False
 
 
-# ─── catalog/visibility bookkeeping ───────────────────────────────────
-
-
-def test_unregistered_tool_disappears_from_list_definitions() -> None:
-    reg = _registry_with(_DummyTool("alpha"), _DummyTool("beta"))
-    assert {d.name for d in reg.list_definitions()} == {"alpha", "beta"}
-
-    reg.unregister("alpha")
-
-    assert {d.name for d in reg.list_definitions()} == {"beta"}
-    assert {d.name for d in reg.list_all_definitions()} == {"beta"}
-
-
-def test_unregistered_tool_disappears_from_list_summaries() -> None:
+def test_unregister_removes_the_tool_and_its_catalog_entry() -> None:
     reg = _registry_with(_DummyTool("alpha"), _DummyTool("beta", tier="warm"))
+    assert {d.name for d in reg.list_definitions()} == {"alpha"}
     assert set(reg.list_summaries()) == {"alpha", "beta"}
 
-    reg.unregister("beta")
-
-    assert set(reg.list_summaries()) == {"alpha"}
-    assert set(reg.list_summary_tiers()) == {"alpha"}
-
-
-def test_unregister_removes_tool_object_and_catalog_entry() -> None:
-    reg = _registry_with(_DummyTool("alpha"))
     reg.unregister("alpha")
 
+    assert reg.list_definitions() == []
+    assert {d.name for d in reg.list_all_definitions()} == {"beta"}
+    assert set(reg.list_summaries()) == {"beta"}
+    assert set(reg.list_summary_tiers()) == {"beta"}
     assert reg.get("alpha") is None
     assert reg.get_catalog_entry("alpha") is None
-    assert "alpha" not in reg.list_names()
-    assert len(reg) == 0
+    assert reg.list_names() == ["beta"]
+    assert len(reg) == 1
     assert "alpha" not in reg
-
-
-# ─── execute dispatch ─────────────────────────────────────────────────
 
 
 async def test_execute_dispatch_fails_after_unregister() -> None:
@@ -110,9 +72,6 @@ async def test_execute_dispatch_fails_after_unregister() -> None:
     assert "Unknown tool" in result.content
     # The removed tool was never invoked again.
     assert tool.calls == [{}]
-
-
-# ─── promote interaction ──────────────────────────────────────────────
 
 
 def test_register_promote_unregister_leaves_no_trace() -> None:
@@ -137,12 +96,7 @@ def test_register_promote_unregister_leaves_no_trace() -> None:
     assert reg.list_names() == []
     assert reg.get("cold_tool") is None
     assert reg.get_catalog_entry("cold_tool") is None
-
-
-def test_promote_after_unregister_returns_none() -> None:
-    reg = _registry_with(_DummyTool("alpha"))
-    reg.unregister("alpha")
-    assert reg.promote_tool("alpha") is None
+    assert reg.promote_tool("cold_tool") is None
 
 
 def test_reregister_after_unregister_restores_default_visibility() -> None:

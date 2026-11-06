@@ -67,7 +67,8 @@ def fake_proxy(request):
             pass
 
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    # A short poll so shutdown() returns at once instead of after the 0.5 s default.
+    thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_port}", seen
@@ -163,7 +164,7 @@ def display_proxy(monkeypatch):
     monkeypatch.setattr(native, "check_screen_recording_permission", lambda: False, raising=False)
     monkeypatch.setattr(native, "capture_screen", capture_screen, raising=False)
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True).start()
     monkeypatch.setenv("FREYJA_CAPTURE_URL", f"http://127.0.0.1:{server.server_port}")
     try:
         yield native_captures

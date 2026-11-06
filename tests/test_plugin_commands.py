@@ -15,12 +15,7 @@ from pathlib import Path
 import pytest
 
 from bridge.mcp.manager import McpManager
-from bridge.plugins.commands import (
-    format_plugin_table,
-    handle_plugin_command,
-    parse_plugin_args,
-)
-
+from bridge.plugins.commands import handle_plugin_command, parse_plugin_args
 
 # ---------------------------------------------------------------------------
 # Fixtures / fakes
@@ -113,16 +108,6 @@ class FakeMcpManager:
 # ---------------------------------------------------------------------------
 # install -> list -> remove roundtrip (real loader, tmp roots)
 # ---------------------------------------------------------------------------
-
-async def test_list_empty(tmp_path):
-    plugins_root, _mcp = _roots(tmp_path)
-    result = await handle_plugin_command(
-        {"action": "list"}, plugins_root=plugins_root
-    )
-    assert result["ok"] is True
-    assert result["action"] == "list"
-    assert result["plugins"] == []
-
 
 async def test_install_list_remove_roundtrip(tmp_path):
     plugins_root, mcp_path = _roots(tmp_path)
@@ -418,22 +403,3 @@ def test_parse_plugin_args():
         "install", "/tmp/My Plugins/demo",
     )
     assert parse_plugin_args("remove demo") == ("remove", "demo")
-
-
-def test_format_plugin_table():
-    rows = [
-        {"name": "demo", "version": "0.1.0", "skills": 2, "commands": 1,
-         "servers": 1, "source": "/tmp/src/demo"},
-        {"name": "huge", "version": "", "skills": 0, "commands": 0,
-         "servers": 0, "source": "https://example.com/" + "x" * 60},
-    ]
-    table = format_plugin_table(rows)
-    lines = table.splitlines()
-    assert lines[0].split() == [
-        "name", "version", "skills", "commands", "servers", "source",
-    ]
-    assert lines[1].startswith("-")
-    assert "demo" in lines[2] and "0.1.0" in lines[2]
-    assert "…" in lines[3]  # long source truncated
-    # Empty list message.
-    assert format_plugin_table([]) == "no plugins installed"

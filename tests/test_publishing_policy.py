@@ -1,36 +1,23 @@
-import ast
-import unittest
-from pathlib import Path
+"""The publishing policy in the system prompt: a standing authorization is honoured without re-asking, stays scoped to what it names, and anything else shows a draft and asks first."""
+
+from bridge.freyja_bridge import _EXECUTING_ACTIONS_BLOCK
 
 
-class PublishingPolicyTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        source = Path(__file__).resolve().parents[1] / "bridge" / "freyja_bridge.py"
-        tree = ast.parse(source.read_text())
-        assignment = next(
-            node
-            for node in tree.body
-            if isinstance(node, ast.Assign)
-            and any(
-                isinstance(target, ast.Name) and target.id == "_EXECUTING_ACTIONS_BLOCK"
-                for target in node.targets
-            )
-        )
-        cls.policy = ast.literal_eval(assignment.value)
+def test_publishing_policy_honours_scoped_standing_authorization_and_asks_otherwise():
+    policy = _EXECUTING_ACTIONS_BLOCK
 
-    def test_standing_authorization_covers_pr_review_publication(self):
-        self.assertIn("durable standing instruction", self.policy)
-        self.assertIn("Honor matching standing authorization without asking again", self.policy)
-        self.assertIn("review findings and inline comments when later asked to review PRs", self.policy)
-        self.assertNotIn("unless they asked you to in this turn", self.policy)
+    # A durable standing instruction covers later PR reviews without re-asking.
+    assert "durable standing instruction" in policy
+    assert "Honor matching standing authorization without asking again" in policy
+    assert "review findings and inline comments when later asked to review PRs" in policy
+    assert "unless they asked you to in this turn" not in policy
 
-    def test_authorization_stays_scoped(self):
-        self.assertIn("covers the action, destination and scope", self.policy)
-        self.assertIn("but not merges, pushes or unrelated messages", self.policy)
-        self.assertIn("Use only the review event types their instructions authorize", self.policy)
+    # The authorization stays scoped to the action, destination and scope named.
+    assert "covers the action, destination and scope" in policy
+    assert "but not merges, pushes or unrelated messages" in policy
+    assert "Use only the review event types their instructions authorize" in policy
 
-    def test_missing_authorization_or_unknown_identity_requires_confirmation(self):
-        self.assertIn("does not by itself authorize publication", self.policy)
-        self.assertIn("If no matching authorization exists, show the draft and ask", self.policy)
-        self.assertIn("cannot tell which identity a tool posts as, ask first", self.policy)
+    # No matching authorization, or an unknown posting identity: show the draft and ask.
+    assert "does not by itself authorize publication" in policy
+    assert "If no matching authorization exists, show the draft and ask" in policy
+    assert "cannot tell which identity a tool posts as, ask first" in policy

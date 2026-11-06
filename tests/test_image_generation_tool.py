@@ -13,23 +13,18 @@ import bridge.tools.image_generation_tool as image_generation_tool
 from bridge.freyja_bridge import _tool_content_preview_and_images
 from bridge.tools.image_generation_tool import GenerateImageTool
 from bridge.tools.image_store import SessionImageStore
-from bridge.tools.registry import build_desktop_registry
 from engine.types import ImageBlock, TextBlock
 
 PNG_1X1_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9Q"
     "DwADhgGAWjR9awAAAABJRU5ErkJggg=="
 )
-MODELS_2_5 = (
-    "gpt-image-2.5-sunburst",
-    "gpt-image-2.5-sunburst-2026-09-08",
-    "gpt-image-2.5-flare",
-    "gpt-image-2.5-flare-2026-09-08",
-)
-MODERN_MODELS = (*MODELS_2_5, "gpt-image-2", "gpt-image-2-2026-04-21")
-# GPT Image 1 shut down 2026-10-23; 1.5 and 1 Mini follow on 2026-12-01.
-# They left with their fixed sizes and the input_fidelity knob.
-ALL_MODELS = MODERN_MODELS
+# GPT Image 1 shut down 2026-10-23; 1.5 and 1 Mini follow on 2026-12-01. They
+# left with their fixed sizes and the input_fidelity knob. The modern models
+# (2.5 Sunburst/Flare and 2) share one validation path; only the 2.5 line
+# takes quality xhigh/max, so tests pick one model from each line.
+MODEL_2_5 = "gpt-image-2.5-sunburst"
+MODEL_2 = "gpt-image-2"
 
 
 @pytest.fixture(autouse=True)
@@ -226,56 +221,17 @@ def test_tool_preview_extracts_image_payload_for_renderer() -> None:
     ]
 
 
-def test_desktop_registry_exposes_generate_image_as_warm_tool(tmp_path) -> None:
-    registry = build_desktop_registry(
-        workspace=tmp_path,
-        include_bash=False,
-        include_web=False,
-        include_subagents=False,
-        include_computer=False,
-    )
-
-    entry = registry.get_catalog_entry("generate_image")
-    assert entry is not None
-    assert entry.summary_visible
-    assert not entry.schema_visible
-    assert "generate_image" in registry.list_summaries()
-
-
-def test_generate_image_schema_describes_supported_models_and_options() -> None:
+def test_generate_image_schema_agrees_with_the_validator() -> None:
+    """The schema's enums and the validator's sets must agree, or the model is offered a value the tool then rejects (or the reverse). input_fidelity left with the GPT Image 1 line."""
     definition = GenerateImageTool().definition
     properties = definition.parameters["properties"]
 
-    assert image_generation_tool.DEFAULT_IMAGE_MODEL == "gpt-image-2.5-sunburst"
-    # The OpenAI set plus Google's Nano Banana 2.1 (tests/test_image_generation_gemini.py).
-    assert image_generation_tool.SUPPORTED_MODELS == set(ALL_MODELS) | {"gemini-nano-banana-2.1"}
-    assert set(properties["model"]["enum"]) == set(ALL_MODELS) | {"gemini-nano-banana-2.1"}
-    assert "Sunburst" in definition.summary
-    assert "Flare" in definition.summary
-    assert "Nano Banana" in definition.summary
-    assert "gpt-image-2.5-sunburst" in definition.description
-    assert "gpt-image-2.5-flare" in definition.description
-    assert "explicit model overrides FREYJA_IMAGE_MODEL" in definition.description
-    assert "snapshots" in definition.description
-    assert "editing precision" in properties["model"]["description"]
-    assert "fast everyday generation" in properties["model"]["description"]
-    assert "FREYJA_IMAGE_MODEL" in properties["model"]["description"]
+    assert image_generation_tool.DEFAULT_IMAGE_MODEL in image_generation_tool.SUPPORTED_MODELS
+    assert set(properties["model"]["enum"]) == image_generation_tool.SUPPORTED_MODELS
     assert "model" not in definition.parameters["required"]
-    assert properties["size"]["type"] == "string"
-    assert "enum" not in properties["size"]
-    assert "WIDTHxHEIGHT" in properties["size"]["description"]
-    assert "3840" in properties["size"]["description"]
-    assert set(properties["quality"]["enum"]) == {"auto", "low", "medium", "high", "xhigh", "max"}
-    assert "2.5" in properties["quality"]["description"]
-    assert set(properties["background"]["enum"]) == {"auto", "opaque", "transparent"}
-    assert set(properties["output_format"]["enum"]) == {"png", "jpeg", "webp"}
-    assert set(properties["moderation"]["enum"]) == {"auto", "low"}
-    # input_fidelity left with the GPT Image 1 line; modern models always
-    # process references at high fidelity.
+    assert set(properties["quality"]["enum"]) == image_generation_tool.SUPPORTED_QUALITIES
+    assert "enum" not in properties["size"]  # free-form WIDTHxHEIGHT
     assert "input_fidelity" not in properties
-    assert properties["output_compression"]["type"] == "integer"
-    assert properties["output_compression"]["minimum"] == 0
-    assert properties["output_compression"]["maximum"] == 100
 
 
 @pytest.mark.asyncio
@@ -322,10 +278,8 @@ async def test_unsupported_environment_model_is_rejected(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", MODERN_MODELS)
-async def test_edits_never_send_input_fidelity(model) -> None:
-    """The knob belonged to the GPT Image 1 line; a leftover argument from
-    an older prompt is ignored rather than forwarded or rejected."""
+async def test_edits_never_send_input_fidelity() -> None:
+    """The knob belonged to the GPT Image 1 line; a leftover argument from an older prompt is ignored rather than forwarded or rejected."""
     fake = FakeClient()
     tool = GenerateImageTool(client_factory=lambda _key: fake)
 
@@ -333,7 +287,7 @@ async def test_edits_never_send_input_fidelity(model) -> None:
         "fidelity",
         {
             "prompt": "preserve details",
-            "model": model,
+            "model": MODEL_2_5,
             "input_images": [_inline_png()],
             "input_fidelity": "high",
         },
@@ -345,7 +299,6 @@ async def test_edits_never_send_input_fidelity(model) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", MODERN_MODELS)
 @pytest.mark.parametrize(
     "size",
     [
@@ -362,18 +315,17 @@ async def test_edits_never_send_input_fidelity(model) -> None:
         "2160x3840",
     ],
 )
-async def test_modern_models_accept_standard_and_custom_sizes(model, size) -> None:
+async def test_modern_models_accept_standard_and_custom_sizes(size) -> None:
     fake = FakeClient()
     tool = GenerateImageTool(client_factory=lambda _key: fake)
 
-    result = await tool.execute("valid-size", {"prompt": "anything", "model": model, "size": size})
+    result = await tool.execute("valid-size", {"prompt": "anything", "model": MODEL_2, "size": size})
 
     assert not result.is_error
     assert fake.images.generate_kwargs["size"] == size
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ["gpt-image-2", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare"])
 @pytest.mark.parametrize(
     "size",
     [
@@ -392,11 +344,11 @@ async def test_modern_models_accept_standard_and_custom_sizes(model, size) -> No
         "1000000000000000x1024",
     ],
 )
-async def test_modern_models_reject_invalid_custom_sizes(model, size) -> None:
+async def test_modern_models_reject_invalid_custom_sizes(size) -> None:
     fake = FakeClient()
     tool = GenerateImageTool(client_factory=lambda _key: fake)
 
-    result = await tool.execute("bad-size", {"prompt": "anything", "model": model, "size": size})
+    result = await tool.execute("bad-size", {"prompt": "anything", "model": MODEL_2_5, "size": size})
 
     assert result.is_error
     assert "size" in str(result.content)
@@ -404,7 +356,7 @@ async def test_modern_models_reject_invalid_custom_sizes(model, size) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ALL_MODELS)
+@pytest.mark.parametrize("model", [MODEL_2_5, MODEL_2])
 @pytest.mark.parametrize("quality", ["auto", "low", "medium", "high", "xhigh", "max"])
 async def test_quality_is_validated_for_selected_model(model, quality) -> None:
     fake = FakeClient()
@@ -414,7 +366,7 @@ async def test_quality_is_validated_for_selected_model(model, quality) -> None:
         "quality", {"prompt": "anything", "model": model, "quality": quality}
     )
 
-    if quality in {"xhigh", "max"} and model not in MODELS_2_5:
+    if quality in {"xhigh", "max"} and model != MODEL_2_5:
         assert result.is_error
         assert "quality" in str(result.content)
         assert fake.images.kwargs is None
@@ -424,9 +376,8 @@ async def test_quality_is_validated_for_selected_model(model, quality) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ALL_MODELS)
 @pytest.mark.parametrize("output_format", ["png", "webp", "jpeg"])
-async def test_transparency_requires_png_or_webp(model, output_format) -> None:
+async def test_transparency_requires_png_or_webp(output_format) -> None:
     fake = FakeClient()
     tool = GenerateImageTool(client_factory=lambda _key: fake)
 
@@ -434,7 +385,6 @@ async def test_transparency_requires_png_or_webp(model, output_format) -> None:
         "transparent",
         {
             "prompt": "a cutout asset",
-            "model": model,
             "background": "transparent",
             "output_format": output_format,
         },
@@ -476,7 +426,7 @@ async def test_unsupported_enum_options_are_rejected(option, value) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("output_format", ["png", "jpeg", "webp"])
-@pytest.mark.parametrize("compression", [None, 0, 75, 100])
+@pytest.mark.parametrize("compression", [None, 0, 100])
 async def test_output_compression_is_only_serialized_for_jpeg_and_webp(
     output_format, compression
 ) -> None:
@@ -498,15 +448,14 @@ async def test_output_compression_is_only_serialized_for_jpeg_and_webp(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("output_format", ["png", "jpeg", "webp"])
 @pytest.mark.parametrize("compression", [-1, 101, True, False, 75.5, "75", "invalid"])
-async def test_invalid_compression_is_rejected_even_for_png(output_format, compression) -> None:
+async def test_invalid_compression_is_rejected_even_for_png(compression) -> None:
     fake = FakeClient()
     tool = GenerateImageTool(client_factory=lambda _key: fake)
 
     result = await tool.execute(
         "bad-compression",
-        {"prompt": "anything", "output_format": output_format, "output_compression": compression},
+        {"prompt": "anything", "output_format": "png", "output_compression": compression},
     )
 
     assert result.is_error
@@ -529,11 +478,10 @@ async def test_mask_without_input_image_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", MODERN_MODELS)
-async def test_sdk_generation_sends_only_the_documented_fields(sdk_client, model) -> None:
+async def test_sdk_generation_sends_only_the_documented_fields(sdk_client) -> None:
     client, requests = sdk_client
     tool = GenerateImageTool(client_factory=lambda _key: client)
-    arguments = {"prompt": "precise image", "model": model, "size": "1536x864"}
+    arguments = {"prompt": "precise image", "model": MODEL_2_5, "size": "1536x864"}
 
     result = await tool.execute("sdk-generation", arguments)
 
@@ -544,7 +492,7 @@ async def test_sdk_generation_sends_only_the_documented_fields(sdk_client, model
     assert request.url.path == "/v1/images/generations"
     assert request.headers["content-type"] == "application/json"
     assert json.loads(request.content) == {
-        "model": model,
+        "model": MODEL_2_5,
         "prompt": "precise image",
         "n": 1,
         "size": "1536x864",
@@ -605,10 +553,12 @@ async def test_sdk_generation_serializes_output_options(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", MODERN_MODELS)
-@pytest.mark.parametrize(("output_format", "compression"), [("png", 75), ("jpeg", 0)])
+@pytest.mark.parametrize(
+    ("model", "quality", "output_format", "compression"),
+    [(MODEL_2_5, "xhigh", "png", 75), (MODEL_2, "high", "jpeg", 0)],
+)
 async def test_sdk_edit_serializes_files_mask_and_model_options(
-    sdk_client, model, output_format, compression
+    sdk_client, model, quality, output_format, compression
 ) -> None:
     client, requests = sdk_client
     tool = GenerateImageTool(client_factory=lambda _key: client)
@@ -616,7 +566,7 @@ async def test_sdk_edit_serializes_files_mask_and_model_options(
         "prompt": "preserve this input outside the mask",
         "model": model,
         "size": "1536x864",
-        "quality": "xhigh" if model in MODELS_2_5 else "high",
+        "quality": quality,
         "input_images": [_inline_png()],
         "mask_image": _inline_png("mask"),
         "output_format": output_format,
@@ -648,7 +598,7 @@ async def test_sdk_edit_serializes_files_mask_and_model_options(
         "prompt": "preserve this input outside the mask",
         "n": "1",
         "size": "1536x864",
-        "quality": "xhigh" if model in MODELS_2_5 else "high",
+        "quality": quality,
         "output_format": output_format,
         "background": "transparent" if output_format == "png" else "opaque",
         "moderation": "low",

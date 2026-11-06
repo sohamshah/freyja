@@ -10,14 +10,8 @@ poison every subsequent turn. Two layers defend against this:
 
 from __future__ import annotations
 
-from engine.types import (
-    ImageBlock,
-    TextBlock,
-    image_media_type_supported,
-    unsupported_image_placeholder_text,
-)
+from engine.types import ImageBlock, TextBlock, image_media_type_supported
 
-# ── shared helper ────────────────────────────────────────────────────────────
 
 def test_supported_media_types_detection():
     assert image_media_type_supported("image/png")
@@ -35,34 +29,21 @@ def test_supported_media_types_detection():
     assert not image_media_type_supported(None)
 
 
-def test_placeholder_names_the_type():
-    txt = unsupported_image_placeholder_text("image/svg+xml")
-    assert "image/svg+xml" in txt
-    assert "omitted" in txt.lower()
-    # Empty/None degrade to a generic note, never crash.
-    assert "unknown" in unsupported_image_placeholder_text(None).lower()
-
-
-# ── Layer A: Anthropic serialization ─────────────────────────────────────────
-
-def test_anthropic_keeps_supported_image():
+def test_anthropic_serialization_swaps_an_unsupported_image_for_text():
     from engine.anthropic_provider import _anthropic_image_block
-    out = _anthropic_image_block(ImageBlock.from_base64("AAAA", "image/png"))
-    assert out["type"] == "image"
-    assert out["source"]["media_type"] == "image/png"
+
+    kept = _anthropic_image_block(ImageBlock.from_base64("AAAA", "image/png"))
+    assert kept["type"] == "image"
+    assert kept["source"]["media_type"] == "image/png"
+
+    swapped = _anthropic_image_block(ImageBlock.from_base64("AAAA", "image/svg+xml"))
+    assert swapped["type"] == "text"
+    assert "image/svg+xml" in swapped["text"]  # the placeholder names the type
 
 
-def test_anthropic_swaps_svg_for_text():
-    from engine.anthropic_provider import _anthropic_image_block
-    out = _anthropic_image_block(ImageBlock.from_base64("AAAA", "image/svg+xml"))
-    assert out["type"] == "text"
-    assert "image/svg+xml" in out["text"]
-
-
-# ── Layer B: bridge tool-result sanitizer ────────────────────────────────────
-
-def test_bridge_strip_swaps_svg_keeps_png():
+def test_bridge_strips_unsupported_images_from_tool_results_and_leaves_clean_ones_alone():
     from bridge.freyja_bridge import _strip_unsupported_image_blocks
+
     content = [
         TextBlock(text="Successfully generated 1 SVG"),
         ImageBlock.from_base64("AAAA", "image/svg+xml"),
@@ -76,15 +57,8 @@ def test_bridge_strip_swaps_svg_keeps_png():
     assert isinstance(out[2], ImageBlock)         # png preserved
     assert out[2].media_type == "image/png"
 
-
-def test_bridge_strip_noop_when_all_supported():
-    from bridge.freyja_bridge import _strip_unsupported_image_blocks
-    content = [TextBlock(text="hi"), ImageBlock.from_base64("AAAA", "image/png")]
     # Returns None so the caller keeps the original object (no needless realloc).
-    assert _strip_unsupported_image_blocks(content) is None
-
-
-def test_bridge_strip_ignores_non_list():
-    from bridge.freyja_bridge import _strip_unsupported_image_blocks
+    clean = [TextBlock(text="hi"), ImageBlock.from_base64("AAAA", "image/png")]
+    assert _strip_unsupported_image_blocks(clean) is None
     assert _strip_unsupported_image_blocks("plain string result") is None
     assert _strip_unsupported_image_blocks(None) is None

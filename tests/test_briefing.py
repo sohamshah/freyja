@@ -69,6 +69,10 @@ def test_prompt_renders_schema_and_escapes(home):
     # Paths honor FREYJA_HOME (the `home` fixture redirects it).
     assert f"{home}/projects/*/working_memory.json" in p
     assert "~/.freyja/" not in p                       # no hardcoded default home
+    # The prompt points at the block fire_context_block injects.
+    assert "authoritative reading list" in p
+    assert "Sessions with new work since your last briefing" in p
+    assert f"Also worked on in the last {briefing.ACTIVE_WINDOW_DAYS} days" in p
 
 
 def test_ensure_briefer_job_creates_once(home):
@@ -200,13 +204,6 @@ def test_fire_context_block_only_fires_for_briefer(home):
     assert briefing.fire_context_block(other_job) == ""
     out = briefing.fire_context_block(briefer_job)
     assert "session-x" in out and "READ EVERY ONE" in out
-
-
-def test_prompt_points_at_the_injected_block(home):
-    p = briefing.briefer_prompt()
-    assert "authoritative reading list" in p
-    assert "Sessions with new work since your last briefing" in p
-    assert f"Also worked on in the last {briefing.ACTIVE_WINDOW_DAYS} days" in p
 
 
 def test_ensure_briefer_job_refreshes_stale_prompt(home):

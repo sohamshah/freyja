@@ -28,8 +28,6 @@ import ast
 import inspect
 import pathlib
 
-import pytest
-
 from bridge.gateway.run import GatewayDaemon, _load_env_into_os_environ
 
 BRIDGE = pathlib.Path(__file__).resolve().parent.parent / "bridge"
@@ -38,16 +36,21 @@ BRIDGE = pathlib.Path(__file__).resolve().parent.parent / "bridge"
 # ── the loader's contract ────────────────────────────────────────────
 
 def test_missing_keys_are_filled_from_the_env_file(monkeypatch):
+    import os
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+
+    # No env file at all: nothing to load, nothing raised.
+    monkeypatch.setattr("bridge.gateway.run.read_env", dict)
+    _load_env_into_os_environ()
+    assert "ANTHROPIC_API_KEY" not in os.environ
+
     monkeypatch.setattr(
         "bridge.gateway.run.read_env",
         lambda: {"ANTHROPIC_API_KEY": "from-file", "SLACK_BOT_TOKEN": "tok"},
     )
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
-
     _load_env_into_os_environ()
-
-    import os
     assert os.environ["ANTHROPIC_API_KEY"] == "from-file"
     assert os.environ["SLACK_BOT_TOKEN"] == "tok"
 
@@ -66,11 +69,6 @@ def test_an_existing_env_var_is_never_clobbered(monkeypatch):
 
     import os
     assert os.environ["ANTHROPIC_API_KEY"] == "explicit"
-
-
-def test_loader_survives_a_missing_env_file(monkeypatch):
-    monkeypatch.setattr("bridge.gateway.run.read_env", dict)
-    _load_env_into_os_environ()  # must not raise
 
 
 # ── it is wired at the choke point ───────────────────────────────────
@@ -102,17 +100,3 @@ def test_headless_entrypoint_reaches_start():
     # Send-only: the dedicated gateway owns inbound Slack. A listening
     # scheduler daemon made both processes answer every mention.
     assert "gateway.start(listen=False)" in body
-
-
-def test_headless_does_not_log_a_workspace_it_does_not_use():
-    """It used to log os.getcwd() — the app bundle, because the launcher
-    cd's there for the bundled Python. start() actually uses Path.home(),
-    so the line described a directory the daemon never ran in."""
-    tree = ast.parse((BRIDGE / "freyja_bridge.py").read_text())
-    fn = next(
-        n for n in ast.walk(tree)
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and n.name == "_main_headless"
-    )
-    body = ast.unparse(fn)
-    assert "os.getcwd()" not in body

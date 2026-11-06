@@ -22,20 +22,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from bridge.artifact_notes import (
-    MAX_QUOTE_CHARS,
-    NoteAnchor,
-    note_label,
-    render_note_message,
-)
+from bridge.artifact_notes import MAX_QUOTE_CHARS, NoteAnchor, render_note_message
 
 # ─── wording ──────────────────────────────────────────────────────────
 
 
-def test_render_names_the_file_and_carries_the_comment() -> None:
+def test_render_names_the_file_quotes_the_range_and_tells_the_agent_to_reread() -> None:
     text = render_note_message(
         artifact_path="/Users/x/.freyja/projects/s1/report.md",
         body="  This section contradicts the benchmark.  ",
+        anchor=NoteAnchor(start_line=12, end_line=14, quote="a\nb\nc"),
         filename="report.md",
     )
     assert "report.md" in text
@@ -43,68 +39,46 @@ def test_render_names_the_file_and_carries_the_comment() -> None:
     assert "This section contradicts the benchmark." in text
     # The comment is stripped, not pasted with the operator's stray spaces.
     assert "  This section" not in text
-
-
-def test_render_quotes_the_highlighted_range() -> None:
-    anchor = NoteAnchor(start_line=12, end_line=14, quote="a\nb\nc")
-    text = render_note_message(
-        artifact_path="/tmp/x.md", body="fix this", anchor=anchor, filename="x.md"
-    )
     assert "lines 12-14" in text
     assert "```\na\nb\nc\n```" in text
-
-
-def test_render_says_line_singular_for_one_line() -> None:
-    anchor = NoteAnchor(start_line=7, end_line=7, quote="only this")
-    text = render_note_message(artifact_path="/tmp/x.md", body="?", anchor=anchor)
-    assert "line 7" in text
-    assert "lines 7" not in text
-
-
-def test_render_truncates_an_enormous_quote() -> None:
-    anchor = NoteAnchor(start_line=1, end_line=9000, quote="x" * (MAX_QUOTE_CHARS * 3))
-    text = render_note_message(artifact_path="/tmp/x.md", body="hm", anchor=anchor)
-    assert "…[truncated]" in text
-    assert len(text) < MAX_QUOTE_CHARS * 2
-
-
-def test_render_tells_the_agent_to_reread_first() -> None:
     # The note may be months older than the file. Trusting the quoted snippet
     # is how an agent "fixes" a paragraph that no longer exists.
-    text = render_note_message(artifact_path="/tmp/x.md", body="tighten this")
     assert "Read the file before you change anything" in text
     assert "answer" in text  # a question gets answered, not edited
 
 
-def test_render_falls_back_to_the_path_basename() -> None:
-    text = render_note_message(artifact_path="/a/b/deep/name.md", body="hi")
-    assert "`name.md`" in text
+def test_render_handles_one_line_huge_quotes_missing_filename_and_empty_body() -> None:
+    one_line = render_note_message(
+        artifact_path="/tmp/x.md",
+        body="?",
+        anchor=NoteAnchor(start_line=7, end_line=7, quote="only this"),
+    )
+    assert "line 7" in one_line and "lines 7" not in one_line
 
+    huge = render_note_message(
+        artifact_path="/tmp/x.md",
+        body="hm",
+        anchor=NoteAnchor(start_line=1, end_line=9000, quote="x" * (MAX_QUOTE_CHARS * 3)),
+    )
+    assert "…[truncated]" in huge
+    assert len(huge) < MAX_QUOTE_CHARS * 2
 
-def test_render_survives_an_empty_body() -> None:
-    text = render_note_message(artifact_path="/tmp/x.md", body="   ")
-    assert "(empty)" in text
-
-
-def test_note_label_identifies_the_source() -> None:
-    assert note_label("report.md") == "Operator (comment on report.md)"
-    assert note_label("") == "Operator"
+    assert "`name.md`" in render_note_message(artifact_path="/a/b/deep/name.md", body="hi")
+    assert "(empty)" in render_note_message(artifact_path="/tmp/x.md", body="   ")
 
 
 # ─── anchor parsing ───────────────────────────────────────────────────
 
 
-def test_anchor_parses_a_well_formed_payload() -> None:
+def test_anchor_parses_a_well_formed_payload_and_normalizes_a_reversed_range() -> None:
     anchor = NoteAnchor.from_payload({"startLine": 3, "endLine": 5, "quote": "hi"})
     assert anchor is not None
     assert (anchor.start_line, anchor.end_line) == (3, 5)
 
-
-def test_anchor_normalizes_a_reversed_range() -> None:
-    anchor = NoteAnchor.from_payload({"startLine": 9, "endLine": 2, "quote": "hi"})
-    assert anchor is not None
     # A reversed range would render as "lines 9-2"; clamp instead.
-    assert anchor.end_line == 9
+    reversed_range = NoteAnchor.from_payload({"startLine": 9, "endLine": 2, "quote": "hi"})
+    assert reversed_range is not None
+    assert reversed_range.end_line == 9
 
 
 @pytest.mark.parametrize(

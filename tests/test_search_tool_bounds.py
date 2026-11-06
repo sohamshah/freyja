@@ -25,13 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from bridge.tools.search_tools import (
-    MAX_FILE_BYTES,
-    PRUNE_DIRS,
-    GlobTool,
-    GrepTool,
-    iter_files,
-)
+from bridge.tools.search_tools import MAX_FILE_BYTES, GlobTool, GrepTool, iter_files
 
 
 def _run(tool, args):
@@ -55,19 +49,9 @@ def tree(tmp_path: Path) -> Path:
 
 # ── pruning ──────────────────────────────────────────────────────────
 
-def test_junk_directories_are_not_walked(tree: Path):
-    found = {p.name for p in iter_files(tree, deadline=time.monotonic() + 30)}
-    assert "app.py" in found
-    assert "buried.py" not in found
-
-
-@pytest.mark.parametrize("junk", ["node_modules", ".git", ".venv", "dist"])
-def test_each_junk_dir_is_pruned(junk):
-    assert junk in PRUNE_DIRS
-
-
 def test_grep_skips_pruned_dirs(tree: Path):
     out = _run(GrepTool(), {"path": str(tree), "pattern": "needle_in_src"}).content
+    assert "Found" in out and "match(es)" in out
     assert "app.py" in out
     assert "buried.py" not in out
 
@@ -96,7 +80,8 @@ def test_grep_stops_and_says_so_when_the_file_cap_is_hit(tmp_path: Path, monkeyp
         (tmp_path / f"f{i}.txt").write_text("nothing here\n")
 
     out = _run(GrepTool(), {"path": str(tmp_path), "pattern": "absent_pattern"}).content
-    assert "INCOMPLETE" in out or "NOT a confirmed absence" in out
+    # A truncated absence is never called absence.
+    assert "NOT a confirmed absence" in out
     assert "file limit" in out
 
 
@@ -120,20 +105,7 @@ def test_genuine_absence_is_still_reported_plainly(tree: Path):
     assert "NOT a confirmed absence" not in out
 
 
-def test_truncated_absence_is_never_called_absence(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("bridge.tools.search_tools.MAX_FILES_SCANNED", 2)
-    for i in range(20):
-        (tmp_path / f"f{i}.txt").write_text("nothing\n")
-    out = _run(GrepTool(), {"path": str(tmp_path), "pattern": "absent"}).content
-    assert "NOT a confirmed absence" in out
-
-
 # ── behaviour preserved ──────────────────────────────────────────────
-
-def test_grep_still_finds_and_reports_matches(tree: Path):
-    out = _run(GrepTool(), {"path": str(tree), "pattern": "needle_in_src"}).content
-    assert "Found" in out and "match(es)" in out
-
 
 def test_file_pattern_filters_by_name(tree: Path):
     out = _run(

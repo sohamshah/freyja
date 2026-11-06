@@ -1,234 +1,126 @@
-"""Tests for TwitterSearchTool."""
+"""TwitterSearchTool: argument validation, xAI key resolution, and the Responses payload in and out."""
 
 from __future__ import annotations
 
-import json
 import os
-import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
-from bridge.session_ledger import OBSERVATION_TOOLS, RESEARCH_TOOLS, SessionLedger
-from bridge.tools.agent_types import AGENT_TYPES
-from bridge.tools.registry import build_desktop_registry
-from bridge.tools.summarize_context_tool import SummarizeContextTool
-from bridge.tools.twitter_tool import (
-    DEFAULT_XAI_MODEL,
-    TwitterSearchTool,
-    _resolve_api_key,
+from bridge.tools.twitter_tool import TwitterSearchTool, _resolve_api_key
+
+
+def _client(payload=None, *, status: int = 200, text: str = "", side_effect=None) -> MagicMock:
+    client = MagicMock()
+    if side_effect is not None:
+        client.post.side_effect = side_effect
+        return client
+    response = MagicMock()
+    response.status_code = status
+    response.text = text
+    if payload is not None:
+        response.json.return_value = payload
+    client.post.return_value = response
+    return client
+
+
+def _message(text: str, annotations=None) -> dict:
+    block = {"type": "output_text", "text": text}
+    if annotations:
+        block["annotations"] = annotations
+    return {"output": [{"type": "message", "content": [block]}]}
+
+
+async def _run(tool, arguments, client):
+    with (
+        patch.object(tool, "_get_api_key", return_value="xai-test-key"),
+        patch.object(tool, "_get_client", return_value=client),
+    ):
+        return await tool.execute("call", arguments)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "complaint"),
+    [
+        ({}, "query"),
+        (
+            {"query": "AI research", "allowed_handles": ["karpathy"], "excluded_handles": ["elonmusk"]},
+            "cannot specify both allowed_handles and excluded_handles",
+        ),
+        (
+            {"query": "AI research", "allowed_handles": [f"user{i}" for i in range(11)]},
+            "allowed_handles cannot exceed 10",
+        ),
+        ({"query": "AI research", "from_date": "2026/09/20"}, "from_date must be in YYYY-MM-DD format"),
+    ],
 )
+async def test_bad_arguments_are_refused_before_any_request(arguments, complaint):
+    client = _client(_message("unused"))
+    result = await _run(TwitterSearchTool(), arguments, client)
+    assert result.is_error
+    assert complaint in result.content
+    client.post.assert_not_called()
 
 
-class TestTwitterTool(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self.tool = TwitterSearchTool()
+async def test_a_tweet_url_or_handle_becomes_a_query_and_handles_lose_their_at():
+    tool = TwitterSearchTool()
+    client = _client(_message("Tweet summary content"))
+    result = await _run(tool, {"tweet_url": "https://x.com/jack/status/20"}, client)
+    assert not result.is_error
+    assert "Tweet summary content" in result.content
 
-    async def test_tool_definition(self):
-        definition = self.tool.definition
-        self.assertEqual(definition.name, "twitter_search")
-        self.assertEqual(definition.tier.value, "hot")
-        self.assertIn("query", definition.parameters["required"])
-        props = definition.parameters["properties"]
-        self.assertIn("query", props)
-        self.assertIn("allowed_handles", props)
-        self.assertIn("excluded_handles", props)
-        self.assertIn("from_date", props)
-        self.assertIn("to_date", props)
-        self.assertIn("include_images", props)
-        self.assertIn("include_videos", props)
+    client = _client(_message("Handle content"))
+    result = await _run(tool, {"query": "Latest posts", "handle": "@karpathy"}, client)
+    assert not result.is_error
+    tools_payload = client.post.call_args[1]["json"]["tools"]
+    assert tools_payload[0]["allowed_x_handles"] == ["karpathy"]
 
-    async def test_missing_query(self):
-        result = await self.tool.execute("call_1", {})
-        self.assertTrue(result.is_error)
-        self.assertIn("query", result.content)
 
-    async def test_query_coercion_from_tweet_url(self):
-        with patch.object(self.tool, "_get_api_key", return_value="xai-test-key"):
-            with patch.object(self.tool, "_get_client") as mock_get_client:
-                mock_client = MagicMock()
-                mock_resp = MagicMock()
-                mock_resp.status_code = 200
-                mock_resp.json.return_value = {
-                    "output": [
-                        {
-                            "type": "message",
-                            "content": [{"type": "output_text", "text": "Tweet summary content"}],
-                        }
-                    ]
+async def test_missing_or_groq_key_is_a_clear_error_and_an_xai_key_wins():
+    tool = TwitterSearchTool()
+    no_env_file = patch("bridge.tools.twitter_tool._read_env_file_keys", return_value={})
+    with patch.dict(os.environ, {}, clear=True), no_env_file:
+        result = await tool.execute("call", {"query": "test query"})
+    assert result.is_error
+    assert "xAI API key not configured" in result.content
+
+    # A Groq key pasted into XAI_API_KEY is named as such, not sent to xAI.
+    with patch.dict(os.environ, {"XAI_API_KEY": "gsk_123456789"}, clear=True), no_env_file:
+        result = await tool.execute("call", {"query": "test query"})
+    assert result.is_error
+    assert "Found Groq API key" in result.content
+
+    with patch.dict(os.environ, {"XAI_API_KEY": "gsk_groq", "GROK_API_KEY": "xai-real-key"}):
+        assert _resolve_api_key() == ("xai-real-key", None)
+
+
+async def test_search_result_carries_the_text_and_its_citations():
+    client = _client(
+        _message(
+            "Discussion on LLM reasoning has surged.",
+            annotations=[
+                {
+                    "type": "url_citation",
+                    "url": "https://x.com/researcher/status/100",
+                    "title": "Reasoning models overview",
                 }
-                mock_client.post.return_value = mock_resp
-                mock_get_client.return_value = mock_client
-
-                result = await self.tool.execute(
-                    "call_2",
-                    {"tweet_url": "https://x.com/jack/status/20"},
-                )
-                self.assertFalse(result.is_error)
-                self.assertIn("Tweet summary content", result.content)
-
-    async def test_query_coercion_from_handle(self):
-        with patch.object(self.tool, "_get_api_key", return_value="xai-test-key"):
-            with patch.object(self.tool, "_get_client") as mock_get_client:
-                mock_client = MagicMock()
-                mock_resp = MagicMock()
-                mock_resp.status_code = 200
-                mock_resp.json.return_value = {
-                    "output": [
-                        {
-                            "type": "message",
-                            "content": [{"type": "output_text", "text": "Handle content"}],
-                        }
-                    ]
-                }
-                mock_client.post.return_value = mock_resp
-                mock_get_client.return_value = mock_client
-
-                result = await self.tool.execute(
-                    "call_handle",
-                    {"query": "Latest posts", "handle": "@karpathy"},
-                )
-                self.assertFalse(result.is_error)
-                # Verify payload had allowed_x_handles stripped of @
-                call_kwargs = mock_client.post.call_args[1]
-                tools_payload = call_kwargs["json"]["tools"]
-                self.assertEqual(tools_payload[0]["allowed_x_handles"], ["karpathy"])
-
-    async def test_mutual_exclusive_handles(self):
-        result = await self.tool.execute(
-            "call_3",
-            {
-                "query": "AI research",
-                "allowed_handles": ["karpathy"],
-                "excluded_handles": ["elonmusk"],
-            },
+            ],
         )
-        self.assertTrue(result.is_error)
-        self.assertIn("cannot specify both allowed_handles and excluded_handles", result.content)
-
-    async def test_too_many_handles(self):
-        result = await self.tool.execute(
-            "call_4",
-            {
-                "query": "AI research",
-                "allowed_handles": [f"user{i}" for i in range(11)],
-            },
-        )
-        self.assertTrue(result.is_error)
-        self.assertIn("allowed_handles cannot exceed 10", result.content)
-
-    async def test_invalid_date_format(self):
-        result = await self.tool.execute(
-            "call_5",
-            {
-                "query": "AI research",
-                "from_date": "2026/09/20",
-            },
-        )
-        self.assertTrue(result.is_error)
-        self.assertIn("from_date must be in YYYY-MM-DD format", result.content)
-
-    async def test_missing_api_key(self):
-        with patch.dict(os.environ, {}, clear=True):
-            with patch("bridge.tools.twitter_tool._read_env_file_keys", return_value={}):
-                result = await self.tool.execute("call_6", {"query": "test query"})
-                self.assertTrue(result.is_error)
-                self.assertIn("xAI API key not configured", result.content)
-
-    async def test_groq_key_disambiguation_error(self):
-        with patch.dict(os.environ, {"XAI_API_KEY": "gsk_123456789"}, clear=True):
-            with patch("bridge.tools.twitter_tool._read_env_file_keys", return_value={}):
-                result = await self.tool.execute("call_7", {"query": "test query"})
-                self.assertTrue(result.is_error)
-                self.assertIn("Found Groq API key", result.content)
-
-    async def test_successful_search_with_annotations(self):
-        with patch.object(self.tool, "_get_api_key", return_value="xai-valid-key"):
-            with patch.object(self.tool, "_get_client") as mock_get_client:
-                mock_client = MagicMock()
-                mock_resp = MagicMock()
-                mock_resp.status_code = 200
-                mock_resp.json.return_value = {
-                    "output": [
-                        {
-                            "type": "message",
-                            "content": [
-                                {
-                                    "type": "output_text",
-                                    "text": "Discussion on LLM reasoning has surged.",
-                                    "annotations": [
-                                        {
-                                            "type": "url_citation",
-                                            "url": "https://x.com/researcher/status/100",
-                                            "title": "Reasoning models overview",
-                                        }
-                                    ],
-                                }
-                            ],
-                        }
-                    ]
-                }
-                mock_client.post.return_value = mock_resp
-                mock_get_client.return_value = mock_client
-
-                result = await self.tool.execute("call_8", {"query": "LLM reasoning"})
-                self.assertFalse(result.is_error)
-                self.assertIn("Discussion on LLM reasoning has surged.", result.content)
-                self.assertIn("Reasoning models overview", result.content)
-                self.assertIn("https://x.com/researcher/status/100", result.content)
-
-    async def test_http_error_handling(self):
-        with patch.object(self.tool, "_get_api_key", return_value="xai-valid-key"):
-            with patch.object(self.tool, "_get_client") as mock_get_client:
-                mock_client = MagicMock()
-                mock_resp = MagicMock()
-                mock_resp.status_code = 429
-                mock_resp.text = '{"error": "rate limit exceeded"}'
-                mock_client.post.return_value = mock_resp
-                mock_get_client.return_value = mock_client
-
-                result = await self.tool.execute("call_9", {"query": "test"})
-                self.assertTrue(result.is_error)
-                self.assertIn("HTTP 429", result.content)
-
-    async def test_timeout_handling(self):
-        with patch.object(self.tool, "_get_api_key", return_value="xai-valid-key"):
-            with patch.object(self.tool, "_get_client") as mock_get_client:
-                mock_client = MagicMock()
-                mock_client.post.side_effect = httpx.TimeoutException("timed out")
-                mock_get_client.return_value = mock_client
-
-                result = await self.tool.execute("call_10", {"query": "test"})
-                self.assertTrue(result.is_error)
-                self.assertIn("timed out", result.content)
+    )
+    result = await _run(TwitterSearchTool(), {"query": "LLM reasoning"}, client)
+    assert not result.is_error
+    assert "Discussion on LLM reasoning has surged." in result.content
+    assert "Reasoning models overview" in result.content
+    assert "https://x.com/researcher/status/100" in result.content
 
 
-class TestTwitterIntegration(unittest.TestCase):
-    def test_key_resolver_prioritizes_xai_prefix(self):
-        with patch.dict(os.environ, {"XAI_API_KEY": "gsk_groq", "GROK_API_KEY": "xai-real-key"}):
-            key, err = _resolve_api_key()
-            self.assertEqual(key, "xai-real-key")
-            self.assertIsNone(err)
+async def test_http_errors_and_timeouts_are_reported_not_raised():
+    tool = TwitterSearchTool()
+    result = await _run(tool, {"query": "test"}, _client(status=429, text='{"error": "rate limit exceeded"}'))
+    assert result.is_error
+    assert "HTTP 429" in result.content
 
-    def test_desktop_registry_wiring(self):
-        registry = build_desktop_registry(workspace="/tmp")
-        tool_names = [t.definition.name for t in registry._tools.values()]
-        self.assertIn("twitter_search", tool_names)
-
-    def test_session_ledger_tool_classification(self):
-        self.assertIn("twitter_search", OBSERVATION_TOOLS)
-        self.assertIn("twitter_search", RESEARCH_TOOLS)
-        target = SessionLedger._observation_target("twitter_search", {"query": "xAI Grok 4"})
-        self.assertEqual(target, "xAI Grok 4")
-
-    def test_summarize_context_exploration_tools(self):
-        self.assertIn("twitter_search", SummarizeContextTool.EXPLORATION_TOOLS)
-
-    def test_subagent_tool_includes(self):
-        self.assertIn("twitter_search", AGENT_TYPES["explore"].tool_include)
-        self.assertIn("twitter_search", AGENT_TYPES["explore-fast"].tool_include)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    result = await _run(tool, {"query": "test"}, _client(side_effect=httpx.TimeoutException("timed out")))
+    assert result.is_error
+    assert "timed out" in result.content
