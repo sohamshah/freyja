@@ -7164,11 +7164,14 @@ class _BridgeSession:
         return _held_elsewhere(getattr(self, "state", None), self.id)
 
     def _save_inbox(self) -> None:
+        """Persist the inbox to its file. A discarded session (_discarded)
+        saves nothing: a message pushed into it wrote the file the next
+        session with its id reads."""
         try:
             from bridge.transcript_persistence import save_inbox_state
         except Exception:
             return
-        if self.inbox is None or self._held_elsewhere:
+        if self.inbox is None or self._held_elsewhere or getattr(self, "_discarded", False):
             return
         inbox = self.inbox
         try:
@@ -7230,8 +7233,9 @@ class _BridgeSession:
         app's menus), they were lost to a gateway restart. The file holds
         the metadata and no entries; the app does not list it, and the
         thread's first turn saves over it. A transcript on disk is never
-        replaced, and no other session saves anything here."""
-        if not _is_gateway_session_id(self.id) or self._held_elsewhere:
+        replaced, and no other session saves anything here, nor does a
+        discarded one (_discarded)."""
+        if not _is_gateway_session_id(self.id) or self._held_elsewhere or getattr(self, "_discarded", False):
             return
         try:
             from bridge.transcript_persistence import load_transcript, save_transcript
