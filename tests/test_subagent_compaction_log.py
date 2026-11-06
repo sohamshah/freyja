@@ -245,3 +245,33 @@ async def test_a_computer_use_child_logs_its_compactions(monkeypatch, tmp_path, 
     assert (row["tokens_before"], row["tokens_after"]) == (90_000, 60_000)
     [event] = [r for r in telemetry_rows if r.get("type") == "compaction_event"]
     assert (event["session_id"], event["agent_type"], event["mechanism"]) == ("comp_c_1", "computer", "image_prune")
+
+
+async def test_a_sub_agents_own_compaction_rows_carry_the_window_and_pressure(
+    monkeypatch, tmp_path, telemetry_rows,
+):
+    """The parent's summarize_context measures its sizes against the runner's
+    window less the reply's reserve, so its rows carry the window and the
+    pressure before and after. The child's tool had no window getter, so its
+    rows had none."""
+    from engine.types import AgentConfig, Message
+
+    async def body(runner, session):
+        for i in range(15):
+            session.transcript.append_message(Message(role="user", content=f"u{i} " + "x" * 2_000))
+        tool = runner.tool_registry.get("summarize_context")
+        result = await tool.execute("sc1", {"scope": "all", "reason": "fold it"})
+        assert not result.is_error, result.content
+
+    await _run_child(monkeypatch, tmp_path, "sub_c_4", body)
+
+    window = 200_000 - AgentConfig().max_tokens_per_turn
+    compactions = [r for r in telemetry_rows if r.get("type") == "compaction_event"]
+    start, done = compactions
+    before, after = done["tokens_before"], done["tokens_after"]
+    pressure = (window, round(before / window * 100, 1), round(after / window * 100, 1))
+    log_start, log_done = _rows(tmp_path, "sub_c_4")
+    for row in (done, log_done):
+        assert (row["effective_window"], row["pressure_pct_before"], row["pressure_pct_after"]) == pressure
+    for row in (start, log_start):
+        assert (row["effective_window"], row["pressure_pct_before"]) == pressure[:2]

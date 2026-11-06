@@ -1798,6 +1798,23 @@ Parameters:
             except Exception:
                 return None
 
+        def _sub_effective_window() -> int | None:
+            # The live provider's window less the reply's reserve, as the
+            # parent's _effective_window reads it: what the child's compaction
+            # events measure their pressure against.
+            r = sub_runner_holder.get("runner")
+            if r is None:
+                return None
+            try:
+                provider_local = r.fallback_chain.current if r.fallback_chain else r.provider
+                window = int(getattr(provider_local, "context_window", 0) or 0)
+                if window <= 0:
+                    return None
+                reserved = int(getattr(r.config, "max_tokens_per_turn", 0) or 0)
+                return max(1, window - reserved)
+            except Exception:
+                return None
+
         def _on_sub_summarize_call(payload: dict[str, Any]) -> None:
             try:
                 from bridge.compaction_telemetry import append_telemetry
@@ -1837,6 +1854,7 @@ Parameters:
             ),
             on_summarize_call=_on_sub_summarize_call,
             get_current_pressure_pct=_sub_summarize_pressure_pct,
+            get_effective_window=_sub_effective_window,
             on_system_event=_on_sub_summarize_event,
             # The summary call is one of the child's model calls, costed as
             # the runner's compactions' are.
