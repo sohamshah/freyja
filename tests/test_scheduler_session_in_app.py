@@ -340,6 +340,55 @@ async def test_a_run_of_the_job_going_on_in_the_app_does_not_hold_the_tick(app_b
     sess.pending_task.cancel()
 
 
+async def test_background_work_left_under_a_job_session_after_the_handover_reports_to_its_inbox_file(
+    app_bridge, monkeypatch, tmp_path
+):
+    # A run in the app outlived its wait on a sub-agent, a shell command
+    # and a monitor, and the app then handed the tick over. Their memos
+    # reached the app's copy, which saves no inbox and runs no turn: the
+    # LaunchAgent that runs the job never saw them.
+    import asyncio
+    import time
+
+    from bridge.tools.background_shell import BackgroundCommand
+    from bridge.tools.sub_agent_registry import SubAgentRegistry, SubAgentState
+
+    monkeypatch.setattr(fb, "MEMO_WAKE_DEBOUNCE_S", 0)
+    _owner_saved()
+    sess = _copy(tmp_path, owns_tick=True)
+    state = sess.state
+    state.sessions[SCHED] = sess
+    sess.subagent_registry = SubAgentRegistry()
+    child = sess.subagent_registry.register(SCHED_SUB, "worker", "t", "general")
+    child.notify_parent = True
+    log = tmp_path / "bg.log"
+    log.write_text("built\n")
+    shell, monitor = (
+        BackgroundCommand(
+            id=f"bg_{kind}", command="make", summary=kind, pid=1, output_path=str(log),
+            started_at=time.time(), backgrounded_at=time.time(), reason="cut_in", kind=kind,
+        )
+        for kind in ("bash", "monitor")
+    )
+    sess.background_commands.update({shell.id: shell, monitor.id: monitor})
+    _app_owns_the_tick(state.scheduler, monkeypatch)
+    await asyncio.wait_for(state.scheduler._hand_over_to_launch_agent(), 1)
+
+    sess.subagent_registry.mark_done(SCHED_SUB, "the report", SubAgentState.DONE)
+    await sess._on_child_terminal(child)
+    shell.state, shell.exit_code = "exited", 0
+    await sess._on_background_exit(shell)
+    await sess._on_monitor_event(monitor, "a line it waited for")
+    monitor.state, monitor.exit_code = "exited", 0
+    await sess._on_background_exit(monitor)
+    await asyncio.sleep(0.01)
+
+    memos = _inbox_file()
+    assert len(memos) == 4
+    assert "the report" in memos[0] and "a line it waited for" in memos[2]
+    assert sess.inbox.unread == []
+
+
 async def _take_the_tick(service, monkeypatch) -> None:
     """``service`` starts while a peer owns the tick, and takes it when the
     peer exits (the scheduler daemon restarts, and the gateway takes over)."""

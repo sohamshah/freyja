@@ -6670,9 +6670,13 @@ class _BridgeSession:
         })
 
     async def _on_monitor_event(self, bg: Any, output: str) -> None:
-        from bridge.tools.monitor_events import queue_monitor_event
+        from bridge.tools.monitor_events import build_monitor_memo, queue_monitor_event
 
         if getattr(self, "_background_closed", False) or bg.cancel_origin == "operator":
+            return
+        if self._held_elsewhere:
+            # Each event goes on its own: only an inbox here folds them.
+            await self._push_memo(build_monitor_memo(bg, output))
             return
         queue_monitor_event(self.inbox, bg, output)
         self._schedule_memo_wake()
@@ -6708,6 +6712,21 @@ class _BridgeSession:
             memo = build_monitor_memo(bg) if monitor else build_background_command_memo(bg)
         except Exception as exc:  # noqa: BLE001
             log("warn", f"background memo build failed for {bg.id}: {exc}")
+            return
+        await self._push_memo(memo)
+
+    async def _push_memo(self, memo: Any) -> None:
+        """Push the memo of finished background work and wake for it. On a
+        copy of a session another process runs (_held_elsewhere), it goes
+        where a talk to the session goes (deliver_talk_message_locally):
+        for a scheduled job's session, to its inbox file, which the tick
+        owner reads. The copy saves no inbox and runs no turn, so a memo
+        pushed there was lost. Work started here can outlive this
+        process's hold on the session: a run in the app outlived its wait
+        on a sub-agent, and the app then handed the tick over."""
+        if self._held_elsewhere:
+            status = await deliver_talk_message_locally(self.state, self.id, memo)
+            log("info", f"memo for {self.id}, which another process runs: {status}")
             return
         self.inbox.push(memo)
         self._schedule_memo_wake()
@@ -6954,8 +6973,7 @@ class _BridgeSession:
         except Exception as exc:  # noqa: BLE001
             log("warn", f"memo build failed for {record.id}: {exc}")
             return
-        self.inbox.push(memo)
-        self._schedule_memo_wake()
+        await self._push_memo(memo)
 
     def _wake_for_memos(self) -> None:
         if getattr(self, "_background_closed", False):
