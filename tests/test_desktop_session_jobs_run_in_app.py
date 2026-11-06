@@ -242,3 +242,38 @@ async def test_a_saved_job_aimed_at_a_sub_agent_builds_no_root_copy_of_it_in_the
 
     assert built == []
     assert run.status == "failed" and "sub-agent" in run.error
+
+
+async def test_a_saved_job_aimed_at_a_sub_agent_is_stopped_once_when_its_owner_boots_and_says_how_to_fix_it(
+    daemon, monkeypatch
+):
+    # Handed to the app on every fire, it failed each time until three
+    # failures stopped it. Stopped at the owner's boot instead, with its
+    # reason as its last run's error and a notice that names the fix.
+    from bridge.scheduler.persistence import load_runs_for_job
+
+    service, built = daemon
+    job = _sub_agent_job()
+    job.next_fire_at = time.time() - 1
+    save_job(job)  # made before jobs like it were refused
+    told: list[str] = []
+
+    async def tell(_job, _run, notice):
+        told.append(notice)
+
+    monkeypatch.setattr(service, "_tell_stopped", tell)
+    for _boot in range(2):
+        await service.start()
+        await asyncio.sleep(0.05)
+        await service.stop()
+
+    stopped = load_job(job.id)
+    assert (stopped.enabled, stopped.status, stopped.next_fire_at) == (False, "disabled_error", None)
+    (notice,) = told
+    assert SUB in notice and DESKTOP in notice and "resume" in notice
+    (run,) = load_runs_for_job(job.id)
+    assert run.status == "failed" and "sub-agent" in run.error
+    assert built == [] and _app_commands() == []
+    # Resumed as it is, it would fail again: resume says why.
+    with pytest.raises(ValueError, match="sub-agent"):
+        await service.resume_job(job.id)

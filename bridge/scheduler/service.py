@@ -421,6 +421,7 @@ class SchedulerService:
         # resumed or whose run was cut off.
         boot_count = 0
         now = time.time()
+        aimed_at_sub_agents: list[tuple[JobRecord, str]] = []
         for job in load_all_jobs():
             with FileLock(job_lock_path(job.id)) as got:
                 if not got:
@@ -443,6 +444,13 @@ class SchedulerService:
                         "type": "scheduler_job_resumed_after_passing_failures",
                         "job_id": fresh.id,
                     })
+                why = _execution_refused(fresh) if fresh.enabled else None
+                if why is not None:
+                    # Made before such jobs were refused: every fire failed
+                    # until three failures stopped it. Stopped once, here.
+                    fresh.enabled = False
+                    fresh.status = "disabled_error"
+                    aimed_at_sub_agents.append((fresh, why))
                 if not _catches_up(fresh, now) and not _waits_for_the_mac(fresh, now):
                     self._recompute_next_fire(fresh)
                 save_job(fresh)
@@ -457,6 +465,11 @@ class SchedulerService:
             "mode": mode,
             "job_count": boot_count,
         })
+        for job, why in aimed_at_sub_agents:
+            asyncio.create_task(
+                self._tell_stopped_aimed_at_a_sub_agent(job, why),
+                name=f"scheduler-stopped-{job.id}",
+            )
         self._loop_task = asyncio.create_task(
             self._run_loop(), name="scheduler-loop",
         )
@@ -1096,6 +1109,43 @@ class SchedulerService:
         )
         await self._tell_stopped(job, run, notice)
 
+    async def _tell_stopped_aimed_at_a_sub_agent(self, job: JobRecord, why: str) -> None:
+        """Post that the boot stopped ``job``, which fires into a sub-agent's
+        session (``why``), and how to run it again. The stop is a failed run
+        that did not start, as for a daily budget: the notice, the
+        dashboard and the schedule tool point to it."""
+        from bridge.freyja_bridge import _root_session_id
+
+        now = time.time()
+        run = RunRecord(
+            run_id=new_run_id(), job_id=job.id, job_name=job.name,
+            started_at=now, finished_at=now, status="failed",
+            fire_number=job.fire_count + 1, prompt=job.prompt, error=why,
+        )
+        save_run(run)
+        sub = job.execution.session_id
+        root = _root_session_id(sub)
+        where = f"its session {root}" if root != sub else "its parent session"
+        notice = (
+            f"I stopped the scheduled job *{job.name}*: it runs in {sub}, a "
+            "sub-agent's session, where a scheduled job cannot run, so each "
+            f"of its runs would fail. To run it again, point it at {where} or "
+            "at a new session, then resume it."
+        )
+        logger.info("job %s (%s) stopped: it runs in sub-agent %s", job.id, job.name, sub)
+        append_event({
+            "type": "scheduler_job_stopped_aimed_at_sub_agent",
+            "job_id": job.id,
+            "run_id": run.run_id,
+            "error": why,
+        })
+        self.emit_event(
+            subtype="scheduler_job_stopped_failing",
+            message=notice,
+            details={"jobId": job.id, "runId": run.run_id, "error": why},
+        )
+        await self._tell_stopped(job, run, notice)
+
     async def _tell_stopped(self, job: JobRecord, run: RunRecord, notice: str) -> None:
         """Post ``notice`` of why ``job`` stopped, with its last ``run``,
         to its sinks."""
@@ -1321,6 +1371,7 @@ class SchedulerService:
             if job is None:
                 raise KeyError(job_id)
             _check_fires_left(job)
+            _check_execution(job.execution)
             if not (job.enabled and job.status == "active"):
                 job.resumed_at = time.time()
             job.enabled = True
@@ -1632,6 +1683,16 @@ def _check_execution(execution: Any) -> None:
             "in a sub-agent's session. Run it in the sub-agent's parent "
             "session, or in a new session"
         )
+
+
+def _execution_refused(job: JobRecord) -> str | None:
+    """Why ``job``'s execution would be refused now (_check_execution), or
+    None. A job saved before it was refused still fires into it."""
+    try:
+        _check_execution(job.execution)
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 def _check_fires_left(job: JobRecord) -> None:
