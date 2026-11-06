@@ -4744,30 +4744,7 @@ class _BridgeSession:
                     "info",
                     f"replayed {len(existing_events)} kanban events for {self.id}",
                 )
-                # Snapshot the rebuilt board into the event so the
-                # renderer's `kanbanCards` slice repopulates on restore.
-                # Without this the journal would silently rebuild the
-                # in-memory board while the UI stays empty until the
-                # next live tool call.
-                kanban_snapshot = [
-                    t.to_dict(include_history=False)
-                    for t in self.kanban_board._tasks.values()  # noqa: SLF001
-                ]
-                emit(
-                    {
-                        "type": "system_event",
-                        "sessionId": self.id,
-                        "subtype": "kanban_replay",
-                        "message": f"Replayed {len(existing_events)} kanban events",
-                        "details": {
-                            "eventCount": len(existing_events),
-                            "priorRestarts": prior_restarts,
-                            "restartCount": prior_restarts + 1,
-                            "tasks": kanban_snapshot,
-                            "chatVisible": False,
-                        },
-                    }
-                )
+                self._emit_kanban_replay(len(existing_events), prior_restarts)
         # Task ledger — built for every mode EXCEPT kanban. The two
         # surfaces compete in kanban: the agent reaches for `tasks`
         # (lighter, no dispatch ceremony) and the kanban board sits
@@ -8634,6 +8611,32 @@ class _BridgeSession:
             "kanban_update",
             f"Kanban update: {task.id} {task.title}",
             details={"action": "update", "task": task.to_dict(), "source": source},
+        )
+
+    def _emit_kanban_replay(self, event_count: int, prior_restarts: int) -> None:
+        """Send the board rebuilt from the journal, so the renderer's
+        `kanbanCards` slice repopulates on restore. Without this the
+        journal would silently rebuild the in-memory board while the UI
+        stays empty until the next live tool call. Each card keeps its
+        history tail: the renderer reads the judge's verdict from a
+        card's events, and a card without them shows as plain done."""
+        kanban_snapshot = [
+            t.to_dict() for t in self.kanban_board._tasks.values()  # noqa: SLF001
+        ]
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": self.id,
+                "subtype": "kanban_replay",
+                "message": f"Replayed {event_count} kanban events",
+                "details": {
+                    "eventCount": event_count,
+                    "priorRestarts": prior_restarts,
+                    "restartCount": prior_restarts + 1,
+                    "tasks": kanban_snapshot,
+                    "chatVisible": False,
+                },
+            }
         )
 
     # ---- Auto-rename via Haiku ----------------------------------------

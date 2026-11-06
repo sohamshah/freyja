@@ -191,3 +191,37 @@ async def test_replay_preserves_sticky_worker_and_judge_bindings(tmp_path) -> No
     assert card.judge_session_id == "judge-sess-1"
     assert card.review_iteration == 2
     assert card.worker_terminal_state == "done"
+
+
+@pytest.mark.asyncio
+async def test_replayed_cards_carry_the_judges_verdict(tmp_path, monkeypatch) -> None:
+    """The renderer reads the judge's verdict from a card's events. The
+    board the bridge sends after a restart must carry them, or a card
+    the judge passed shows as plain done until a fresh event arrives."""
+    from bridge import freyja_bridge
+    from bridge.freyja_bridge import _BridgeSession
+
+    live = SessionKanbanBoard(journal=KanbanJournal(tmp_path / "kanban.jsonl"))
+    tool = KanbanTool(live, actor_id="parent", actor_label="parent")
+    create = await tool.execute("c1", {"action": "create", "title": "work"})
+    card_id = json.loads(create.content)["task"]["id"]
+    await tool.execute("c2", {"action": "update", "task_id": card_id, "status": "running"})
+    worker = KanbanTool(live, actor_id="sub_w", actor_label="worker", owned_task_id=card_id)
+    await worker.execute("c3", {"action": "complete", "summary": "built"})
+    await live.update(card_id, actor="kanban-judge", status="done", summary="checked")
+
+    journal = KanbanJournal(tmp_path / "kanban.jsonl")
+    session = _BridgeSession.__new__(_BridgeSession)
+    session.id = "test-session"
+    session.kanban_board = SessionKanbanBoard(journal=journal)
+    events = journal.read_all()
+    session.kanban_board.replay_events(events)
+    sent: list[dict] = []
+    monkeypatch.setattr(freyja_bridge, "emit", sent.append)
+    session._emit_kanban_replay(len(events), 0)
+
+    [replay] = [event for event in sent if event["subtype"] == "kanban_replay"]
+    [card] = replay["details"]["tasks"]
+    assert card["status"] == "done"
+    moves = [(e["actor"], e["details"].get("status")) for e in card["events"]]
+    assert moves[-1] == ("kanban-judge", "done")
