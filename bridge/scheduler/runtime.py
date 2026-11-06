@@ -310,9 +310,10 @@ async def fire_job(
             pass
 
         # Budget enforcement (post-hoc) — if a per-run cap was set and
-        # the run blew through it, mark the run timed_out/aborted and,
-        # if on_exceeded=abort_job, disable the job (with the run's
-        # other writes to the record, below).
+        # the run blew through it, mark the run budget_exceeded and, if
+        # on_exceeded=abort_job, disable the job (with the run's other
+        # writes to the record, below). Marked timed_out, it was retried
+        # by a retry_policy for timeouts and spent the budget again.
         if job.budget is not None:
             b = job.budget
             exceeded = (
@@ -322,7 +323,7 @@ async def fire_job(
                     and run.cost_usd > b.max_cost_usd_per_run)
             )
             if exceeded:
-                run.status = "timed_out"
+                run.status = "budget_exceeded"
                 run.error = (
                     f"budget exceeded: tokens={run.input_tokens + run.output_tokens}, "
                     f"cost=${run.cost_usd:.4f}"
@@ -404,7 +405,7 @@ async def fire_job(
     # ── Deliver to sinks ──────────────────────────────────────────────
     # A cancelled run delivers nothing and stays cancelled: delivered, its
     # partial answer went out and the delivery overwrote its status.
-    if run.status not in ("failed", "timed_out", "cancelled"):
+    if run.status not in ("failed", "timed_out", "budget_exceeded", "cancelled"):
         run.status = "delivering"
         save_run(run)
         sink_ctx = SinkContext(state=service.state, outputs_dir=write_run_output, log=logger.info)

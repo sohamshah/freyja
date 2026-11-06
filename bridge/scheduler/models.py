@@ -581,7 +581,8 @@ RunStatus = Literal[
     "partial_failure",# agent succeeded; ≥1 sink failed
     "failed",         # agent errored OR all sinks failed
     "cancelled",      # user-requested cancellation
-    "timed_out",      # wall-clock or budget timeout
+    "timed_out",      # wall-clock timeout
+    "budget_exceeded",# went over its budget; never retried
 ]
 
 

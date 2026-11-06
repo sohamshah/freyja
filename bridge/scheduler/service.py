@@ -139,7 +139,7 @@ _STOP_RUN_GRACE_SECONDS = 5.0
 # silently, since failed runs deliver nothing: one self-paced loop failed
 # 180 times in six hours before anyone noticed.
 MAX_FAILED_RUNS_IN_A_ROW = 3
-_FAILED_RUN_STATUSES = frozenset({"failed", "timed_out"})
+_FAILED_RUN_STATUSES = frozenset({"failed", "timed_out", "budget_exceeded"})
 
 # A run that failed for a passing reason (no network, a timeout, an
 # overloaded provider) says nothing about the job and does not count
@@ -679,11 +679,13 @@ class SchedulerService:
         record saved before that bound says. Returns True if it will. The
         attempt used to be read from a run attribute nothing set, so every
         failure was the first: retried without end, always after
-        ``backoff_seconds``."""
+        ``backoff_seconds``. A run over its budget is never retried: run
+        again, it spends the budget again."""
         retry = job.retry_policy
         if (
             retry is None
             or run.status not in _FAILED_RUN_STATUSES
+            or run.status == "budget_exceeded"
             or run.attempt >= min(retry.max_retries, MAX_RETRIES)
             or (retry.on and _retry_kind(run) not in retry.on)
         ):
@@ -1076,7 +1078,7 @@ class SchedulerService:
         cutoff = time.time() - 86400
         recent_24h = [r for r in recent if r.started_at >= cutoff]
         ok = sum(1 for r in recent_24h if r.status in ("succeeded", "partial_failure"))
-        fail = sum(1 for r in recent_24h if r.status in ("failed", "timed_out"))
+        fail = sum(1 for r in recent_24h if r.status in _FAILED_RUN_STATUSES)
         avg_dur = (
             sum(r.duration_seconds for r in recent_24h) / len(recent_24h)
             if recent_24h else 0.0
@@ -1288,8 +1290,8 @@ def _failed_for_a_passing_reason(run: RunRecord) -> bool:
     """True when ``run`` failed for a reason that passes by itself: the
     network was down (the Mac asleep or in DarkWake, no Wi-Fi), a request
     timed out, or the provider was overloaded or failed. A wall-clock
-    timeout or a budget overrun ends a run as timed_out, not failed: those
-    are the job's own."""
+    timeout ends a run as timed_out and a budget overrun as budget_exceeded,
+    not failed: those are the job's own."""
     if run.status != "failed":
         return False
     errors = [run.error] if run.error else [

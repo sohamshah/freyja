@@ -777,7 +777,7 @@ export function Sidebar() {
           {recentRuns.slice(0, 12).map((run) => {
             const sid =
               run.execution_session_id || `scheduler:${run.job_id}.ephemeral`
-            const failed = run.status === 'failed' || run.status === 'timed_out'
+            const failed = run.status === 'failed' || run.status === 'timed_out' || run.status === 'budget_exceeded'
             const active = run.status === 'running' || run.status === 'delivering'
             const dotClass = failed ? 'bg-danger' : active ? 'bg-accent' : 'bg-ok'
             return (

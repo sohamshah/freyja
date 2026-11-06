@@ -79,6 +79,7 @@ export function ScheduledJobsDashboard() {
       if (runFilter === 'failed') {
         return r.status === 'failed'
             || r.status === 'timed_out'
+            || r.status === 'budget_exceeded'
             || r.status === 'partial_failure'
       }
       return true
@@ -616,7 +617,7 @@ function statusPillClass(status: string): string {
 
 function runStatusTextClass(status: string): string {
   if (status === 'succeeded') return 'text-ok'
-  if (status === 'failed' || status === 'timed_out') return 'text-danger'
+  if (status === 'failed' || status === 'timed_out' || status === 'budget_exceeded') return 'text-danger'
   if (status === 'partial_failure') return 'text-warn'
   if (status === 'running') return 'text-accent'
   if (status === 'cancelled') return 'text-fg-3'
@@ -692,9 +693,9 @@ function startOfDay(ts: number): number {
 
 function worstStatus(runs: SchedulerRun[]): string {
   if (runs.length === 0) return ''
-  const order = ['failed', 'timed_out', 'partial_failure', 'running', 'succeeded']
+  const order = ['failed', 'timed_out', 'budget_exceeded', 'partial_failure', 'running', 'succeeded']
   for (const s of order) {
-    if (runs.some((r) => r.status === s)) return s === 'timed_out' ? 'failed' : s
+    if (runs.some((r) => r.status === s)) return s === 'timed_out' || s === 'budget_exceeded' ? 'failed' : s
   }
   return runs[0].status
 }
@@ -1274,7 +1275,7 @@ function RunRow(props: {
       <div className="flex items-center gap-2 font-mono text-[10.5px]">
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
           r.status === 'succeeded' ? 'bg-ok'
-            : r.status === 'failed' || r.status === 'timed_out' ? 'bg-danger'
+            : r.status === 'failed' || r.status === 'timed_out' || r.status === 'budget_exceeded' ? 'bg-danger'
               : r.status === 'partial_failure' ? 'bg-warn'
                 : r.status === 'running' ? 'bg-accent animate-pulse-soft'
                   : 'bg-fg-3'
@@ -1342,8 +1343,9 @@ function RunDetailDrawer(props: {
     : run.status === 'succeeded' ? 'completed'
       : run.status === 'failed' ? 'failed'
         : run.status === 'timed_out' ? 'timed out'
-          : run.status === 'partial_failure' ? 'partial delivery failure'
-            : run.status
+          : run.status === 'budget_exceeded' ? 'over budget'
+            : run.status === 'partial_failure' ? 'partial delivery failure'
+              : run.status
 
   return (
     <DetailDrawer
