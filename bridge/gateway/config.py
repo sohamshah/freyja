@@ -15,6 +15,8 @@ Schema (all keys optional; missing → default):
       T012345: [U001, U002]            #   Slack user ids
       T067890: ["*"]                   # "*" → every member of that
                                        #   workspace, with full tools
+                                       #   (not Slack Connect users
+                                       #   from other workspaces)
                                        # empty list → nobody
                                        # workspace not present at all
                                        #   → DENY-ALL for unknown
@@ -67,12 +69,23 @@ class SlackConfig:
     # the bot.
     enable_tool_filter: bool = False
 
-    def user_allowed(self, team_id: str, user_id: str) -> bool:
-        """Decide whether a user from a workspace should be heard."""
+    def user_allowed(
+        self, team_id: str, user_id: str, user_team: str | None = None
+    ) -> bool:
+        """Decide whether a user from a workspace should be heard.
+
+        ``user_team`` is the user's own workspace when Slack gives it, or
+        "" when it does not in a channel shared with another organization.
+        "*" lets in members of ``team_id`` only, never a Slack Connect user
+        from another workspace, so it needs ``user_team`` to be ``team_id``
+        (None: nothing suggests another workspace). A listed user id passes
+        either way."""
         if not team_id or not user_id:
             return False
         ids = self.allowed_user_ids.get(team_id) or []
-        return "*" in ids or user_id in ids
+        if user_id in ids:
+            return True
+        return "*" in ids and (user_team is None or user_team == team_id)
 
 
 @dataclass

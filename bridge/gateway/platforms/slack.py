@@ -548,7 +548,7 @@ class SlackAdapter:
         assert self._app is not None
 
         @self._app.event("message")
-        async def _handle_message_event(event, say):  # noqa: ARG001
+        async def _handle_message_event(event, body, say):  # noqa: ARG001
             # If an app_mention task is pending for this same event_ts,
             # cancel it — the message.channels event we just got is
             # strictly richer (carries the files array, full subtype
@@ -557,10 +557,10 @@ class SlackAdapter:
             pending = self._pending_app_mention.pop(event_ts, None)
             if pending is not None and not pending.done():
                 pending.cancel()
-            await self._handle_message(event)
+            await self._handle_message(event, body)
 
         @self._app.event("app_mention")
-        async def _handle_app_mention(event, say):  # noqa: ARG001
+        async def _handle_app_mention(event, body, say):  # noqa: ARG001
             # Defer processing by a short window so any twin
             # message.channels event (which carries files) can
             # cancel us and handle the inbound itself. The
@@ -573,7 +573,7 @@ class SlackAdapter:
             # after the window expires.
             event_ts = str(event.get("ts") or "")
             if not event_ts:
-                await self._handle_message(event)
+                await self._handle_message(event, body)
                 return
             # If a deferred task is already in flight for this ts
             # (duplicate Socket Mode delivery during a reconnect
@@ -581,7 +581,7 @@ class SlackAdapter:
             if event_ts in self._pending_app_mention:
                 return
             self._pending_app_mention[event_ts] = asyncio.create_task(
-                self._handle_app_mention_after_defer(event_ts, event)
+                self._handle_app_mention_after_defer(event_ts, event, body)
             )
 
         # Ack file lifecycle events so Slack doesn't log unhandled-event
@@ -684,13 +684,13 @@ class SlackAdapter:
         # subscribed to this event. On receipt the turn is cancelled;
         # Slack seals the streams it lists itself.
         @self._app.event("agent_session_stopped")
-        async def _on_agent_session_stopped(event, say):  # noqa: ARG001
-            await self._handle_session_stopped(event or {})
+        async def _on_agent_session_stopped(event, body, say):  # noqa: ARG001
+            await self._handle_session_stopped(event or {}, body)
 
         # The operator renamed a session thread in the sidebar.
         @self._app.event("agent_session_title_changed")
-        async def _on_agent_session_title_changed(event, say):  # noqa: ARG001
-            await self._handle_session_title_changed(event or {})
+        async def _on_agent_session_title_changed(event, body, say):  # noqa: ARG001
+            await self._handle_session_title_changed(event or {}, body)
 
         # Messages tab or Home tab opened: suggested prompts + home view.
         @self._app.event("app_home_opened")
@@ -699,8 +699,8 @@ class SlackAdapter:
 
         # Emoji on one of Freyja's messages is feedback.
         @self._app.event("reaction_added")
-        async def _on_reaction_added(event, say):  # noqa: ARG001
-            await self._handle_reaction(event or {})
+        async def _on_reaction_added(event, body, say):  # noqa: ARG001
+            await self._handle_reaction(event or {}, body)
 
         @self._app.event("reaction_removed")
         async def _on_reaction_removed(event, say):  # noqa: ARG001
@@ -732,7 +732,9 @@ class SlackAdapter:
         user = body.get("user") or {}
         user_id = str(user.get("id") or "")
         team_id = str((body.get("team") or {}).get("id") or user.get("team_id") or "")
-        if self.slack_config.user_allowed(team_id, user_id):
+        # The clicker's own workspace, so "*" never admits a Slack Connect user.
+        user_team = str(user.get("team_id") or "") or None
+        if self.slack_config.user_allowed(team_id, user_id, user_team):
             return True
         logger.info(
             "[slack] ignoring a card click from team=%s user=%s — not in allowlist",
@@ -893,6 +895,7 @@ class SlackAdapter:
         self,
         event_ts: str,
         event: dict[str, Any],
+        body: dict[str, Any] | None = None,
     ) -> None:
         """Process an app_mention after a brief delay.
 
@@ -950,7 +953,7 @@ class SlackAdapter:
                         exc_info=True,
                     )
         try:
-            await self._handle_message(event)
+            await self._handle_message(event, body)
         except Exception:  # noqa: BLE001
             logger.exception("deferred app_mention handler raised")
         # _handle_message stamped the key matching THIS event's
@@ -1039,7 +1042,9 @@ class SlackAdapter:
         except Exception:  # noqa: BLE001
             logger.debug("[slack] denied-user notice failed", exc_info=True)
 
-    async def _handle_message(self, event: dict[str, Any]) -> None:
+    async def _handle_message(
+        self, event: dict[str, Any], body: dict[str, Any] | None = None
+    ) -> None:
         # Dedup: Socket Mode can redeliver after reconnect, AND Slack
         # double-fires @mentions in channels as both ``app_mention`` and
         # ``message.channels`` with the same ts. We can't just drop the
@@ -1177,8 +1182,11 @@ class SlackAdapter:
         # everyone outside the allowlist before routing further.
         # Unattended Slack with no allowlist is footgun-grade — we
         # refuse to process anything from a workspace not explicitly
-        # opted in.
-        if not self.slack_config.user_allowed(team_id, user_id):
+        # opted in. The author's own team keeps "*" from admitting a
+        # Slack Connect user when the team above came from the channel.
+        if not self.slack_config.user_allowed(
+            team_id, user_id, self._user_team(event, body)
+        ):
             logger.info(
                 "[slack] denying message from team=%s user=%s — not in allowlist",
                 team_id, user_id,
@@ -2281,6 +2289,27 @@ class SlackAdapter:
             team_id = next(iter(self._team_clients.keys()))
         return team_id
 
+    @staticmethod
+    def _user_team(
+        event: dict[str, Any], body: dict[str, Any] | None = None
+    ) -> str | None:
+        """The author's own workspace, for "*" in the allowlist.
+
+        Slack gives it as ``user_team`` (and a message's ``team``). Stop,
+        a rename and a reaction name no author team, so in a channel the
+        envelope says is shared with another organization the author may
+        be a Slack Connect user: "" (unknown), and only a listed id
+        passes. None when nothing suggests another workspace. An
+        enterprise id (``E…``) names no workspace, so it is skipped.
+        """
+        for key in ("user_team", "team"):
+            team = str(event.get(key) or "")
+            if team.startswith("T"):
+                return team
+        if (body or {}).get("is_ext_shared_channel"):
+            return ""
+        return None
+
     async def _session_action_allowed(
         self,
         team_id: str,
@@ -2290,11 +2319,12 @@ class SlackAdapter:
         *,
         what: str,
         notice: str,
+        user_team: str | None = None,
     ) -> bool:
         """Stop, a rename and a feedback note act on the operator's
         session, so whoever did it passes the same allowlist as a message.
         Anyone else is told privately, where they did it."""
-        if self.slack_config.user_allowed(team_id, user_id):
+        if self.slack_config.user_allowed(team_id, user_id, user_team):
             return True
         logger.info(
             "[slack] ignoring %s from team=%s user=%s — not in allowlist",
@@ -2312,7 +2342,9 @@ class SlackAdapter:
             logger.debug("[slack] denied %s notice failed", what, exc_info=True)
         return False
 
-    async def _handle_session_stopped(self, event: dict[str, Any]) -> None:
+    async def _handle_session_stopped(
+        self, event: dict[str, Any], body: dict[str, Any] | None = None
+    ) -> None:
         channel_id = str(event.get("channel") or "")
         info = {
             "chat_id": channel_id,
@@ -2329,6 +2361,7 @@ class SlackAdapter:
         if not await self._session_action_allowed(
             info["team_id"], info["user_id"], channel_id, info["thread_ts"],
             what="a stop", notice="Only Freyja's owner can stop it.",
+            user_team=self._user_team(event, body),
         ):
             return
         if self.on_session_stopped is None:
@@ -2338,7 +2371,9 @@ class SlackAdapter:
         except Exception:  # noqa: BLE001
             logger.exception("[slack] on_session_stopped raised")
 
-    async def _handle_session_title_changed(self, event: dict[str, Any]) -> None:
+    async def _handle_session_title_changed(
+        self, event: dict[str, Any], body: dict[str, Any] | None = None
+    ) -> None:
         channel_id = str(event.get("channel") or "")
         thread_ts = str(event.get("thread_ts") or "") or None
         title = str(event.get("title") or "").strip()
@@ -2355,6 +2390,7 @@ class SlackAdapter:
         if not await self._session_action_allowed(
             info["team_id"], info["user_id"], channel_id, thread_ts,
             what="a rename", notice="Only Freyja's owner can rename this session.",
+            user_team=self._user_team(event, body),
         ):
             return
         self.bindings.set_title(channel_id, thread_ts, title, by_user=True)
@@ -2384,7 +2420,9 @@ class SlackAdapter:
     _FEEDBACK_REACTIONS_POSITIVE = {"+1", "thumbsup", "white_check_mark", "heavy_check_mark", "heart", "tada", "raised_hands", "100"}
     _FEEDBACK_REACTIONS_NEGATIVE = {"-1", "thumbsdown", "x", "no_entry", "no_entry_sign", "face_with_raised_eyebrow", "confused"}
 
-    async def _handle_reaction(self, event: dict[str, Any]) -> None:
+    async def _handle_reaction(
+        self, event: dict[str, Any], body: dict[str, Any] | None = None
+    ) -> None:
         item = event.get("item") or {}
         if str(item.get("type") or "") != "message":
             return
@@ -2407,7 +2445,9 @@ class SlackAdapter:
         team_id = self._team_for(event, channel_id)
         # Only the operator's reactions are feedback. Anyone else gets no
         # note: a reaction is not addressed to Freyja (see _tell_denied).
-        if not self.slack_config.user_allowed(team_id, user_id):
+        if not self.slack_config.user_allowed(
+            team_id, user_id, self._user_team(event, body)
+        ):
             return
         if self.on_feedback is None:
             return
@@ -2485,6 +2525,7 @@ class SlackAdapter:
         if not await self._session_action_allowed(
             team_id, user_id, channel_id, thread_ts,
             what="a feedback note", notice="Only Freyja's owner can leave feedback.",
+            user_team=str((body.get("user") or {}).get("team_id") or "") or None,
         ):
             return
         try:

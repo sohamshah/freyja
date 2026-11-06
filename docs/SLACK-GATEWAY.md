@@ -656,7 +656,7 @@ slack:
   enable_tool_filter: false        # true gives Slack sessions a read-mostly tool set
 ```
 
-Everyone on the allowlist gets the same full toolset as the operator (shell, file writes, computer use) unless `enable_tool_filter` is on. So list explicit user ids. `"*"` opens a workspace to every member, and the wizard warns when you choose it. An empty list lets nobody in, and a workspace that is not in the map is denied. `allowed_user_ids` is a map from workspace id to a list, not a flat list.
+Everyone on the allowlist gets the same full toolset as the operator (shell, file writes, computer use) unless `enable_tool_filter` is on. So list explicit user ids. `"*"` opens a workspace to every member, and the wizard warns when you choose it. It never lets in a Slack Connect user from another workspace: the gateway checks the author's own team when Slack gives it, and in a channel shared with another organization where Slack does not, only listed ids pass. An empty list lets nobody in, and a workspace that is not in the map is denied. `allowed_user_ids` is a map from workspace id to a list, not a flat list.
 
 ### 7.3 launchd plist
 
