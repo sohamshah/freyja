@@ -173,6 +173,11 @@ async def fire_job(
                 build_complete_loop_tool,
                 build_continue_loop_tool,
             )
+            # Made before the tools are offered: a loop whose tools could not
+            # be offered waits its maximum delay, as one whose agent chose
+            # none. Left without a decision, it kept the minimum delay the
+            # claim set and ran again at once.
+            loop_decision = LoopDecision()
             # A session that has not run a turn yet (a new job session, or
             # any session since a reset) builds its tool registry at the
             # start of its first turn, after this point. Build it now, or
@@ -188,7 +193,6 @@ async def fire_job(
                     job.id, sess_id,
                 )
             else:
-                loop_decision = LoopDecision()
                 cont = build_continue_loop_tool(schedule=job.schedule, decision=loop_decision)
                 comp = build_complete_loop_tool(schedule=job.schedule, decision=loop_decision)
                 inner_reg.register(cont)

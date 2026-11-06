@@ -90,7 +90,8 @@ def _drive_fire(
         if not replies:
             sess.last_turn_error = "auth: Error code: 401 - Incorrect API key provided"
             return
-        offered.extend(d.name for d in sess.tool_registry.list_definitions())
+        if sess.tool_registry is not None:
+            offered.extend(d.name for d in sess.tool_registry.list_definitions())
         if loop_call is not None:
             name, args = loop_call
             await sess.tool_registry.get(name).execute("call-1", args)
@@ -181,6 +182,29 @@ async def test_no_decision_waits_the_maximum_delay(monkeypatch) -> None:
 
     await fire_job(_Service({"s1": sess}), job)
 
+    assert load_job(job.id).next_fire_at >= time.time() + 590
+
+
+async def test_a_loop_whose_tools_were_not_offered_waits_the_maximum_delay(monkeypatch) -> None:
+    # Without its loop tools the agent cannot choose a delay; the minimum
+    # delay the claim set was kept, and the loop ran again at once.
+    from bridge.scheduler.runtime import fire_job
+
+    sess = _session(cost_so_far=0.0)
+    sess.tool_registry = None
+
+    async def initialize() -> None:
+        raise OSError("mcp.json: No such file or directory")
+
+    sess.initialize = initialize
+    job = _job()
+    job.next_fire_at = time.time() + 120  # Set by the claim.
+    save_job(job)
+    offered = _drive_fire(monkeypatch, sess, loop_call=None, cost=0.1)
+
+    run = await fire_job(_Service({"s1": sess}), job)
+
+    assert offered == [] and run.status == "succeeded"
     assert load_job(job.id).next_fire_at >= time.time() + 590
 
 
