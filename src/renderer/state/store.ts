@@ -5281,7 +5281,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
   },
 
   async newSession(model, reasoningLevel, runtime) {
-    const newSessionId = `session-${Date.now().toString(36)}`
+    // The suffix keeps two sessions started in one millisecond (Morning
+    // Room's run-all) apart: the clock alone gave both one id.
+    const newSessionId = `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
     const state = useHarness.getState()
     const chosenModel = model || state.model
     const chosenReasoning = normalizeReasoningFor(
