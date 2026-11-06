@@ -1461,13 +1461,12 @@ async def _cold_load_session(state: Any, sid: str) -> Any:
 
 
 async def _host_for_subagent_wake(state: Any, parent_id: str) -> Any | None:
-    """The root session that should run a re-woken sub-agent.
-
-    Its original parent when this process can serve it: already loaded,
-    or closed and loadable from disk. Only the parent gets the child's
-    memo when the run ends, so any other host breaks the parent-child
-    link. Falls back to any loaded root (no memo) when the parent can't
-    be loaded here, e.g. a nested sub-agent whose parent is a sub-agent."""
+    """The root session that should run a re-woken sub-agent: its own
+    parent, when this process can serve it, already loaded or closed and
+    loadable from disk. None otherwise, and the sub-agent is not woken.
+    Hosted by any other root, it became that root's child: its saved
+    state named that root as its parent, and from then on its memo woke
+    that unrelated conversation."""
     sessions = getattr(state, "sessions", None) or {}
     if parent_id and parent_id in sessions:
         return sessions[parent_id]
@@ -1487,9 +1486,6 @@ async def _host_for_subagent_wake(state: Any, parent_id: str) -> Any | None:
                 return host
             except Exception as exc:  # noqa: BLE001
                 log("warn", f"sub-agent wake: loading parent {parent_id} failed: {exc}")
-    for root in sessions.values():
-        if getattr(root, "tool_registry", None) is not None:
-            return root
     return None
 
 
@@ -1983,18 +1979,16 @@ async def _wake_archived_subagent(
     the inbox sidecar.
 
     ``notify_parent``: when the re-woken run ends, memo its parent (as a
-    fresh spawn would). Only honoured when the host is the ORIGINAL
-    parent — a memo to whichever root happened to host the resume would
-    land in an unrelated conversation. Kanban re-wakes pass False: they
-    report through the board.
+    fresh spawn would). Kanban re-wakes pass False: they report through
+    the board.
 
     Flow:
       1. Append the new message to the inbox sidecar so it survives
          even if spawn fails (it'll be picked up on next try).
       2. Load the SUBAGENT sidecar (spawn config + transcript).
-      3. Find a host root session that has a `sub_agent` tool we can
-         spawn through — prefer the original parent if still running,
-         otherwise any root.
+      3. Find its parent, which has a `sub_agent` tool we can spawn
+         through: loaded, or loaded from disk if it is closed. No other
+         root hosts it (_host_for_subagent_wake).
       4. Call SubAgentTool.resume_archived(...) which:
            - registers a record with the SAME session id
            - restores the saved transcript onto a fresh Session
@@ -2059,8 +2053,8 @@ async def _wake_archived_subagent(
         log("warn", f"_wake_archived_subagent: no sidecar for {session_id}")
         return False
 
-    # Step 3: find a host root session whose SubAgentTool we can call.
-    # The original parent (loaded from disk if it is closed), else any root.
+    # Step 3: find a host root session whose SubAgentTool we can call:
+    # its parent (loaded from disk if it is closed), or none.
     preferred_parent = str(sidecar.get("parentSessionId") or "")
     if preferred_parent and predates_reset(sidecar, reset_at(preferred_parent)):
         # Its parent's conversation was reset since (Slack's /reset,
@@ -2070,7 +2064,7 @@ async def _wake_archived_subagent(
         return False
     host_sess = await _host_for_subagent_wake(state, preferred_parent)
     if host_sess is None or host_sess.tool_registry is None:
-        log("warn", f"_wake_archived_subagent: no host root running for {session_id}")
+        log("warn", f"_wake_archived_subagent: its parent {preferred_parent or '(none)'} cannot run {session_id} here — not woken")
         return False
 
     # Step 4: find the SubAgentTool on the host's registry. The tool is

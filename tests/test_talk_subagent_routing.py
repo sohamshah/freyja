@@ -373,3 +373,40 @@ async def test_wake_of_a_subagent_that_is_running_again_uses_its_live_inbox():
     msg = InboxMessage(id="m2", from_session="p", from_label="p", from_role="agent", content="more")
     assert await fb._wake_archived_subagent(state, rec.id, msg) is True
     assert [m.id for m in rec.inbox.unread] == ["m2"]
+
+
+# ─── a sub-agent is woken only under its own parent ───────────────────
+
+
+@pytest.mark.parametrize("parent", ["deleted", "in the app"])
+async def test_a_sub_agent_whose_parent_cannot_run_here_is_not_woken_under_another_session(monkeypatch, parent):
+    # It was resumed under whatever root this process had loaded: that
+    # unrelated conversation became its parent, its memo woke it, and its
+    # saved state named it as the parent from then on.
+    from bridge.transcript_persistence import load_inbox_state, save_subagent_state, save_transcript
+
+    if parent == "in the app":  # a closed desktop session, and this is the gateway
+        monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
+        save_transcript("session-parent", {"version": 1, "session_id": "session-parent", "transcript": {"entries": []}})
+    save_subagent_state("sub_x_1", {
+        "sessionId": "sub_x_1", "parentSessionId": "session-parent", "agentType": "general",
+        "label": "builder", "task": "build it", "transcript": {"entries": []},
+    })
+    resumed: list[str] = []
+
+    async def resume_archived(sidecar, **_kw):
+        resumed.append(sidecar["sessionId"])
+        return sidecar["sessionId"]
+
+    other = SimpleNamespace(
+        id="freyja:slack:T1:channel:C1:1.0", parent_session_id=None,
+        tool_registry=SimpleNamespace(_tools={"sub_agent": SimpleNamespace(resume_archived=resume_archived)}),
+    )
+    state = _State({other.id: other})
+    msg = InboxMessage(id="m1", from_session="session-x", from_label="x", from_role="agent", content="one more pass")
+
+    status = await fb.deliver_talk_message_locally(state, "sub_x_1", msg)
+
+    assert resumed == []
+    assert "failed" in status and "inbox" in status
+    assert [m["content"] for m in load_inbox_state("sub_x_1")["unread"]] == ["one more pass"]
