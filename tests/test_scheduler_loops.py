@@ -213,6 +213,58 @@ async def test_a_loop_whose_tools_were_not_offered_waits_the_maximum_delay(monke
 
 
 @pytest.mark.parametrize("decides", ["continue", "nothing"])
+async def test_a_loop_run_queued_behind_the_turn_that_started_it_keeps_its_loop_tools(
+    monkeypatch, decides,
+) -> None:
+    # A run now from a tool call in the loop's own session queues its prompt
+    # to run once the calling turn ends. Its loop tools were removed as the
+    # run returned, so the prompt ran without them, and no decision was
+    # applied: the loop kept the next fire it had.
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.runtime import fire_job
+    from bridge.tools.schedule_tool import COMPLETE_LOOP_TOOL, CONTINUE_LOOP_TOOL
+
+    sess = _session(cost_so_far=0.0)
+    sess.queued_messages = []
+
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
+        s.queued_messages.append((prompt, attachments, on_turn_start))
+        return False
+
+    monkeypatch.setattr(fb, "_schedule_or_queue_turn", schedule_turn)
+    job = _job()
+    job.next_fire_at = time.time() + 120
+    save_job(job)
+    offered: list[str] = []
+
+    async def calling_turn():
+        run = await fire_job(_Service({"s1": sess}), job)  # Its tool call.
+        # The turn ends, and its task runs the queued prompt (_drain_turns).
+        _prompt, _attachments, on_turn_start = sess.queued_messages.pop(0)
+        on_turn_start()
+        offered.extend(d.name for d in sess.tool_registry.list_definitions())
+        tool = sess.tool_registry.get(CONTINUE_LOOP_TOOL)
+        if decides == "continue" and tool is not None:
+            await tool.execute("call-1", {"delay_seconds": 300})
+        return run
+
+    sess.pending_task = asyncio.ensure_future(calling_turn())
+    run = await sess.pending_task
+    for _ in range(50):  # The run's end follows the session's turn task.
+        if load_job(job.id).next_fire_at > time.time() + 200:
+            break
+        await asyncio.sleep(0.02)
+
+    assert run.status == "queued"
+    assert {CONTINUE_LOOP_TOOL, COMPLETE_LOOP_TOOL} <= set(offered)
+    assert CONTINUE_LOOP_TOOL not in sess.tool_registry
+    saved = load_job(job.id)
+    delay = 300 if decides == "continue" else 600
+    assert time.time() + delay - 10 < saved.next_fire_at <= time.time() + delay
+    assert saved.fire_count == 1
+
+
+@pytest.mark.parametrize("decides", ["continue", "nothing"])
 async def test_a_loop_paused_while_it_ran_gets_no_next_fire(monkeypatch, decides) -> None:
     # The run set the delay its agent chose, or the maximum delay, over the
     # pause: the paused loop showed a next fire it would never run.

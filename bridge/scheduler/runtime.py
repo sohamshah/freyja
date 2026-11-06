@@ -281,6 +281,14 @@ async def fire_job(
             # its prompt runs once the calling turn ends. Uncounted, the
             # next run took its fire number, and a job ran past max_fires.
             await update_job_record(job.id, lambda fresh: count_fire(fresh, run))
+            if loop_decision is not None:
+                # A loop's tools stay for its prompt, and its decision is
+                # applied once that has run. Removed as the run returned, the
+                # prompt ran without them and no decision was applied.
+                _end_queued_loop_run(
+                    service, job.id, sess, registered_loop_tools, loop_decision, preexisting,
+                )
+                registered_loop_tools = []  # Handed over: the finally leaves them.
             # Its end, as every run's: without it, the claim was the last
             # the events log and the dashboard heard of it.
             append_event({
@@ -413,22 +421,7 @@ async def fire_job(
         run.error = f"agent turn failed: {exc}"
     finally:
         unregister_session_listener(sess_id, run_cost.on_event)
-        # Clean up loop-control tools so they don't dangle. unregister()
-        # drops the catalog entry too: the request's tool list is built
-        # from the catalog, so popping only the tool table left them in
-        # every later request of the session.
-        if registered_loop_tools:
-            try:
-                reg = getattr(sess, "tool_registry", None)
-                inner_reg = getattr(reg, "_underlying", None) or reg
-                if inner_reg is not None:
-                    for name in registered_loop_tools:
-                        try:
-                            inner_reg.unregister(name)
-                        except Exception:  # noqa: BLE001
-                            pass
-            except Exception:  # noqa: BLE001
-                pass
+        _remove_loop_tools(sess, registered_loop_tools)
 
     run.iterations = iteration_count
     run.output_text = output_text
@@ -517,15 +510,8 @@ async def fire_job(
     # ── Job-level bookkeeping ─────────────────────────────────────────
     # On the record as it is now: an edit made while the job ran stays.
     def _record_fire(fresh: JobRecord) -> None:
-        # A loop paused or stopped while it ran gets no next fire; its
-        # agent's "complete" still ends a paused one, and leaves a stopped
-        # one the reason it was stopped. A job given another schedule
-        # meanwhile is no loop now: its next fire is that schedule's.
-        if loop_decision is not None and isinstance(fresh.schedule, SelfPacedSchedule) and (
-            (loop_decision.kind == "complete" and fresh.status in ("active", "paused"))
-            or (fresh.enabled and fresh.status == "active")
-        ):
-            _apply_loop_decision(service, fresh, loop_decision)
+        if loop_decision is not None:
+            _apply_run_loop_decision(service, fresh, loop_decision)
         if abort_job:
             # No next fire, like every stopped job: the one the claim set
             # was shown as a paused job's.
@@ -577,6 +563,75 @@ def count_failed_fire(service: "SchedulerService", job: JobRecord, run: RunRecor
 
         _apply_loop_decision(service, job, LoopDecision())
     count_fire(job, run)
+
+
+def _apply_run_loop_decision(service: "SchedulerService", job: JobRecord, decision: Any) -> None:
+    """Apply ``decision``, made in a run that has ended, to ``job`` as it is
+    now. A loop paused or stopped while it ran gets no next fire; its agent's
+    "complete" still ends a paused one, and leaves a stopped one the reason
+    it was stopped. A job given another schedule meanwhile is no loop now:
+    its next fire is that schedule's."""
+    if isinstance(job.schedule, SelfPacedSchedule) and (
+        (decision.kind == "complete" and job.status in ("active", "paused"))
+        or (job.enabled and job.status == "active")
+    ):
+        _apply_loop_decision(service, job, decision)
+
+
+def _remove_loop_tools(sess: Any, names: list[str]) -> None:
+    """Remove a run's loop-control tools from ``sess`` so they don't dangle.
+    unregister() drops the catalog entry too: the request's tool list is
+    built from the catalog, so popping only the tool table left them in
+    every later request of the session."""
+    if not names:
+        return
+    try:
+        reg = getattr(sess, "tool_registry", None)
+        inner_reg = getattr(reg, "_underlying", None) or reg
+        if inner_reg is not None:
+            for name in names:
+                try:
+                    inner_reg.unregister(name)
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# The ends of loop runs whose prompts wait to run (_end_queued_loop_run),
+# held so none is collected while it waits.
+_queued_loop_run_ends: set[asyncio.Task] = set()
+
+
+def _end_queued_loop_run(
+    service: "SchedulerService",
+    job_id: str,
+    sess: Any,
+    tools: list[str],
+    decision: Any,
+    preexisting: set[str],
+) -> None:
+    """End a self-paced loop's run whose prompt was queued behind the turn
+    that started it (fire_job), once that prompt's turn and the work it
+    started are done, as fire_job ends a run whose prompt waits behind
+    another turn: remove its loop ``tools``, then apply its ``decision``."""
+
+    async def _end() -> None:
+        from bridge.freyja_bridge import wait_until_quiescent
+
+        try:
+            await wait_until_quiescent(
+                sess, background_wait_cap_s=BACKGROUND_WORK_WAIT_CAP_S, ignore_ids=preexisting,
+            )
+        finally:
+            _remove_loop_tools(sess, tools)
+        await update_job_record(
+            job_id, lambda fresh: _apply_run_loop_decision(service, fresh, decision),
+        )
+
+    task = asyncio.ensure_future(_end())
+    _queued_loop_run_ends.add(task)
+    task.add_done_callback(_queued_loop_run_ends.discard)
 
 
 def _apply_loop_decision(service: "SchedulerService", job: JobRecord, decision: Any) -> None:
