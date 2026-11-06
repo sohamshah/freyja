@@ -237,6 +237,38 @@ async def test_a_loop_paused_while_it_ran_gets_no_next_fire(monkeypatch, decides
     assert saved.fire_count == 1
 
 
+@pytest.mark.parametrize("decides", ["continue", "complete", "nothing"])
+async def test_a_loop_given_another_schedule_while_it_ran_keeps_it(monkeypatch, decides) -> None:
+    # The run applied its agent's decision to the job as it was then: with
+    # none it read the maximum delay only a self-paced schedule has, and
+    # crashed before the fire was counted.
+    from bridge.scheduler.models import IntervalSchedule
+    from bridge.scheduler.runtime import fire_job
+    from bridge.tools.schedule_tool import COMPLETE_LOOP_TOOL, CONTINUE_LOOP_TOOL
+
+    sess = _session(cost_so_far=0.0)
+    job = _job()
+    hourly = time.time() + 3600
+
+    def reschedule() -> None:
+        edited = load_job(job.id)
+        edited.schedule, edited.next_fire_at = IntervalSchedule(seconds=3600), hourly
+        save_job(edited)
+
+    loop_call = {
+        "continue": (CONTINUE_LOOP_TOOL, {"delay_seconds": 300}),
+        "complete": (COMPLETE_LOOP_TOOL, {"reason": "done"}),
+        "nothing": None,
+    }[decides]
+    _drive_fire(monkeypatch, sess, loop_call=loop_call, cost=0.1, meanwhile=reschedule)
+
+    await fire_job(_Service({"s1": sess}), job)
+
+    saved = load_job(job.id)
+    assert (saved.enabled, saved.status, saved.next_fire_at) == (True, "active", hourly)
+    assert saved.fire_count == 1
+
+
 async def test_a_fire_nothing_answered_leaves_no_prompt_behind(monkeypatch) -> None:
     from bridge.scheduler.runtime import fire_job
 
