@@ -10,17 +10,21 @@ line, at every slot for the rest of the day.
 
 A budget raised or removed while it held a job left the job waiting for
 the next day.
+
+The claim uses up a one-shot's only slot before the daily budget is
+read: skipped, the reminder never ran and was gone, as if it had.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from datetime import date, datetime, time as dt_time, timedelta
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
+import bridge.scheduler.service as service_mod
 from bridge.scheduler.models import (
     BudgetSpec,
     CreatorRef,
@@ -32,6 +36,7 @@ from bridge.scheduler.models import (
     JobPatch,
     JobRecord,
     NoopSinkSpec,
+    OnceSchedule,
     RunRecord,
     SelfPacedSchedule,
 )
@@ -255,3 +260,41 @@ async def test_a_new_budget_leaves_the_next_fire_a_loop_chose_for_itself(service
     updated = await service.update_job(job.id, JobPatch(budget=BudgetSpec(max_cost_usd_per_day=2.0)))
 
     assert updated.next_fire_at == START_OF_TOMORROW + 3600
+
+
+def _one_shot(job: JobRecord) -> JobRecord:
+    job.schedule = OnceSchedule(
+        at_iso=datetime.fromtimestamp(time.time() - 60, timezone.utc).isoformat(),
+    )
+    save_job(job)
+    return job
+
+
+async def test_a_one_shot_that_spent_its_daily_budget_waits_for_the_next_day(service, monkeypatch):
+    # Its earlier attempts today spent the budget, so its retry is held.
+    job = _one_shot(_job("abort_run"))
+    _spent(job, 0.70, at=time.time() - 600)
+
+    held = await _when_due(service, job)
+
+    assert (held.enabled, held.status, held.fire_count) == (True, "active", 0)
+    assert held.next_fire_at == START_OF_TOMORROW
+    assert [r.run_id for r in load_runs_for_job(job.id)] == ["run_spent_1"]
+
+    # The next day it runs, and only then is it used up.
+    monkeypatch.setattr(service_mod, "_start_of_today", lambda: START_OF_TOMORROW)
+    ran = await _when_due(service, job)
+
+    assert (ran.enabled, ran.status, ran.fire_count) == (False, "disabled_max_fires", 1)
+    assert load_runs_for_job(job.id)[0].status == "succeeded"
+
+
+async def test_a_one_shot_its_daily_budget_holds_runs_today_once_the_budget_allows(service):
+    job = _one_shot(_job("abort_run"))
+    _spent(job, 0.70, at=time.time() - 600)
+    await _when_due(service, job)
+
+    updated = await service.update_job(job.id, JobPatch(budget=BudgetSpec(max_cost_usd_per_day=2.0)))
+
+    assert (updated.enabled, updated.status) == (True, "active")
+    assert updated.next_fire_at <= time.time()

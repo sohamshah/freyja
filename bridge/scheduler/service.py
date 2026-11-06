@@ -896,8 +896,12 @@ class SchedulerService:
             # A loop's next fire after the claim is its minimum delay, a
             # placeholder its run replaces, and a cron or interval job's is
             # its next slot today: skipped, the job was claimed and skipped
-            # again at each of them for the rest of the day.
+            # again at each of them for the rest of the day. A one-shot the
+            # claim used up did not run: left so, it was gone.
             def _wait_for_tomorrow(fresh: JobRecord) -> None:
+                if _one_shot_used_up(fresh):
+                    fresh.enabled = True
+                    fresh.status = "active"
                 if fresh.enabled and fresh.status == "active":
                     fresh.next_fire_at = _first_fire_tomorrow(fresh)
 
@@ -1081,9 +1085,13 @@ class SchedulerService:
                 if getattr(patch, f"clear_{field_name}"):
                     setattr(job, field_name, None)
             if held and not _over_daily_budget(job.budget, spent):
+                now = time.time()
                 job.next_fire_at = compute_next_fire(
-                    job.schedule, now=time.time(), last_fire=job.last_fire_at,
-                ) or job.next_fire_at
+                    job.schedule, now=now, last_fire=job.last_fire_at,
+                ) or (
+                    # A one-shot held after its slot runs now.
+                    now if isinstance(job.schedule, OnceSchedule) else job.next_fire_at
+                )
             # A cap lowered to the fires the job ran stops it now, as the
             # end of the run that reaches the cap does. Nothing checks
             # max_fires when a run is claimed: left active, it fired again.
@@ -1644,11 +1652,12 @@ def _over_daily_budget(budget: BudgetSpec | None, spent: float) -> bool:
 
 def _first_fire_tomorrow(job: JobRecord) -> float | None:
     """``job``'s first fire on the Mac's next local day, when its daily
-    budget starts over: a self-paced loop at the day's start, any other
-    job at its first slot from then (on an interval job's grid of slots,
-    which runs through its next fire)."""
+    budget starts over: a self-paced loop, or a one-shot held after its
+    only slot, at the day's start, any other job at its first slot from
+    then (on an interval job's grid of slots, which runs through its next
+    fire)."""
     tomorrow = _start_of_tomorrow()
-    if isinstance(job.schedule, SelfPacedSchedule):
+    if isinstance(job.schedule, (SelfPacedSchedule, OnceSchedule)):
         return tomorrow
     if job.next_fire_at is None or job.next_fire_at >= tomorrow:
         return job.next_fire_at
