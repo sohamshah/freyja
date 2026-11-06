@@ -11,6 +11,7 @@ the run had no cost and no output, and its sinks got nothing.
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 from typing import get_args
 
@@ -23,8 +24,16 @@ from bridge.scheduler.models import (
     NoopSinkSpec,
     RunRecord,
     RunStatus,
+    SelfPacedSchedule,
 )
-from bridge.scheduler.persistence import load_job, load_run, save_job
+from bridge.scheduler.persistence import (
+    FileLock,
+    job_run_lock_path,
+    load_job,
+    load_run,
+    load_runs_for_job,
+    save_job,
+)
 from engine.session import TranscriptManager
 from engine.tools import ToolRegistry
 from tests.test_scheduler_run_output import operator_session  # noqa: F401
@@ -178,3 +187,46 @@ async def test_a_queued_run_ends_with_the_cost_and_reply_of_its_prompts_turn_and
     assert saved.cost_usd == pytest.approx(0.20)
     assert [r.sink_kind for r in saved.delivery_reports] == ["noop"]
     assert load_job(job.id).fire_count == 1
+
+
+async def test_a_loops_fire_due_while_its_run_is_queued_waits_for_that_run(monkeypatch):
+    # The run lock was released as fire_job returned: the loop's fire, due
+    # meanwhile, queued its prompt behind the same turn, and both runs put
+    # the same loop tools in the session and took them out by name.
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.service import SchedulerService
+
+    sess = _stub_session()
+
+    def schedule_turn(s, prompt, attachments=None, on_turn_start=None):
+        s.queued_messages.append((prompt, attachments, on_turn_start))
+        return False
+
+    monkeypatch.setattr(fb, "_schedule_or_queue_turn", schedule_turn)
+    service = SchedulerService(SimpleNamespace(sessions={"s1": sess}, permission_tier="low"))
+    monkeypatch.setattr(service, "emit_event", lambda **_kw: None)
+    job = JobRecord(id="sched_loop", name="babysit the merge queue", prompt="check the PRs",
+                    schedule=SelfPacedSchedule(min_delay_seconds=120, max_delay_seconds=600),
+                    execution=ExistingSession(session_id="s1"))
+    save_job(job)
+
+    async def calling_turn():
+        sess.pending_task = asyncio.current_task()
+        run = await service.run_job_now(job.id)  # Its tool call.
+        # The loop comes due while the turn goes on.
+        due = load_job(job.id)
+        due.next_fire_at = time.time() - 1
+        save_job(due)
+        await service._try_claim_and_fire(job.id)
+        await asyncio.sleep(0.1)
+        return run
+
+    run = await asyncio.ensure_future(calling_turn())
+
+    assert len(sess.queued_messages) == 1
+    assert [r.run_id for r in load_runs_for_job(job.id)] == [run.run_id]
+    assert load_job(job.id).waiting_slot is not None  # It fires once the run ends.
+    await _ended(job.id, run.run_id)
+    await asyncio.sleep(0)
+    with FileLock(job_run_lock_path(job.id)) as free:
+        assert free

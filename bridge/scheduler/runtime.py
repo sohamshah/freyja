@@ -261,6 +261,21 @@ async def fire_job(
 _queued_runs: dict[str, asyncio.Task] = {}
 
 
+def release_when_run_ends(lock: Any, run: RunRecord | None) -> None:
+    """Release ``lock``, the run lock of ``run``'s job, once ``run`` has
+    ended: now, or for a run whose prompt is queued behind the turn that
+    started it, once the rest of it has. Released as fire_job returned, a
+    fire of the job due meanwhile queued its prompt behind the same turn
+    with the same fire number, and a loop's two runs put the same tools in
+    the session and took them out by name. Held, such a fire is one that
+    comes due while a run of the job goes on: its overlap policy decides."""
+    rest = _queued_runs.get(run.run_id) if run is not None else None
+    if rest is None:
+        lock.release()
+    else:
+        rest.add_done_callback(lambda _t: lock.release())
+
+
 async def _run_fire(
     service: "SchedulerService",
     job: JobRecord,

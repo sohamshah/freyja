@@ -1738,19 +1738,24 @@ class SchedulerService:
         return job, lock
 
     async def _run_now(self, job: JobRecord, lock: FileLock, **kw: Any) -> RunRecord:
-        """Run ``job`` now under its run ``lock``, and release it."""
+        """Run ``job`` now under its run ``lock``, and release it once the
+        run has ended."""
+        from bridge.scheduler.runtime import release_when_run_ends
+
         started = time.time()
+        run = None
         try:
             async with self._runs_here(job), self._concurrency:
                 from bridge.scheduler.runtime import fire_job
                 # Re-read inside the lock for freshness.
                 fresh = load_job(job.id) or job
-                return await fire_job(self, fresh, **kw)
+                run = await fire_job(self, fresh, **kw)
+                return run
         except Exception as exc:
             await self._finish_crashed_run(job, started, exc)
             raise
         finally:
-            lock.release()
+            release_when_run_ends(lock, run)
 
     async def get_runs(self, job_id: str, *, limit: int = 50) -> list[RunRecord]:
         return load_runs_for_job(job_id, limit=limit)
