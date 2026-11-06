@@ -5669,6 +5669,7 @@ class _BridgeSession:
                     "tokens_before": estimated,
                 }
                 self._mirror_compaction_event("compaction_start", restore_details)
+                self._snapshot_compaction_boundary("compaction_start", restore_details)
                 # Block the mid-session WM trigger for the whole window
                 # this compaction is running — its internal Call B and a
                 # session_memory-driven Call B would otherwise race.
@@ -5755,6 +5756,10 @@ class _BridgeSession:
                         }
                     )
                     self._mirror_compaction_event("compaction_complete", complete_details)
+                    self._snapshot_compaction_boundary("compaction_complete", complete_details)
+                    # On disk now, as the runtime's compactions do (Gap 6):
+                    # the next save may be a long turn away.
+                    self._save_transcript()
         except Exception as exc:
             log("warn", f"post-restore compaction failed: {exc}")
 
@@ -12462,11 +12467,16 @@ class _BridgeSession:
                 self._compaction_in_flight = False
         except Exception:  # noqa: BLE001
             pass
-        # Snapshot the transcript as the runtime's compactions do. The
-        # cheap scopes summarize nothing.
+        # Snapshot the transcript, and save it once compacted, as the
+        # runtime's compactions do. The cheap scopes summarize nothing.
         details = event.get("details") or {}
         if details.get("scope") not in ("tool_results_only", "exploration_only"):
             self._snapshot_compaction_boundary(event.get("subtype"), details)
+            if event.get("subtype") == "compaction_complete":
+                try:
+                    self._save_transcript()
+                except Exception:  # noqa: BLE001
+                    pass
         # If this is a compaction system_event, mirror to the existing
         # telemetry path so the dashboard's trigger/savings surfaces
         # pick it up (matches the existing _on_system_event mirror).

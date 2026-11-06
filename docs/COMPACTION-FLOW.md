@@ -160,13 +160,13 @@ Paths A and B build their events with it. Path C builds its own in the tool. Pat
 | Event on failure | `compaction_skipped` | `compaction_skipped` | `compaction_skipped` | `compaction_skipped` | `compaction_failed` |
 | `compaction_event` rows in telemetry | yes | yes | yes | yes | yes |
 | `compactions.jsonl` row with the full summary | yes | yes | yes | yes | yes |
-| Snapshot pair (`.md` and `.json`, before and after) | yes | yes | no | yes | no |
+| Snapshot pair (`.md` and `.json`, before and after) | yes | yes | yes | yes | yes |
 | `llm_call_metric` rows for the summary calls | yes | yes | yes | yes | yes |
 | `summarize_context_call` row | no | no | yes | no | no |
 | `usage_snapshot` event at once | no | no | no | yes | no |
-| Transcript saved at once | yes | yes | no | yes | no |
+| Transcript saved at once | yes | yes | yes | yes | yes |
 
-Paths A and B reach the telemetry through the runner's `on_system_event`: `_BridgeSession._on_system_event` calls `_mirror_compaction_event`, writes the snapshot pair and saves the transcript on `compaction_complete`. Path C reaches it through `_emit_summarize_event`. Paths D and E call `_mirror_compaction_event` themselves. Paths C and E leave the save to the end of a turn.
+Paths A and B reach the telemetry through the runner's `on_system_event`: `_BridgeSession._on_system_event` calls `_mirror_compaction_event`, writes the snapshot pair and saves the transcript on `compaction_complete`. Path C reaches it through `_emit_summarize_event`, which writes the snapshot pair and saves the transcript the same way. Paths D and E call `_mirror_compaction_event` themselves, and write the pair and save the transcript themselves.
 
 `_mirror_compaction_event` also mirrors `context_pruning` and `media_pruning`, so halving and image pruning have telemetry rows.
 
@@ -177,7 +177,7 @@ Paths A and B reach the telemetry through the runner's `on_system_event`: `_Brid
 | `~/.freyja/sessions/<sid>.transcript.json` | `_save_transcript` | The live transcript: the compaction entry, the kept tail, halved results. A resume reads it. |
 | `~/.freyja/projects/<sid>/raw_messages.jsonl` | `_append_raw_message_log`, on every append | Every message as it was appended. Compaction and halving never touch it. Sub-agents have none. |
 | `~/.freyja/projects/<sid>/compactions.jsonl` | `_append_compaction_log` | One row per compaction event, with the full summary. |
-| `~/.freyja/sessions/compactions/<sid>-<ms>-{before,after}.{md,json}` | `_write_compaction_snapshot` | The transcript before and after a compaction (paths A, B and D). |
+| `~/.freyja/sessions/compactions/<sid>-<ms>-{before,after}.{md,json}` | `_write_compaction_snapshot` | The transcript before and after a compaction (every path). A fork at a message a summary folded in is cut from the newest `-before.json` that still holds it. |
 | `~/.freyja/telemetry/compaction.jsonl` | `bridge/compaction_telemetry.append_telemetry` | The cross-session rows the metrics dashboard reads (section 8). |
 | `~/.freyja/truncated/*.txt` | `ToolResultTruncator.write_full_content` | The whole text of each result the truncator cut to fit, and of each result halving cut. The cut text names its file. |
 

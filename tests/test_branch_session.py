@@ -927,10 +927,63 @@ async def test_fork_at_a_message_summarize_context_folded_in_is_cut_from_its_sna
 
     assert not result.is_error, result.content
     assert transcript.entries[0].summarized_through >= t0 + 1
-    sess._save_transcript()
-    # A fork before m1, which the summary folded in.
+    # On disk already. A fork before m1, which the summary folded in:
     assert tp.clone_transcript("s", "f1", cutoff_ts=t0 + 0.99)
     assert [e["message"]["content"][:3] for e in tp.load_transcript("f1")["transcript"]["entries"]] == ["m0 "]
+
+
+async def test_fork_at_a_message_a_restore_compaction_folded_in_is_cut_from_its_snapshot(monkeypatch, tmp_path):
+    # Reopening a long session compacts it; that compaction snapshots
+    # the transcript as the others do.
+    import asyncio
+    import time
+    from types import SimpleNamespace
+
+    import bridge.freyja_bridge as fb
+    import engine.constants as constants
+    from engine.compaction import CompactionResult, SummaryCompaction
+    from engine.session import Session
+
+    monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(fb, "emit", lambda _ev: None)
+    monkeypatch.setattr(constants, "CONTEXT_COMPACTION_THRESHOLD", 0.0)
+    old = Session.create(system_prompt="t")
+    for i in range(4):
+        (old.add_user_message if i % 2 == 0 else old.add_assistant_message)(f"m{i}")
+    t0 = time.time() - 100
+    for i, e in enumerate(old.transcript.entries):
+        e.timestamp = t0 + i
+    tp.save_transcript("s", old.serialize_transcript())
+
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    sess = fb._BridgeSession("s", workspace=str(tmp_path), model_id="claude-sonnet-5-5",
+                             reasoning_level="auto", coordination_strategy="bus", state=state)
+
+    async def _initialize():
+        sess.session = Session.create(system_prompt="t")
+        sess.provider = SimpleNamespace(name="anthropic", model_id="claude-sonnet-5-5", context_window=200_000)
+        sess._bridge_loop = asyncio.get_running_loop()
+
+    sess.initialize = _initialize
+    sess._ledger_ground_truth = lambda: None
+    sess._restore_goal_state = lambda: False
+    sess._restore_inbox = lambda: None
+    sess._append_compaction_log = lambda _row: None
+
+    def _compact(_self, transcript, _provider, **_kw):
+        transcript.append_compaction("We read m0 and m1.", first_kept_id=transcript.entries[2].id, tokens_before=9)
+        return CompactionResult(success=True, summary="We read m0 and m1.", tokens_before=9, tokens_after=3,
+                                entries_removed=2)
+
+    monkeypatch.setattr(SummaryCompaction, "compact", _compact)
+
+    assert await sess.try_restore_transcript()
+
+    assert [e.id for e in sess.session.transcript.entries][1:] == [e.id for e in old.transcript.entries[2:]]
+    # Saved compacted, and a fork before m1 is cut from the snapshot.
+    assert tp.load_transcript("s")["transcript"]["entries"][0]["is_compaction"]
+    assert tp.clone_transcript("s", "f1", cutoff_ts=t0 + 0.99)
+    assert [e["message"]["content"] for e in tp.load_transcript("f1")["transcript"]["entries"]] == ["m0"]
 
 
 # ── compaction records a fork keeps ────────────────────────────────────
