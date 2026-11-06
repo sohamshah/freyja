@@ -1745,8 +1745,7 @@ async def _wake_archived_subagent(
     """
     try:
         from bridge.transcript_persistence import (
-            save_inbox_state,
-            load_inbox_state,
+            append_inbox_messages,
             load_subagent_state,
         )
     except Exception:
@@ -1783,16 +1782,8 @@ async def _wake_archived_subagent(
         return True
 
     # Step 1: append to inbox sidecar (so spawn failures don't drop msg).
-    existing_inbox = load_inbox_state(session_id) or {
-        "sessionId": session_id,
-        "unread": [],
-        "delivered": [],
-    }
-    unread = list(existing_inbox.get("unread") or [])
-    unread.append(msg.to_dict())
-    existing_inbox["unread"] = unread
     try:
-        save_inbox_state(session_id, existing_inbox)
+        append_inbox_messages(session_id, [msg.to_dict()])
     except Exception:
         pass
 

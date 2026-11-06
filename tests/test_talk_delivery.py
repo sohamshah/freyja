@@ -232,6 +232,69 @@ async def test_gateway_id_goes_to_its_inbox_file_when_no_daemon(monkeypatch, tmp
     assert [m.content for m in thread.inbox.unread] == ["hi"]
 
 
+def _queue_in_another_process(monkeypatch, sid: str, content: str):
+    """Start queueing ``content`` to ``sid``'s inbox file on a thread, as
+    another process would, and return once it has read the file and is
+    about to put its copy back. Join the returned thread to finish it."""
+    import threading
+    import time
+    from pathlib import Path
+
+    replace = Path.replace
+    putting_back = threading.Event()
+
+    def _replace_slowly(self, target):
+        if threading.current_thread().name == "queue" and str(target).endswith(".inbox.json"):
+            putting_back.set()
+            time.sleep(0.3)
+        return replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", _replace_slowly)
+    writer = threading.Thread(target=queue_to_inbox_sidecar, args=(sid, _msg(content)), name="queue")
+    writer.start()
+    assert putting_back.wait(5)
+    return writer
+
+
+def test_a_message_queued_while_the_gateway_loads_the_thread_is_kept(monkeypatch, tmp_path):
+    """No gateway ran, so a talk to the thread went to its inbox file. The
+    gateway started and loaded the thread while that write was between its
+    read and its write: the gateway's copy of the inbox lacked the message,
+    and its next save of the inbox dropped it."""
+    from bridge import freyja_bridge as fb
+    from bridge import transcript_persistence as tp
+
+    monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path)
+    tp.save_inbox_state(GW_ID, {"sessionId": GW_ID, "unread": [], "delivered": []})
+    writer = _queue_in_another_process(monkeypatch, GW_ID, "hi")
+
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    thread = fb._BridgeSession(
+        GW_ID, workspace=str(tmp_path), model_id="claude-sonnet-5-5",
+        reasoning_level="auto", coordination_strategy="bus", state=state,
+    )
+    thread._restore_inbox()
+    writer.join()
+    thread._save_inbox()
+
+    assert [m.content for m in thread.inbox.unread] == ["hi"]
+    assert [u["content"] for u in tp.load_inbox_state(GW_ID)["unread"]] == ["hi"]
+
+
+def test_two_messages_queued_at_once_are_both_kept(monkeypatch, tmp_path):
+    # The app and the scheduler daemon can each queue one while no gateway
+    # runs.
+    from bridge import transcript_persistence as tp
+
+    monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path)
+    writer = _queue_in_another_process(monkeypatch, GW_ID, "from the app")
+    queue_to_inbox_sidecar(GW_ID, _msg("from the daemon"))
+    writer.join()
+
+    assert sorted(u["content"] for u in tp.load_inbox_state(GW_ID)["unread"]) == ["from the app", "from the daemon"]
+
+
 def test_sidecar_queue_roundtrip(monkeypatch, tmp_path):
     from bridge import transcript_persistence as tp
 

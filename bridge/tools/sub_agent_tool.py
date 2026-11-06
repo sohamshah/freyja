@@ -1062,19 +1062,11 @@ Parameters:
             return
         try:
             from bridge.transcript_persistence import (
-                load_inbox_state,
+                append_inbox_messages,
                 load_subagent_state,
-                save_inbox_state,
             )
 
-            data = load_inbox_state(record.id) or {
-                "sessionId": record.id, "unread": [], "delivered": [],
-            }
-            known = {u.get("id") for u in data.get("unread") or []}
-            data["unread"] = list(data.get("unread") or []) + [
-                m.to_dict() for m in stranded if m.id not in known
-            ]
-            save_inbox_state(record.id, data)
+            append_inbox_messages(record.id, [m.to_dict() for m in stranded])
             sidecar = load_subagent_state(record.id)
             if not sidecar:
                 return

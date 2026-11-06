@@ -87,22 +87,9 @@ def queue_to_inbox_sidecar(session_id: str, msg: InboxMessage) -> str:
     message on its first turn.
     """
     try:
-        from bridge.transcript_persistence import (
-            load_inbox_state,
-            save_inbox_state,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return f"sidecar queue failed: {exc}"
-    data = load_inbox_state(session_id) or {
-        "sessionId": session_id,
-        "unread": [],
-        "delivered": [],
-    }
-    unread = list(data.get("unread") or [])
-    unread.append(msg.to_dict())
-    data["unread"] = unread
-    try:
-        save_inbox_state(session_id, data)
+        from bridge.transcript_persistence import append_inbox_messages
+
+        append_inbox_messages(session_id, [msg.to_dict()])
     except Exception as exc:  # noqa: BLE001
         return f"sidecar queue failed: {exc}"
     return (

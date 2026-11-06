@@ -21,8 +21,9 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -119,13 +120,63 @@ def _inbox_path(session_id: str) -> Path:
     return SESSIONS_DIR / f"{session_id}.inbox.json"
 
 
+@contextmanager
+def _inbox_lock() -> Iterator[None]:
+    """The exclusive flock that every read and write of an inbox sidecar
+    holds, in every process. The app, the gateway and the scheduler daemon
+    each queue messages into these files (append_inbox_messages), and the
+    process that loads a session reads its file once, then saves its own
+    copy over it. Unlocked, a load or a second queue that fell between a
+    queue's read and its write missed the message, and the next save
+    dropped it: the gateway, starting, could load a Slack thread just as
+    the app queued a talk for it. One lock for all sessions: each hold is
+    one small file's read or write."""
+    import fcntl
+
+    try:
+        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        fp = (SESSIONS_DIR / ".inbox.lock").open("a")
+    except OSError:
+        yield  # no lock file: go on unlocked, as before
+        return
+    with fp:
+        try:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            pass  # no flock on this filesystem: go on unlocked
+        yield  # closing the file releases the lock
+
+
 def save_inbox_state(session_id: str, data: dict[str, Any]) -> None:
     """Persist a session's inbox queue + recent delivered history.
 
     Schema mirrors SessionInbox.to_dict(); see bridge/inbox.py.
     Writes atomically; safe across crashes.
     """
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    with _inbox_lock():
+        _write_inbox(session_id, data)
+
+
+def load_inbox_state(session_id: str) -> dict[str, Any] | None:
+    """Load a session's inbox from disk. Returns None if absent/corrupt."""
+    with _inbox_lock():
+        return _read_inbox(session_id)
+
+
+def append_inbox_messages(session_id: str, messages: list[dict[str, Any]]) -> None:
+    """Add ``messages`` (``InboxMessage.to_dict()``) to the unread queue in
+    a session's inbox sidecar, skipping any it already holds. The read and
+    the write are one hold of the inbox lock, so a message another process
+    queues at the same time, or a load at the same time, is not lost."""
+    with _inbox_lock():
+        data = _read_inbox(session_id) or {"sessionId": session_id, "unread": [], "delivered": []}
+        unread = list(data.get("unread") or [])
+        known = {u.get("id") for u in unread if isinstance(u, dict)}
+        data["unread"] = unread + [m for m in messages if m.get("id") not in known]
+        _write_inbox(session_id, data)
+
+
+def _write_inbox(session_id: str, data: dict[str, Any]) -> None:
     dest = _inbox_path(session_id)
     tmp = dest.with_suffix(".tmp")
     try:
@@ -139,8 +190,7 @@ def save_inbox_state(session_id: str, data: dict[str, Any]) -> None:
             pass
 
 
-def load_inbox_state(session_id: str) -> dict[str, Any] | None:
-    """Load a session's inbox from disk. Returns None if absent/corrupt."""
+def _read_inbox(session_id: str) -> dict[str, Any] | None:
     path = _inbox_path(session_id)
     if not path.exists():
         return None
