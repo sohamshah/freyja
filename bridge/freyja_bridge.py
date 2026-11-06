@@ -13167,6 +13167,17 @@ class _BridgeState:
         # + apply the capability filter). If we set it after, the
         # initial registration block sees None and silently no-ops,
         # leaving the session permanently without send_attachment.
+        # A thread the gateway loads for anything but its own message (a
+        # talk, a memo, an app command, /mode) takes its source from its
+        # key; a copy in another process runs no turn and gets none.
+        if (
+            gateway_source is None
+            and _is_gateway_session_id(session_id)
+            and _process_owns_gateway()
+        ):
+            from bridge.gateway.session_router import source_from_session_key
+
+            gateway_source = source_from_session_key(session_id)
         if gateway_source is not None:
             s.gateway_source = gateway_source
         self.active_session_id = session_id
