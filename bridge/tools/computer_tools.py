@@ -33,6 +33,7 @@ import asyncio
 import base64
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -59,7 +60,9 @@ from bridge.tools.base import (
 # session keeps its newest 20 frames per format, plus latest.jpg /
 # latest.png for the last frame of any session. Nothing removes the
 # frames of earlier sessions, so the folder grows by up to 20 frames
-# for every session that takes a screenshot.
+# for every session that takes a screenshot. A frame is named
+# <session id>_<ms timestamp>_<reason>.<ext>; see _session_frames for
+# how the trim tells one session's frames from another's.
 _FRAME_DUMP_DIR = os.environ.get("FREYJA_FRAME_DUMP_DIR") or str(
     Path.home() / ".freyja" / "last-frames"
 )
@@ -281,6 +284,32 @@ class EmittedFrame:
     display_count: int = 0
 
 
+def _frame_name_reason(reason: str) -> str:
+    """The reason part of a dumped frame's name: letters and "_" only.
+    `_session_frames` relies on it holding no digit."""
+    return re.sub(r"[^A-Za-z_]", "_", reason) or "frame"
+
+
+def _session_frames(dump_dir: Path, session_id: str, ext: str) -> list[Path]:
+    """The frames `session_id` dumped in `dump_dir`, oldest first.
+
+    Ids contain "_" themselves ("jev_1a0cd5d2713_1"), so one id can be
+    another's id plus "_..." ("jev_x" and "jev_x_8"). Matching names by
+    "<id>_*" counted the longer id's frames as the shorter one's, and the
+    trim deleted them, or deleted the shorter id's own new frames. A name
+    belongs to the session only when what follows "<id>_" is the
+    timestamp, "_" and the reason. The reason holds no digit, so the
+    longer id's names, which carry their own timestamp after its extra
+    part, never match."""
+    own = re.compile(re.escape(session_id) + r"_(\d+)_[A-Za-z_]*\." + re.escape(ext))
+    found = []
+    for path in dump_dir.iterdir():
+        m = own.fullmatch(path.name)
+        if m is not None:
+            found.append((int(m.group(1)), path.name, path))
+    return [path for _ts, _name, path in sorted(found)]
+
+
 async def _emit_frame(
     spec: ComputerToolSpec,
     native: Any,
@@ -399,7 +428,7 @@ async def _emit_frame(
             dump_dir.mkdir(parents=True, exist_ok=True)
             ts = int(time.time() * 1000)
             ext = "jpg" if frame.format == "jpeg" else "png"
-            filename = f"{spec.session_id}_{ts}_{reason or 'frame'}.{ext}"
+            filename = f"{spec.session_id}_{ts}_{_frame_name_reason(reason)}.{ext}"
             (dump_dir / filename).write_bytes(png_bytes)
             # Also write a stable "latest" symlink for the session so
             # you can always `open ~/.freyja/last-frames/latest.jpg`.
@@ -410,8 +439,7 @@ async def _emit_frame(
                 pass
             latest.write_bytes(png_bytes)
             # Trim old frames for this session
-            pattern = f"{spec.session_id}_*.{ext}"
-            existing = sorted(dump_dir.glob(pattern))
+            existing = _session_frames(dump_dir, spec.session_id, ext)
             for old in existing[:-20]:
                 try:
                     old.unlink()

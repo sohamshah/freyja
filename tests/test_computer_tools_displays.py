@@ -10,6 +10,7 @@ is an error that names the displays that are. No screen is touched.
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from types import SimpleNamespace
 
@@ -411,3 +412,26 @@ async def test_a_window_screenshot_says_clicks_still_use_the_display_screenshot(
     assert "ONE coordinate space" not in _text(res)
     await tools["click"].execute("c3", {"x": 640, "y": 360, "settle_ms": 0})
     assert screens.sent == [("click", -1280, 720)]
+
+
+@pytest.mark.parametrize("other", ["jev_x_8", "jev_x_12"])
+async def test_the_frame_trim_keeps_to_the_session_that_wrote_the_frame(monkeypatch, tmp_path, other):
+    # An id can be another id plus "_..." ("jev_x" and "jev_x_8"). Matching
+    # "jev_x_*" counted the other session's frames as jev_x's, so the trim
+    # removed jev_x's new frame (for jev_x_8) or one of jev_x_12's frames.
+    monkeypatch.setattr(ct, "_FRAME_DUMP_ENABLED", True)
+    monkeypatch.setattr(ct, "_FRAME_DUMP_DIR", str(tmp_path))
+    # one frame per millisecond, so no two frames share a name
+    ticks = iter(range(1779000000000, 1779000001000))
+    monkeypatch.setattr(ct, "time", SimpleNamespace(time=lambda: next(ticks) / 1000))
+    theirs = [f"{other}_{1778000000000 + i}_post_click.jpg" for i in range(20)]
+    for name in theirs:
+        (tmp_path / name).write_bytes(b"theirs")
+    spec = ct.ComputerToolSpec(session_id="jev_x", emit_event=lambda e: None, cancel_event=asyncio.Event())
+    for _ in range(22):
+        assert await ct._emit_frame(spec, _Monitors(only_primary=True), reason="screenshot_tool")
+    names = {p.name for p in tmp_path.iterdir()}
+    assert set(theirs) <= names
+    mine = [n for n in names if re.fullmatch(r"jev_x_\d+_screenshot_tool\.jpg", n)]
+    assert len(mine) == 20
+    assert names == set(theirs) | set(mine) | {"latest.jpg"}
