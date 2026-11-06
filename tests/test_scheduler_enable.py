@@ -9,6 +9,7 @@ through update_job.
 
 from __future__ import annotations
 
+import json
 import time
 from types import SimpleNamespace
 
@@ -120,3 +121,41 @@ async def test_the_slack_resume_command_says_when_the_job_runs_next(service):
     )
 
     assert f"Next fire: {_format_ts(load_job(job.id).next_fire_at)}" in reply
+
+
+# ─── a paused job has no next fire ────────────────────────────────────
+
+
+@pytest.mark.parametrize("pause", ["pause_job", "enabled=False"])
+async def test_a_paused_job_has_no_next_fire(service, pause):
+    job = await _hourly(service)
+    assert job.next_fire_at is not None
+
+    if pause == "pause_job":
+        paused = await service.pause_job(job.id)
+    else:
+        paused = await service.update_job(job.id, JobPatch(enabled=False))
+
+    assert paused.next_fire_at is None
+    assert load_job(job.id).next_fire_at is None
+
+
+async def test_a_paused_job_shows_no_next_fire_in_the_tool_or_slack(service):
+    from bridge.gateway.run import _format_job_detail, _format_jobs_table
+
+    job = await _hourly(service)
+    await service.pause_job(job.id)
+    tool = ScheduleTool(service=service, current_session_id="s1")
+
+    result = await tool.execute("call_1", {"action": "get", "job_id": job.id})
+
+    assert json.loads(result.content)["job"]["next_fire_at"] is None
+    assert "Next fire: —" in _format_job_detail(load_job(job.id))
+    assert "next: —" in _format_jobs_table([load_job(job.id)])
+
+
+async def test_a_resumed_job_fires_from_its_schedule_again(service):
+    job = await _hourly(service)
+    await service.pause_job(job.id)
+
+    assert _runs_from_its_schedule(await service.resume_job(job.id))

@@ -899,16 +899,16 @@ class SchedulerService:
             # enabled pauses or resumes the job, as pause_job and
             # resume_job do. Set alone, a paused job kept status "paused",
             # which the tick skips, and never ran again.
-            resumed = False
+            switched = False
             if patch.enabled is not None and patch.enabled != (
                 job.enabled and job.status == "active"
             ):
                 job.enabled = patch.enabled
                 job.status = "active" if patch.enabled else "paused"
-                resumed = patch.enabled
+                switched = True
             if patch.schedule is not None:
                 job.schedule = patch.schedule
-            if patch.schedule is not None or resumed:
+            if patch.schedule is not None or switched:
                 self._recompute_next_fire(job, force=True)
             if patch.execution is not None:
                 job.execution = patch.execution
@@ -935,6 +935,10 @@ class SchedulerService:
                 raise KeyError(job_id)
             job.enabled = False
             job.status = "paused"
+            # A paused job has no next fire, like every job that cannot
+            # fire. The one it kept was shown, soon long past, wherever
+            # the job was listed; resume_job sets a fresh one.
+            self._recompute_next_fire(job)
             save_job(job)
         touch_wake()
         append_event({"type": "scheduler_job_paused", "job_id": job_id})
