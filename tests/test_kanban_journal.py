@@ -538,3 +538,24 @@ async def test_unblock_counts_the_mission_root_as_done() -> None:
 
     assert not result.is_error, result.content
     assert (await board.get(child)).status == "ready"
+
+
+@pytest.mark.asyncio
+async def test_create_refuses_parents_the_board_does_not_hold() -> None:
+    """create() dropped parent ids it did not know, so a typo made a card
+    that does not wait on the parent the agent meant (with no other
+    parent, a ready card under the mission root). It now refuses and
+    names the unknown ids."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    await board.create(title="mission", metadata={"role": "mission_root"})
+    parent = (await board.create(title="parent")).id
+
+    result = await tool.execute(
+        "create",
+        {"action": "create", "title": "child", "parents": [parent, "card_02", "card_9"]},
+    )
+
+    assert result.is_error, result.content
+    assert "card_02, card_9" in result.content
+    assert {card.title for card in await board.list()} == {"mission", "parent"}

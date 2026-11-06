@@ -504,7 +504,15 @@ class SessionKanbanBoard:
         async with self._lock:
             clean_meta = dict(metadata or {})
             is_root = clean_meta.get("role") == "mission_root"
-            clean_parents = [pid for pid in parents or [] if pid in self._tasks]
+            # Dropping an unknown id would leave the card free to dispatch
+            # before the parent the caller meant, so refuse it.
+            unknown = [pid for pid in parents or [] if pid not in self._tasks]
+            if unknown:
+                raise ValueError(
+                    f"unknown parent card(s): {', '.join(unknown)}; "
+                    "check the ids with `list` and create the card again"
+                )
+            clean_parents = list(parents or [])
             # Auto-adopt the mission root as parent when caller passed no
             # parents and this isn't itself the root. Explicit `parents=[]`
             # callers that want detachment can pass a sentinel via metadata
