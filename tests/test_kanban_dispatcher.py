@@ -503,3 +503,189 @@ async def test_judge_verdict_sends_the_card_it_moved(
     assert [task["status"] for task in moved] == [status]
     assert moved[0]["id"] == card_id
     assert moved[0]["events"][-1]["actor"] == "kanban-judge"
+
+
+# Every path where the bridge writes the board itself, and how many direct
+# `kanban_board` write calls in freyja_bridge.py it drives. The reclaim
+# goes through the kanban tool, which sends its own event.
+_BOARD_WRITERS: dict[str, int] = {
+    "reclaim": 0,
+    "nothing_to_review": 1,
+    "judge_pinned": 1,
+    "verdict_done": 1,
+    "verdict_rework": 1,
+    "verdict_blocked": 1,
+    "verdict_requeued": 1,
+    "operator_create": 2,
+    "operator_cancel": 1,
+    "operator_unblock": 1,
+    "operator_unblock_orphan": 1,
+    "operator_reassign": 1,
+}
+
+
+async def _review_card(board: SessionKanbanBoard, tool: KanbanTool, *, worker: bool) -> Any:
+    """A card in review, finished by a worker or (worker=False) with no
+    worker session and no artifacts."""
+    create = await tool.execute("c1", {"action": "create", "title": "judge me"})
+    card_id = json.loads(create.content)["task"]["id"]
+    await tool.execute("c2", {"action": "update", "task_id": card_id, "status": "running"})
+    if worker:
+        await KanbanTool(
+            board, actor_id="sub_w", actor_label="worker", owned_task_id=card_id
+        ).execute("c3", {"action": "complete", "summary": "done"})
+    else:
+        await board.update(card_id, actor="worker", status="review", review_iteration=1)
+    card = await board.get(card_id)
+    assert card is not None and card.status == "review"
+    return card
+
+
+async def _set_up_writer(name: str, session: Any, board: SessionKanbanBoard, tool: KanbanTool) -> Any:
+    """Bring the board to where `name` writes it; return the write."""
+    import time as _time
+    import types
+
+    from bridge import freyja_bridge
+    from bridge.tools.goal_loop import GoalVerdict
+
+    async def _ensure_session(_session_id: str) -> Any:
+        return session
+
+    state = types.SimpleNamespace(active_session_id=session.id, ensure_session=_ensure_session)
+
+    def _command(**cmd: Any) -> Any:
+        return lambda: freyja_bridge._handle_command(state, {"sessionId": session.id, **cmd})
+
+    async def _woken(*args: Any, **kwargs: Any) -> bool:
+        return True
+
+    session._wake_subagent_with_task = _woken
+
+    if name == "reclaim":
+        create = await tool.execute("c1", {"action": "create", "title": "quiet"})
+        card_id = json.loads(create.content)["task"]["id"]
+        await tool.execute("c2", {"action": "update", "task_id": card_id, "status": "running"})
+        card = await board.get(card_id)
+        card.updated_at = _time.time() - (_BridgeSession.KANBAN_RECLAIM_SECONDS + 60)
+        return lambda: session._kanban_tick(source="test")
+    if name == "nothing_to_review":
+        await _review_card(board, tool, worker=False)
+        return lambda: session._kanban_tick(source="test")
+    if name == "judge_pinned":
+        card = await _review_card(board, tool, worker=True)
+        sub_tool = _StubSubAgentTool()
+
+        async def _spawn(**kwargs: Any) -> Any:
+            return types.SimpleNamespace(id="sub_judge"), None, None
+
+        async def _synthesis_fails(*args: Any) -> Any:
+            raise RuntimeError("synthesis failed")
+
+        sub_tool.spawn_programmatically = _spawn
+        session._synthesize_judge_verdict = _synthesis_fails
+        return lambda: session._run_kanban_judge_for_card(card, sub_tool=sub_tool)
+    if name.startswith("verdict_"):
+        card = await _review_card(board, tool, worker=name != "verdict_requeued")
+        if name == "verdict_blocked":
+            card.review_iteration = _BridgeSession.KANBAN_MAX_REVIEW_ITERATIONS
+        verdict = GoalVerdict(done=name == "verdict_done", reason="r")
+        return lambda: session._handle_kanban_verdict(card, verdict)
+    if name == "operator_create":
+        create = await tool.execute("c1", {"action": "create", "title": "later"})
+        child_id = json.loads(create.content)["task"]["id"]
+        return _command(type="kanban_operator_create", title="first", children=[child_id])
+    if name == "operator_cancel":
+        create = await tool.execute("c1", {"action": "create", "title": "stop me"})
+        card_id = json.loads(create.content)["task"]["id"]
+        await board.update(card_id, actor="worker", status="running", worker_session_id="sub_w")
+        session.subagent_registry.kill = lambda _session_id: None
+        return _command(type="kanban_operator_cancel", cardId=card_id)
+    if name == "operator_unblock":
+        create = await tool.execute("c1", {"action": "create", "title": "stuck"})
+        card_id = json.loads(create.content)["task"]["id"]
+        await board.update(card_id, actor="worker", status="blocked")
+        return _command(type="kanban_operator_unblock", cardId=card_id)
+    if name == "operator_unblock_orphan":
+        parent = await tool.execute("c1", {"action": "create", "title": "plan"})
+        parent_id = json.loads(parent.content)["task"]["id"]
+        child = await tool.execute(
+            "c2", {"action": "create", "title": "do", "parents": [parent_id]}
+        )
+        child_id = json.loads(child.content)["task"]["id"]
+        await tool.execute(
+            "c3", {"action": "update", "task_id": parent_id, "status": "cancelled"}
+        )
+        return _command(type="kanban_operator_unblock", cardId=child_id)
+    if name == "operator_reassign":
+        create = await tool.execute("c1", {"action": "create", "title": "move me"})
+        card_id = json.loads(create.content)["task"]["id"]
+        return _command(type="kanban_operator_reassign", cardId=card_id, assignee="code")
+    raise AssertionError(f"no set-up for {name}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", list(_BOARD_WRITERS))
+async def test_every_bridge_board_write_sends_the_cards_it_changed(monkeypatch, name: str) -> None:
+    """The renderer learns a card's state only from kanban_* events that
+    carry it. Each path where the bridge writes the board must send every
+    card it changed, in the state the board now holds, or the app's board
+    stays where it was."""
+    from bridge import freyja_bridge
+
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(freyja_bridge, "emit", sent.append)
+    board = SessionKanbanBoard()
+    session = _make_session(board=board, sub_tool=_StubSubAgentTool())
+    # The parent's kanban tool sends through the bridge's emit, as
+    # build_desktop_registry wires it.
+    tool = KanbanTool(
+        board,
+        actor_id=session.id,
+        actor_label="parent",
+        emit_event=lambda event: freyja_bridge.emit(event),
+        parent_session_id=session.id,
+    )
+    session.tool_registry._tools["kanban"] = tool
+    write = await _set_up_writer(name, session, board, tool)
+    before = {task.id: task.to_dict() for task in await board.list()}
+    sent.clear()
+
+    await write()
+
+    seen: dict[str, dict[str, Any]] = {}
+    for event in sent:
+        details = event.get("details") or {}
+        if not str(event.get("subtype") or "").startswith("kanban_"):
+            continue
+        for task in [details.get("task"), *(details.get("tasks") or [])]:
+            if isinstance(task, dict):
+                seen[task["id"]] = task
+    changed = [task for task in await board.list() if before.get(task.id) != task.to_dict()]
+    assert changed, f"{name} changed no card"
+    for task in changed:
+        assert task.id in seen, f"{name} changed {task.id} and sent no event with it"
+        current = task.to_dict(include_history=False)
+        assert {key: seen[task.id].get(key) for key in current} == current
+
+
+def test_every_direct_board_write_in_the_bridge_is_driven_above() -> None:
+    """A new place where the bridge writes the board must send the cards
+    it changes (`_emit_kanban_card`) and join `_BOARD_WRITERS`."""
+    import ast
+    import inspect
+
+    from bridge import freyja_bridge
+
+    writes = [
+        node.lineno
+        for node in ast.walk(ast.parse(inspect.getsource(freyja_bridge)))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"create", "update", "link", "unblock"}
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "kanban_board"
+    ]
+    assert len(writes) == sum(_BOARD_WRITERS.values()), (
+        f"direct board writes at freyja_bridge.py lines {writes}"
+    )

@@ -8909,7 +8909,7 @@ class _BridgeSession:
             # judge spawns at all, saving the full judge round-trip.
             if not card.worker_session_id and not (card.artifacts or []):
                 try:
-                    await self.kanban_board.update(
+                    task = await self.kanban_board.update(
                         card.id,
                         actor="kanban-dispatcher",
                         status="blocked",
@@ -8925,6 +8925,7 @@ class _BridgeSession:
                         f"empty-review auto-park failed for {card.id}: {exc}",
                     )
                 else:
+                    self._emit_kanban_card(task, source="kanban_dispatcher")
                     self._emit_kanban_event(
                         "kanban_blocked",
                         f"{card.id} blocked: nothing to review",
@@ -9344,11 +9345,12 @@ class _BridgeSession:
                 judge_record = record
                 # Pin the session id onto the card so future reviews
                 # wake this same judge.
-                await self.kanban_board.update(
+                task = await self.kanban_board.update(
                     card.id,
                     actor="kanban-dispatcher",
                     judge_session_id=record.id,
                 )
+                self._emit_kanban_card(task, source="kanban_dispatcher")
             else:
                 # Sticky wake. Resume the existing judge session with
                 # the rework prompt as its next user turn. The resume
@@ -14418,11 +14420,12 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         # isn't done yet.
         for child_id in children:
             try:
-                await sess.kanban_board.link(
+                child, _ = await sess.kanban_board.link(
                     parent_id=task.id,
                     child_id=child_id,
                     actor="operator",
                 )
+                sess._emit_kanban_card(child, source="operator")  # noqa: SLF001
             except Exception as exc:  # noqa: BLE001
                 log("warn", f"kanban_operator_create link {task.id}→{child_id} failed: {exc}")
         # Emit a kanban_task_created system event so the renderer slice
@@ -14474,13 +14477,14 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             except Exception as exc:  # noqa: BLE001
                 log("warn", f"kanban_operator_cancel: kill({worker_sid}) raised: {exc}")
         try:
-            await sess.kanban_board.update(
+            task = await sess.kanban_board.update(
                 card_id,
                 actor="operator",
                 status="cancelled",
                 comment="Cancelled by operator from the board",
                 worker_terminal_state="cancelled",
             )
+            sess._emit_kanban_card(task, source="operator")  # noqa: SLF001
         except Exception as exc:  # noqa: BLE001
             log("warn", f"kanban_operator_cancel failed for {card_id}: {exc}")
             return
@@ -14518,11 +14522,12 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             log("warn", f"kanban_operator_unblock: card {card_id} not found")
             return
         status = (task.status or "").lower()
+        updated = None
         moved = False
         note = ""
         try:
             if status == "triage":
-                _, note = await sess.kanban_board.unblock(card_id, actor="operator")
+                updated, note = await sess.kanban_board.unblock(card_id, actor="operator")
                 moved = note == "unblocked"
             elif status in {"blocked", "crashed", "timed_out"}:
                 updated = await sess.kanban_board.update(
@@ -14547,6 +14552,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 details={"cardId": card_id, "reason": note},
             )
             return
+        sess._emit_kanban_card(updated, source="operator")  # noqa: SLF001
         # Reset breaker bookkeeping: an unblocked card gets a fresh
         # chance, otherwise autopilot would skip it the moment it
         # came up for re-dispatch.
@@ -14628,7 +14634,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             return
         new_assignee = str(cmd.get("assignee") or "").strip()
         try:
-            await sess.kanban_board.update(
+            task = await sess.kanban_board.update(
                 card_id,
                 actor="operator",
                 assignee=new_assignee,
@@ -14638,6 +14644,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     else "Cleared assignee by operator"
                 ),
             )
+            sess._emit_kanban_card(task, source="operator")  # noqa: SLF001
         except Exception as exc:  # noqa: BLE001
             log("warn", f"kanban_operator_reassign failed for {card_id}: {exc}")
             return
