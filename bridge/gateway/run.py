@@ -1998,7 +1998,10 @@ class GatewayDaemon:
 
     async def _on_home_opened(self, info: dict[str, Any]) -> None:
         """Messages tab: 2 to 4 prompts from live state. Home tab: the
-        status view (defaults, sessions, jobs, skills waiting)."""
+        status view (defaults, sessions, jobs, skills waiting), for
+        someone on the allowlist only."""
+        from bridge.gateway import slack_blocks as _blocks
+
         adapter = self._slack_adapter()
         if adapter is None:
             return
@@ -2011,7 +2014,13 @@ class GatewayDaemon:
             if prompts:
                 await adapter.set_suggested_prompts(chat_id, prompts, title="Try")
         elif tab == "home" and user_id:
-            view = await asyncio.to_thread(self._home_view, adapter)
+            # Any workspace member can open the Home tab, and the status
+            # view lists the operator's sessions, jobs and skills.
+            config = getattr(adapter, "slack_config", None)
+            if config is not None and config.user_allowed(team_id, user_id):
+                view = await asyncio.to_thread(self._home_view, adapter)
+            else:
+                view = _blocks.personal_home_view()
             await adapter.publish_home(user_id, view, team_id=team_id or None)
 
     def _suggested_prompts(

@@ -464,6 +464,24 @@ def home_view(
     return {"type": "home", "blocks": blocks[:100]}
 
 
+def personal_home_view() -> dict[str, Any]:
+    """The Home tab for someone not on the allowlist: what this is, and
+    nothing about the operator's sessions, jobs or skills."""
+    return {
+        "type": "home",
+        "blocks": [
+            {"type": "header", "text": {"type": "plain_text", "text": "Freyja"}},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "Freyja is a personal assistant. It works only for the person who installed it.",
+                },
+            },
+        ],
+    }
+
+
 def suggested_prompts(items: list[tuple[str, str]]) -> list[dict[str, str]]:
     """``[(title, message)]`` into the shape setSuggestedPrompts takes, max 4."""
     out: list[dict[str, str]] = []
