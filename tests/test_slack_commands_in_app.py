@@ -207,8 +207,11 @@ async def test_a_model_change_is_refused_when_no_gateway_runs(app, monkeypatch):
     _gateway_running(monkeypatch, None)
     await fb._handle_command(state, {"type": "set_model", "sessionId": SLACK, "model": "claude-opus-5-5"})
     assert state.sessions == {} and _forwarded() == []
-    (err,) = [e for e in events if e["type"] == "error"]
-    assert "Slack gateway" in err["message"]
+    # Refused as the gateway refuses a model, for the session, so the app
+    # takes back the model it showed.
+    (refused,) = [e for e in events if e.get("subtype") == "model_change_refused"]
+    assert refused["sessionId"] == SLACK and "Slack gateway" in refused["message"]
+    assert refused["details"]["chatVisible"]
 
 
 def _gateway_state(monkeypatch, *, turn_running: bool = False):
@@ -299,8 +302,8 @@ async def test_a_mode_change_is_refused_when_no_gateway_runs(app, monkeypatch):
     )
     assert state.sessions == {} and _forwarded() == []
     assert not [e for e in events if e.get("subtype") == "coordination_strategy_changed"]
-    (err,) = [e for e in events if e["type"] == "error"]
-    assert "Slack gateway" in err["message"]
+    (refused,) = [e for e in events if e.get("subtype") == "coordination_strategy_refused"]
+    assert refused["sessionId"] == SLACK and "Slack gateway" in refused["message"]
 
 
 @pytest.fixture

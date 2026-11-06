@@ -1545,24 +1545,42 @@ def _route_stop_to_gateway(sid: str, cmd: dict[str, Any]) -> bool:
     return True
 
 
-def _route_command_to_gateway(sid: str, cmd: dict[str, Any], down: str) -> bool:
+def _route_command_to_gateway(
+    sid: str, cmd: dict[str, Any], down: str, refused: str | None = None
+) -> bool:
     """A command from the app for a Slack session, whose state (its kanban
     board, its model) the gateway holds: hand it to the gateway on the
     control channel, which runs it there. Returns False when ``sid`` is not
     a Slack session the gateway holds; ``down`` is the error when no
-    gateway runs."""
+    gateway runs. With ``refused``, a refusal is the session's system
+    event of that subtype, as the gateway's own refusal is, so the app
+    can take back what it showed for the command."""
     if not _gateway_holds(sid):
         return False
     from bridge.gateway.control_channel import append_command
     from bridge.gateway.pid import get_running_pid
 
+    def _refuse(message: str) -> None:
+        if refused is None:
+            emit_error(message, recoverable=True)
+            return
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": sid,
+                "subtype": refused,
+                "message": message,
+                "details": {"chatVisible": True},
+            }
+        )
+
     if get_running_pid() is None:
-        emit_error(down, recoverable=True)
+        _refuse(down)
         return True
     try:
         append_command({**cmd, "sessionId": sid})
     except Exception as exc:  # noqa: BLE001
-        emit_error(f"Not sent to the Slack gateway: {exc}", recoverable=True)
+        _refuse(f"Not sent to the Slack gateway: {exc}")
         return True
     log("info", f"{cmd.get('type')} → gateway for {sid}")
     return True
@@ -14687,6 +14705,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             session_id,
             {"type": "set_model", "model": new_model, "reasoningLevel": reasoning_level},
             _MODEL_GATEWAY_DOWN,
+            refused="model_change_refused",
         ):
             return
         if session_id:
@@ -14734,6 +14753,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             session_id,
             {"type": "set_coordination_strategy", "coordinationStrategy": strategy},
             _MODE_GATEWAY_DOWN,
+            refused="coordination_strategy_refused",
         ):
             return
         sess = await state.ensure_session(

@@ -884,6 +884,46 @@ const pendingRewinds = new Map<
   { requestId: string; at: number; removed: Message[]; edited?: { id: string; text: string } }
 >()
 
+/** A session's model and mode as they were before the app showed a new
+ *  one, by session (the latest change). The app shows a change at once;
+ *  for a Slack session the gateway, or the app's bridge when no gateway
+ *  runs, can refuse it (`model_change_refused`,
+ *  `coordination_strategy_refused`), and the refusal puts these back. */
+const modelBeforeChange = new Map<string, { model: string; reasoningLevel: string }>()
+const modeBeforeChange = new Map<string, CoordinationStrategy>()
+
+/** Show the model or mode `sessionId` had before the change the bridge
+ *  refused, on its row and on its slice, active or archived. */
+function undoRefusedChange<S extends HarnessState>(state: S, sessionId: string, subtype: string): S {
+  let patch: Partial<SessionSlice> | undefined
+  if (subtype === 'model_change_refused') {
+    patch = modelBeforeChange.get(sessionId)
+    modelBeforeChange.delete(sessionId)
+  } else if (subtype === 'coordination_strategy_refused') {
+    const mode = modeBeforeChange.get(sessionId)
+    modeBeforeChange.delete(sessionId)
+    if (mode) patch = { coordinationStrategy: mode }
+  }
+  if (!patch) return state
+  queueMicrotask(() => schedulePersistSession(sessionId))
+  const sessions = state.sessions.map((s) => (s.id === sessionId ? { ...s, ...patch } : s))
+  const usageFor = (usage: SessionSlice['usage']) =>
+    patch.model ? { usage: { ...usage, contextWindow: contextWindowFor(patch.model) } } : {}
+  if (sessionId === state.activeSessionId) {
+    return { ...state, ...patch, ...usageFor(state.usage), sessions }
+  }
+  const archived = state.sessionArchive[sessionId]
+  if (!archived) return { ...state, sessions }
+  return {
+    ...state,
+    sessions,
+    sessionArchive: {
+      ...state.sessionArchive,
+      [sessionId]: { ...archived, ...patch, ...usageFor(archived.usage) },
+    },
+  }
+}
+
 /** What was attached to a message sent to a Slack session, keyed on its
  *  bubble, for as long as the bridge may still refuse it (`send_refused`).
  *  The bubble keeps only previews, so a refusal gives these back to the
@@ -4459,6 +4499,13 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         }
       }
 
+      // A model or mode the app showed for a session at once, which the
+      // bridge or the gateway refused: show what the session had before.
+      // The refusal goes on to the session's chat below.
+      if (ev.type === 'system_event' && ev.sessionId) {
+        prev = undoRefusedChange(prev, ev.sessionId, ev.subtype)
+      }
+
       // Session-scoped events: route to the right slice.
       const sessionId = (ev as any).sessionId as string | undefined
       const isActive = !sessionId || sessionId === prev.activeSessionId
@@ -4906,6 +4953,10 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       reasoningLevel ?? (model === current.model ? current.reasoningLevel : undefined),
       current.availableModels,
     )
+    modelBeforeChange.set(current.activeSessionId, {
+      model: current.model,
+      reasoningLevel: current.reasoningLevel,
+    })
     set((prev) => ({
       model,
       reasoningLevel: nextReasoning,
@@ -4935,6 +4986,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
   async setCoordinationStrategy(strategy) {
     const normalized = normalizeCoordinationStrategy(strategy)
     const current = useHarness.getState()
+    modeBeforeChange.set(current.activeSessionId, current.coordinationStrategy)
     set((prev) => ({
       coordinationStrategy: normalized,
       sessions: prev.sessions.map((s) =>
@@ -6802,6 +6854,8 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           reasoningLevel: state.reasoningLevel,
           coordinationStrategy: state.coordinationStrategy,
         })
+        // The bridge refuses a goal for a Slack session, and says so.
+        if (isInSlackThread(state.sessions, state.activeSessionId)) return true
         if (action === 'set') show('goal loop armed', 'ok')
         else show(`goal ${action}`, 'info')
         return true
