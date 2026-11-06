@@ -1170,6 +1170,19 @@ class SchedulerService:
             fresh.next_fire_at = None
 
         fresh = await update_job_record(job.id, _stop)
+        # The dashboard and the sidebar follow runs by these events. Sent
+        # once the job is stopped, they read it back stopped.
+        append_event({
+            "type": "scheduler_run_budget_exceeded",
+            "job_id": job.id,
+            "run_id": run.run_id,
+            "duration_seconds": run.duration_seconds,
+        })
+        self.emit_event(
+            subtype="scheduler_run_budget_exceeded",
+            message=f"Scheduled job '{job.name}' budget_exceeded",
+            details={"jobId": job.id, "runId": run.run_id, "error": run.error},
+        )
         await self._tell_stopped_over_budget(
             fresh or job, run, f"it reached its daily budget ({said})",
         )

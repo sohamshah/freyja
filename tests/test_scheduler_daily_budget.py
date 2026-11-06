@@ -40,7 +40,13 @@ from bridge.scheduler.models import (
     RunRecord,
     SelfPacedSchedule,
 )
-from bridge.scheduler.persistence import load_job, load_runs_for_job, save_job, save_run
+from bridge.scheduler.persistence import (
+    load_job,
+    load_runs_for_job,
+    read_recent_events,
+    save_job,
+    save_run,
+)
 from bridge.scheduler.service import SchedulerService
 from engine.session import TranscriptManager
 from engine.tools import ToolRegistry
@@ -196,6 +202,28 @@ async def test_a_job_that_spent_its_daily_budget_is_stopped_and_says_so(service)
     assert DesktopSinkSpec(session_id="session-abc") in told
     assert "digest" in text
     assert "spent $0.70 today, the budget is $0.60 a day" in text
+
+
+async def test_the_run_a_daily_budget_stops_reaches_the_dashboard(service, monkeypatch):
+    # The dashboard and the sidebar follow runs by their scheduler_run_*
+    # events; the stop's run sent none, so it showed in neither.
+    told: list[dict] = []
+    monkeypatch.setattr(service, "emit_event", lambda **kw: told.append(kw))
+    job = _job("abort_job")
+    _spent(job, 0.70, at=time.time() - 600)
+
+    await _when_due(service, job)
+
+    newest = load_runs_for_job(job.id)[0]
+    ran = [e for e in told if e["subtype"].startswith("scheduler_run_")]
+    assert [(e["subtype"], e["details"]["runId"]) for e in ran] == [
+        ("scheduler_run_budget_exceeded", newest.run_id),
+    ]
+    assert ran[0]["details"]["jobId"] == job.id
+    logged = [e for e in read_recent_events() if e["type"].startswith("scheduler_run_")]
+    assert [(e["type"], e["run_id"]) for e in logged] == [
+        ("scheduler_run_budget_exceeded", newest.run_id),
+    ]
 
 
 async def test_a_loop_that_spent_its_daily_budget_waits_for_the_next_day(service):
