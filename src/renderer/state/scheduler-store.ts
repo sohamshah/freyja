@@ -197,34 +197,24 @@ export const useSchedulerStore = create<SchedulerStore>((set, get) => ({
     // hasn't surfaced the full payload yet.
     const t = (event as { type?: string }).type
     if (t === 'system_event') {
+      // These come from the app's bridge, and from the gateway's and the
+      // scheduler daemon's logs, which main follows.
+      const { subtype, details } = event as Extract<BridgeEvent, { type: 'system_event' }>
+      if (subtype.startsWith('scheduler_job_')) {
+        // A job made, changed, paused, resumed, stopped or removed: read
+        // the list back, so next_fire_at and the status reconcile.
+        schedulerApi.listJobs().catch(() => {})
+        return
+      }
       // A run's events (scheduler_run_claimed, then how it ended) name its
-      // job: read its runs back. They come from the app's bridge, and from
-      // the gateway's and the scheduler daemon's logs, which main follows.
-      // Run now answers as the run starts, so its outcome reaches the
-      // dashboard only this way.
-      const jobId = (event as Extract<BridgeEvent, { type: 'system_event' }>).details?.jobId
+      // job: read its runs back. Run now answers as the run starts, so its
+      // outcome reaches the dashboard only this way.
+      const jobId = details?.jobId
       if (typeof jobId === 'string') {
         schedulerApi.getRuns(jobId, 100).catch(() => {})
         schedulerApi.recentRuns(100).catch(() => {})
         schedulerApi.getJob(jobId).catch(() => {})
       }
-      return
-    }
-    if (t === 'scheduler_job_created'
-        || t === 'scheduler_job_updated') {
-      const j = (event as any).job
-      if (j) get().upsertJob(j as SchedulerJob)
-      return
-    }
-    if (t === 'scheduler_job_paused' || t === 'scheduler_job_resumed') {
-      // Status flip — easiest to just refresh the list so next_fire_at
-      // and the status field reconcile.
-      schedulerApi.listJobs().catch(() => {})
-      return
-    }
-    if (t === 'scheduler_job_removed') {
-      const id = (event as any).job_id
-      if (typeof id === 'string') get().removeJob(id)
       return
     }
     if (event.type !== 'scheduler_response') return
@@ -282,11 +272,11 @@ export const useSchedulerStore = create<SchedulerStore>((set, get) => ({
 
 
 /** True for the bridge events the scheduler store takes: its answers,
- *  scheduler_* events, and the system events of a scheduler run. */
+ *  scheduler_* events, and the system events of a scheduler run or job. */
 export function isSchedulerEvent(event: any): boolean {
   const t = event?.type
   if (t === 'system_event') {
-    return typeof event.subtype === 'string' && event.subtype.startsWith('scheduler_run_')
+    return typeof event.subtype === 'string' && /^scheduler_(run|job)_/.test(event.subtype)
   }
   return typeof t === 'string' && t.startsWith('scheduler_')
 }
