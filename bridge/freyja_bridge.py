@@ -9523,14 +9523,24 @@ class _BridgeSession:
 
         for plan in plans:
             card = plan["card"]
-            try:
-                await self._dispatch_kanban_card(plan, sub_tool=sub_tool, source=source)
-                self._kanban_dispatched.add(card.id)
-            except Exception as exc:  # noqa: BLE001
-                log(
-                    "warn",
-                    f"kanban dispatch for {card.id} failed: {exc}",
+            reason = await self._dispatch_kanban_card(plan, sub_tool=sub_tool, source=source)
+            if reason:
+                # The card stays where it was, and the next tick tries it
+                # again.
+                log("warn", f"kanban dispatch for {card.id} failed: {reason}")
+                self._emit_kanban_event(
+                    "kanban_dispatch_failed",
+                    f"Could not dispatch {plan['agent_type']} on {card.id}: {reason}",
+                    details={
+                        "cardId": card.id,
+                        "agentType": plan["agent_type"],
+                        "lane": plan["lane"],
+                        "source": source,
+                        "reason": reason,
+                    },
                 )
+                continue
+            self._kanban_dispatched.add(card.id)
 
         # Stale-card sweep. Runs every tick regardless of capacity, so a
         # saturated board still surfaces silent workers to the operator
@@ -9621,7 +9631,10 @@ class _BridgeSession:
         *,
         sub_tool: Any,
         source: str,
-    ) -> None:
+    ) -> str:
+        """Spawn the plan's sub-agent on its card. Returns "" once it
+        runs, or why it did not start: sub_agent refuses a spawn with an
+        error result (no model for the agent type, too many sub-agents)."""
         card = plan["card"]
         agent_type = plan["agent_type"]
         label = plan["label"][:60]
@@ -9637,6 +9650,26 @@ class _BridgeSession:
             "do the work and finish by calling `complete` (or `block` if "
             "you need user input)."
         )
+        # Sub-agents always run in the background, so the dispatcher tick
+        # never blocks on the worker. notify_parent=False: a dispatched
+        # worker reports through its card (review → judge), not through
+        # a memo in the parent's inbox.
+        try:
+            result = await sub_tool.execute(
+                f"auto-{card.id}-{int(time.time() * 1000):x}",
+                {
+                    "label": label,
+                    "task": task_text,
+                    "agent_type": agent_type,
+                    "mode": "background",
+                    "kanban_task_id": card.id,
+                },
+                notify_parent=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return str(exc) or type(exc).__name__
+        if getattr(result, "is_error", False):
+            return str(result.content).removeprefix("Error: ")
         self._emit_kanban_event(
             "kanban_dispatched",
             f"Auto-dispatched {agent_type} on {card.id}",
@@ -9647,21 +9680,7 @@ class _BridgeSession:
                 "source": source,
             },
         )
-        # Sub-agents always run in the background, so the dispatcher tick
-        # never blocks on the worker. notify_parent=False: a dispatched
-        # worker reports through its card (review → judge), not through
-        # a memo in the parent's inbox.
-        await sub_tool.execute(
-            f"auto-{card.id}-{int(time.time() * 1000):x}",
-            {
-                "label": label,
-                "task": task_text,
-                "agent_type": agent_type,
-                "mode": "background",
-                "kanban_task_id": card.id,
-            },
-            notify_parent=False,
-        )
+        return ""
 
     async def _wake_subagent_with_task(
         self,
@@ -15500,11 +15519,16 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "label": f"{agent_type} {task.id}",
                 "lane": "worker",
             }
-        try:
-            await sess._dispatch_kanban_card(plan, sub_tool=sub_tool, source="operator_force")  # noqa: SLF001
-            sess._kanban_dispatched.add(task.id)  # noqa: SLF001
-        except Exception as exc:  # noqa: BLE001
-            log("warn", f"kanban_operator_force_dispatch failed for {card_id}: {exc}")
+        reason = await sess._dispatch_kanban_card(plan, sub_tool=sub_tool, source="operator_force")  # noqa: SLF001
+        if reason:
+            log("warn", f"kanban_operator_force_dispatch failed for {card_id}: {reason}")
+            sess._emit_kanban_event(  # noqa: SLF001
+                "kanban_operator_force_dispatch_failed",
+                f"Could not dispatch {card_id}: {reason}",
+                details={"cardId": card_id, "reason": reason},
+            )
+            return
+        sess._kanban_dispatched.add(task.id)  # noqa: SLF001
         return
 
     if ctype == "kanban_operator_reassign":

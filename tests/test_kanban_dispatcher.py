@@ -984,3 +984,81 @@ async def test_force_dispatch_sends_a_card_again_once_its_worker_is_gone(monkeyp
 
     assert [call["kanban_task_id"] for call in sub_tool.calls] == [card, card]
     assert [e["subtype"] for e in sent if e["type"] == "system_event"] == ["kanban_dispatched"]
+
+
+def _failing_spawn(sub_tool: _StubSubAgentTool, failure: str) -> None:
+    """Make `sub_tool` refuse each spawn as sub_agent does, with an error
+    result, or (failure="raises") raise."""
+    from bridge.tools.base import ToolResult
+
+    async def _execute(
+        call_id: str, arguments: dict[str, Any], *, notify_parent: bool = True,
+    ) -> Any:
+        sub_tool.calls.append({"callId": call_id, **arguments})
+        if failure == "raises":
+            raise RuntimeError("registry closed")
+        return ToolResult(
+            call_id=call_id,
+            content="Error: no available model for `code` profile (m: no key)",
+            is_error=True,
+        )
+
+    sub_tool.execute = _execute
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["error", "raises"])
+async def test_a_card_whose_worker_did_not_start_is_not_reported_dispatched(
+    monkeypatch, failure: str,
+) -> None:
+    """The tick sent kanban_dispatched before it spawned the worker, and
+    took an error result (no model for the agent type, the sub-agent cap)
+    as a spawn, so the feed said the card went out and the tick held it
+    as dispatched. It now says why the card did not go out, and leaves it
+    where it was for the next tick."""
+    from bridge import freyja_bridge
+
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(freyja_bridge, "emit", sent.append)
+    board = SessionKanbanBoard()
+    card = (await board.create(title="card", assignee="code")).id
+    sub_tool = _StubSubAgentTool()
+    _failing_spawn(sub_tool, failure)
+    session = _make_session(board=board, sub_tool=sub_tool)
+
+    await session._kanban_tick(source="test")
+
+    assert [call["kanban_task_id"] for call in sub_tool.calls] == [card]
+    subtypes = [e["subtype"] for e in sent if e["type"] == "system_event"]
+    assert "kanban_dispatched" not in subtypes
+    [failed] = [e for e in sent if e.get("subtype") == "kanban_dispatch_failed"]
+    assert failed["details"]["cardId"] == card
+    reason = "registry closed" if failure == "raises" else "no available model for `code`"
+    assert reason in failed["details"]["reason"]
+    assert reason in failed["message"]
+    assert card not in session._kanban_dispatched
+    assert (await board.get(card)).status == "ready"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["error", "raises"])
+async def test_force_dispatch_says_why_a_worker_did_not_start(monkeypatch, failure: str) -> None:
+    """Force dispatch toasted "Force-dispatched" on a kanban_dispatched
+    sent before the spawn, though the spawn failed. It now answers with
+    the reason instead."""
+    board = SessionKanbanBoard()
+    card = (await board.create(title="card", assignee="code")).id
+    sub_tool = _StubSubAgentTool()
+    _failing_spawn(sub_tool, failure)
+    session = _make_session(board=board, sub_tool=sub_tool)
+    session.auto_dispatch_enabled = False
+
+    sent = await _force_dispatch(monkeypatch, session, card)
+
+    [failed] = [e for e in sent if e["type"] == "system_event"]
+    assert failed["subtype"] == "kanban_operator_force_dispatch_failed"
+    reason = "registry closed" if failure == "raises" else "no available model for `code`"
+    assert reason in failed["message"]
+    assert failed["details"]["cardId"] == card
+    assert card not in session._kanban_dispatched
+    assert (await board.get(card)).status == "ready"
