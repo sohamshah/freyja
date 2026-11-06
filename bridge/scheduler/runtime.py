@@ -230,30 +230,40 @@ async def fire_job(
         snapshot_notes(job, run.run_id)
     except Exception as exc:  # noqa: BLE001
         logger.debug("notes snapshot failed: %s", exc)
-    prompt = _compose_fire_prompt(job, run, service, scheduled_for=scheduled_for)
+    handed = None
+    try:
+        prompt = _compose_fire_prompt(job, run, service, scheduled_for=scheduled_for)
+        if getattr(sess, "pending_task", None) is asyncio.current_task():
+            # Run now from a tool call of the session's own turn: its prompt can
+            # only run once that turn ends, and the turn waits for this call. The
+            # prompt is queued and the call answered "queued" now, and the run
+            # goes on by itself: it ends as any run does, with its turn's cost
+            # and reply, delivered. Ended here, the turn that ran the prompt was
+            # no run's: no cost, no output, nothing delivered. Queued a step
+            # later, after a calling turn that had ended by then, the prompt
+            # started as a new turn.
+            handed = _hand_over_prompt(sess, sess_id, prompt, run, run_cost)
+            run.status = "queued"
+            save_run(run)
+            append_event({
+                "type": "scheduler_run_queued",
+                "job_id": job.id,
+                "run_id": run.run_id,
+            })
+            service.emit_event(
+                subtype="scheduler_run_queued",
+                message=f"Scheduled job '{job.name}' {run.status}",
+                details={"jobId": job.id, "runId": run.run_id},
+            )
+    except BaseException:
+        # What _run_fire takes out as the run ends: a run that failed before
+        # it left a loop's tools in every later turn of the session.
+        from bridge.freyja_bridge import unregister_session_listener
 
-    if getattr(sess, "pending_task", None) is asyncio.current_task():
-        # Run now from a tool call of the session's own turn: its prompt can
-        # only run once that turn ends, and the turn waits for this call. The
-        # prompt is queued and the call answered "queued" now, and the run
-        # goes on by itself: it ends as any run does, with its turn's cost
-        # and reply, delivered. Ended here, the turn that ran the prompt was
-        # no run's: no cost, no output, nothing delivered. Queued a step
-        # later, after a calling turn that had ended by then, the prompt
-        # started as a new turn.
-        handed = _hand_over_prompt(sess, sess_id, prompt, run, run_cost)
-        run.status = "queued"
-        save_run(run)
-        append_event({
-            "type": "scheduler_run_queued",
-            "job_id": job.id,
-            "run_id": run.run_id,
-        })
-        service.emit_event(
-            subtype="scheduler_run_queued",
-            message=f"Scheduled job '{job.name}' {run.status}",
-            details={"jobId": job.id, "runId": run.run_id},
-        )
+        unregister_session_listener(sess_id, run_cost.on_event)
+        _remove_loop_tools(sess, registered_loop_tools)
+        raise
+    if handed is not None:
         rest = asyncio.ensure_future(_run_fire(
             service, job, run, sess, sess_id, owns_session, prompt, run_cost,
             loop_decision, registered_loop_tools, handed,

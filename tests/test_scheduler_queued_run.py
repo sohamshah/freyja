@@ -301,3 +301,34 @@ async def test_a_queued_run_holds_its_session_and_a_run_slot_until_it_ends(monke
     await asyncio.sleep(0)
     assert not service.holds_session(sid)
     assert not service._concurrency.locked()
+
+
+@pytest.mark.parametrize("failing", ["prompt", "hand-over"])
+async def test_a_loops_tools_go_when_its_run_fails_before_its_prompt_runs(monkeypatch, failing):
+    # They were taken out only once the run's turns were done, and a run that
+    # failed before then left them in every later turn's request.
+    import bridge.freyja_bridge as fb
+    import bridge.scheduler.runtime as runtime
+    from bridge.tools.schedule_tool import COMPLETE_LOOP_TOOL, CONTINUE_LOOP_TOOL
+
+    sess = _stub_session()
+
+    def fails(*_a, **_kw):
+        raise RuntimeError(f"the {failing} failed")
+
+    job = JobRecord(id="sched_loop", name="babysit the merge queue", prompt="check the PRs",
+                    schedule=SelfPacedSchedule(min_delay_seconds=120, max_delay_seconds=600),
+                    execution=ExistingSession(session_id="s1"))
+    save_job(job)
+
+    with pytest.raises(RuntimeError, match=f"the {failing} failed"):
+        if failing == "prompt":
+            monkeypatch.setattr(runtime, "_compose_fire_prompt", fails)
+            await runtime.fire_job(_Service({"s1": sess}), job)
+        else:
+            monkeypatch.setattr(fb, "_schedule_or_queue_turn", fails)
+            await _run_now_from_a_tool_call(_Service({"s1": sess}), sess, job)
+
+    assert CONTINUE_LOOP_TOOL not in sess.tool_registry
+    assert COMPLETE_LOOP_TOOL not in sess.tool_registry
+    assert not fb._SESSION_EVENT_LISTENERS.get("s1")
