@@ -7275,6 +7275,12 @@ class _BridgeSession:
         restored = SessionInbox.from_dict(data)
         if restored is None:
             return False
+        # A stop's notice folded in a copy elsewhere takes the place of the
+        # ones it folded, as in the inbox watch: this process saved its own
+        # copy of one beside the fold before the watch took the fold in.
+        for msg in list(restored.unread):
+            for old in (msg.meta or {}).get("supersedes") or ():
+                restored.remove(str(old))
         # Preserve our existing on_change hook + session_id.
         restored.session_id = self.id
         restored.on_change = self._on_inbox_change

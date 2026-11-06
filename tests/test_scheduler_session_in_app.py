@@ -492,6 +492,38 @@ async def test_a_stops_notice_folded_after_the_owner_took_it_in_replaces_the_one
     assert _inbox_file() == [notice.content]
 
 
+async def test_a_stops_notice_folded_after_the_owner_saved_the_one_it_took_loads_alone(
+    app_bridge, monkeypatch, tmp_path
+):
+    # The owner took the first notice in, and saved its inbox before its
+    # watch took in the fold that replaces it: the file held both, and the
+    # next load of the session read both.
+    from bridge.tools.sub_agent_registry import SubAgentRegistry, SubAgentState
+
+    copy = _copy(tmp_path, owns_tick=False)
+    copy.state.sessions[SCHED] = copy
+    copy.subagent_registry = SubAgentRegistry()
+    owner = _copy(tmp_path, owns_tick=True)
+    owner.state.sessions[SCHED] = owner
+    monkeypatch.setattr(owner, "wake_for_inbox", lambda: "woke")
+    children = [copy.subagent_registry.register(f"{SCHED_SUB[:-1]}{n}", f"worker {n}", "t", "general") for n in (1, 2)]
+    for child in children:
+        child.notify_parent = True
+        child.cancel_origin = "operator"
+
+    copy.subagent_registry.mark_done(children[0].id, "Cancelled", SubAgentState.CANCELLED)
+    await copy._on_child_terminal(children[0])
+    fb._take_in_queued_inbox_messages(owner.state)
+    copy.subagent_registry.mark_done(children[1].id, "Cancelled", SubAgentState.CANCELLED)
+    await copy._on_child_terminal(children[1])
+    owner._save_inbox()  # a change to its inbox, before its watch ran
+    restarted = _copy(tmp_path, owns_tick=True)
+    restarted._restore_inbox()
+
+    (notice,) = restarted.inbox.unread
+    assert "worker 1 (" in notice.content and "worker 2 (" in notice.content
+
+
 FRESH = "scheduler:sched_19f0.ephemeral"
 
 
