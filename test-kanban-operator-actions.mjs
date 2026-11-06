@@ -165,6 +165,20 @@ await check('a crashed or timed-out card has Force dispatch, and a failed card d
   root.unmount()
 })
 
+// No worker takes a failed or cancelled card again, so a new assignee
+// changes nothing; Reassign… was offered on them all the same.
+await check('a failed or cancelled card has no Reassign…, and a crashed card has', async () => {
+  const shown = async (status) => {
+    const { root, button } = await openCard([tile('card_002', status)], 'card_002')
+    const reassign = !!button('Reassign…')
+    root.unmount()
+    return reassign
+  }
+  assert.equal(await shown('failed'), false)
+  assert.equal(await shown('cancelled'), false)
+  assert.equal(await shown('crashed'), true)
+})
+
 // Only the tick's review lane judges a card, and no tick runs with
 // autopilot off; the card view offered nothing for a card in review.
 await check('a card in review has Judge now, which toasts when the judge starts', async () => {

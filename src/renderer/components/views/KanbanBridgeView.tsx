@@ -296,7 +296,8 @@ export function KanbanBridgeView({
 // the bridge's `unblock` releases past a failed parent, `force dispatch`
 // only when there's something to dispatch (`judge now` on a card in
 // review), `reassign` available
-// whenever the card isn't already done. Confirmation prompts gate the
+// whenever a worker can still take the card (not done, failed or
+// cancelled). Confirmation prompts gate the
 // destructive actions because the IPC effects are immediate.
 function CardOperatorActions({
   card,
@@ -349,7 +350,10 @@ function CardOperatorActions({
   // it visible whenever the card is dispatchable so the operator can
   // skip the queue cadence even with autopilot on.
   const showForceDispatch = (isReadyish || isRetried || canJudge) && card.metadata?.role !== 'mission_root'
-  const showReassign = !isDone
+  // No worker takes a failed or cancelled card again, so a new assignee
+  // would change nothing.
+  const isEnded = status === 'failed' || status === 'cancelled' || status === 'canceled'
+  const showReassign = !isDone && !isEnded
 
   // Nothing to do — render nothing rather than an empty divider.
   if (!showCancel && !showUnblock && !showForceDispatch && !showReassign) return null
