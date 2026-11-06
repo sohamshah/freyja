@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
 
@@ -618,6 +618,10 @@ class RunRecord:
     error: str | None = None
     delivery_reports: list[DeliveryReport] = field(default_factory=list)
 
+    # Set in the run's file by whoever asks it to stop, possibly another
+    # process (persistence.request_run_cancellation); the run polls it.
+    cancel_requested: bool = False
+
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["delivery_reports"] = [r.to_dict() for r in self.delivery_reports]
@@ -626,9 +630,12 @@ class RunRecord:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> RunRecord:
         reports = [DeliveryReport.from_dict(r) for r in (d.get("delivery_reports") or [])]
-        copy = dict(d)
-        copy.pop("delivery_reports", None)
-        return cls(**copy, delivery_reports=reports)
+        # A key this version does not know (a newer scheduler wrote it) is
+        # left out. Passed on, it failed the load, and the run was missing
+        # from its job's history: cancel_requested did that until the run
+        # ended.
+        known = {f.name for f in fields(cls)} - {"delivery_reports"}
+        return cls(**{k: v for k, v in d.items() if k in known}, delivery_reports=reports)
 
 
 # ─── Query / mutation helpers ──────────────────────────────────────────

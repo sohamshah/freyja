@@ -430,6 +430,11 @@ def read_run_cancel_requested(job_id: str, run_id: str) -> bool:
 def save_run(run: RunRecord) -> None:
     ensure_dirs()
     path = runs_dir(run.job_id) / f"{run.run_id}.json"
+    # A stop asked for since the run last saved stays asked for. Saved
+    # over, it was lost: a run asked to stop while its session loaded
+    # went on to the end and delivered.
+    if not run.cancel_requested and read_run_cancel_requested(run.job_id, run.run_id):
+        run.cancel_requested = True
     _atomic_write_json(path, run.to_dict())
 
 
