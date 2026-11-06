@@ -379,7 +379,9 @@ async def _run_fire(
             if cancel_outcome == "timed_out":
                 run.status = "timed_out"
                 run.error = f"wall-clock timeout after {timeout}s"
-            elif cancel_outcome == "cancelled":
+            elif cancel_outcome == "cancelled" or run_cost.stopped:
+                # A turn task stopped before its first step is done when the
+                # run hears of the stop, so the session can be quiet first.
                 run.status = "cancelled"
                 run.error = "cancel_requested by peer process or user"
 

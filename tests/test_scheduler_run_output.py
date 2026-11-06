@@ -231,3 +231,23 @@ async def test_a_run_whose_turn_fails_before_it_starts_fails_with_the_turns_erro
     assert (run.status, run.output_text) == ("failed", "")
     assert "GEMINI_API_KEY is not set" in run.error
 
+
+# ─── a stop before the run's turn task has taken its first step ───────
+
+
+async def test_a_run_stopped_as_its_turn_is_dispatched_is_cancelled(operator_session):
+    # Stopped before its first step, the turn's task ran nothing and said
+    # nothing, so the run ended failed: no output, no turn.
+    import bridge.freyja_bridge as fb
+    from bridge.scheduler.runtime import fire_job
+
+    sess = operator_session
+    sess.replies = {"write the digest": "Here is the digest"}
+    fire = asyncio.create_task(fire_job(_Service({"s1": sess}), _job()))
+    while sess.pending_task is None:
+        await asyncio.sleep(0)
+    fb._force_cancel_session(sess, scope="turn")  # The app's Stop, at once.
+
+    run = await asyncio.wait_for(fire, 10)
+
+    assert (run.status, run.output_text, run.delivery_reports) == ("cancelled", "", [])

@@ -15464,6 +15464,15 @@ def _schedule_or_queue_turn(
         _run_turn_queue(sess, content, attachments, run_id),
         name=f"turn-{sess.id}",
     )
+
+    def _stopped_before_it_ran(task: asyncio.Task) -> None:
+        # A stop before the task's first step ran none of _run_turn_queue,
+        # so nothing said the turn was stopped: a scheduled run whose
+        # prompt it was ended failed, with no turn, not cancelled.
+        if task.cancelled():
+            _tell_turn_stopped(sess, run_id)
+
+    sess.pending_task.add_done_callback(_stopped_before_it_ran)
     return True
 
 
