@@ -601,7 +601,9 @@ class SchedulerService:
                 # The gateway or the app takes the run lock for the run.
                 run_lock.release()
                 run_lock = None
-                _hand_over(job, slot, attempt, to_app=in_app)
+                if not _hand_over(job, slot, attempt, to_app=in_app) and _due_again(job, slot, attempt):
+                    save_job(job)
+                    self._waiting_job_ids.add(job.id)
                 return
             # Hand off to the fire path while STILL holding the run
             # lock — the fire path releases it after the run completes.
@@ -638,9 +640,12 @@ class SchedulerService:
         once that run ends, skip_if_running drops the slot, and
         cancel_running asks that run to stop, then fires. A self-paced
         job's next fire is set when its run ends; the time it came due by
-        is a placeholder, so it waits."""
+        is a placeholder, so it waits. A one-shot waits too: its only slot,
+        skipped, was used up without running."""
         policy = _overlap_policy(job)
         if isinstance(job.schedule, SelfPacedSchedule):
+            policy = "queue"
+        elif isinstance(job.schedule, OnceSchedule) and policy == "skip_if_running":
             policy = "queue"
         if policy == "skip_if_running":
             slot = job.next_fire_at
@@ -683,6 +688,12 @@ class SchedulerService:
             return False
         run_lock = FileLock(job_run_lock_path(job_id))
         if not run_lock.acquire():
+            if isinstance(job.schedule, OnceSchedule):
+                # The claim used up its only slot. It is due again, and is
+                # claimed once that run ends.
+                await update_job_record(job_id, lambda fresh: _due_again(fresh, slot, attempt))
+                logger.warning("job %s: handed a fire while a run of it goes on; due again", job_id)
+                return False
             logger.warning("job %s: handed a fire while a run of it goes on; slot %s dropped", job_id, slot)
             append_event({"type": "scheduler_slot_skipped_running", "job_id": job_id, "slot": slot})
             return False
@@ -1570,12 +1581,12 @@ def _app_runs() -> bool:
         return False
 
 
-def _hand_over(job: JobRecord, slot: float | None, attempt: int, *, to_app: bool) -> None:
+def _hand_over(job: JobRecord, slot: float | None, attempt: int, *, to_app: bool) -> bool:
     """Send a claimed fire of ``job`` on its control channel to the process
     that runs its session: the gateway (``GatewayDaemon._on_scheduler_fire``)
     or the app's bridge (``_handle_scheduler_fire_command``). Each reads
     from where it left off, so a fire sent while it restarts runs when it
-    is back."""
+    is back. Returns False when the fire was not sent."""
     from bridge.gateway.control_channel import append_command, desktop_commands_path
 
     owner = "the app" if to_app else "the Slack gateway"
@@ -1589,13 +1600,14 @@ def _hand_over(job: JobRecord, slot: float | None, attempt: int, *, to_app: bool
         }, path=desktop_commands_path() if to_app else None)
     except Exception:  # noqa: BLE001
         logger.exception("job %s: the fire for slot %s did not reach %s", job.id, slot, owner)
-        return
+        return False
     logger.info("job %s (%s): fire handed to %s", job.id, job.name, owner)
     append_event({
         "type": "scheduler_run_handed_to_app" if to_app else "scheduler_run_handed_to_gateway",
         "job_id": job.id,
         "slot": slot,
     })
+    return True
 
 
 def _failed_for_a_passing_reason(run: RunRecord) -> bool:
@@ -1749,6 +1761,19 @@ def _one_shot_used_up(job: JobRecord) -> bool:
         and job.status == "disabled_max_fires"
         and (job.max_fires is None or job.fire_count < job.max_fires)
     )
+
+
+def _due_again(job: JobRecord, slot: float | None, attempt: int) -> bool:
+    """Make ``job`` due at ``slot`` again, as retry ``attempt`` of it, when
+    it is a one-shot the claim used up and its run did not start: left so,
+    the reminder never ran and was gone. Returns True if it did."""
+    if not _one_shot_used_up(job):
+        return False
+    job.enabled = True
+    job.status = "active"
+    job.next_fire_at = slot if slot is not None else time.time()
+    job.retry_attempt = attempt
+    return True
 
 
 def _missed_one_shot_slot(job: JobRecord) -> float | None:
