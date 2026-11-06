@@ -185,3 +185,42 @@ async def test_a_run_cut_off_before_many_newer_runs_is_interrupted_too(fired, mo
 
     assert load_run(job.id, "run_cut").status == "interrupted"
     assert {load_run(job.id, f"run_{n}").status for n in range(12)} == {"succeeded"}
+
+
+# A removed job's runs stay in its history. The sweep went over the jobs that
+# exist, so a run cut off before or after its job was removed said "running"
+# for good. One still going in another process holds the run lock it took
+# before the job was removed, and is left alone.
+
+
+def _removed_job_with_a_run_cut_off(service: SchedulerService) -> JobRecord:
+    job = JobRecord(id="sched_digest", name="digest", prompt="digest",
+                    schedule=IntervalSchedule(seconds=3600), sinks=[NoopSinkSpec()])
+    save_job(job)
+    _left_running(job)
+    return job
+
+
+async def test_a_run_of_a_removed_job_cut_off_is_interrupted(fired, monkeypatch):
+    service = _service(monkeypatch)
+    job = _removed_job_with_a_run_cut_off(service)
+    assert await service.remove_job(job.id)
+
+    await _start_and_stop(_service(monkeypatch))
+
+    run = load_run(job.id, "run_cut")
+    assert run.status == "interrupted"
+    assert run.finished_at is not None and run.error
+    assert load_job(job.id) is None
+
+
+async def test_a_run_of_a_removed_job_still_going_in_another_process_is_left_alone(fired, monkeypatch):
+    service = _service(monkeypatch)
+    job = _removed_job_with_a_run_cut_off(service)
+
+    with FileLock(job_run_lock_path(job.id)) as got:
+        assert got  # the live process that runs it, since before the removal
+        assert await service.remove_job(job.id)
+        await _start_and_stop(_service(monkeypatch))
+
+    assert load_run(job.id, "run_cut").status == "running"

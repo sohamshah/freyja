@@ -516,6 +516,15 @@ def load_unfinished_runs(job_id: str) -> list[RunRecord]:
     return sorted(out, key=lambda r: r.started_at, reverse=True)
 
 
+def load_run_job_ids() -> list[str]:
+    """The ids of the jobs that have runs on disk, removed jobs too: a
+    job's run history stays when it is removed (delete_job)."""
+    base = schedules_root() / "runs"
+    if not base.exists():
+        return []
+    return sorted(p.name for p in base.iterdir() if p.is_dir())
+
+
 def load_recent_runs_global(limit: int = 100) -> list[RunRecord]:
     """All runs across all jobs, newest first. Used by the global Run
     History view."""

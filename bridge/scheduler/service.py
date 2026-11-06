@@ -86,6 +86,7 @@ from bridge.scheduler.persistence import (
     load_all_jobs,
     load_job,
     load_recent_runs_global,
+    load_run_job_ids,
     load_runs_for_job,
     load_runs_started_since,
     load_unfinished_runs,
@@ -1486,13 +1487,16 @@ class SchedulerService:
         # Best-effort cleanup of the lock file. Safe to leave behind
         # if removal fails — next iter_job_files won't return the
         # deleted job anyway, and FileLock recreates the file on
-        # next acquire.
-        for jlp in (job_lock_path(job_id), job_run_lock_path(job_id)):
-            try:
-                if jlp.exists():
-                    jlp.unlink()
-            except OSError:
-                pass
+        # next acquire. The run lock's file stays while a run of the job
+        # goes on: by it, the start-up sweep tells that run from one cut
+        # off (_settle_interrupted_runs).
+        with FileLock(job_run_lock_path(job_id)) as free:
+            for jlp in (job_lock_path(job_id), *([job_run_lock_path(job_id)] if free else [])):
+                try:
+                    if jlp.exists():
+                        jlp.unlink()
+                except OSError:
+                    pass
         append_event({"type": "scheduler_job_removed", "job_id": job_id})
         self.emit_event(
             subtype="scheduler_job_removed",
@@ -2308,28 +2312,17 @@ def _settle_interrupted_runs() -> None:
     record said "running" for good. A run still going, in any process,
     holds its job's run lock and is left alone. A one-shot that the claim
     for such a run used up, and that has not run since its time, is due at
-    its time again, so it runs once, late: left used up, it never ran."""
+    its time again, so it runs once, late: left used up, it never ran. The
+    runs of a removed job are looked at too: its history stays."""
     now = time.time()
     settled = False
-    for job in load_all_jobs():
+    jobs = load_all_jobs()
+    for job in jobs:
         with FileLock(job_lock_path(job.id)) as got, FileLock(job_run_lock_path(job.id)) as free:
             if not got or not free:
                 # Being edited, or a run of it goes on; the next start looks.
                 continue
-            cut = [r for r in load_unfinished_runs(job.id) if r.status in _UNFINISHED_RUN_STATUSES]
-            for run in cut:
-                was = run.status
-                run.status = "interrupted"
-                run.finished_at = now
-                run.error = f"cut off while {was}: the process that ran it exited, or the run crashed"
-                save_run(run)
-                logger.warning("job %s: run %s was cut off while %s", job.id, run.run_id, was)
-                append_event({
-                    "type": "scheduler_run_interrupted",
-                    "job_id": job.id,
-                    "run_id": run.run_id,
-                    "status": was,
-                })
+            cut = _interrupt_cut_off_runs(job.id, now)
             fresh = load_job(job.id) if cut else None
             if fresh is None or not _one_shot_used_up(fresh):
                 continue
@@ -2343,8 +2336,37 @@ def _settle_interrupted_runs() -> None:
             save_job(fresh)
             settled = True
             logger.info("job %s (%s): its run was cut off; due again", job.id, job.name)
+    known = {job.id for job in jobs}
+    for job_id in load_run_job_ids():
+        if job_id in known or not load_unfinished_runs(job_id):
+            continue
+        # A run of it that goes on took the run lock before the job was
+        # removed, and remove_job left that lock's file.
+        with FileLock(job_run_lock_path(job_id)) as free:
+            if free:
+                _interrupt_cut_off_runs(job_id, now)
     if settled:
         touch_wake()
+
+
+def _interrupt_cut_off_runs(job_id: str, now: float) -> list[RunRecord]:
+    """Mark interrupted the runs of ``job_id`` that have not ended, and
+    return them. Our caller holds the job's run lock: none goes on."""
+    cut = [r for r in load_unfinished_runs(job_id) if r.status in _UNFINISHED_RUN_STATUSES]
+    for run in cut:
+        was = run.status
+        run.status = "interrupted"
+        run.finished_at = now
+        run.error = f"cut off while {was}: the process that ran it exited, or the run crashed"
+        save_run(run)
+        logger.warning("job %s: run %s was cut off while %s", job_id, run.run_id, was)
+        append_event({
+            "type": "scheduler_run_interrupted",
+            "job_id": job_id,
+            "run_id": run.run_id,
+            "status": was,
+        })
+    return cut
 
 
 def _missed_one_shot_slot(job: JobRecord) -> float | None:
