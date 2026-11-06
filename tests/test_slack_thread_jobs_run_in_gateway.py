@@ -347,3 +347,34 @@ async def test_a_run_now_the_gateway_cannot_start_is_recorded_as_failed(daemon, 
     assert recorded.status == "failed" and "a run of it goes on" in recorded.error
     assert recorded.finished_at is not None
     assert load_job(job.id).next_fire_at == job.next_fire_at
+
+
+async def test_a_run_now_the_gateway_reads_too_late_is_recorded_as_expired_and_not_run(daemon, monkeypatch):
+    # Sent just before the gateway died, it waited in the control file and
+    # ran whenever the gateway next started, hours or days later.
+    from bridge.scheduler.persistence import load_run
+
+    service, _built = daemon
+    job = _slack_thread_job()
+    run = await service.start_job_now(job.id)
+    (cmd,) = _commands()
+    gateway, gateway_service = _gateway_service(monkeypatch)
+    fired: list[str] = []
+
+    async def fake_fire(_service, fresh, **kw):
+        fired.append(kw.get("run_id"))
+        return RunRecord(run_id=kw["run_id"], job_id=fresh.id, job_name=fresh.name,
+                         started_at=time.time(), status="succeeded")
+
+    monkeypatch.setattr(runtime, "fire_job", fake_fire)
+    started_again = time.time() + 6 * 3600
+    monkeypatch.setattr(time, "time", lambda: started_again)
+
+    await gateway._on_scheduler_fire(cmd)
+    await asyncio.gather(*gateway_service._in_flight_runs.values())
+
+    assert fired == []
+    recorded = load_run(job.id, run.run_id)
+    assert recorded.status == "expired" and recorded.finished_at is not None
+    assert "360 min ago" in recorded.error
+    assert load_job(job.id).next_fire_at == job.next_fire_at

@@ -602,6 +602,7 @@ RunStatus = Literal[
     "queued",         # its prompt waits behind the turn that started it (run_now
                       # from that session's tool call); the record is the dispatch
     "interrupted",    # the process that ran it exited before it ended
+    "expired",        # a run now handed to the gateway, which read it too late to run
 ]
 
 

@@ -186,6 +186,12 @@ _RUNS_WAIT_AT_MOST_SECONDS = 30 * 60
 _REFUSED_RETRY_FIRST_SECONDS = 1.0
 _REFUSED_RETRY_MAX_SECONDS = 60.0
 
+# A run now handed to the gateway waits in its control file until the
+# gateway reads it. Sent just before the gateway exited, it ran whenever the
+# gateway next started, maybe days later. Read later than this after it was
+# sent, it is recorded as expired and does not run.
+_HANDED_RUN_NOW_EXPIRES_SECONDS = 5 * 60
+
 # A run whose process exited before it ended (a crash, a quit app, a
 # restart) is still "claimed", "running" or "delivering" on disk. Every
 # scheduler start looks for such runs among all of each job's runs: one
@@ -1539,19 +1545,28 @@ class SchedulerService:
             raise RuntimeError(f"{job.name} could not be handed to the Slack gateway")
         return run
 
-    async def run_now_handed_over(self, job_id: str, run_id: str) -> bool:
+    async def run_now_handed_over(self, job_id: str, run_id: str, sent_at: float | None = None) -> bool:
         """Run ``job_id`` now as ``run_id``: a run now that the app handed
         to this process, which runs the job's session
-        (_hand_run_now_to_gateway). It is a manual run, as run_job_now
-        makes: no slot, no retries, and the cadence is left alone. When it
-        cannot start, its record says why, so the app's run does not stay
-        "claimed" or vanish. Returns False then."""
+        (_hand_run_now_to_gateway), at ``sent_at``. It is a manual run, as
+        run_job_now makes: no slot, no retries, and the cadence is left
+        alone. When it cannot start, or it was sent more than
+        _HANDED_RUN_NOW_EXPIRES_SECONDS ago, its record says why, so the
+        app's run does not stay "claimed" or vanish. Returns False then."""
         job = load_job(job_id)
         if job is None:
             logger.warning("job %s: handed a run now, but the job is gone", job_id)
             return False
         lock = FileLock(job_run_lock_path(job_id))
-        if _fires_in_the_gateway(job) or _fires_in_the_app(job):
+        status = "failed"
+        waited = time.time() - sent_at if sent_at is not None else 0.0
+        if waited > _HANDED_RUN_NOW_EXPIRES_SECONDS:
+            status = "expired"
+            refused = (
+                f"it was asked for {int(waited // 60)} min ago, and a run now "
+                f"expires after {int(_HANDED_RUN_NOW_EXPIRES_SECONDS // 60)} min"
+            )
+        elif _fires_in_the_gateway(job) or _fires_in_the_app(job):
             refused = "this process does not run its session"
         elif not lock.acquire():
             refused = "a run of it goes on"
@@ -1561,13 +1576,13 @@ class SchedulerService:
         now = time.time()
         save_run(RunRecord(
             run_id=run_id, job_id=job.id, job_name=job.name,
-            started_at=now, finished_at=now, status="failed",
+            started_at=now, finished_at=now, status=status,
             fire_number=job.fire_count + 1, prompt=job.prompt,
             error=f"not run: {refused}",
         ))
         logger.warning("job %s: handed a run now, but %s", job_id, refused)
         self.emit_event(
-            subtype="scheduler_run_failed",
+            subtype=f"scheduler_run_{status}",
             message=f"Scheduled job '{job.name}' did not run: {refused}",
             details={"jobId": job.id, "runId": run_id, "error": f"not run: {refused}"},
         )
@@ -2040,6 +2055,7 @@ def _hand_over(
     }
     if run_id is not None:
         cmd["run_id"] = run_id
+        cmd["sent_at"] = time.time()
     try:
         append_command(cmd, path=desktop_commands_path() if to_app else None)
     except Exception:  # noqa: BLE001
