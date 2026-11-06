@@ -426,6 +426,11 @@ async def fire_job(
     finally:
         unregister_session_listener(sess_id, run_cost.on_event)
         _remove_loop_tools(sess, registered_loop_tools)
+        # The work this run left still running is set aside now: its memo
+        # woke a turn on the ended run's transcript before the next run.
+        end_fresh_run = getattr(sess, "end_fresh_run", None)
+        if owns_session and callable(end_fresh_run):
+            end_fresh_run()
 
     run.iterations = iteration_count
     run.output_text = output_text

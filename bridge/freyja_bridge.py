@@ -6754,13 +6754,13 @@ class _BridgeSession:
     def _memo_has_no_reader(self, work_id: str, label: str) -> bool:
         """Whether a memo of background work is dropped, with a log line,
         because an earlier run left the work, in the session of a job that
-        starts a new session each run: work begin_fresh_run set aside, or
-        any work under a copy of the session that another process runs (the
-        run that started it went on here, and is over). That run has ended
-        and delivered, and the session now holds another run, which the
-        memo reached. No run record shows such a memo, and the work's
-        output stays where the work wrote it: a sub-agent's transcript and
-        artifact, a command's log."""
+        starts a new session each run: work begin_fresh_run or end_fresh_run
+        set aside, or any work under a copy of the session that another
+        process runs (the run that started it went on here, and is over).
+        That run has ended and delivered, and the session now holds another
+        run, which the memo reached, or none. No run record shows such a
+        memo, and the work's output stays where the work wrote it: a
+        sub-agent's transcript and artifact, a command's log."""
         from bridge.scheduler.runtime import starts_new_session_each_run
 
         if not starts_new_session_each_run(self.id):
@@ -6794,6 +6794,15 @@ class _BridgeSession:
                     f"earlier run of {self.id} left it unread, and each run "
                     "starts a new session",
                 )
+
+    def end_fresh_run(self) -> None:
+        """The run that took this session (begin_fresh_run) is over: it
+        stops counting the session's cost and delivers. Its work still
+        running is set aside, and its memos left unread are dropped, as
+        the next run's begin_fresh_run does. Set aside only then, a memo
+        of that work woke a turn on the ended run's transcript in between,
+        which no run counted or delivered."""
+        self.begin_fresh_run()
 
     async def _note_stopped_by_operator(self, label: str, work_id: str, what: str) -> None:
         """Fold background work the operator stopped into ONE unread notice.

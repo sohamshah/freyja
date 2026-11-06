@@ -495,6 +495,56 @@ async def test_a_fresh_session_jobs_next_run_gets_no_memo_of_work_an_earlier_run
     assert _inbox_file(FRESH) == [sess.inbox.unread[0].content]
 
 
+async def test_work_a_fresh_session_jobs_run_left_wakes_no_turn_after_the_run(
+    app_bridge, monkeypatch, tmp_path
+):
+    # The run delivered with a sub-agent still working. Before the next
+    # run began, the sub-agent's memo woke a turn on the ended run's
+    # transcript: no run counted its cost, and its reply went nowhere.
+    import asyncio
+
+    import bridge.scheduler.runtime as runtime
+    from bridge.scheduler.models import CronSchedule, JobRecord, NewSession, NoopSinkSpec
+    from bridge.scheduler.persistence import save_job
+    from bridge.scheduler.runtime import fire_job
+    from bridge.tools.sub_agent_registry import SubAgentState
+    from engine.types import Message
+
+    monkeypatch.setattr(fb, "MEMO_WAKE_DEBOUNCE_S", 0)
+    monkeypatch.setattr(runtime, "BACKGROUND_WORK_WAIT_CAP_S", 0.1)
+    sess = _copy(tmp_path, owns_tick=True, sid=FRESH)
+    state = sess.state
+    state.sessions[FRESH] = sess
+    await sess.initialize()
+    ran: list[str] = []
+    left: list = []
+
+    async def run_turn(content, _attachments=None, **_kw):
+        ran.append(content)
+        sess.session.transcript.append_message(Message(role="assistant", content="the digest"))
+        if not left:
+            left.append(sess.subagent_registry.register("sub_19f0fresh_1", "worker", "t", "general"))
+            left[0].notify_parent = True
+
+    async def ensure_session(_sid, **_kw):
+        return sess
+
+    sess.run_turn = run_turn
+    state.ensure_session = ensure_session
+    job = JobRecord(id="sched_19f0", name="digest", schedule=CronSchedule(expression="0 6 * * *"),
+                    prompt="digest", execution=NewSession(), sinks=[NoopSinkSpec()])
+    save_job(job)
+    run = await fire_job(SimpleNamespace(state=state, emit_event=lambda **_kw: None), job)
+    assert run.status == "succeeded" and len(ran) == 1
+
+    sess.subagent_registry.mark_done(left[0].id, "the worker's report", SubAgentState.DONE)
+    await sess._on_child_terminal(left[0])
+    await asyncio.sleep(0.05)
+
+    assert ran[1:] == []  # no turn after the run
+    assert sess.inbox.unread == [] and _inbox_file(FRESH) == []
+
+
 async def _take_the_tick(service, monkeypatch) -> None:
     """``service`` starts while a peer owns the tick, and takes it when the
     peer exits (the scheduler daemon restarts, and the gateway takes over)."""
