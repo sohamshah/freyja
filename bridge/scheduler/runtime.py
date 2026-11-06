@@ -398,7 +398,9 @@ async def fire_job(
         logger.debug("write_run_output failed: %s", exc)
 
     # ── Deliver to sinks ──────────────────────────────────────────────
-    if run.status not in ("failed", "timed_out"):
+    # A cancelled run delivers nothing and stays cancelled: delivered, its
+    # partial answer went out and the delivery overwrote its status.
+    if run.status not in ("failed", "timed_out", "cancelled"):
         run.status = "delivering"
         save_run(run)
         sink_ctx = SinkContext(state=service.state, outputs_dir=write_run_output, log=logger.info)
