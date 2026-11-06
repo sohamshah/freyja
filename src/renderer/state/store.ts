@@ -909,17 +909,22 @@ export function remapIdsDeep<T>(obj: T, remap: Record<string, string>): T {
 /** Build the UI slice for a forked session from its source slice.
  *  With `cutoffMs`, every timestamped record at/after the cutoff is
  *  dropped (branch-before-message); without it the slice is copied
- *  whole (fork at current point). Sub-agent cards survive only for
- *  children the bridge actually cloned (present in `remap`), and all
- *  ids are rewritten to the fork's. Streaming state is reset — a fork
- *  is never mid-turn. */
+ *  whole (fork at current point). Compaction events are held to
+ *  `compactionRecordsUntil` instead when given: the bridge sets it past
+ *  the cutoff when the fork keeps a summary made after the anchor.
+ *  Sub-agent cards survive only for children the bridge actually
+ *  cloned (present in `remap`), and all ids are rewritten to the
+ *  fork's. Streaming state is reset — a fork is never mid-turn. */
 export function forkSliceForBranch(
   source: SessionSlice,
   remap: Record<string, string>,
   cutoffMs: number | null,
+  compactionRecordsUntil: number | null = null,
 ): SessionSlice {
   const before = (t: number | undefined) =>
     cutoffMs == null || typeof t !== 'number' || t < cutoffMs
+  const recordBefore = (t: number | undefined) =>
+    cutoffMs == null || typeof t !== 'number' || t < (compactionRecordsUntil ?? cutoffMs)
   const toolCalls: SessionSlice['toolCalls'] = {}
   for (const [id, tc] of Object.entries(source.toolCalls)) {
     if (before(tc.startedAt)) toolCalls[id] = tc
@@ -952,7 +957,9 @@ export function forkSliceForBranch(
     fileChanges: source.fileChanges.filter((f) => before(f.createdAt)),
     subagents,
     subagentOrder,
-    systemEvents: source.systemEvents.filter((e) => before(e.at)),
+    systemEvents: source.systemEvents.filter((e) =>
+      e.subtype.startsWith('compaction_') ? recordBefore(e.at) : before(e.at),
+    ),
     busMessages: source.busMessages.filter((b) => before(b.timestamp)),
     inboxEvents: source.inboxEvents.filter((e) => before(e.timestamp)),
     artifacts: source.artifacts.filter((a) => before(a.createdAt)),
@@ -3587,6 +3594,8 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           typeof ev.messageCreatedAt === 'number' && ev.messageCreatedAt > 0
             ? ev.messageCreatedAt
             : null
+        const recordsUntil =
+          typeof ev.compactionRecordsUntil === 'number' ? ev.compactionRecordsUntil : null
         const cloned: SessionSnapshot[] = []
         const nextArchive = { ...prev.sessionArchive }
         for (const [oldId, newId] of Object.entries(remap)) {
@@ -3599,7 +3608,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
             : undefined
           const source = sliceForSession(prev, oldId)
           const seeded = source
-            ? forkSliceForBranch(source, remap, isParent ? cutoff : null)
+            ? forkSliceForBranch(source, remap, isParent ? cutoff : null, isParent ? recordsUntil : null)
             : undefined
           if (seeded) nextArchive[newId] = seeded
           const childIds = prev.sessions

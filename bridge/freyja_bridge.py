@@ -15260,6 +15260,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             clone_project_dir,
             clone_session_sidecars,
             clone_transcript,
+            compaction_records_cutoff_ms,
             load_transcript,
         )
 
@@ -15320,8 +15321,18 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 recoverable=True,
             )
             return
+        # A summary the fork keeps brings its compaction's records along,
+        # though they are stamped after the anchor.
+        records_cutoff_ms: float | None = None
+        if cutoff_ms is not None:
+            kept = ((load_transcript(new_parent_id) or {}).get("transcript") or {}).get("entries")
+            records_cutoff_ms = compaction_records_cutoff_ms(session_id, kept or [], cutoff_ms)
         sidecars = clone_session_sidecars(
-            session_id, new_parent_id, id_remap=id_remap, cutoff_ms=cutoff_ms
+            session_id,
+            new_parent_id,
+            id_remap=id_remap,
+            cutoff_ms=cutoff_ms,
+            records_cutoff_ms=records_cutoff_ms,
         )
 
         cloned_children: list[dict[str, str]] = []
@@ -15359,6 +15370,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 project_output_dir(new_parent_id),
                 id_remap=project_remap,
                 cutoff_ms=cutoff_ms,
+                records_cutoff_ms=records_cutoff_ms,
             )
             if project_cloned:
                 # Stamp the copied ledger so the fork knows the rows above
@@ -15391,6 +15403,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "newName": new_name,
                 "messageOrdinal": ordinal,
                 "messageCreatedAt": cutoff_ms,
+                "compactionRecordsUntil": records_cutoff_ms,
                 "idRemap": final_remap,
                 "childMappings": cloned_children,
                 "projectSessionId": new_parent_id if clone_project else old_project_id,

@@ -479,6 +479,42 @@ def fork_entries(session_id: str, entries: list[Any], cutoff_ts: float) -> list[
     )
 
 
+# A compaction writes its last records (the complete event and log row,
+# the receipt, the after-snapshot) within tens of ms of its summary
+# entry; the next compaction starts at least a provider call later.
+COMPACTION_RECORDS_GRACE_MS = 2_000
+
+
+def compaction_records_cutoff_ms(
+    session_id: str, entries: list[Any], cutoff_ms: float
+) -> float:
+    """Where a fork's compaction records end: its snapshots, compaction
+    log rows and compaction events. ``entries`` are the fork's.
+
+    A fork keeps the summary entry of a compaction that ran after its
+    branch point when the anchor was in the kept tail. That compaction's
+    records, and those of the earlier ones it folded in, are then the
+    fork's history too, though they are stamped after the anchor: they
+    run until the source's next compaction started.
+    """
+    summary = max(
+        (e for e in entries if _field(e, "is_compaction")), key=_entry_ts, default=None
+    )
+    if summary is None:
+        return cutoff_ms
+    made_ms = _entry_ts(summary) * 1000
+    end = made_ms + COMPACTION_RECORDS_GRACE_MS
+    for stamp, _path in _before_snapshots(session_id):
+        if stamp > made_ms:
+            end = min(end, stamp)
+            break
+    return max(cutoff_ms, end)
+
+
+def _is_compaction_record(row: Any) -> bool:
+    return isinstance(row, dict) and str(row.get("subtype") or "").startswith("compaction_")
+
+
 def clone_transcript(
     old_id: str,
     new_id: str,
@@ -627,10 +663,13 @@ def _clone_jsonl_file(
     id_remap: dict[str, str],
     cutoff_ms: float | None = None,
     ts_fields: tuple[str, ...] = (),
+    records_cutoff_ms: float | None = None,
 ) -> bool:
     """Copy a JSONL file with ids remapped. When ``cutoff_ms`` and
     ``ts_fields`` are given, rows stamped at/after the cutoff are
-    dropped; rows without a recognizable stamp are kept."""
+    dropped; rows without a recognizable stamp are kept. Compaction rows
+    are held to ``records_cutoff_ms`` when it is given (see
+    ``compaction_records_cutoff_ms``)."""
     if not src.exists():
         return False
     tmp = dst.with_suffix(dst.suffix + ".tmp")
@@ -649,8 +688,11 @@ def _clone_jsonl_file(
                     fout.write(line if line.endswith("\n") else line + "\n")
                     continue
                 if cutoff_ms is not None and ts_fields:
+                    limit = cutoff_ms
+                    if records_cutoff_ms is not None and _is_compaction_record(row):
+                        limit = records_cutoff_ms
                     stamp = _row_ms(row, *ts_fields)
-                    if stamp is not None and stamp >= cutoff_ms:
+                    if stamp is not None and stamp >= limit:
                         continue
                 fout.write(json.dumps(remap_ids(row, id_remap), ensure_ascii=False) + "\n")
         tmp.replace(dst)
@@ -670,6 +712,7 @@ def clone_session_sidecars(
     *,
     id_remap: dict[str, str],
     cutoff_ms: float | None = None,
+    records_cutoff_ms: float | None = None,
 ) -> list[str]:
     """Clone every per-session sidecar file from ``old_id`` to ``new_id``.
 
@@ -680,7 +723,10 @@ def clone_session_sidecars(
     rewritten via ``id_remap``. With ``cutoff_ms`` (renderer ms), rows
     that carry a timestamp at/after the cutoff are dropped from the
     inbox and journals; the event mirror has no timestamps and is
-    copied whole. Returns the list of suffixes that were cloned.
+    copied whole. Compaction snapshots and compaction events are held to
+    ``records_cutoff_ms`` instead when it is given (see
+    ``compaction_records_cutoff_ms``). Returns the list of suffixes that
+    were cloned.
     """
     cloned: list[str] = []
 
@@ -738,9 +784,15 @@ def clone_session_sidecars(
             id_remap=id_remap,
             cutoff_ms=cutoff_ms if ts_fields else None,
             ts_fields=ts_fields,
+            records_cutoff_ms=records_cutoff_ms,
         ):
             cloned.append(suffix)
-    if clone_compaction_snapshots(old_id, new_id, id_remap=id_remap, cutoff_ms=cutoff_ms) > 0:
+    if clone_compaction_snapshots(
+        old_id,
+        new_id,
+        id_remap=id_remap,
+        cutoff_ms=records_cutoff_ms if records_cutoff_ms is not None else cutoff_ms,
+    ) > 0:
         cloned.append("compactions/")
     return cloned
 
@@ -761,8 +813,8 @@ def clone_compaction_snapshots(
     """Copy the before/after compaction snapshots
     (``sessions/compactions/<id>-<ms>-<phase>.{md,json}``) to the fork's
     id. The stamp in the filename is the compaction's wall-clock ms, so
-    a branch-before-message keeps only snapshots taken before the branch
-    point. JSON snapshots get ids remapped structurally; markdown ones
+    a branch-before-message keeps only snapshots taken before
+    ``cutoff_ms``. JSON snapshots get ids remapped structurally; markdown ones
     get a plain text substitution of each old id. Returns the number of
     files written.
     """
@@ -840,13 +892,15 @@ def clone_project_dir(
     *,
     id_remap: dict[str, str],
     cutoff_ms: float | None = None,
+    records_cutoff_ms: float | None = None,
 ) -> bool:
     """Clone a session's project output directory (artifacts, manifest,
     action ledger, working memory, compaction log) for a fork.
 
     The tree is copied as-is, then the ledger-style files are rewritten
     with ids remapped and — when ``cutoff_ms`` is given — rows created
-    at/after the cutoff dropped. Artifact files themselves are never
+    at/after the cutoff dropped (compaction rows: at/after
+    ``records_cutoff_ms`` when it is given). Artifact files themselves are never
     deleted (a file written after the branch point stays on disk; only
     its manifest row is dropped). Returns False when there is nothing
     to clone or the destination already exists.
@@ -873,6 +927,9 @@ def clone_project_dir(
                 id_remap=id_remap,
                 cutoff_ms=cutoff_ms / unit_ms if cutoff_ms is not None else None,
                 ts_fields=ts_fields,
+                records_cutoff_ms=(
+                    records_cutoff_ms / unit_ms if records_cutoff_ms is not None else None
+                ),
             )
     for name in _PROJECT_JSON:
         path = dst_dir / name

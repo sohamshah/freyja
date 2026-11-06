@@ -764,3 +764,94 @@ def test_fork_drops_compaction_log_rows_written_after_the_branch_point(tmp_path)
     dst = tmp_path / "projects" / "dst"
     assert tp.clone_project_dir(src, dst, id_remap={}, cutoff_ms=5000)
     assert [r["ts"] for r in _rows(dst / "compactions.jsonl")] == [1.0]
+
+
+async def test_fork_keeps_the_records_of_the_summary_it_keeps(sessions_dir, monkeypatch):
+    # The source compacted at 150 s and kept u2 a2. A fork before a2
+    # keeps that summary, so it keeps that compaction's snapshots, log
+    # rows and events, and none of the compaction that started at 170 s.
+    import bridge.project_paths as pp
+
+    projects = sessions_dir / "projects"
+    monkeypatch.setattr(pp, "project_output_dir", lambda sid: projects / str(sid))
+    fb, sess, state, events = _live(monkeypatch, AFTER)
+    tp.save_transcript("s", _transcript("s", AFTER))
+    root = sessions_dir / "compactions"
+    for stamp, phase in [(90_000, "before"), (140_000, "before"), (150_020, "after"), (170_000, "before")]:
+        _write(root / f"s-{stamp}-{phase}.md", "snapshot\n")
+        _write(root / f"s-{stamp}-{phase}.json", json.dumps(_transcript("s", BEFORE)))
+
+    def system_event(subtype, t):
+        return {"type": "system_event", "sessionId": "s", "subtype": subtype, "_t": t}
+
+    _write(
+        sessions_dir / "s.events.jsonl",
+        "".join(
+            json.dumps(r) + "\n"
+            for r in [
+                system_event("compaction_start", 140_001),
+                {"type": "text_delta", "sessionId": "s", "_t": 140_500},
+                system_event("context_pruning", 145_000),
+                system_event("compaction_complete", 150_010),
+                system_event("compaction_receipt", 150_015),
+                system_event("compaction_start", 170_001),
+            ]
+        ),
+    )
+    _write(
+        projects / "s" / "compactions.jsonl",
+        "".join(
+            json.dumps(r) + "\n"
+            for r in [
+                {"ts": 140.0, "subtype": "compaction_start"},
+                {"ts": 145.0, "subtype": "context_pruning"},
+                {"ts": 150.01, "subtype": "compaction_complete"},
+                {"ts": 170.0, "subtype": "compaction_start"},
+            ]
+        ),
+    )
+
+    await fb._handle_command(
+        state,
+        {"type": "branch_session", "sessionId": "s", "messageOrdinal": 2, "messageCreatedAt": 102_990},
+    )
+    (branched,) = [e for e in events if e["type"] == "session_branched"]
+    new = branched["newSessionId"]
+    assert [e["id"] for e in tp.load_transcript(new)["transcript"]["entries"]] == ["c1", "u2"]
+    # The renderer keeps compaction events up to here too.
+    assert 150_015 < branched["compactionRecordsUntil"] <= 170_000
+
+    assert sorted(p.name for p in root.iterdir() if p.name.startswith(f"{new}-")) == sorted(
+        f"{new}-{stamp}-{phase}.{ext}"
+        for stamp, phase in [(90_000, "before"), (140_000, "before"), (150_020, "after")]
+        for ext in ("md", "json")
+    )
+    events_rows = _rows(sessions_dir / f"{new}.events.jsonl")
+    assert [r.get("subtype") for r in events_rows] == [
+        "compaction_start",
+        "compaction_complete",
+        "compaction_receipt",
+    ]
+    assert [r["subtype"] for r in _rows(projects / new / "compactions.jsonl")] == [
+        "compaction_start",
+        "compaction_complete",
+    ]
+
+
+async def test_fork_from_a_snapshot_keeps_no_records_of_the_summary_it_left_out(sessions_dir, monkeypatch):
+    import bridge.project_paths as pp
+
+    projects = sessions_dir / "projects"
+    monkeypatch.setattr(pp, "project_output_dir", lambda sid: projects / str(sid))
+    fb, sess, state, events = _live(monkeypatch, AFTER)
+    tp.save_transcript("s", _transcript("s", AFTER))
+    _write_before_snapshot(sessions_dir, "s", 140_000, BEFORE)
+    await fb._handle_command(
+        state,
+        {"type": "branch_session", "sessionId": "s", "messageOrdinal": 1, "messageCreatedAt": ON_A1 * 1000},
+    )
+    (branched,) = [e for e in events if e["type"] == "session_branched"]
+    new = branched["newSessionId"]
+    assert [e["id"] for e in tp.load_transcript(new)["transcript"]["entries"]] == ["u1"]
+    assert branched["compactionRecordsUntil"] == branched["messageCreatedAt"]
+    assert not [p for p in (sessions_dir / "compactions").iterdir() if p.name.startswith(f"{new}-")]

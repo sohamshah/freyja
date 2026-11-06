@@ -1523,6 +1523,10 @@ export type BridgeEvent =
       /** Echo of the branch anchor (renderer ms), null for a whole fork.
        *  The renderer truncates its own UI slice at this point. */
       messageCreatedAt?: number | null
+      /** Where compaction events end in the fork (ms): later than the
+       *  anchor when the fork keeps a summary made after it, since that
+       *  compaction is then part of the fork's history. */
+      compactionRecordsUntil?: number | null
       idRemap: Record<string, string>
       childMappings: Array<{ oldId: string; newId: string }>
       /** Project dir the fork writes into (its own id when cloned). */
