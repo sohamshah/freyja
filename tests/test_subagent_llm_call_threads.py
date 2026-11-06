@@ -125,3 +125,24 @@ async def test_a_sub_agents_call_rows_say_what_kind_of_call_each_was(monkeypatch
         ("main", None),
         ("summarizer", True),
     ]
+
+
+async def test_a_sub_agents_summary_calls_are_not_steps_and_share_the_steps_turn(monkeypatch, tmp_path):
+    # The parent runner counts its own calls as iterations; a compaction's
+    # summary calls carry the turn they ran in. A sub-agent counted each
+    # summary call as a step of its own, with a turn id of its own.
+    record, on_llm_call = await _child_llm_hook(monkeypatch, tmp_path)
+    rows: list[dict] = []
+    telemetry = ModuleType("bridge.compaction_telemetry")
+    telemetry.append_telemetry = rows.append
+    monkeypatch.setitem(sys.modules, "bridge.compaction_telemetry", telemetry)
+
+    on_llm_call({"model": "claude-sonnet-5-5", "input_tokens": 100})
+    on_llm_call({"model": "claude-sonnet-5-5", "input_tokens": 900, "call_kind": "summarizer"})
+    on_llm_call({"model": "claude-sonnet-5-5", "input_tokens": 300, "call_kind": "working_memory_extraction"})
+    assert record.iterations == 1
+    on_llm_call({"model": "claude-sonnet-5-5", "input_tokens": 120})
+
+    assert [r["turn_id"] for r in rows] == ["sub_t_1-t1", "sub_t_1-t1", "sub_t_1-t1", "sub_t_1-t2"]
+    assert record.iterations == 2
+    assert record.input_tokens == 1_420

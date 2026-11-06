@@ -238,7 +238,7 @@ Written from the bridge's `on_llm_call` when the band changes. Fields: `session_
 
 ### `llm_call_metric`
 
-One row per model call. Fields: `session_id`, `turn_id`, `agent_type`, `parent_session_id`, `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd`, `duration_ms`, `call_kind`, `iterative_summarizer`, `ts`. `call_kind` is `main`, `summarizer`, `working_memory_extraction` or `cache_keepalive`. `iterative_summarizer` is set on summarizer rows only. A sub-agent's rows come from `_on_sub_llm_call` and carry the same two fields.
+One row per model call. Fields: `session_id`, `turn_id`, `agent_type`, `parent_session_id`, `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd`, `duration_ms`, `call_kind`, `iterative_summarizer`, `ts`. `call_kind` is `main`, `summarizer`, `working_memory_extraction` or `cache_keepalive`. `iterative_summarizer` is set on summarizer rows only. A sub-agent's rows come from `_on_sub_llm_call` and carry the same two fields. Their `turn_id` is `<sub id>-t<n>`, where n counts the sub-agent's own calls, its steps. A summary or working-memory call is not a step: it carries the n of the step it ran in, as the parent's carry their turn, and it does not count toward the record's `iterations`. Before 2026-11-06 each one counted as a step with a turn id of its own.
 
 ### `summarize_context_call`
 

@@ -1643,7 +1643,13 @@ Parameters:
 
                 if payload.get("error"):
                     return
-                turn_counter["n"] += 1
+                # Tagged as the parent's rows are, so the dashboard can tell
+                # a compaction's summary calls from the child's own. Only the
+                # child's own calls are steps: a summary call carries the
+                # step it ran in, as the parent's carry their turn.
+                call_kind = payload.get("call_kind") or "main"
+                if call_kind == "main":
+                    turn_counter["n"] += 1
                 model = payload.get("model") or child_model
                 in_tok = int(payload.get("input_tokens", 0) or 0)
                 out_tok = int(payload.get("output_tokens", 0) or 0)
@@ -1663,9 +1669,6 @@ Parameters:
                     cache_read_tokens=cr_tok,
                     cache_write_tokens=cw_tok,
                 )
-                # Tagged as the parent's rows are, so the dashboard can tell
-                # a compaction's summary calls from the child's own.
-                call_kind = payload.get("call_kind") or "main"
                 append_telemetry({
                     "type": "llm_call_metric",
                     "session_id": sub_id_local,
