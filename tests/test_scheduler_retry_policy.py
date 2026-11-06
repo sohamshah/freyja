@@ -209,3 +209,50 @@ async def test_the_stop_notice_says_how_many_runs_failed(service, monkeypatch, r
 
     assert saved.status == "disabled_error"
     assert f"I stopped the scheduled job *daily report*: {said} Last error: {REAL_ERROR}" in notices
+
+
+# ─── many retries do not hide the failing slots ───────────────────────
+
+
+@pytest.mark.parametrize("max_retries", [7, 8, 10])
+async def test_a_job_with_many_retries_is_stopped_after_three_failed_slots(service, max_retries):
+    job = _report(retry_policy=RetryPolicy(max_retries=max_retries, backoff_seconds=60))
+
+    for _ in range(3 * (max_retries + 1)):
+        saved = await _run_when_due(service, job.id)
+
+    assert (saved.enabled, saved.status) == (False, "disabled_error")
+
+
+async def test_passing_failures_between_slots_do_not_hide_the_first_one(service):
+    job = _report(retry_policy=RetryPolicy(max_retries=10, backoff_seconds=60))
+    service.errors = [CONNECTION_ERROR] * 20
+
+    for _ in range(20 + 3 * 11):
+        saved = await _run_when_due(service, job.id)
+
+    assert (saved.enabled, saved.status) == (False, "disabled_error")
+
+
+async def test_a_job_saved_with_more_retries_than_allowed_gets_ten(service):
+    job = _report(retry_policy=RetryPolicy(max_retries=11, backoff_seconds=60))
+
+    for _ in range(3 * 11):
+        saved = await _run_when_due(service, job.id)
+
+    assert service.attempts == list(range(11)) * 3
+    assert (saved.enabled, saved.status) == (False, "disabled_error")
+
+
+@pytest.mark.parametrize("max_retries", [11, -1])
+async def test_max_retries_out_of_bounds_is_refused(service, max_retries):
+    from bridge.scheduler.models import JobPatch
+
+    job = _report(retry_policy=None)
+    too_many = RetryPolicy(max_retries=max_retries)
+
+    with pytest.raises(ValueError, match=rf"retry_policy.max_retries is {max_retries}: use 0 to 10"):
+        await service.update_job(job.id, JobPatch(retry_policy=too_many))
+    with pytest.raises(ValueError, match="use 0 to 10 retries per slot"):
+        await service.create_job(JobRecord(id="", name="x", prompt="x", retry_policy=too_many))
+    assert load_job(job.id).retry_policy is None

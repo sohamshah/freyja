@@ -56,6 +56,7 @@ from bridge.scheduler.models import (
     NewSession,
     OnceSchedule,
     PersistentJobSession,
+    RetryPolicy,
     RunRecord,
     SchedulerMetrics,
     ScheduleSpec,
@@ -149,6 +150,15 @@ _FAILED_RUN_STATUSES = frozenset({"failed", "timed_out"})
 MAX_PASSING_FAILURES_IN_A_ROW = 24
 _PASSING_RETRY_FIRST_SECONDS = 120
 _PASSING_RETRY_MAX_SECONDS = 3600
+
+# The most retries a retry_policy gives a slot. The runs read to decide a
+# stop hold three slots with all their retries and the passing failures
+# between them: the last 24 runs held two slots of a job allowing 8
+# retries, so a job that always failed was never stopped.
+MAX_RETRIES = 10
+_FAILURE_WINDOW_RUNS = (
+    MAX_FAILED_RUNS_IN_A_ROW * (MAX_RETRIES + 1) + MAX_PASSING_FAILURES_IN_A_ROW
+)
 
 # A due run waits out DarkWake and a lost network (machine.py), at most
 # this long counted while the Mac is awake: time.monotonic() stops while it
@@ -665,14 +675,16 @@ class SchedulerService:
         """Run ``job`` again after its failed ``run`` when its retry_policy
         says so: at most ``max_retries`` times per slot, ``backoff_seconds``
         after the slot's own run, ``backoff_multiplier`` times longer after
-        each retry. Returns True if it will. The attempt used to be read
-        from a run attribute nothing set, so every failure was the first:
-        retried without end, always after ``backoff_seconds``."""
+        each retry, and never more than ``MAX_RETRIES`` times, whatever a
+        record saved before that bound says. Returns True if it will. The
+        attempt used to be read from a run attribute nothing set, so every
+        failure was the first: retried without end, always after
+        ``backoff_seconds``."""
         retry = job.retry_policy
         if (
             retry is None
             or run.status not in _FAILED_RUN_STATUSES
-            or run.attempt >= retry.max_retries
+            or run.attempt >= min(retry.max_retries, MAX_RETRIES)
             or (retry.on and _retry_kind(run) not in retry.on)
         ):
             return False
@@ -747,7 +759,7 @@ class SchedulerService:
         post why to its sinks. Returns True if stopped."""
         if run.status not in _FAILED_RUN_STATUSES:
             return False
-        recent = load_runs_for_job(job.id, limit=MAX_PASSING_FAILURES_IN_A_ROW)
+        recent = load_runs_for_job(job.id, limit=_FAILURE_WINDOW_RUNS)
         if not _should_stop(recent):
             return False
         stopped = False
@@ -811,6 +823,7 @@ class SchedulerService:
         canonical (post-pre-advance, post-validation) record."""
         _check_misfire_policy(spec.misfire_policy)
         _check_overlap_policy(spec.overlap_policy)
+        _check_retry_policy(spec.retry_policy)
         if not spec.id:
             spec.id = new_job_id()
         spec.created_at = spec.updated_at = time.time()
@@ -874,6 +887,7 @@ class SchedulerService:
         save. Eliminates lost-update against concurrent peer writes."""
         _check_misfire_policy(patch.misfire_policy)
         _check_overlap_policy(patch.overlap_policy)
+        _check_retry_policy(patch.retry_policy)
         with FileLock(job_lock_path(job_id)) as got:
             if not got:
                 # A peer is writing this job's record, for milliseconds
@@ -1194,6 +1208,17 @@ def _check_overlap_policy(policy: str | None) -> None:
         )
 
 
+def _check_retry_policy(policy: RetryPolicy | None) -> None:
+    """Refuse a retry policy whose max_retries is below 0 or above
+    ``MAX_RETRIES``. Unbounded, a job that always failed retried each
+    slot so often that it was never stopped for failing."""
+    if policy is not None and not 0 <= policy.max_retries <= MAX_RETRIES:
+        raise ValueError(
+            f"retry_policy.max_retries is {policy.max_retries}: "
+            f"use 0 to {MAX_RETRIES} retries per slot"
+        )
+
+
 def _overlap_policy(job: JobRecord) -> str:
     """``job``'s overlap policy; unset is queue. "skip", which the
     dashboard saved before this was checked, meant skip_if_running."""
@@ -1326,7 +1351,7 @@ def _stopped_only_by_passing_failures(job: JobRecord) -> bool:
     stop it now that passing failures do not count."""
     if job.enabled or job.status != "disabled_error":
         return False
-    runs = load_runs_for_job(job.id, limit=MAX_PASSING_FAILURES_IN_A_ROW)
+    runs = load_runs_for_job(job.id, limit=_FAILURE_WINDOW_RUNS)
     return bool(runs) and _failed_for_a_passing_reason(runs[0]) and not _should_stop(runs)
 
 
