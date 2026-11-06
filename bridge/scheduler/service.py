@@ -1667,6 +1667,13 @@ class SchedulerService:
             error=f"not run: {refused}",
         ))
         logger.warning("job %s: handed a run now, but %s", job_id, refused)
+        append_event({
+            "type": f"scheduler_run_{status}",
+            "job_id": job.id,
+            "run_id": run_id,
+            "duration_seconds": 0.0,
+            "reason": refused,
+        })
         self.emit_event(
             subtype=f"scheduler_run_{status}",
             message=f"Scheduled job '{job.name}' did not run: {refused}",

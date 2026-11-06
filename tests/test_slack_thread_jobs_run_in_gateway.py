@@ -296,6 +296,14 @@ async def test_run_now_in_the_app_of_a_slack_thread_job_while_no_gateway_runs_sa
     assert built == [] and _commands() == [] and not service._in_flight_runs
 
 
+def _logged_end(run_id: str) -> str | None:
+    """The type of the last line events.jsonl has for ``run_id``."""
+    from bridge.scheduler.persistence import read_recent_events
+
+    logged = [e["type"] for e in read_recent_events() if e.get("run_id") == run_id]
+    return logged[-1] if logged else None
+
+
 def _gateway_service(monkeypatch):
     from bridge.gateway.run import GatewayDaemon
 
@@ -353,6 +361,8 @@ async def test_a_run_now_the_gateway_cannot_start_is_recorded_as_not_started(dae
     assert recorded.status == "not_started" and "a run of it goes on" in recorded.error
     assert recorded.finished_at is not None
     assert load_job(job.id).next_fire_at == job.next_fire_at
+    # Written to the events log, as every other run that ends is.
+    assert _logged_end(run.run_id) == "scheduler_run_not_started"
 
 
 async def test_run_nows_that_could_not_start_do_not_count_toward_stopping_the_job(daemon, monkeypatch):
@@ -410,3 +420,4 @@ async def test_a_run_now_the_gateway_reads_too_late_is_recorded_as_expired_and_n
     assert recorded.status == "expired" and recorded.finished_at is not None
     assert "360 min ago" in recorded.error
     assert load_job(job.id).next_fire_at == job.next_fire_at
+    assert _logged_end(run.run_id) == "scheduler_run_expired"
