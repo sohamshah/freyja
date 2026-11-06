@@ -33,6 +33,7 @@ import tempfile
 import time
 from pathlib import Path
 
+import pytest
 
 # ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -208,7 +209,7 @@ def test_no_double_fire_under_race() -> None:
         _cleanup(home)
 
 
-def test_update_under_flock_no_lost_update() -> None:
+def test_update_under_flock_no_lost_update(monkeypatch) -> None:
     """Two processes update disjoint fields of the same job. Both
     fields should land on disk; neither should clobber the other.
 
@@ -217,7 +218,7 @@ def test_update_under_flock_no_lost_update() -> None:
     home = _make_home()
     try:
         # Create a passive job (far-future fire, no schedulers ticking).
-        os.environ["FREYJA_HOME"] = home
+        monkeypatch.setenv("FREYJA_HOME", home)
         sys.path.insert(0, os.getcwd())
         from bridge.scheduler.models import (
             JobRecord, CreatorRef, OnceSchedule, NewSession, NoopSinkSpec,
@@ -309,13 +310,13 @@ def test_wake_propagates_across_processes() -> None:
         _cleanup(home)
 
 
-def test_run_now_rejects_when_peer_firing() -> None:
+def test_run_now_rejects_when_peer_firing(monkeypatch) -> None:
     """If process A holds the per-job flock (mid-fire), process B's
     ``run_now`` should fail-fast rather than race."""
     home = _make_home()
     try:
         sys.path.insert(0, os.getcwd())
-        os.environ["FREYJA_HOME"] = home
+        monkeypatch.setenv("FREYJA_HOME", home)
         from bridge.scheduler.models import (
             JobRecord, CreatorRef, OnceSchedule, NewSession, NoopSinkSpec,
         )
@@ -381,27 +382,5 @@ def test_owner_lock_singleton() -> None:
 
 
 if __name__ == "__main__":
-    print("running tests...")
-    tests = [
-        test_no_double_fire_under_race,
-        test_update_under_flock_no_lost_update,
-        test_wake_propagates_across_processes,
-        test_run_now_rejects_when_peer_firing,
-        test_owner_lock_singleton,
-    ]
-    failures = 0
-    for t in tests:
-        print(f"\n--- {t.__name__} ---")
-        try:
-            t()
-            print(f"  PASS")
-        except AssertionError as e:
-            failures += 1
-            print(f"  FAIL: {e}")
-        except Exception as e:
-            failures += 1
-            import traceback
-            print(f"  ERROR: {e}")
-            traceback.print_exc()
-    print(f"\n{len(tests) - failures}/{len(tests)} passed")
-    sys.exit(1 if failures else 0)
+    # Through pytest, which supplies the monkeypatch fixture two tests take.
+    sys.exit(pytest.main([__file__, "-s"]))
