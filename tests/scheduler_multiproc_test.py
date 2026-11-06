@@ -322,7 +322,7 @@ def test_wake_propagates_across_processes() -> None:
 
 
 def test_run_now_rejects_when_peer_firing(monkeypatch) -> None:
-    """If process A holds the per-job flock (mid-fire), process B's
+    """If process A holds the job's run lock (mid-fire), process B's
     ``run_now`` should fail-fast rather than race."""
     home = _make_home()
     try:
@@ -332,7 +332,7 @@ def test_run_now_rejects_when_peer_firing(monkeypatch) -> None:
             JobRecord, CreatorRef, OnceSchedule, NewSession, NoopSinkSpec,
         )
         from bridge.scheduler.persistence import (
-            save_job, FileLock, job_lock_path,
+            save_job, FileLock, job_run_lock_path,
         )
 
         spec = JobRecord(
@@ -343,9 +343,9 @@ def test_run_now_rejects_when_peer_firing(monkeypatch) -> None:
         )
         save_job(spec)
 
-        # Simulate "process A is mid-fire" by grabbing the per-job
-        # flock in THIS process.
-        held_lock = FileLock(job_lock_path("rn1"))
+        # Simulate "process A is mid-fire" by grabbing the job's run
+        # lock in THIS process.
+        held_lock = FileLock(job_run_lock_path("rn1"))
         assert held_lock.acquire()
 
         # Now spawn a child that tries to run_now → must reject.

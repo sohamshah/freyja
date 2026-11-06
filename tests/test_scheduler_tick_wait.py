@@ -1,8 +1,8 @@
 """A due job that cannot fire yet does not make the tick loop spin.
 
 The loop slept until the earliest next fire, at least 0.05 s. A job that
-stays due because it cannot fire yet (its lock is held while its last
-run goes on) kept that earliest time in the past, so the loop woke
+stays due because it cannot fire yet (its last run is still going)
+kept that earliest time in the past, so the loop woke
 twenty times a second, parsing every job file twice each time, until
 the run ended.
 """
@@ -14,7 +14,7 @@ import time
 from types import SimpleNamespace
 
 from bridge.scheduler.models import IntervalSchedule, JobRecord, NoopSinkSpec
-from bridge.scheduler.persistence import FileLock, job_lock_path, save_job
+from bridge.scheduler.persistence import FileLock, job_run_lock_path, save_job
 from bridge.scheduler.service import SchedulerService
 
 
@@ -23,7 +23,7 @@ async def test_a_due_job_that_cannot_fire_is_looked_at_once_a_second():
                     prompt="digest", sinks=[NoopSinkSpec()])
     job.next_fire_at = time.time() - 1
     save_job(job)
-    held = FileLock(job_lock_path(job.id))
+    held = FileLock(job_run_lock_path(job.id))
     assert held.acquire()
     service = SchedulerService(SimpleNamespace())
     ticks = 0

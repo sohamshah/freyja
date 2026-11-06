@@ -7,7 +7,9 @@ Layout under ``~/.freyja/schedules/``:
   outputs/{job_id}/{run_id}/      run artifacts (response.md, attachments/…)
   events.jsonl                    global audit log, append-only
   metrics/                        rolled-up daily metrics
-  .locks/job-{job_id}.lock        per-job fire/mutate flock target
+  .locks/job-{job_id}.lock        per-job record flock: held while the
+                                  job's record is read and written
+  .locks/job-{job_id}.run.lock    held for the whole of a run of the job
   .wake                           bumped via os.utime on every CRUD;
                                   peers' tick loops poll mtime
 
@@ -34,6 +36,7 @@ This module also provides cross-process coordination primitives:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import errno
 import fcntl
@@ -42,7 +45,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from bridge.scheduler.models import (
     JobRecord,
@@ -91,9 +94,17 @@ def wake_path() -> Path:
 
 
 def job_lock_path(job_id: str) -> Path:
-    """One lock file per job, used to coordinate concurrent fires +
-    mutations across processes."""
+    """One lock file per job, held while the job's record is read and
+    written (a claim, an edit, a run's writes at its start and end), so
+    no write is lost to a concurrent one. Never held across a run."""
     return locks_dir() / f"job-{job_id}.lock"
+
+
+def job_run_lock_path(job_id: str) -> Path:
+    """Held for the whole of a run of the job, by the process running
+    it, so two runs of one job never overlap. The run used to hold the
+    record lock instead, and every edit of the job failed until it ended."""
+    return locks_dir() / f"job-{job_id}.run.lock"
 
 
 def owner_lock_path() -> Path:
@@ -206,6 +217,38 @@ def with_job_lock(job_id: str) -> Iterator[bool]:
     finally:
         if got:
             lock.release()
+
+
+# How long a run's write to its job's record waits for the record lock.
+# Others hold it for milliseconds.
+_RECORD_LOCK_WAIT_SECONDS = 10.0
+
+
+async def update_job_record(
+    job_id: str, change: Callable[[JobRecord], Any],
+) -> JobRecord | None:
+    """Re-read the job under its record lock, apply ``change`` and save.
+    For writes a run makes while edits may land: it changes only the
+    fields it owns, on the record as it is now, and waits for the lock
+    instead of skipping. Returns the saved job, or None when the job is
+    gone (removed while it ran) or the lock did not come."""
+    lock = FileLock(job_lock_path(job_id))
+    deadline = time.monotonic() + _RECORD_LOCK_WAIT_SECONDS
+    while not lock.acquire():
+        if time.monotonic() > deadline:
+            logger.warning("job %s: record lock busy; a run's write was dropped", job_id)
+            return None
+        await asyncio.sleep(0.02)
+    try:
+        job = load_job(job_id)
+        if job is None:
+            return None
+        change(job)
+        save_job(job)
+    finally:
+        lock.release()
+    touch_wake()
+    return job
 
 
 def touch_wake() -> None:

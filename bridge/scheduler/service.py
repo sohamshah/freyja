@@ -12,9 +12,12 @@ The mechanism:
   · ``jobs/{id}.json`` is the canonical record. Atomic writes
     (temp + rename) prevent partial-state reads.
   · ``.locks/job-{id}.lock`` is acquired (non-blocking) before any
-    state-mutating operation, including pre-advance + fire dispatch.
-    Two processes racing the same due job: whoever flocks first
-    wins; the other skips.
+    write to the job's record: a claim's pre-advance, an edit, a run's
+    writes at its start and end. Two processes racing the same due
+    job: whoever flocks first wins; the other skips.
+  · ``.locks/job-{id}.run.lock`` is held for the whole of a run, so two
+    runs of one job never overlap, while edits to the job still go
+    through and apply from its next run.
   · ``.wake`` is touched on every CRUD; tick loops poll its mtime
     each iteration (1Hz cap) and re-scan on change. Wake latency is
     bounded by the poll interval; no cross-process asyncio
@@ -27,8 +30,8 @@ when the holder exits (clean OR crash). A dead process can never leave
 a job permanently locked.
 
 Self-paced loops: the fire registers the loop-control tools and applies
-the agent's decision itself, under the lock it already holds
-(``runtime._apply_loop_decision``).
+the agent's decision itself, with its other writes to the job's record
+at the end of the run (``runtime._apply_loop_decision``).
 """
 
 from __future__ import annotations
@@ -74,6 +77,7 @@ from bridge.scheduler.persistence import (
     ensure_dirs,
     iter_job_files,
     job_lock_path,
+    job_run_lock_path,
     load_all_jobs,
     load_job,
     load_recent_runs_global,
@@ -83,6 +87,7 @@ from bridge.scheduler.persistence import (
     request_run_cancellation,
     save_job,
     touch_wake,
+    update_job_record,
 )
 from bridge.scheduler.scheduling import (
     cadence_label,
@@ -184,8 +189,8 @@ class SchedulerService:
         process polls during its agent turn and cancels the local
         task. Same-process callers also get an immediate
         ``Task.cancel()`` for speed.
-      · ``run_job_now`` flocks the per-job lock; if a peer is
-        already firing, it raises ``RuntimeError`` instead of racing.
+      · ``run_job_now`` flocks the job's run lock; if the job is
+        already running, it raises ``RuntimeError`` instead of racing.
     """
 
     def __init__(
@@ -303,7 +308,7 @@ class SchedulerService:
         process, CRUD-only until then, takes the tick within 15 s. Held
         on, the lock stayed here until the app quit, and runs this
         process starts die with the app. Runs in flight here keep their
-        job locks, so the new owner does not fire them again."""
+        run locks, so the new owner does not fire them again."""
         while not self._stopped and self._is_owner:
             await asyncio.sleep(_OWNER_RETRY_SECONDS)
             if self._stopped or not self._is_owner or self._owner_lock is None:
@@ -393,7 +398,7 @@ class SchedulerService:
                 self._loop_task.cancel()
         logger.info("scheduler stopped (pid %d, owner=%s)", os.getpid(), self._is_owner)
         # Hand the tick to a peer before waiting on runs. Each in-flight
-        # run holds its job's lock, so the new owner cannot fire it
+        # run holds its job's run lock, so the new owner cannot fire it
         # again. Released after the runs, the lock kept every peer idle
         # until the slowest run ended or launchd killed this process.
         if self._owner_lock is not None:
@@ -481,10 +486,11 @@ class SchedulerService:
             )
 
     async def _try_claim_and_fire(self, job_id: str) -> None:
-        """Acquire the per-job flock, re-read the job under it, verify
-        still due, pre-advance + persist, then fire. If the flock is
-        already held (by a peer process or our own concurrent claim),
-        skip — the holder is firing this job already.
+        """Acquire the job's record lock, re-read the job under it,
+        verify still due, take its run lock, pre-advance + persist, then
+        fire. If the record lock is already held (a peer process or our
+        own concurrent claim, or an edit), skip — the next tick looks
+        again. If the run lock is held, the job's last run is still going.
         """
         lock = FileLock(job_lock_path(job_id))
         if not lock.acquire():
@@ -493,6 +499,7 @@ class SchedulerService:
             self._waiting_job_ids.add(job_id)
             return
         self._waiting_job_ids.discard(job_id)
+        run_lock = FileLock(job_run_lock_path(job_id))
         try:
             # Re-read under the lock — the peer may have already
             # advanced next_fire_at past now.
@@ -501,6 +508,10 @@ class SchedulerService:
                 return
             now = time.time()
             if job.next_fire_at is None or job.next_fire_at > now:
+                return
+            if not run_lock.acquire():
+                # Its last run is still going: it fires once that ends.
+                self._waiting_job_ids.add(job_id)
                 return
             if _misfire_policy(job) == "fire_all":
                 _bound_catch_up(job, now)
@@ -516,25 +527,26 @@ class SchedulerService:
             self._recompute_next_fire(job, force=True, after_fire=True)
             save_job(job)
             touch_wake()
-            # Hand off to the fire path while STILL holding the lock —
-            # the fire path is responsible for releasing it after the
-            # run completes (so cancel_run flag polling sees the same
-            # owner).
+            # Hand off to the fire path while STILL holding the run
+            # lock — the fire path releases it after the run completes.
+            # The record lock goes now, so the job can be edited while
+            # it runs; the run keeps the record it was claimed with.
             task = asyncio.create_task(
-                self._fire_with_concurrency(job, lock, slot),
+                self._fire_with_concurrency(job, run_lock, slot),
                 name=f"scheduler-fire-{job.id}",
             )
             self._in_flight_runs[task.get_name()] = task
-            # Don't release lock here — _fire_with_concurrency owns it.
-            lock = None
+            # Don't release run_lock here — _fire_with_concurrency owns it.
+            run_lock = None
         finally:
-            if lock is not None:
-                lock.release()
+            lock.release()
+            if run_lock is not None:
+                run_lock.release()
 
     async def _fire_with_concurrency(
-        self, job: JobRecord, fire_lock: FileLock, slot: float | None,
+        self, job: JobRecord, run_lock: FileLock, slot: float | None,
     ) -> None:
-        """Owns the per-job flock for the duration of the fire."""
+        """Holds the job's run lock for the duration of the fire."""
         task_name = asyncio.current_task().get_name()
         try:
             async with self._concurrency:
@@ -542,19 +554,19 @@ class SchedulerService:
         except Exception as exc:  # noqa: BLE001
             logger.exception("fire crashed (job=%s): %s", job.id, exc)
         finally:
-            fire_lock.release()
+            run_lock.release()
             self._in_flight_runs.pop(task_name, None)
 
     async def _fire_under_lock(self, job: JobRecord, slot: float | None) -> None:
-        """Run the agent turn for ``job``'s ``slot``. The per-job flock is
-        already held by our caller, so the failure stop and retry-policy
-        writes are race-free."""
+        """Run the agent turn for ``job``'s ``slot``. Our caller holds
+        the job's run lock; the failure stop and retry writes take the
+        record lock and apply to the record as it is now."""
         from bridge.scheduler.runtime import fire_job
         run = await fire_job(self, job, scheduled_for=slot)
         if await self._stop_if_failing(job, run):
             return
         if _failed_for_a_passing_reason(run):
-            self._retry_after_passing_failure(job)
+            await self._retry_after_passing_failure(job)
             return
         # Retry policy. If the run failed and the user configured
         # retries, schedule a backoff fire.
@@ -570,13 +582,11 @@ class SchedulerService:
                 delay = retry.backoff_seconds * (
                     retry.backoff_multiplier ** (attempts - 1)
                 )
-                # Re-read job under our held lock so we don't clobber
-                # any concurrent update_job from a peer (also locked,
-                # but ordered before us).
-                fresh = load_job(job.id) or job
-                fresh.next_fire_at = time.time() + float(delay)
-                save_job(fresh)
-                touch_wake()
+
+                def _retry(fresh: JobRecord) -> None:
+                    fresh.next_fire_at = time.time() + float(delay)
+
+                await update_job_record(job.id, _retry)
                 append_event({
                     "type": "scheduler_run_retrying",
                     "job_id": job.id,
@@ -585,7 +595,7 @@ class SchedulerService:
                     "delay_seconds": delay,
                 })
 
-    def _retry_after_passing_failure(self, job: JobRecord) -> None:
+    async def _retry_after_passing_failure(self, job: JobRecord) -> None:
         """Run ``job`` again soon after a run that failed for a passing
         reason: 2 minutes later, twice as long after each such failure in
         a row, at most an hour, and never after its next slot."""
@@ -597,18 +607,24 @@ class SchedulerService:
             _PASSING_RETRY_FIRST_SECONDS * 2 ** (max(passing, 1) - 1),
         )
         retry_at = time.time() + delay
-        fresh = load_job(job.id) or job
-        if fresh.enabled and fresh.status == "active":
-            if fresh.next_fire_at is not None and fresh.next_fire_at <= retry_at:
+        retried = False
+
+        def _retry(fresh: JobRecord) -> None:
+            nonlocal retried
+            if fresh.enabled and fresh.status == "active":
+                if fresh.next_fire_at is not None and fresh.next_fire_at <= retry_at:
+                    return
+            elif not _one_shot_used_up(fresh):
+                # Paused or stopped meanwhile.
                 return
-        elif not _one_shot_used_up(fresh):
-            # Paused or stopped meanwhile.
+            fresh.enabled = True
+            fresh.status = "active"
+            fresh.next_fire_at = retry_at
+            retried = True
+
+        await update_job_record(job.id, _retry)
+        if not retried:
             return
-        fresh.enabled = True
-        fresh.status = "active"
-        fresh.next_fire_at = retry_at
-        save_job(fresh)
-        touch_wake()
         logger.info(
             "job %s: run failed for a passing reason; runs again in %d s",
             job.id, delay,
@@ -631,14 +647,20 @@ class SchedulerService:
         recent = load_runs_for_job(job.id, limit=MAX_PASSING_FAILURES_IN_A_ROW)
         if not _should_stop(recent):
             return False
-        fresh = load_job(job.id) or job
-        if not fresh.enabled:
+        stopped = False
+
+        def _stop(fresh: JobRecord) -> None:
+            nonlocal stopped
+            if not fresh.enabled:
+                return
+            fresh.enabled = False
+            fresh.status = "disabled_error"
+            fresh.next_fire_at = None
+            stopped = True
+
+        fresh = await update_job_record(job.id, _stop)
+        if fresh is None or not stopped:
             return False
-        fresh.enabled = False
-        fresh.status = "disabled_error"
-        fresh.next_fire_at = None
-        save_job(fresh)
-        touch_wake()
         error = (run.error or _sink_errors(run) or "no error was recorded")[:600]
         notice = (
             f"I stopped the scheduled job *{fresh.name}*: its last "
@@ -749,10 +771,10 @@ class SchedulerService:
         _check_misfire_policy(patch.misfire_policy)
         with FileLock(job_lock_path(job_id)) as got:
             if not got:
-                # A peer is firing this job. Updates wait for the next
-                # opportunity — the caller can retry. We could
-                # alternatively block here on flock; preferring fail-
-                # fast keeps the surface simple.
+                # A peer is writing this job's record, for milliseconds
+                # (a run holds only its run lock) — the caller can retry.
+                # We could alternatively block here on flock; preferring
+                # fail-fast keeps the surface simple.
                 raise RuntimeError(
                     f"job {job_id} is locked by a peer; retry shortly"
                 )
@@ -842,12 +864,12 @@ class SchedulerService:
         # if removal fails — next iter_job_files won't return the
         # deleted job anyway, and FileLock recreates the file on
         # next acquire.
-        try:
-            jlp = job_lock_path(job_id)
-            if jlp.exists():
-                jlp.unlink()
-        except OSError:
-            pass
+        for jlp in (job_lock_path(job_id), job_run_lock_path(job_id)):
+            try:
+                if jlp.exists():
+                    jlp.unlink()
+            except OSError:
+                pass
         append_event({"type": "scheduler_job_removed", "job_id": job_id})
         self.emit_event(
             subtype="scheduler_job_removed",
@@ -857,17 +879,16 @@ class SchedulerService:
         return deleted
 
     async def run_job_now(self, job_id: str) -> RunRecord:
-        """Fire a job immediately. Acquires the per-job flock so a
-        concurrent scheduled tick won't double-fire. Doesn't touch
+        """Fire a job immediately. Acquires the job's run lock so a
+        concurrent scheduled tick won't start a second run. Doesn't touch
         ``next_fire_at`` — manual runs are independent of cadence."""
         job = await self.get_job(job_id)
         if job is None:
             raise KeyError(job_id)
-        lock = FileLock(job_lock_path(job_id))
+        lock = FileLock(job_run_lock_path(job_id))
         if not lock.acquire():
             raise RuntimeError(
-                f"job {job_id} is currently firing in another process; "
-                f"try again when the current fire completes"
+                f"job {job_id} is running; try again when its run ends"
             )
         try:
             async with self._concurrency:

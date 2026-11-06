@@ -24,8 +24,8 @@ from bridge.scheduler.models import (
     SelfPacedSchedule,
 )
 from bridge.scheduler.persistence import (
-    save_job,
     save_run,
+    update_job_record,
     write_run_output,
     append_event,
 )
@@ -62,7 +62,10 @@ async def fire_job(
     """Run one fire of ``job``. Returns the run record. The caller
     (SchedulerService.tick / run_job_now) is responsible for
     pre-advancing the next_fire_at and persisting BEFORE this call,
-    so a crash mid-fire doesn't double-fire.
+    so a crash mid-fire doesn't double-fire. The caller holds the job's
+    run lock, not its record lock: the job may be edited while it runs,
+    so the run goes on with ``job`` as claimed and writes to the record
+    only what it owns, on the record as it is then.
 
     ``scheduled_for`` is the slot a scheduled fire is for; None for a
     manual run.
@@ -172,6 +175,7 @@ async def fire_job(
     output_attachments: list[dict[str, Any]] = []
     iteration_count = 0
     entries_before: set[str] | None = None
+    abort_job = False
     try:
         from bridge.freyja_bridge import _schedule_or_queue_turn
 
@@ -303,7 +307,8 @@ async def fire_job(
 
         # Budget enforcement (post-hoc) — if a per-run cap was set and
         # the run blew through it, mark the run timed_out/aborted and,
-        # if on_exceeded=abort_job, disable the job.
+        # if on_exceeded=abort_job, disable the job (with the run's
+        # other writes to the record, below).
         if job.budget is not None:
             b = job.budget
             exceeded = (
@@ -318,10 +323,7 @@ async def fire_job(
                     f"budget exceeded: tokens={run.input_tokens + run.output_tokens}, "
                     f"cost=${run.cost_usd:.4f}"
                 )
-                if b.on_exceeded == "abort_job":
-                    job.enabled = False
-                    job.status = "disabled_budget_exhausted"
-                    save_job(job)
+                abort_job = b.on_exceeded == "abort_job"
     except Exception as exc:  # noqa: BLE001
         run.status = "failed"
         run.error = f"agent turn failed: {exc}"
@@ -426,15 +428,21 @@ async def fire_job(
     save_run(run)
 
     # ── Job-level bookkeeping ─────────────────────────────────────────
-    if loop_decision is not None:
-        _apply_loop_decision(service, job, loop_decision)
-    job.fire_count += 1
-    job.last_fire_at = run.started_at
-    if job.max_fires is not None and job.fire_count >= job.max_fires:
-        job.status = "disabled_max_fires"
-        job.enabled = False
-        job.next_fire_at = None
-    save_job(job)
+    # On the record as it is now: an edit made while the job ran stays.
+    def _record_fire(fresh: JobRecord) -> None:
+        if loop_decision is not None:
+            _apply_loop_decision(service, fresh, loop_decision)
+        if abort_job:
+            fresh.enabled = False
+            fresh.status = "disabled_budget_exhausted"
+        fresh.fire_count += 1
+        fresh.last_fire_at = run.started_at
+        if fresh.max_fires is not None and fresh.fire_count >= fresh.max_fires:
+            fresh.status = "disabled_max_fires"
+            fresh.enabled = False
+            fresh.next_fire_at = None
+
+    await update_job_record(job.id, _record_fire)
 
     append_event({
         "type": f"scheduler_run_{run.status}",
@@ -545,7 +553,13 @@ async def _resolve_execution_session(
         if not spec.session_id:
             # First fire — allocate a deterministic id tied to the job.
             spec.session_id = scheduler_session_id(job.id)
-            save_job(job)
+            session_id = spec.session_id
+
+            def _keep_session(fresh: JobRecord) -> None:
+                if isinstance(fresh.execution, PersistentJobSession):
+                    fresh.execution.session_id = fresh.execution.session_id or session_id
+
+            await update_job_record(job.id, _keep_session)
         sess = await state.ensure_session(
             spec.session_id,
             coordination_strategy=spec.coordination_strategy,
