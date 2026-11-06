@@ -17009,6 +17009,10 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             # Follow-ups / memos that arrived during the edited turn.
             await _drain_after_turn(sess, cancelled=cancelled)
 
+        # The operator acting, as with a message they send: what an
+        # emergency stop held goes with this turn, and agents wake the
+        # session again (_schedule_or_queue_turn).
+        sess._agent_wakes_held = False
         sess.pending_task = asyncio.create_task(_run_edit(), name=f"edit-{sess.id}")
         return
 
@@ -17074,6 +17078,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 _emit_turn_failed(sess, exc)
             await _drain_after_turn(sess, cancelled=cancelled)
 
+        sess._agent_wakes_held = False  # as for an edit
         sess.pending_task = asyncio.create_task(_run_rerun(), name=f"rerun-{sess.id}")
         return
 

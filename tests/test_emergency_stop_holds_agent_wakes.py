@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 import bridge.freyja_bridge as fb
 from bridge.inbox import InboxMessage, new_message_id
 
@@ -110,3 +112,27 @@ async def test_after_a_normal_stop_an_agents_message_still_wakes_the_session(mon
     await fb._handle_command(state, {"type": "cancel", "sessionId": sess.id, "scope": "turn"})
     await _until(lambda: len(ran) == 2)
     assert ran[1] in fb.SYNTHETIC_WAKE_PROMPTS
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        {"type": "edit_user_message", "messageOrdinal": 0, "content": "first, again"},
+        {"type": "rerun_user_message", "messageOrdinal": 0},
+    ],
+)
+async def test_an_edit_or_rerun_ends_the_hold_as_a_message_does(monkeypatch, tmp_path, command):
+    """The operator acting: what waited goes with the turn, and agents wake
+    the session again."""
+    state, sess, ran, events = await _stopped_session(monkeypatch, tmp_path)
+    await sess.initialize()
+    sess.session.add_user_message("first")
+    await fb._handle_command(state, {**command, "sessionId": sess.id})
+    await asyncio.wait_for(asyncio.gather(sess.pending_task, return_exceptions=True), timeout=2)
+    assert len(ran) == 2 and sess.inbox.unread == []
+
+    sess.inbox.push(_agent_message("and another"))
+    status = sess.wake_for_inbox()
+    await asyncio.wait_for(asyncio.gather(sess.pending_task, return_exceptions=True), timeout=2)
+    assert "emergency stop" not in status
+    assert len(ran) == 3 and ran[2] in fb.SYNTHETIC_WAKE_PROMPTS
