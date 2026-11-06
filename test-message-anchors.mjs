@@ -72,6 +72,48 @@ await check('edit and fork send it too', async () => {
   assert.equal(sent.at(-1).messageFingerprint.textHead, 'thanks')
 })
 
+const ids = () => useHarness.getState().messages.map((m) => m.id)
+const sid = () => useHarness.getState().activeSessionId
+const ev = (e) => useHarness.getState().handleEvent({ sessionId: sid(), ...e })
+
+await check('a refused rerun puts the chat back as it was', async () => {
+  reset()
+  const before = ids()
+  await useHarness.getState().rerunUserMessage('u2')
+  assert.deepEqual(ids(), ['u1', 'a1', 'a2', 'a3'])
+  ev({ type: 'rewind_refused', requestId: sent.at(-1).requestId })
+  assert.deepEqual(ids(), before)
+})
+
+await check('a refused edit puts the chat back and the new text in the composer', async () => {
+  reset()
+  useHarness.setState({ inputDraft: 'half a thought' })
+  const before = useHarness.getState().messages
+  await useHarness.getState().editUserMessage('u1', 'Look at the other logs.')
+  assert.equal(useHarness.getState().messages.length, 1)
+  ev({ type: 'rewind_refused', requestId: sent.at(-1).requestId })
+  assert.deepEqual(useHarness.getState().messages, before)
+  assert.equal(useHarness.getState().inputDraft, 'Look at the other logs.\n\nhalf a thought')
+})
+
+await check('a refused delete keeps what arrived after the cut', async () => {
+  reset()
+  await useHarness.getState().deleteMessagesFrom('a2')
+  const { requestId } = sent.at(-1)
+  ev({ type: 'message_appended', role: 'assistant', content: 'Scheduled run done.', messageId: 'late', createdAt: 4_000 })
+  ev({ type: 'rewind_refused', requestId })
+  assert.deepEqual(ids(), ['u1', 'a1', 'a2', 'a3', 'u2', 'late'])
+})
+
+await check('a refusal of an earlier command does not undo the latest one', async () => {
+  reset()
+  await useHarness.getState().deleteMessagesFrom('a3')
+  const first = sent.at(-1).requestId
+  await useHarness.getState().deleteMessagesFrom('a1')
+  ev({ type: 'rewind_refused', requestId: first })
+  assert.deepEqual(ids(), ['u1'])
+})
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

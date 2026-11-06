@@ -817,6 +817,8 @@ export type BridgeCommand =
        *  and tool-heavy turns. `messageOrdinal` is the legacy fallback. */
       messageCreatedAt?: number
       messageFingerprint?: MessageFingerprint
+      /** Echoed by `rewind_refused`. */
+      requestId?: string
       content: string
       attachments?: CommandAttachment[]
     }
@@ -833,6 +835,8 @@ export type BridgeCommand =
        *  and tool-heavy turns. `messageOrdinal` is the legacy fallback. */
       messageCreatedAt?: number
       messageFingerprint?: MessageFingerprint
+      /** Echoed by `rewind_refused`. */
+      requestId?: string
     }
   | {
       // Delete the message at `messageOrdinal` and every message after
@@ -846,6 +850,8 @@ export type BridgeCommand =
        *  and tool-heavy turns. `messageOrdinal` is the legacy fallback. */
       messageCreatedAt?: number
       messageFingerprint?: MessageFingerprint
+      /** Echoed by `rewind_refused`. */
+      requestId?: string
     }
   | {
       // Deep-clone a session into a new one. Two anchors:
@@ -1498,6 +1504,14 @@ export type BridgeEvent =
       content: string
       messageId?: string
       createdAt?: number
+    } & SessionId)
+  | ({
+      /** The bridge did not act on an edit, rerun or delete (its message
+       *  went into a compaction summary, a turn is running, the agent has
+       *  no entry for it, ...). The renderer cut its chat when it sent the
+       *  command, and puts it back. */
+      type: 'rewind_refused'
+      requestId?: string | null
     } & SessionId)
   | ({
       type: 'session_spawned'

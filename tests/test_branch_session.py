@@ -777,6 +777,59 @@ async def test_live_commands_refuse_a_summarized_anchor(sessions_dir, monkeypatc
     assert "compaction summary" in err["message"]
 
 
+class _Running:
+    def done(self) -> bool:
+        return False
+
+
+REWINDS = [
+    {"type": "rerun_user_message"},
+    {"type": "edit_user_message", "content": "again"},
+    {"type": "delete_messages_from"},
+]
+
+
+@pytest.mark.parametrize("cmd", REWINDS)
+@pytest.mark.parametrize("why", ["summarized", "not found", "turn running", "no session"])
+async def test_a_refused_rewind_tells_the_renderer_to_put_its_chat_back(sessions_dir, monkeypatch, cmd, why):
+    # The renderer cut its chat at the message when it sent the command.
+    fb, sess, state, events = _live(monkeypatch, AFTER)
+    stamp = {"summarized": ON_A1, "not found": 170.0}.get(why, ON_U2)
+    if why == "turn running":
+        sess.pending_task = _Running()
+    sid = "gone" if why == "no session" else "s"
+    await fb._handle_command(
+        state, {**cmd, "sessionId": sid, "messageOrdinal": 0, "messageCreatedAt": stamp * 1000, "requestId": "r1"}
+    )
+    assert sess.turns == []
+    assert [e.id for e in sess.session.transcript.entries] == ["c1", "u2", "a2", "u3"]
+    assert [e for e in events if e["type"] == "rewind_refused"] == [
+        {"type": "rewind_refused", "sessionId": sid, "requestId": "r1"}
+    ]
+
+
+async def test_a_rerun_on_a_reply_cuts_nothing(sessions_dir, monkeypatch):
+    # Its anchor resolves to a reply, not a user message: no rerun, and
+    # the transcript stays whole.
+    fb, sess, state, events = _live(monkeypatch, AFTER)
+    await _send(fb, sess, state, {"type": "rerun_user_message", "messageCreatedAt": 102.5 * 1000, "requestId": "r1"})
+    assert sess.turns == []
+    assert [e.id for e in sess.session.transcript.entries] == ["c1", "u2", "a2", "u3"]
+    assert [e["type"] for e in events if e["type"] == "rewind_refused"] == ["rewind_refused"]
+
+
+@pytest.mark.parametrize("why", ["not found", "no session"])
+async def test_a_refused_pin_puts_the_renderer_toggle_back(sessions_dir, monkeypatch, why):
+    fb, sess, state, events = _live(monkeypatch, AFTER)
+    sid = "gone" if why == "no session" else "s"
+    await fb._handle_command(
+        state,
+        {"type": "toggle_entry_pin", "sessionId": sid, "messageOrdinal": 3, "messageCreatedAt": 170_000, "pinned": True},
+    )
+    assert not any(e.compaction_excluded for e in sess.session.transcript.entries)
+    assert [(e["sessionId"], e["pinned"]) for e in events if e["type"] == "entry_pin_changed"] == [(sid, False)]
+
+
 async def test_live_commands_still_act_on_the_first_kept_message(sessions_dir, monkeypatch):
     fb, sess, state, events = _live(monkeypatch, AFTER)
     await _send(fb, sess, state, {"type": "toggle_entry_pin", "pinned": True, "messageCreatedAt": ON_U2 * 1000})

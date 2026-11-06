@@ -874,6 +874,14 @@ function messageFingerprint(
   }
 }
 
+/** The chat an edit, rerun or delete cut when it was sent, by session (the
+ *  latest per session): what the cut took out, and the edited message put
+ *  in its place. A `rewind_refused` from the bridge puts it back. */
+const pendingRewinds = new Map<
+  string,
+  { requestId: string; at: number; removed: Message[]; edited?: { id: string; text: string } }
+>()
+
 interface SessionTreeIndex {
   byId: Map<string, SessionSnapshot>
   childrenOf: Map<string, string[]>
@@ -3404,6 +3412,33 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           memories: { ...prev.memories, [ev.memory.id]: ev.memory },
         }
       }
+      // The bridge did not act on an edit, rerun or delete: put back the
+      // chat the command cut, so it shows what the agent still has. An
+      // edit's new text goes back into the composer.
+      if (ev.type === 'rewind_refused') {
+        const sid = ev.sessionId
+        const cut = sid ? pendingRewinds.get(sid) : undefined
+        if (!sid || !cut || cut.requestId !== ev.requestId) return prev
+        pendingRewinds.delete(sid)
+        const restore = (messages: Message[]): Message[] => {
+          const kept = messages.filter((m) => m.id !== cut.edited?.id)
+          return [...kept.slice(0, cut.at), ...cut.removed, ...kept.slice(cut.at)]
+        }
+        queueMicrotask(() => schedulePersistSession(sid))
+        if (sid === prev.activeSessionId) {
+          return {
+            ...prev,
+            messages: restore(prev.messages),
+            inputDraft: cut.edited ? restoreIntoDraft(prev.inputDraft, cut.edited.text) : prev.inputDraft,
+          }
+        }
+        const archived = prev.sessionArchive[sid]
+        if (!archived) return prev
+        return {
+          ...prev,
+          sessionArchive: { ...prev.sessionArchive, [sid]: { ...archived, messages: restore(archived.messages) } },
+        }
+      }
       // Bridge-driven pin toggle (in case future tool surfaces toggle
       // pins without a renderer round-trip). Idempotent with the
       // optimistic update in toggleEntryPin().
@@ -5345,6 +5380,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     const ordinal = messageOrdinalById(state.messages, messageId)
     if (ordinal < 0) return
     const anchor = state.messages.find((m) => m.id === messageId)
+    const requestId = nextId('rewind')
     // Local truncate: drop everything from the edited message onward and
     // re-insert a new user message with the new content. Streaming
     // response will append a fresh assistant turn.
@@ -5353,6 +5389,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       if (idx < 0) return {}
       const before = prev.messages.slice(0, idx)
       const newId = nextId('msg')
+      pendingRewinds.set(sessionId, {
+        requestId, at: idx, removed: prev.messages.slice(idx), edited: { id: newId, text: trimmed },
+      })
       const newMessage: Message = {
         id: newId,
         role: 'user',
@@ -5373,6 +5412,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       messageOrdinal: ordinal,
       messageCreatedAt: anchor?.createdAt,
       messageFingerprint: messageFingerprint(state.messages, messageId),
+      requestId,
       content: trimmed,
     })
   },
@@ -5386,12 +5426,14 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     if (ordinal < 0) return
     const target = state.messages.find((m) => m.id === messageId)
     if (!target || target.role !== 'user') return
+    const requestId = nextId('rewind')
     // Drop the user message + everything after locally; the bridge
     // will re-add the user message via a fresh turn so it reappears
     // in stream order.
     set((prev) => {
       const idx = prev.messages.findIndex((m) => m.id === messageId)
       if (idx < 0) return {}
+      pendingRewinds.set(sessionId, { requestId, at: idx, removed: prev.messages.slice(idx) })
       return {
         messages: prev.messages.slice(0, idx),
         currentStreamingMessageId: null,
@@ -5406,6 +5448,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       messageOrdinal: ordinal,
       messageCreatedAt: target.createdAt,
       messageFingerprint: messageFingerprint(state.messages, messageId),
+      requestId,
     })
   },
 
@@ -5417,9 +5460,11 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     const ordinal = messageOrdinalById(state.messages, messageId)
     if (ordinal < 0) return
     const anchor = state.messages.find((m) => m.id === messageId)
+    const requestId = nextId('rewind')
     set((prev) => {
       const idx = prev.messages.findIndex((m) => m.id === messageId)
       if (idx < 0) return {}
+      pendingRewinds.set(sessionId, { requestId, at: idx, removed: prev.messages.slice(idx) })
       return {
         messages: prev.messages.slice(0, idx),
         currentStreamingMessageId: null,
@@ -5434,6 +5479,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       messageOrdinal: ordinal,
       messageCreatedAt: anchor?.createdAt,
       messageFingerprint: messageFingerprint(state.messages, messageId),
+      requestId,
     })
   },
 

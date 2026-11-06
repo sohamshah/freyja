@@ -12904,6 +12904,21 @@ def _refuse_summarized_anchor(sess: Any, cmd: dict[str, Any], verb: str) -> bool
     return True
 
 
+_REWIND_NO_SESSION = "Can't {verb} this message: its session is not loaded in the agent."
+_REWIND_TURN_RUNNING = "Can't {verb} this message while a turn is running."
+_REWIND_NOT_FOUND = "Can't {verb} this message: the agent has no entry for it."
+
+
+def _refuse_rewind(session_id: str, cmd: dict[str, Any], reason: str | None = None) -> None:
+    """Edit, rerun or delete did nothing. The renderer cut its chat at the
+    message when it sent the command: tell it to put the chat back, so it
+    shows what the agent still has. ``reason`` is shown to the operator
+    (a summarized anchor's refusal has said why already)."""
+    if reason:
+        emit_error(reason, recoverable=True)
+    emit({"type": "rewind_refused", "sessionId": session_id, "requestId": cmd.get("requestId")})
+
+
 def _truncate_session_at_message_ordinal(
     session: Any,
     ordinal: int,
@@ -15088,11 +15103,12 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         pinned = bool(cmd.get("pinned", False))
         if ordinal < 0:
             return
-        sess = state.get(session_id)
-        if sess is None or sess.session is None:
-            return
-        if _refuse_summarized_anchor(sess, cmd, "pin" if pinned else "unpin"):
+        verb = "pin" if pinned else "unpin"
+
+        def _undo_pin(reason: str | None = None) -> None:
             # Undo the renderer's optimistic toggle.
+            if reason:
+                emit_error(reason, recoverable=True)
             emit({
                 "type": "entry_pin_changed",
                 "sessionId": session_id,
@@ -15100,6 +15116,13 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "messageOrdinal": ordinal,
                 "pinned": not pinned,
             })
+
+        sess = state.get(session_id)
+        if sess is None or sess.session is None:
+            _undo_pin(_REWIND_NO_SESSION.format(verb=verb))
+            return
+        if _refuse_summarized_anchor(sess, cmd, verb):
+            _undo_pin()
             return
         target_entry_id: str | None = None
         try:
@@ -15113,24 +15136,27 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             target_entry_id = None
         if not target_entry_id:
             log("warn", f"toggle_entry_pin: ordinal {ordinal} not found")
+            _undo_pin(_REWIND_NOT_FOUND.format(verb=verb))
             return
         try:
             ok = sess.session.transcript.set_entry_pinned(target_entry_id, pinned)
         except Exception as exc:  # noqa: BLE001
             log("error", f"toggle_entry_pin failed: {exc}")
+            ok = False
+        if not ok:
+            _undo_pin()
             return
-        if ok:
-            emit({
-                "type": "entry_pin_changed",
-                "sessionId": session_id,
-                "entryId": target_entry_id,
-                "messageOrdinal": ordinal,
-                "pinned": pinned,
-            })
-            try:
-                sess._save_transcript()  # noqa: SLF001
-            except Exception:  # noqa: BLE001
-                pass
+        emit({
+            "type": "entry_pin_changed",
+            "sessionId": session_id,
+            "entryId": target_entry_id,
+            "messageOrdinal": ordinal,
+            "pinned": pinned,
+        })
+        try:
+            sess._save_transcript()  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
         return
 
     if ctype == "edit_user_message":
@@ -15143,17 +15169,21 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sess = state.get(session_id)
         if sess is None or sess.session is None:
             log("warn", "edit_user_message: session not initialized")
+            _refuse_rewind(session_id, cmd, _REWIND_NO_SESSION.format(verb="edit"))
             return
         if sess.pending_task and not sess.pending_task.done():
             log("warn", "edit_user_message: turn in progress, ignoring")
+            _refuse_rewind(session_id, cmd, _REWIND_TURN_RUNNING.format(verb="edit"))
             return
         if _refuse_summarized_anchor(sess, cmd, "edit"):
+            _refuse_rewind(session_id, cmd)
             return
         ok, target = _truncate_session_at_message_ordinal(
             sess.session, ordinal, cutoff_ts=_message_cutoff_ts(cmd)
         )
         if not ok:
             log("warn", f"edit_user_message: ordinal {ordinal} not found")
+            _refuse_rewind(session_id, cmd, _REWIND_NOT_FOUND.format(verb="edit"))
             return
         try:
             sess._save_transcript()  # noqa: SLF001
@@ -15185,20 +15215,35 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sess = state.get(session_id)
         if sess is None or sess.session is None:
             log("warn", "rerun_user_message: session not initialized")
+            _refuse_rewind(session_id, cmd, _REWIND_NO_SESSION.format(verb="rerun"))
             return
         if sess.pending_task and not sess.pending_task.done():
             log("warn", "rerun_user_message: turn in progress, ignoring")
+            _refuse_rewind(session_id, cmd, _REWIND_TURN_RUNNING.format(verb="rerun"))
             return
         if _refuse_summarized_anchor(sess, cmd, "rerun"):
+            _refuse_rewind(session_id, cmd)
+            return
+        # Check the target before cutting: a refusal must leave the
+        # transcript whole.
+        entries = sess.session.transcript.entries
+        idx = _find_message_entry_index(entries, ordinal, _message_cutoff_ts(cmd))
+        if idx is None or entries[idx].message is None:
+            log("warn", f"rerun_user_message: ordinal {ordinal} not found")
+            _refuse_rewind(session_id, cmd, _REWIND_NOT_FOUND.format(verb="rerun"))
+            return
+        if entries[idx].message.role != "user":
+            log("warn", "rerun_user_message: target is not a user message")
+            _refuse_rewind(
+                session_id, cmd, "Can't rerun this message: the agent's entry for it is not a user message."
+            )
             return
         ok, target = _truncate_session_at_message_ordinal(
             sess.session, ordinal, cutoff_ts=_message_cutoff_ts(cmd)
         )
         if not ok or target is None or target.message is None:
             log("warn", f"rerun_user_message: ordinal {ordinal} not found")
-            return
-        if target.message.role != "user":
-            log("warn", "rerun_user_message: target is not a user message")
+            _refuse_rewind(session_id, cmd, _REWIND_NOT_FOUND.format(verb="rerun"))
             return
         original_content = target.message.content
 
@@ -15495,17 +15540,21 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sess = state.get(session_id)
         if sess is None or sess.session is None:
             log("warn", "delete_messages_from: session not initialized")
+            _refuse_rewind(session_id, cmd, _REWIND_NO_SESSION.format(verb="delete from"))
             return
         if sess.pending_task and not sess.pending_task.done():
             log("warn", "delete_messages_from: turn in progress, ignoring")
+            _refuse_rewind(session_id, cmd, _REWIND_TURN_RUNNING.format(verb="delete from"))
             return
         if _refuse_summarized_anchor(sess, cmd, "delete from"):
+            _refuse_rewind(session_id, cmd)
             return
         ok, _ = _truncate_session_at_message_ordinal(
             sess.session, ordinal, cutoff_ts=_message_cutoff_ts(cmd)
         )
         if not ok:
             log("warn", f"delete_messages_from: ordinal {ordinal} not found")
+            _refuse_rewind(session_id, cmd, _REWIND_NOT_FOUND.format(verb="delete from"))
             return
         try:
             sess._save_transcript()  # noqa: SLF001
