@@ -12477,9 +12477,7 @@ class _BridgeSession:
         Defensive: telemetry must never break the agent loop.
         """
         try:
-            import json as _json
-
-            from bridge.transcript_persistence import compactions_path
+            from bridge.transcript_persistence import compactions_path, jsonl_line
 
             target = self._own_log_path("compactions.jsonl", compactions_path)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -12490,7 +12488,7 @@ class _BridgeSession:
                 **payload,
             }
             with target.open("a", encoding="utf-8") as fh:
-                fh.write(_json.dumps(row, ensure_ascii=False))
+                fh.write(jsonl_line(row))
                 fh.write("\n")
         except Exception:
             log("debug", f"compactions log append failed for {self.id}")

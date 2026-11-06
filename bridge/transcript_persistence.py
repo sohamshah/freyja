@@ -158,6 +158,18 @@ def delete_inbox_state(session_id: str) -> None:
         pass
 
 
+def jsonl_line(row: Any) -> str:
+    """One JSONL row, text as it is. Text holding a lone surrogate (half of a
+    pair, cut in JavaScript) cannot be written as UTF-8: that row escapes
+    its non-ASCII text instead, and reads back the same."""
+    line = json.dumps(row, ensure_ascii=False, default=str)
+    try:
+        line.encode("utf-8")
+    except UnicodeEncodeError:
+        line = json.dumps(row, default=str)
+    return line
+
+
 def raw_messages_path(session_id: str) -> Path:
     """A sub-agent's raw message log, beside its other sidecars. A root
     session's is ``<project dir>/raw_messages.jsonl``."""
@@ -184,7 +196,7 @@ def append_raw_message(
     externalize_images(payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, ensure_ascii=False))
+        fh.write(jsonl_line(payload))
         fh.write("\n")
 
 
@@ -267,7 +279,7 @@ def append_subagent_compaction(
         path = compactions_path(session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row, ensure_ascii=False, default=str))
+            fh.write(jsonl_line(row))
             fh.write("\n")
     except Exception:  # noqa: BLE001
         logger.debug("compactions log append failed for %s", session_id, exc_info=True)
