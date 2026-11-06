@@ -77,13 +77,9 @@ async def test_a_card_added_in_the_app_is_written_by_the_gateways_board_alone(ap
     _thread_saved()
     board = SessionKanbanBoard(journal=KanbanJournal(journal_path(SLACK)))
     await board.create(title="from the thread", actor="parent")
-    # The app holds a copy of the thread in kanban mode (the mode menu
-    # builds one).
-    await fb._handle_command(
-        state,
-        {"type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "kanban",
-         "model": "claude-sonnet-5-5"},
-    )
+    # The app holds a copy of the thread, in the kanban mode it was saved
+    # in (a command such as compact or repair_session builds one).
+    await state.ensure_session(SLACK)
     await fb._handle_command(state, {"type": "kanban_operator_create", "sessionId": SLACK, "title": "from the app"})
     await board.create(title="next in the thread", actor="parent")
 
@@ -99,12 +95,8 @@ async def test_a_copy_in_the_app_has_no_board_to_write_or_dispatch_from(app, mon
     _thread_saved()
     board = SessionKanbanBoard(journal=KanbanJournal(journal_path(SLACK)))
     await board.create(title="from the thread", actor="parent")
-    await fb._handle_command(
-        state,
-        {"type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "kanban",
-         "model": "claude-sonnet-5-5"},
-    )
-    copy = state.sessions[SLACK]
+    copy = await state.ensure_session(SLACK)
+    assert copy.coordination_strategy == "kanban"
     assert copy.kanban_board is None
     await copy._kanban_tick(source="test", force=True)
     assert [row["kind"] for row in _journal()] == ["create"]
@@ -275,6 +267,87 @@ async def test_the_gateway_refuses_a_model_it_does_not_know(app, monkeypatch):
     assert not [e for e in events if e.get("subtype") == "model_changed"]
     (note,) = [e for e in events if e.get("subtype") == "model_change_refused"]
     assert note["sessionId"] == SLACK and "claude-opus-9-9" in note["message"]
+
+
+# ── mode ─────────────────────────────────────────────────────────────
+
+
+async def test_a_mode_picked_in_the_app_for_a_slack_session_goes_to_the_gateway(app, monkeypatch):
+    # Changed on a copy here, the app said the thread was in kanban mode
+    # with autopilot on, for a board the copy does not have, while the
+    # gateway ran the thread on as before.
+    state, events = app
+    _gateway_running(monkeypatch, os.getpid() + 1)
+    _thread_saved("bus")
+    await fb._handle_command(
+        state,
+        {"type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "kanban",
+         "model": "claude-opus-5-5", "reasoningLevel": "high"},
+    )
+    assert state.sessions == {}
+    assert not [e for e in events if e.get("subtype") in ("coordination_strategy_changed", "kanban_autopilot_enabled")]
+    # Only the mode: the app's model for the thread is not the gateway's.
+    (cmd,) = _forwarded()
+    assert cmd == {"type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "kanban"}
+
+
+async def test_a_mode_change_is_refused_when_no_gateway_runs(app, monkeypatch):
+    state, events = app
+    _gateway_running(monkeypatch, None)
+    await fb._handle_command(
+        state, {"type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "kanban"},
+    )
+    assert state.sessions == {} and _forwarded() == []
+    assert not [e for e in events if e.get("subtype") == "coordination_strategy_changed"]
+    (err,) = [e for e in events if e["type"] == "error"]
+    assert "Slack gateway" in err["message"]
+
+
+@pytest.fixture
+def gateway(monkeypatch, tmp_path):
+    """The gateway's bridge state, which runs the thread."""
+    from bridge.gateway.run import GatewayDaemon
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
+    events: list[dict] = []
+    monkeypatch.setattr(fb, "emit", events.append)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    state.talk_wake_hook_factory = lambda _sess: "hook"
+    daemon = GatewayDaemon()
+    daemon.state = state
+    yield daemon, state, events
+    for sess in state.sessions.values():
+        sess._stop_kanban_dispatcher()
+
+
+async def test_the_gateway_puts_the_thread_in_the_mode_picked_in_the_app(gateway):
+    daemon, state, events = gateway
+    _thread_saved("bus")
+    await daemon._on_set_coordination_strategy(
+        {"type": "set_coordination_strategy", "sessionId": SLACK, "coordinationStrategy": "kanban"},
+    )
+    thread = state.sessions[SLACK]
+    assert thread.coordination_strategy == "kanban"
+    # The thread's own board, autopilot on as when the app enters kanban
+    # mode, and the talk wake hook its workers' memos wake it through.
+    assert thread.kanban_board is not None and thread.auto_dispatch_enabled
+    assert thread.talk_wake_hook == "hook"
+    assert thread.gateway_source.chat_id == "C1"
+    (changed,) = [e for e in events if e.get("subtype") == "coordination_strategy_changed"]
+    assert changed["sessionId"] == SLACK and changed["details"]["coordinationStrategy"] == "kanban"
+    # The thread kept the model it was saved with.
+    assert thread.model_id == "claude-sonnet-5-5"
+
+
+async def test_the_gateway_builds_no_session_on_a_sub_agents_id_for_a_mode_change(gateway):
+    daemon, state, events = gateway
+    await daemon._on_set_coordination_strategy(
+        {"type": "set_coordination_strategy", "sessionId": SUB, "coordinationStrategy": "kanban"},
+    )
+    assert state.sessions == {}
+    (refused,) = [e for e in events if e.get("subtype") == "coordination_strategy_refused"]
+    assert refused["sessionId"] == SUB
 
 
 # ── goal ─────────────────────────────────────────────────────────────

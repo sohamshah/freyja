@@ -2971,6 +2971,7 @@ class GatewayDaemon:
         reader.register("cancel_turn", self._on_cancel_turn)
         reader.register("scheduler_fire", self._on_scheduler_fire)
         reader.register("set_model", self._on_set_model)
+        reader.register("set_coordination_strategy", self._on_set_coordination_strategy)
         from bridge.freyja_bridge import _KANBAN_COMMANDS
 
         for kind in _KANBAN_COMMANDS:
@@ -3093,6 +3094,48 @@ class GatewayDaemon:
                 "details": {"model": target, "reasoningLevel": reasoning},
             }
         )
+
+    async def _on_set_coordination_strategy(self, cmd: dict[str, Any]) -> None:
+        """A mode picked in the app for a Slack session. It changes the
+        thread's coordination strategy as the app's bridge does for its own
+        sessions (autopilot on when it enters kanban), loading a saved
+        thread first. The app's bridge changed only its copy, which has no
+        board, so the app showed a mode the thread was not in."""
+        from bridge.freyja_bridge import (
+            _handle_command,
+            _install_talk_wake_hook,
+            _is_gateway_session_id,
+            emit,
+        )
+
+        session_id = str(cmd.get("sessionId") or "")
+        if not session_id or self.state is None:
+            return
+        if not _is_gateway_session_id(session_id):
+            # A sub-agent's pane was in view. A session built on its id
+            # would be a second, parentless copy of it, saving over its files.
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": session_id,
+                    "subtype": "coordination_strategy_refused",
+                    "message": "A sub-agent runs in its thread's mode.",
+                    "details": {"chatVisible": True},
+                }
+            )
+            return
+        await _handle_command(
+            self.state,
+            {
+                "type": "set_coordination_strategy",
+                "sessionId": session_id,
+                "coordinationStrategy": cmd.get("coordinationStrategy"),
+            },
+        )
+        # Kanban workers' memos wake the thread; its turn has to stream there.
+        sess = self.state.sessions.get(session_id)
+        if sess is not None:
+            _install_talk_wake_hook(self.state, sess)
 
     async def _on_kanban_command(self, cmd: dict[str, Any]) -> None:
         """A kanban board command from the app (add, cancel, unblock,

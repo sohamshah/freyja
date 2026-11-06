@@ -13354,6 +13354,10 @@ _MODEL_GATEWAY_DOWN = (
     "Model not changed: this session runs in the Slack gateway, which is not "
     "running."
 )
+_MODE_GATEWAY_DOWN = (
+    "Mode not changed: this session runs in the Slack gateway, which is not "
+    "running."
+)
 _GOAL_GATEWAY = (
     "Not done: this session's Slack thread runs in the Slack gateway, and the "
     "app cannot set, pause, resume or clear its goal yet."
@@ -14713,6 +14717,16 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
 
         strategy = normalize_coordination_strategy(cmd.get("coordinationStrategy"))
         if not session_id:
+            return
+        # A Slack session runs in the gateway's mode. Changed on a copy
+        # here, the app said the thread was in the new mode, with autopilot
+        # on for a board the copy does not have, while the thread ran on as
+        # before. The app's model for the thread is not sent with it.
+        if _route_command_to_gateway(
+            session_id,
+            {"type": "set_coordination_strategy", "coordinationStrategy": strategy},
+            _MODE_GATEWAY_DOWN,
+        ):
             return
         sess = await state.ensure_session(
             session_id,
