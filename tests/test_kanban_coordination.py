@@ -388,6 +388,37 @@ async def test_kanban_digest_marks_a_card_the_dispatcher_holds_on_a_pending_pare
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["crashed", "timed_out"])
+async def test_kanban_digest_lists_a_crashed_card_the_dispatcher_holds_as_waiting(
+    status: str,
+) -> None:
+    """The dispatcher sends a crashed or timed-out card back to a worker,
+    but holds it while a parent can still finish (link() gave it one
+    after a worker picked it up). The digest has no bucket for these
+    statuses, so a held one showed nowhere as waiting. It is now listed
+    with the waiting cards and names the parents it waits on."""
+    board = SessionKanbanBoard()
+    await board.create(title="mission", metadata={"role": "mission_root"})
+    parent = (await board.create(title="parent")).id
+    card = (await board.create(title="card")).id
+    free = (await board.create(title="free")).id
+    for task_id in (card, free):
+        await board.update(task_id, actor="worker", status="running", worker_session_id="sub_w")
+    await board.link(parent, card, actor="parent")
+    for task_id in (card, free):
+        await board.update(task_id, actor="kanban-dispatcher", status=status)
+
+    digest = await board.digest()
+
+    entries = {entry["id"]: entry for entry in digest["waiting"]}
+    assert entries[card]["status"] == status
+    assert entries[card]["pendingParents"] == [parent]
+    # Not held: it goes back to a worker on the next tick.
+    assert free not in entries
+    assert digest["totals"]["waiting"] == 1
+
+
+@pytest.mark.asyncio
 async def test_kanban_show_inlines_parent_context() -> None:
     board = SessionKanbanBoard()
     tool = KanbanTool(board, actor_id="parent", actor_label="parent")

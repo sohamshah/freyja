@@ -216,8 +216,22 @@ const { createElement } = await import('react')
 const { renderToStaticMarkup } = await import('react-dom/server')
 const { KanbanBridgeView } = await import('./src/renderer/components/views/KanbanBridgeView.tsx')
 
+const tile = (id, status, parents = [], metadata = {}) => ({ id, title: `title ${id}`, status, parents, metadata, events: [], comments: [] })
+const boardHtml = (cards) => renderToStaticMarkup(createElement(KanbanBridgeView, {
+  sessionId: 's', objective: 'o', cards, agents: [], telemetryEvents: [], contextPct: 0, cost: 0,
+  autoDispatchEnabled: false, onAttach() {}, onOpenDispatcherBrief() {},
+}))
+const pipIn = (html, id) => {
+  const at = html.indexOf(`title ${id}<`)
+  assert.ok(at > 0, `no tile for ${id}`)
+  const start = html.lastIndexOf('<article', at)
+  const pipAt = html.lastIndexOf('<span title="', at)
+  assert.ok(pipAt > start, `no pip on ${id}`)
+  const [, title, label] = html.slice(pipAt).match(/^<span title="([^"]*)"[^>]*><span[^>]*><\/span>([^<]*)</)
+  return { title, label }
+}
+
 check('a tile the dispatcher holds on a pending parent says it waits on it, not that it is ready', () => {
-  const tile = (id, status, parents = [], metadata = {}) => ({ id, title: `title ${id}`, status, parents, metadata, events: [], comments: [] })
   const cards = [
     tile('card_001', 'running', [], { role: 'mission_root' }),
     tile('card_002', 'running', ['card_001']),
@@ -227,23 +241,29 @@ check('a tile the dispatcher holds on a pending parent says it waits on it, not 
     tile('card_006', 'review', ['card_002']),
     tile('card_007', 'ready', ['card_001', 'card_003', 'card_009']),
   ]
-  const html = renderToStaticMarkup(createElement(KanbanBridgeView, {
-    sessionId: 's', objective: 'o', cards, agents: [], telemetryEvents: [], contextPct: 0, cost: 0,
-    autoDispatchEnabled: false, onAttach() {}, onOpenDispatcherBrief() {},
-  }))
-  const pip = (id) => {
-    const at = html.indexOf(`title ${id}<`)
-    assert.ok(at > 0, `no tile for ${id}`)
-    const start = html.lastIndexOf('<article', at)
-    const pipAt = html.lastIndexOf('<span title="', at)
-    assert.ok(pipAt > start, `no pip on ${id}`)
-    const [, title, label] = html.slice(pipAt).match(/^<span title="([^"]*)"[^>]*><span[^>]*><\/span>([^<]*)</)
-    return { title, label }
-  }
+  const html = boardHtml(cards)
+  const pip = (id) => pipIn(html, id)
   assert.deepEqual(pip('card_004'), { title: 'Waits on card_002', label: 'waiting' })
   assert.deepEqual(pip('card_005'), { title: 'Waits on card_002', label: 'waiting' })
   assert.equal(pip('card_006').label, 'waiting')
   assert.equal(pip('card_007').label, 'ready')
+})
+
+// The dispatcher sends a crashed or timed-out card back to a worker on
+// the next tick, and holds it as it holds a ready card.
+check('a crashed or timed-out tile the dispatcher holds on a pending parent says it waits on it', () => {
+  const html = boardHtml([
+    tile('card_001', 'running'),
+    tile('card_002', 'crashed', ['card_001']),
+    tile('card_003', 'timed_out', ['card_001']),
+    tile('card_004', 'crashed'),
+    tile('card_005', 'failed', ['card_001']),
+  ])
+  const pip = (id) => pipIn(html, id)
+  assert.deepEqual(pip('card_002'), { title: 'Worker ended as: crashed. Waits on card_001', label: 'waiting' })
+  assert.deepEqual(pip('card_003'), { title: 'Worker ended as: timed out. Waits on card_001', label: 'waiting' })
+  assert.equal(pip('card_004').label, 'crashed')
+  assert.equal(pip('card_005').label, 'failed')
 })
 
 if (failures) {

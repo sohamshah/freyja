@@ -656,13 +656,15 @@ function TaskBoard({
     return m
   }, [stations])
   // Cards the dispatcher holds on a parent that can still finish. They
-  // sit in ready or review with the cards that go out next.
+  // sit in ready or review with the cards that go out next, or in
+  // blocked as a crashed or timed-out card it sends back to a worker.
   const waitingByCard = useMemo(() => {
     const byId = new Map(cards.map((c) => [c.id, c]))
     const m = new Map<string, string[]>()
     for (const c of cards) {
       const column = columnForCard(c)
-      if (column !== 'ready' && column !== 'review') continue
+      const retried = ['crashed', 'timed_out'].includes((c.status ?? '').toLowerCase())
+      if (column !== 'ready' && column !== 'review' && !retried) continue
       const pending = pendingParents(c, byId)
       if (pending.length > 0) m.set(c.id, pending)
     }
@@ -1220,11 +1222,13 @@ function StatusPip({
   //     (e.g. "blocked-by-worker") because it's already the most
   //     informative thing to surface for that column.
   //   · Waiting → the dispatcher holds the card on a parent that can
-  //     still finish, so it says "waiting" and names those parents.
+  //     still finish, so it says "waiting" and names those parents. A
+  //     crashed or timed-out card it holds says so too, since it goes
+  //     back to a worker once they finish.
   //   · Other columns → use the column label.
   const terminalLabel = terminalStatusLabel(status)
-  const isTerminalFailure = !!terminalLabel
-  const waiting = !isTerminalFailure && !!waitingOn?.length
+  const waiting = !!waitingOn?.length
+  const isTerminalFailure = !!terminalLabel && !waiting
   const cls = isTerminalFailure
     ? 'text-danger bg-danger/[0.10] border border-danger/[0.34]'
     : waiting
@@ -1238,7 +1242,7 @@ function StatusPip({
     titleText = `Worker ended as: ${terminalLabel}. Card is in blocked until you intervene.`
   } else if (waiting && waitingOn) {
     label = 'waiting'
-    titleText = `Waits on ${waitingOn.join(', ')}`
+    titleText = `${terminalLabel ? `Worker ended as: ${terminalLabel}. ` : ''}Waits on ${waitingOn.join(', ')}`
   } else if (column === 'review' && workerTerminalState) {
     label = `${meta.label} · worker ${workerTerminalState}`
     titleText = `${meta.label} · worker exited ${workerTerminalState} — awaiting judge verdict.`

@@ -889,6 +889,21 @@ class SessionKanbanBoard:
                     if missing:
                         entry["missingParents"] = missing
                     waiting.append(entry)
+                elif task.status in ("crashed", "timed_out") and (
+                    pending := self._pending_parents(task)
+                ):
+                    # The dispatcher sends these back to a worker, but
+                    # holds one while a parent can still finish, as in the
+                    # ready and review buckets.
+                    waiting.append(
+                        {
+                            "id": task.id,
+                            "title": task.title,
+                            "priority": task.priority,
+                            "status": task.status,
+                            "pendingParents": pending,
+                        }
+                    )
                 elif task.status == "done":
                     done.append(
                         {
@@ -900,10 +915,11 @@ class SessionKanbanBoard:
                             ),
                         }
                     )
-                # Other terminal failures (cancelled, failed, crashed,
-                # timed_out) intentionally don't get a dedicated bucket;
-                # they show up in ``totals.byStatus`` so the agent knows
-                # they exist and can call ``list`` to drill in.
+                # Other terminal failures (cancelled, failed, and crashed
+                # or timed_out cards nothing holds) intentionally don't get
+                # a dedicated bucket; they show up in ``totals.byStatus``
+                # so the agent knows they exist and can call ``list`` to
+                # drill in.
 
             running.sort(key=lambda r: r["lastUpdateSeconds"], reverse=True)
             ready.sort(key=lambda r: (r["priority"], r["promotedAtSeconds"]))
