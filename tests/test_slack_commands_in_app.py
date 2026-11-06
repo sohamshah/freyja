@@ -275,3 +275,27 @@ async def test_the_gateway_refuses_a_model_it_does_not_know(app, monkeypatch):
     assert not [e for e in events if e.get("subtype") == "model_changed"]
     (note,) = [e for e in events if e.get("subtype") == "model_change_refused"]
     assert note["sessionId"] == SLACK and "claude-opus-9-9" in note["message"]
+
+
+# ── goal ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("action", ["set", "pause", "resume", "clear", "stop", "done", "status", "recalibrate_judge"])
+async def test_a_goal_command_for_a_slack_session_is_refused_in_the_app(app, monkeypatch, action):
+    # Armed on a copy, the goal could never run (a copy runs no turn), the
+    # copy saves no goal file, and arming it started a judge calibration
+    # (a model call) here.
+    state, events = app
+    _gateway_running(monkeypatch, os.getpid() + 1)
+    _thread_saved("goal")
+    await fb._handle_command(
+        state,
+        {"type": "goal_control", "sessionId": SLACK, "action": action, "goal": "ship the release",
+         "model": "claude-sonnet-5-5", "coordinationStrategy": "goal"},
+    )
+    assert state.sessions == {}
+    assert not [e for e in events if str(e.get("subtype") or "").startswith("goal_")]
+    (err,) = [e for e in events if e["type"] == "error"]
+    assert "Slack" in err["message"] and "goal" in err["message"]
+    # A notice, not an error that ends the thread's live turn in the app.
+    assert "sessionId" not in err

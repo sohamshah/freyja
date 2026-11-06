@@ -13286,6 +13286,10 @@ _MODEL_GATEWAY_DOWN = (
     "Model not changed: this session runs in the Slack gateway, which is not "
     "running."
 )
+_GOAL_GATEWAY = (
+    "Not done: this session's Slack thread runs in the Slack gateway, and the "
+    "app cannot set, pause, resume or clear its goal yet."
+)
 _KANBAN_GATEWAY_DOWN = (
     "Not done: this session's kanban board is in the Slack gateway, which is "
     "not running."
@@ -15050,6 +15054,12 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
 
     if ctype == "goal_control":
         if not session_id:
+            return
+        if _gateway_holds(session_id):
+            # A Slack session's goal is the gateway's. Armed on a copy here,
+            # it never ran (a copy runs no turn and saves no goal file), and
+            # its judge calibration spent a model call on the copy.
+            emit_error(_GOAL_GATEWAY, recoverable=True)
             return
         sess = await state.ensure_session(
             session_id,
