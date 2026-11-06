@@ -201,19 +201,35 @@ async def test_gateway_id_forwards_to_daemon_not_local_mirror(
     assert cmd["to"] == GW_ID and cmd["message"]["content"] == "ping"
 
 
-async def test_gateway_id_delivers_locally_when_no_daemon(monkeypatch):
-    """Desktop-only deployment: no gateway lock holder → the live local
-    session is the best (only) surface."""
+async def test_gateway_id_goes_to_its_inbox_file_when_no_daemon(monkeypatch, tmp_path):
+    """No gateway runs: the thread's inbox file is its mailbox, even with a
+    copy of the thread loaded here. The copy saves and runs nothing (see
+    _BridgeSession._gateway_copy), so a message pushed into it was lost
+    while the sender was told it was delivered. The gateway reads the file
+    when it next loads the thread."""
+    from bridge import freyja_bridge as fb
+    from bridge import transcript_persistence as tp
+
+    monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path)
     monkeypatch.setattr(tt, "_gateway_owner_pid", lambda: None)
 
     wake_log: list = []
-    sess = _fake_root(GW_ID, wake_log=wake_log)
-    router = _router({GW_ID: sess, "caller": _fake_root("caller")})
+    copy = _fake_root(GW_ID, wake_log=wake_log)
+    router = _router({GW_ID: copy, "caller": _fake_root("caller")})
     tool = TalkTool(router, _ctx())
 
     result = await tool.execute("c1", {"to": GW_ID, "content": "hi"})
-    assert "delivered to root session" in result.content
-    assert wake_log == [GW_ID]
+    assert "sidecar" in result.content
+    assert copy.inbox.unread == [] and wake_log == []
+
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: True)
+    state = fb._BridgeState(workspace=str(tmp_path), default_model="claude-sonnet-5-5")
+    thread = fb._BridgeSession(
+        GW_ID, workspace=str(tmp_path), model_id="claude-sonnet-5-5",
+        reasoning_level="auto", coordination_strategy="bus", state=state,
+    )
+    assert thread._restore_inbox()
+    assert [m.content for m in thread.inbox.unread] == ["hi"]
 
 
 def test_sidecar_queue_roundtrip(monkeypatch, tmp_path):

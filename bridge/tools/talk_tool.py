@@ -338,11 +338,11 @@ class TalkRouter:
                     "owns this session — it will deliver and wake the "
                     "recipient"
                 )
-            # No live gateway daemon. A live local mirror (desktop-only
-            # deployment where the operator continued the thread in the
-            # app) is the best available surface; otherwise persist.
-            if live_local:
-                return None
+            # No live gateway daemon: the thread's inbox file is its
+            # mailbox, read when the gateway next loads the thread
+            # (try_restore_transcript, Step 2c). Not a copy loaded here:
+            # it saves and runs nothing (_BridgeSession._gateway_copy), so
+            # a message pushed into it was lost.
             return queue_to_inbox_sidecar(target_id, msg)
 
         # Non-gateway recipient. If we're the gateway daemon and can't
