@@ -517,3 +517,24 @@ async def test_link_refuses_a_done_card_a_parent_that_is_not_done() -> None:
     card = await board.get(child)
     assert (card.status, card.parents) == ("done", [finished])
     assert (await board.get(pending)).children == []
+
+
+@pytest.mark.asyncio
+async def test_unblock_counts_the_mission_root_as_done() -> None:
+    """The mission root stays running as the mission's container and
+    gates nothing. unblock refused a child of the root and a failed
+    parent because the root was still pending, and the digest listed it
+    as unresolved."""
+    board = SessionKanbanBoard()
+    root = (await board.create(title="mission", metadata={"role": "mission_root"})).id
+    failed = (await board.create(title="failed")).id
+    child = (await board.create(title="child", parents=[root, failed])).id
+    await board.update(failed, actor="parent", status="cancelled")
+
+    [waiting] = (await board.digest())["waiting"]
+    assert waiting["unresolvedParents"] == [failed]
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    result = await tool.execute("unblock", {"action": "unblock", "task_id": child})
+
+    assert not result.is_error, result.content
+    assert (await board.get(child)).status == "ready"

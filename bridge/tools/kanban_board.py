@@ -846,11 +846,15 @@ class SessionKanbanBoard:
                         }
                     )
                 elif task.status == "triage":
+                    # The mission root gates nothing, as in `_parents_done`.
                     unresolved = [
                         pid
                         for pid in task.parents
-                        if (parent := self._tasks.get(pid)) is None
-                        or parent.status != "done"
+                        if pid != self._mission_root_id
+                        and (
+                            (parent := self._tasks.get(pid)) is None
+                            or parent.status != "done"
+                        )
                     ]
                     entry: dict[str, Any] = {
                         "id": task.id,
@@ -1045,8 +1049,10 @@ class SessionKanbanBoard:
             )
             if not has_failure_parent:
                 return task, "no parent has terminated in failure; nothing to unblock"
+            # The mission root gates nothing, as in `_parents_done`.
             non_failure_parents_done = all(
-                (parent := self._tasks.get(pid)) is None
+                pid == self._mission_root_id
+                or (parent := self._tasks.get(pid)) is None
                 or parent.status == "done"
                 or parent.status in TERMINAL_FAILURE_STATUSES
                 for pid in task.parents
