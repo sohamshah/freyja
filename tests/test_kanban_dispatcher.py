@@ -1237,3 +1237,32 @@ async def test_a_full_board_still_judges_and_reclaims() -> None:
     assert judged == [review]
     assert (await board.get(stuck)).status == "crashed"
     assert sub_tool.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("autopilot", [False, True])
+async def test_add_task_sends_only_the_new_card(monkeypatch, autopilot: bool) -> None:
+    """+ Add Task ran a whole forced tick for the operator's new card, so
+    with autopilot off it also sent every other ready card to a worker
+    and every card in review to a judge. It now sends only the new card;
+    the rest wait for autopilot or the operator, as before."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    await board.create(title="waiting", assignee="code")
+    await _review_card(board, tool, worker=True)
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    session.auto_dispatch_enabled = autopilot
+    judged: list[str] = []
+
+    async def _judge(card: Any, *, sub_tool: Any) -> None:
+        judged.append(card.id)
+
+    session._run_kanban_judge_for_card = _judge
+
+    await _operator_command(monkeypatch, session, type="kanban_operator_create", title="mine")
+    await asyncio.sleep(0)
+
+    [new] = [t.id for t in await board.list() if t.title == "mine"]
+    assert [call["kanban_task_id"] for call in sub_tool.calls] == [new]
+    assert judged == []

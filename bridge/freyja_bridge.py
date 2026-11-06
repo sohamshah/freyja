@@ -9425,7 +9425,9 @@ class _BridgeSession:
         except asyncio.CancelledError:
             return
 
-    async def _kanban_tick(self, *, source: str, force: bool = False) -> None:
+    async def _kanban_tick(
+        self, *, source: str, force: bool = False, card_id: str = "",
+    ) -> None:
         """One dispatch pass. Walk the board, spawn at most a few sub-agents
         per pass so we don't blast the runner under a sudden flurry of ready
         cards.
@@ -9439,7 +9441,10 @@ class _BridgeSession:
         single tick; persistent dispatch behavior still requires the user
         to flip autopilot on via `/autopilot on`, so follow-up cards from
         downstream worker spawns won't dispatch unless they also come
-        through a force path."""
+        through a force path.
+
+        `card_id` limits the pass to that card: the operator's new card
+        goes out, and no other card does."""
         if self.kanban_board is None or self.tool_registry is None:
             return
         now_ms = int(time.time() * 1000)
@@ -9485,6 +9490,8 @@ class _BridgeSession:
         capacity = max(0, self.KANBAN_MAX_PARALLEL - running_count)
 
         cards = await self.kanban_board.list()
+        if card_id:
+            cards = [card for card in cards if card.id == card_id]
 
         # Review lane (Move R): every card sitting in `review` needs
         # the judge to pass/fail it before it can flow forward. Each
@@ -15441,9 +15448,13 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         # worker. `force=True` bypasses the autopilot-enabled +
         # queued-messages gates inside `_kanban_tick`; the dispatch logic
         # itself (capacity, blocked-by, ready+assignee or triage) still
-        # runs and decides which lane the card belongs in.
+        # runs and decides which lane the card belongs in. `card_id` keeps
+        # the pass to this card: a whole forced tick also sent every other
+        # ready card and judged every card in review with autopilot off.
         try:
-            await sess._kanban_tick(source="operator_create", force=True)  # noqa: SLF001
+            await sess._kanban_tick(  # noqa: SLF001
+                source="operator_create", force=True, card_id=task.id,
+            )
         except Exception as exc:  # noqa: BLE001
             log("warn", f"kanban_operator_create dispatch failed: {exc}")
         return
