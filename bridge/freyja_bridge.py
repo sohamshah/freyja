@@ -12469,23 +12469,15 @@ class _BridgeSession:
         """
         try:
             from pathlib import Path
-            import json as _json
 
-            base = self.project_output_dir
-            Path(base).mkdir(parents=True, exist_ok=True)
-            target = Path(base) / "raw_messages.jsonl"
-            payload: dict[str, Any] = {
-                "ts": time.time(),
-                "session_id": self.id,
-                "turn_id": self.current_turn_id,
-                "message": message.to_dict() if hasattr(message, "to_dict") else None,
-            }
-            from engine.media_store import externalize_images
+            from bridge.transcript_persistence import append_raw_message
 
-            externalize_images(payload)
-            with target.open("a", encoding="utf-8") as fh:
-                fh.write(_json.dumps(payload, ensure_ascii=False))
-                fh.write("\n")
+            append_raw_message(
+                Path(self.project_output_dir) / "raw_messages.jsonl",
+                session_id=self.id,
+                turn_id=self.current_turn_id,
+                message=message,
+            )
         except Exception:  # noqa: BLE001
             log("debug", f"raw_messages append failed for {self.id}")
 

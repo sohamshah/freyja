@@ -605,9 +605,13 @@ click/type/scroll tools until the memo arrives.
             self._sub_spec.standard_tier_model,
             self._sub_spec.parent_reasoning_level,
         )
+        from bridge.transcript_persistence import append_subagent_raw_message
+
         session = Session.create(
             system_prompt=system_prompt,
             tools=list(child_registry._tools.values()),  # noqa: SLF001
+            # The child's raw message log, as sub_agent_tool keeps one.
+            on_message_appended=lambda message: append_subagent_raw_message(record.id, message),
         )
 
         await _fire(

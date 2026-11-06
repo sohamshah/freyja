@@ -1442,10 +1442,16 @@ Parameters:
 
         # Build provider with agent type's model and thinking config
         provider = self._spec.build_provider(child_model, thinking_effort)
+        from bridge.transcript_persistence import append_subagent_raw_message
+
         session = Session.create(
             system_prompt=system_prompt,
             tools=list(child_registry._tools.values()),  # noqa: SLF001
             session_id=record.id,
+            # Every message the child's transcript takes, whole, as a root
+            # session logs to its project dir. Exports read the child's tool
+            # results from it; the app's record keeps a 2,000-char preview.
+            on_message_appended=lambda message: append_subagent_raw_message(record.id, message),
             metadata={
                 "model_id": child_model,
                 "reasoning_level": agent_type.thinking_effort,

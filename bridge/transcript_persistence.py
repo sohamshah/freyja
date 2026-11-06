@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -155,6 +156,50 @@ def delete_inbox_state(session_id: str) -> None:
         _inbox_path(session_id).unlink(missing_ok=True)
     except Exception:
         pass
+
+
+def raw_messages_path(session_id: str) -> Path:
+    """A sub-agent's raw message log, beside its other sidecars. A root
+    session's is ``<project dir>/raw_messages.jsonl``."""
+    return SESSIONS_DIR / f"{_sanitize_session_id(session_id)}.raw_messages.jsonl"
+
+
+def append_raw_message(
+    path: Path, *, session_id: str, turn_id: str | None, message: Any
+) -> None:
+    """Append one message, as the transcript took it, to a raw message log.
+
+    The log is append-only and outside the engine transcript, so compaction
+    and halving never touch it; exports read each tool result whole from it.
+    Image bytes go to the shared media store (``externalize_images``).
+    """
+    from engine.media_store import externalize_images
+
+    payload: dict[str, Any] = {
+        "ts": time.time(),
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "message": message.to_dict() if hasattr(message, "to_dict") else None,
+    }
+    externalize_images(payload)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False))
+        fh.write("\n")
+
+
+def append_subagent_raw_message(session_id: str, message: Any) -> None:
+    """A sub-agent session's ``on_message_appended``: append the message to
+    its raw message log. Never raises; the agent loop must not stop on it."""
+    try:
+        append_raw_message(
+            raw_messages_path(session_id),
+            session_id=session_id,
+            turn_id=None,
+            message=message,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("raw_messages append failed for %s", session_id, exc_info=True)
 
 
 def _subagent_path(session_id: str) -> Path:

@@ -582,6 +582,47 @@ await check('a session with no saved slice still downloads', async () => {
   assert.deepEqual([d.messages, d.toolCalls, d.rawTranscript], [[], [], []])
 })
 
+console.log('\na sub-agent')
+// A sub-agent has no project directory of its own: the bridge writes its raw
+// log beside its other sidecars (bridge/transcript_persistence.py).
+const subId = 'sub_19e0000000a_1'
+const LONG = 'a sub-agent read this\n' + 'detail '.repeat(2_000) + '\nTHE END'
+const preview = LONG.slice(0, 1000) + `\n\n… [truncated ${LONG.length - 2000} chars] …\n\n` + LONG.slice(-1000)
+fs.writeFileSync(path.join(sessionsDir, `${subId}.raw_messages.jsonl`), [
+  { ts: 1, session_id: subId, turn_id: null, message: { role: 'user', content: 'read it' } },
+  { ts: 2, session_id: subId, turn_id: null, message: asst([{ id: 's-read', name: 'bash', arguments: { command: 'cat big' } }]) },
+  { ts: 3, session_id: subId, turn_id: null, message: res('s-read', LONG) },
+].map((r) => JSON.stringify(r)).join('\n') + '\n')
+fs.writeFileSync(path.join(sessionsDir, `${subId}.json`), JSON.stringify({
+  version: 1, id: subId, title: 'reader', model: 'm', workspace: '~/', createdAt: 1, updatedAt: 2,
+  messageCount: 1, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, parentSessionId: sid,
+  slice: {
+    messages: [{ id: 'm1', role: 'assistant', parts: [{ type: 'tool_call', toolCallId: 's-read' }] }],
+    toolCalls: { 's-read': record2({ id: 's-read', name: 'bash', arguments: { command: 'cat big' }, result: preview }) },
+    toolCallOrder: ['s-read'], subagents: {}, usage: {}, systemEvents: [],
+  },
+}))
+await check('its export has each tool result whole, from its raw log', async () => {
+  const r = await persistence.exportSessionToFile(subId, path.join(home, 'sub-out.json'))
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const tc = readJson(r.jsonPath).slice.toolCalls['s-read']
+  assert.equal(tc.result, LONG)
+  assert.deepEqual([tc.resultSource, tc.resultComplete], ['transcript', true])
+  assert.equal(readJson(r.bundlePath).raw_transcript.length, 3)
+  assert.ok(fs.readFileSync(r.tracePath, 'utf8').includes('THE END'))
+})
+await check('its download has each tool result whole, and its raw transcript', async () => {
+  const out = path.join(home, 'sub-download.json')
+  const r = await persistence.writeSessionDownload(subId, out)
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const d = readJson(out)
+  assert.equal(d.toolCalls[0].result, LONG)
+  assert.deepEqual(d.rawTranscript.map((row) => row.message.role), ['user', 'assistant', 'tool_result'])
+})
+await check('a root session does not read a sub-agent\'s log', () => {
+  assert.equal(record.readRawRecord(sid).results.get('s-read'), undefined)
+})
+
 console.log('\nthe download button')
 await check('it saves the live session first, then asks main to write the file', async () => {
   const calls = []

@@ -14,6 +14,8 @@ import type { ModelCall, ModelResult, ModelView } from '../shared/sessionExport'
  *  - ``~/.freyja/projects/<id>/raw_messages.jsonl`` is every message the
  *    engine appended: each call as the model sent it, each result as the
  *    model received it. It is append-only, and compaction never touches it.
+ *    A sub-agent's is ``~/.freyja/sessions/<id>.raw_messages.jsonl``, beside
+ *    its other sidecars.
  *  - ``~/.freyja/truncated/*.txt`` holds the whole output of a tool result
  *    the engine cut to fit the model's context. The text the model saw ends
  *    with ``[Content truncated -- ... Full output saved to: <path>]``, and the
@@ -29,6 +31,18 @@ export function sanitizeForFsId(id: string): string {
 
 export function projectDirFor(id: string): string {
   return path.join(os.homedir(), '.freyja', 'projects', sanitizeForFsId(id))
+}
+
+/** Where a session's raw log is. A root session's is in its project
+ *  directory. A sub-agent has no project directory of its own: the bridge
+ *  writes its log beside its other sidecars, with the sidecars' file-name rule
+ *  (bridge/transcript_persistence.py). Both are read, the sidecar first. */
+function rawLogPathsFor(id: string): string[] {
+  const sidecarId = id.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 160)
+  return [
+    path.join(os.homedir(), '.freyja', 'sessions', `${sidecarId}.raw_messages.jsonl`),
+    path.join(projectDirFor(id), 'raw_messages.jsonl'),
+  ]
 }
 
 // The engine writes the full output of a cut tool result here. Read from HOME
@@ -179,10 +193,13 @@ export interface RawRecord extends ModelView {
  *  text of each result, not the rows, so an image-heavy log costs no more
  *  memory. A cut result's saved file is read when the result is asked for. */
 export function readRawRecord(id: string): RawRecord {
-  const rawPath = path.join(projectDirFor(id), 'raw_messages.jsonl')
+  const rawPaths = rawLogPathsFor(id)
+  const rows = function* () {
+    for (const rawPath of rawPaths) yield* jsonlRows(rawPath)
+  }
   const calls = new Map<string, ModelCall>()
   const resultTexts = new Map<string, string[]>()
-  for (const row of jsonlRows(rawPath) as Iterable<{ message?: Record<string, unknown> } | null>) {
+  for (const row of rows() as Iterable<{ message?: Record<string, unknown> } | null>) {
     const message = row?.message
     if (!message) continue
     if (Array.isArray(message.tool_calls)) {
@@ -221,7 +238,7 @@ export function readRawRecord(id: string): RawRecord {
         return texts ? modelResult(texts) : undefined
       },
     },
-    rows: () => jsonlRows(rawPath),
+    rows,
     *restoredResults() {
       for (const [callId, texts] of resultTexts) {
         const result = modelResult(texts)
