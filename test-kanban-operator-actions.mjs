@@ -203,7 +203,7 @@ await check('a Judge now whose judge does not start toasts why', async () => {
   const { root, button } = await openCard([tile('card_002', 'review')], 'card_002')
   button('Judge now').click()
   await settle()
-  const message = 'Judge crashed for card_002: Too many active sub-agents (8/8)'
+  const message = 'Judge could not start for card_002: Too many active sub-agents (8/8)'
   answer('kanban_judge_failed', message, { cardId: 'card_002', error: 'Too many active sub-agents (8/8)' })
   await settle()
   assert.equal(H().toast?.message, message)

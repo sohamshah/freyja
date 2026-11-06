@@ -208,6 +208,20 @@ check('a rework counts its review against the cap of three', () => {
   assert.equal(line, 'reworking card_002 · iter 2/3')
 })
 
+// The bridge's kanban_judge_failed (_run_kanban_judge_for_card) says
+// whether the judge started: one that did not (no model for judge-deep,
+// the sub-agent cap, a sticky judge that would not wake) never crashed.
+check('a judge that never started says it could not start, and why', () => {
+  const error = 'Too many active sub-agents (8/8)'
+  const line = narrate('kanban_judge_failed', { cardId: 'card_002', started: false, error, chatVisible: true })
+  assert.equal(line, `judge could not start on card_002 — ${error}`)
+})
+
+check('a judge that started and then failed crashed', () => {
+  const line = narrate('kanban_judge_failed', { cardId: 'card_002', started: true, error: 'synthesis failed', chatVisible: true })
+  assert.equal(line, 'judge crashed on card_002')
+})
+
 // The board's tiles (KanbanBridgeView.tsx), rendered on the server. The
 // dispatcher holds a card while a parent can still finish, as the
 // bridge's `_pending_parents` counts them: the mission root counts as

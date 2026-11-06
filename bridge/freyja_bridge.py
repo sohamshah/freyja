@@ -9935,6 +9935,10 @@ class _BridgeSession:
         )
         from bridge.transcript_persistence import _transcript_path
 
+        # Set once the judge runs: a judge that never started (no model
+        # for judge-deep, the sub-agent cap, a sticky judge that would not
+        # wake) did not crash.
+        started = False
         try:
             # Build the user prompt. Same template family for initial
             # vs rework — the judge's session itself carries the
@@ -9998,6 +10002,8 @@ class _BridgeSession:
                 # Sent once the judge runs, as kanban_dispatched is for a
                 # worker: a judge that never starts sends only
                 # kanban_judge_failed.
+                nonlocal started
+                started = True
                 self._emit_kanban_event(
                     "kanban_review_started",
                     f"Judge {'reviewing' if not sticky else 're-reviewing'} {card.id} (iter {card.review_iteration}/{self.KANBAN_MAX_REVIEW_ITERATIONS})",
@@ -10103,14 +10109,16 @@ class _BridgeSession:
 
             await self._handle_kanban_verdict(card, verdict)
         except Exception as exc:  # noqa: BLE001
-            log("warn", f"kanban judge for {card.id} crashed: {exc}")
+            what = "crashed" if started else "could not start"
+            log("warn", f"kanban judge for {card.id} {what}: {exc}")
             # Surface to the operator so they don't sit watching a
             # silent review column.
             self._emit_kanban_event(
                 "kanban_judge_failed",
-                f"Judge crashed for {card.id}: {exc}",
+                f"Judge {what} for {card.id}: {exc}",
                 details={
                     "cardId": card.id,
+                    "started": started,
                     "error": str(exc),
                     "errorType": type(exc).__name__,
                     "chatVisible": True,

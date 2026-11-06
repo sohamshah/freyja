@@ -1417,6 +1417,10 @@ async def test_review_started_goes_out_once_the_judge_runs(
 
     if not starts:
         assert subtypes() == ["kanban_judge_failed"]
+        # It says the judge could not start, not that it crashed.
+        [failed] = [e for e in sent if e.get("type") == "system_event"]
+        assert failed["details"]["started"] is False
+        assert failed["message"].startswith(f"Judge could not start for {card.id}: ")
         return
     assert subtypes().index("kanban_review_started") < subtypes().index("kanban_judge_verdict")
     # A fresh judge says so while it runs; a sticky one once it is woken.
@@ -1487,3 +1491,38 @@ async def test_cancel_stops_the_worker_only_once_the_card_is_cancelled(monkeypat
         assert sent[-1]["subtype"] == "kanban_operator_cancelled"
         assert killed == ["sub_w"]
         assert (await board.get(card)).status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_judge_that_started_and_then_failed_says_it_crashed(monkeypatch) -> None:
+    """kanban_judge_failed says whether the judge started, so the app
+    tells a judge that crashed from one that could not start."""
+    import types
+
+    from bridge import freyja_bridge
+
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(freyja_bridge, "emit", sent.append)
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    card = await _review_card(board, tool, worker=True)
+    session = _make_session(board=board, sub_tool=_StubSubAgentTool())
+    sub_tool = _StubSubAgentTool()
+
+    async def _spawn(*, on_started: Any, **kwargs: Any) -> Any:
+        record = types.SimpleNamespace(id="sub_judge")
+        on_started(record)
+        return record, "looked", None
+
+    async def _synthesis_fails(*args: Any) -> Any:
+        raise RuntimeError("synthesis failed")
+
+    sub_tool.spawn_programmatically = _spawn
+    session._synthesize_judge_verdict = _synthesis_fails
+
+    await session._run_kanban_judge_for_card(card, sub_tool=sub_tool)
+
+    [failed] = [e for e in sent if e.get("subtype") == "kanban_judge_failed"]
+    assert failed["details"]["started"] is True
+    assert failed["message"] == f"Judge crashed for {card.id}: synthesis failed"
+

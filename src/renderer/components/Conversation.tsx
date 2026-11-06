@@ -1389,6 +1389,12 @@ export function formatNarratorEvent(event: SystemEventRecord): string {
     }
     case 'kanban_judge_failed': {
       const card = typeof details.cardId === 'string' ? details.cardId : ''
+      // The bridge says whether the judge started; one that never did
+      // (no model, the sub-agent cap) did not crash.
+      if (details.started === false) {
+        const error = typeof details.error === 'string' && details.error ? ` — ${details.error}` : ''
+        return `judge could not start${card ? ` on ${card}` : ''}${error}`
+      }
       return card ? `judge crashed on ${card}` : 'judge crashed'
     }
     default:
