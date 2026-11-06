@@ -812,14 +812,42 @@ class SchedulerService:
     ) -> None:
         """Holds the job's run lock for the duration of the fire."""
         task_name = asyncio.current_task().get_name()
+        started = time.time()
         try:
             async with self._runs_here(job), self._concurrency:
                 await self._fire_under_lock(job, slot, attempt)
         except Exception as exc:  # noqa: BLE001
             logger.exception("fire crashed (job=%s): %s", job.id, exc)
+            self._finish_crashed_run(job, started, exc)
         finally:
             run_lock.release()
             self._in_flight_runs.pop(task_name, None)
+
+    def _finish_crashed_run(self, job: JobRecord, since: float, exc: Exception) -> None:
+        """End the run of ``job`` that started at ``since`` or later and has
+        not ended, as failed with ``exc``, the error its fire raised. Our
+        caller holds the job's run lock, so that run is the fire's own.
+        Left so, it said "running" until the next scheduler start marked it
+        interrupted."""
+        for run in load_runs_started_since(job.id, since):
+            if run.finished_at is not None:
+                continue
+            run.status = "failed"
+            run.error = f"the run crashed: {exc}"
+            run.finished_at = time.time()
+            run.duration_seconds = run.finished_at - run.started_at
+            save_run(run)
+            append_event({
+                "type": "scheduler_run_failed",
+                "job_id": job.id,
+                "run_id": run.run_id,
+                "duration_seconds": run.duration_seconds,
+            })
+            self.emit_event(
+                subtype="scheduler_run_failed",
+                message=f"Scheduled job '{job.name}' failed (crashed)",
+                details={"jobId": job.id, "runId": run.run_id, "error": run.error},
+            )
 
     async def _fire_under_lock(
         self, job: JobRecord, slot: float | None, attempt: int = 0,
@@ -1462,12 +1490,16 @@ class SchedulerService:
 
     async def _run_now(self, job: JobRecord, lock: FileLock, **kw: Any) -> RunRecord:
         """Run ``job`` now under its run ``lock``, and release it."""
+        started = time.time()
         try:
             async with self._runs_here(job), self._concurrency:
                 from bridge.scheduler.runtime import fire_job
                 # Re-read inside the lock for freshness.
                 fresh = load_job(job.id) or job
                 return await fire_job(self, fresh, **kw)
+        except Exception as exc:
+            self._finish_crashed_run(job, started, exc)
+            raise
         finally:
             lock.release()
 
