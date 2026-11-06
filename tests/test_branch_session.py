@@ -483,6 +483,37 @@ def test_clone_session_sidecars_truncates_stamped_events_keeps_legacy(sessions_d
     assert len(rows) == 3
 
 
+def test_a_branch_copies_a_sub_agents_logs_and_cuts_them_at_the_anchor(sessions_dir):
+    """A sub-agent keeps its raw message log, its compaction log and the rows
+    the backfill recovered beside its sidecars. A branch that copies the
+    sub-agent copies them, or the copy's export has only previews. Their
+    rows are stamped ``ts`` in seconds; the anchor is in milliseconds."""
+    old, new = "sub_a", "sub_a-branch-1-0"
+    for suffix in (".raw_messages.jsonl", ".compactions.jsonl", ".raw_messages.recovered.jsonl"):
+        _write(
+            sessions_dir / f"{old}{suffix}",
+            json.dumps({"ts": 1.0, "session_id": old, "message": {"role": "user", "content": "early"}})
+            + "\n"
+            + json.dumps({"ts": 5.0, "session_id": old, "message": {"role": "user", "content": "late"}})
+            + "\n",
+        )
+    # A row holding a lone surrogate is copied, not the end of the copy.
+    with (sessions_dir / f"{old}.raw_messages.jsonl").open("a") as fh:
+        fh.write(json.dumps({"ts": 6.0, "session_id": old, "message": {"role": "user", "content": "\ud835"}}) + "\n")
+
+    whole = tp.clone_session_sidecars(old, new, id_remap={old: new})
+    cut = tp.clone_session_sidecars(old, "sub_a-branch-2", id_remap={old: "sub_a-branch-2"}, cutoff_ms=3000)
+
+    for suffix in (".raw_messages.jsonl", ".compactions.jsonl", ".raw_messages.recovered.jsonl"):
+        assert suffix in whole and suffix in cut
+        rows = [json.loads(l) for l in (sessions_dir / f"{new}{suffix}").read_text().splitlines()]
+        assert [(r["session_id"], r["message"]["content"]) for r in rows][:2] == [(new, "early"), (new, "late")]
+        rows = [json.loads(l) for l in (sessions_dir / f"sub_a-branch-2{suffix}").read_text().splitlines()]
+        assert [r["message"]["content"] for r in rows] == ["early"]
+    raw = [json.loads(l) for l in (sessions_dir / f"{new}.raw_messages.jsonl").read_text().splitlines()]
+    assert raw[-1]["message"]["content"] == "\ud835"
+
+
 def test_clone_compaction_snapshots(sessions_dir):
     old, new = "session-src", "session-src-branch-1"
     root = sessions_dir / "compactions"

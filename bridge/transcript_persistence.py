@@ -940,7 +940,7 @@ def _clone_jsonl_file(
                     stamp = _row_ms(row, *ts_fields)
                     if stamp is not None and stamp >= limit:
                         continue
-                fout.write(json.dumps(remap_ids(row, id_remap), ensure_ascii=False) + "\n")
+                fout.write(jsonl_line(remap_ids(row, id_remap)) + "\n")
         tmp.replace(dst)
         return True
     except Exception:
@@ -965,7 +965,8 @@ def clone_session_sidecars(
     Covers ``.goal.json`` (goal loop + judge rules), ``.inbox.json``
     (queued/delivered messages), ``.subagent.json`` (re-wake record),
     ``.events.jsonl`` (renderer event mirror), ``.tasks.jsonl`` and
-    ``.kanban.jsonl`` (append-only journals replayed on resume). Ids are
+    ``.kanban.jsonl`` (append-only journals replayed on resume), and a
+    sub-agent's raw message, compaction and recovered logs. Ids are
     rewritten via ``id_remap``. With ``cutoff_ms`` (renderer ms), rows
     that carry a timestamp at/after the cutoff are dropped from the
     inbox and journals; the event mirror has no timestamps and is
@@ -1005,32 +1006,46 @@ def clone_session_sidecars(
         if _clone_json_file(src, dst, id_remap=id_remap, transform=transform):
             cloned.append(suffix)
 
-    jsonl_jobs: list[tuple[str, Path, Path, tuple[str, ...]]] = [
+    # (suffix, source, destination, stamp fields, ms in one unit of them)
+    jsonl_jobs: list[tuple[str, Path, Path, tuple[str, ...], int]] = [
         # Event lines are stamped ``_t`` (ms) by the bridge's mirror
         # writer; lines from before that stamp existed carry no ``_t``
         # and are kept (see _clone_jsonl_file).
-        (".events.jsonl", _events_path(old_id), _events_path(new_id), ("_t",)),
+        (".events.jsonl", _events_path(old_id), _events_path(new_id), ("_t",), 1),
         (
             ".tasks.jsonl",
             _journal_path(old_id, ".tasks.jsonl"),
             _journal_path(new_id, ".tasks.jsonl"),
             ("ts",),
+            1,
         ),
         (
             ".kanban.jsonl",
             _journal_path(old_id, ".kanban.jsonl"),
             _journal_path(new_id, ".kanban.jsonl"),
             ("ts",),
+            1,
         ),
     ]
-    for suffix, src, dst, ts_fields in jsonl_jobs:
+    # A sub-agent's logs, which its export reads: its raw messages, its
+    # compactions, and the rows scripts/backfill_raw_messages.py recovered.
+    # Stamped ``ts`` in seconds.
+    for name in ("raw_messages.jsonl", "compactions.jsonl", "raw_messages.recovered.jsonl"):
+        jsonl_jobs.append((
+            f".{name}",
+            SESSIONS_DIR / f"{_sanitize_session_id(old_id)}.{name}",
+            SESSIONS_DIR / f"{_sanitize_session_id(new_id)}.{name}",
+            ("ts",),
+            1000,
+        ))
+    for suffix, src, dst, ts_fields, unit_ms in jsonl_jobs:
         if _clone_jsonl_file(
             src,
             dst,
             id_remap=id_remap,
-            cutoff_ms=cutoff_ms if ts_fields else None,
+            cutoff_ms=cutoff_ms / unit_ms if cutoff_ms is not None and ts_fields else None,
             ts_fields=ts_fields,
-            records_cutoff_ms=records_cutoff_ms,
+            records_cutoff_ms=records_cutoff_ms / unit_ms if records_cutoff_ms is not None else None,
         ):
             cloned.append(suffix)
     if clone_compaction_snapshots(
