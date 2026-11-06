@@ -1428,6 +1428,58 @@ async def _route_operator_message_to_subagent(
     return True
 
 
+async def _route_operator_message_to_gateway(
+    sid: str,
+    content: str,
+    attachments: list[dict[str, Any]] | None,
+    *,
+    client_id: str | None = None,
+    force: bool = False,
+    after_turn: bool = False,
+) -> bool:
+    """Deliver what the operator typed into a Slack session's pane to the
+    gateway, which runs its thread. Returns False when ``sid`` is not a
+    Slack session the gateway holds.
+
+    It travels as talk delivery does, on the control channel. The gateway
+    pushes it into the thread's inbox as the operator's follow-up and
+    wakes the thread with its talk wake hook, which streams the reply into
+    Slack; a running turn takes it at its next step. Run here, on the copy
+    the app had loaded, the turn never reached the thread, and its save
+    went over the gateway's transcript."""
+    if not _gateway_holds(sid):
+        return False
+    from bridge.gateway.control_channel import MAX_LINE_BYTES, append_command
+    from bridge.gateway.pid import get_running_pid
+    from bridge.inbox import KIND_FOLLOWUP, KIND_QUEUED, InboxMessage, new_message_id
+
+    if get_running_pid() is None:
+        emit_error(_SEND_GATEWAY_DOWN, recoverable=True)
+        return True
+    msg = InboxMessage(
+        id=new_message_id(),
+        from_session="operator",
+        from_label="operator",
+        from_role="operator",
+        content=content,
+        force=force and not after_turn,
+        kind=KIND_QUEUED if after_turn else KIND_FOLLOWUP,
+        attachments=list(attachments) if attachments else None,
+        client_id=client_id,
+    )
+    cmd = {"type": "talk_deliver", "to": sid, "message": msg.to_dict(), "origin_pid": os.getpid()}
+    if len(json.dumps(cmd, ensure_ascii=False).encode("utf-8")) >= MAX_LINE_BYTES:
+        emit_error(_SEND_GATEWAY_TOO_LARGE, recoverable=True)
+        return True
+    try:
+        append_command(cmd)
+    except Exception as exc:  # noqa: BLE001
+        emit_error(f"Not sent to the Slack gateway: {exc}", recoverable=True)
+        return True
+    log("info", f"operator message → gateway for {sid}")
+    return True
+
+
 def _process_owns_gateway() -> bool:
     """True when THIS process holds the gateway PID lock — i.e. it is
     the authoritative host for ``freyja:<platform>:…`` sessions."""
@@ -5641,7 +5693,9 @@ class _BridgeSession:
             except Exception as exc:  # noqa: BLE001
                 log("debug", f"slack idle-trigger check failed: {exc}")
 
-            if pressure_trigger or idle_trigger:
+            # Not on a copy of a Slack thread (see _gateway_copy): the
+            # gateway compacts its own when a turn needs it.
+            if (pressure_trigger or idle_trigger) and not self._gateway_copy:
                 reason = (
                     "pressure" if pressure_trigger else "slack_idle_revisit"
                 )
@@ -6467,12 +6521,24 @@ class _BridgeSession:
         except Exception as exc:  # noqa: BLE001
             log("warn", f"inbox sidecar save failed: {exc}")
 
+    @property
+    def _gateway_copy(self) -> bool:
+        """A Slack (gateway) session in a process with no gateway: the
+        app's bridge, holding a copy of a thread the gateway runs. The
+        gateway saves the same transcript, inbox and goal files, so the
+        copy saves nothing, runs no turn and is not compacted. Each would
+        write the copy over the gateway's newer history, and the gateway's
+        next save would drop it. The gateway and the scheduler daemon both
+        set ``gateway_runner``; only the app's bridge has none."""
+        state = getattr(self, "state", None)
+        return _is_gateway_session_id(self.id) and getattr(state, "gateway_runner", None) is None
+
     def _save_inbox(self) -> None:
         try:
             from bridge.transcript_persistence import save_inbox_state
         except Exception:
             return
-        if self.inbox is None:
+        if self.inbox is None or self._gateway_copy:
             return
         try:
             save_inbox_state(self.id, self.inbox.to_dict())
@@ -6499,7 +6565,7 @@ class _BridgeSession:
 
     def _save_transcript(self) -> None:
         """Persist the engine transcript to disk (fire-and-forget)."""
-        if self.session is None:
+        if self.session is None or self._gateway_copy:
             return
         try:
             from bridge.transcript_persistence import save_transcript
@@ -6528,6 +6594,8 @@ class _BridgeSession:
         brief on app restart. See `bridge/transcript_persistence.save_goal_state`
         for the schema.
         """
+        if self._gateway_copy:
+            return
         try:
             from bridge.transcript_persistence import save_goal_state
 
@@ -6782,6 +6850,13 @@ class _BridgeSession:
         if self.session is None:
             _report("Nothing to repair: this session has no model history loaded.")
             return
+        if self._gateway_copy:
+            _report(
+                "Repair skipped: this session's Slack thread runs in the gateway, "
+                "and the app only has a copy of it.",
+                reason="gateway_session",
+            )
+            return
         if self.pending_task and not self.pending_task.done():
             _report(
                 "Repair skipped: a turn is running. Stop it or let it finish, "
@@ -6856,6 +6931,20 @@ class _BridgeSession:
 
     async def force_compact(self) -> None:
         """Force an LLM summary compaction for the current session."""
+        if self._gateway_copy:
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": self.id,
+                    "subtype": "compaction_skipped",
+                    "message": (
+                        "Manual compaction skipped: this session's Slack thread "
+                        "runs in the gateway, which compacts it"
+                    ),
+                    "details": {"trigger": "manual", "reason": "gateway_session", "chatVisible": True},
+                }
+            )
+            return
         await self.initialize()
         if self.session is None or self.provider is None:
             emit(
@@ -12512,6 +12601,8 @@ class _BridgeSession:
         Defensive: telemetry must never break the agent loop, so all
         exceptions are caught and logged but not raised.
         """
+        if self._gateway_copy:
+            return
         try:
             from bridge.transcript_persistence import append_raw_message, raw_messages_path
 
@@ -13004,14 +13095,25 @@ _REWIND_GATEWAY = (
     "Can't {verb} this message here: its Slack thread runs in the gateway, "
     "and the app only has a copy of it."
 )
+_GATEWAY_COPY_TURN = (
+    "Can't run a turn here: this session's Slack thread runs in the gateway, "
+    "and the app only has a copy of it."
+)
+_SEND_GATEWAY_DOWN = (
+    "Not sent: this session lives in Slack, and the Slack gateway is not "
+    "running. Reply in the Slack thread, or start the gateway."
+)
+_SEND_GATEWAY_TOO_LARGE = (
+    "Not sent: this session lives in Slack, and the message is too large to "
+    "hand to the Slack gateway. Attach large files in the Slack thread."
+)
 
 
 def _gateway_holds(session_id: str) -> bool:
-    """A Slack (gateway) session this process does not run. Opening one in
-    the app loads a copy of it here (switch_session), but its thread runs
+    """A Slack (gateway) session this process does not run. Its thread runs
     on the gateway's copy, which saves over the same transcript file: an
-    edit, rerun, delete or pin made on this copy would be written over the
-    gateway's newer history, then dropped at the gateway's next save."""
+    edit, rerun, delete or pin made on a copy here would be written over
+    the gateway's newer history, then dropped at the gateway's next save."""
     return _is_gateway_session_id(session_id) and not _process_owns_gateway()
 
 
@@ -13803,6 +13905,11 @@ def _schedule_or_queue_turn(
     register per-turn event listeners (Slack stream consumer)
     without racing the previous turn's tail-end events.
     """
+    if getattr(sess, "_gateway_copy", False):
+        # Its thread runs in the gateway; a turn here would never reach
+        # Slack (see _BridgeSession._gateway_copy).
+        emit_error(_GATEWAY_COPY_TURN, recoverable=True)
+        return False
     if sess.pending_task and not sess.pending_task.done():
         sess.queued_messages.append((content, attachments, on_turn_start))
         log(
@@ -14947,6 +15054,13 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             # parent. Loading it here would make a second, parentless copy.
             log("info", f"switch_session: {session_id} is a sub-agent — view only")
             return
+        if _gateway_holds(session_id):
+            # A Slack session is only viewed here too. Its thread runs in the
+            # gateway, which saves its files; the copy this loaded could be
+            # compacted and saved over them. Messages typed for it go to the
+            # gateway (_route_operator_message_to_gateway).
+            log("info", f"switch_session: {session_id} runs in the gateway — view only")
+            return
         # Capture pre-switch identity so we can detect a true no-op
         # switch (same session id, same config) and skip emitting
         # session_switched. Real-world incident: the operator clicking
@@ -15055,6 +15169,17 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             client_id=str(cmd.get("clientId") or "").strip() or None,
             force=bool(cmd.get("force") or False) and not bool(cmd.get("afterTurn") or False),
             followup=bool(cmd.get("followup") or False),
+        ):
+            return
+        # Typed into a Slack session's pane: it goes to the gateway, which
+        # runs the thread and posts the reply there.
+        if session_id and await _route_operator_message_to_gateway(
+            session_id,
+            content,
+            attachments,
+            client_id=str(cmd.get("clientId") or "").strip() or None,
+            force=bool(cmd.get("force") or False),
+            after_turn=bool(cmd.get("afterTurn") or False),
         ):
             return
         sess = await state.ensure_session(

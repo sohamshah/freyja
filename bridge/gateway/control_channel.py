@@ -81,6 +81,11 @@ def append_command(cmd: dict[str, Any], *, path: Path | None = None) -> None:
         fp.write(line + "\n")
 
 
+# The reader takes at most this much per read and dispatches whole lines
+# only, so a longer line is never read (see ControlChannelReader._drain).
+MAX_LINE_BYTES = 1024 * 1024
+
+
 CommandHandler = Callable[[dict[str, Any]], Any]
 
 
@@ -225,7 +230,7 @@ class ControlChannelReader:
                 fp.seek(off)
                 # Cap each batch to a sane upper bound so a runaway
                 # writer can't pin the loop for tens of MB.
-                chunk = fp.read(min(end - off, 1024 * 1024))
+                chunk = fp.read(min(end - off, MAX_LINE_BYTES))
             return off + len(chunk), chunk
 
         new_offset, chunk = await asyncio.to_thread(_read_chunk, self._offset, size)
