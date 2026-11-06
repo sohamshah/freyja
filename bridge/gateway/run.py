@@ -454,9 +454,10 @@ def _setup_logging() -> None:
             handlers.append(file_handler)
         except OSError:
             pass
+    # The date too: gateway.log spans days.
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     for h in handlers:
         h.setFormatter(fmt)
