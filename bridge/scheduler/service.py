@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -201,8 +202,8 @@ class SchedulerService:
             return
         logger.info(
             "scheduler started in CRUD-only mode "
-            "(peer holds owner lock at %s)",
-            owner_lock_path(),
+            "(pid %d; peer holds owner lock at %s)",
+            os.getpid(), owner_lock_path(),
         )
         append_event({
             "type": "scheduler_started",
@@ -256,7 +257,10 @@ class SchedulerService:
                 save_job(fresh)
                 boot_count += 1
         touch_wake()
-        logger.info("scheduler booted as owner (%s): %d jobs", mode, boot_count)
+        logger.info(
+            "scheduler booted as owner (%s, pid %d): %d jobs",
+            mode, os.getpid(), boot_count,
+        )
         append_event({
             "type": "scheduler_started",
             "mode": mode,
@@ -286,6 +290,7 @@ class SchedulerService:
                 *self._in_flight_runs.values(),
                 return_exceptions=True,
             )
+        logger.info("scheduler stopped (pid %d, owner=%s)", os.getpid(), self._is_owner)
         if self._owner_lock is not None:
             self._owner_lock.release()
             self._owner_lock = None

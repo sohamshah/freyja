@@ -481,6 +481,9 @@ def append_event(event: dict[str, Any]) -> None:
     ensure_dirs()
     payload = dict(event)
     payload.setdefault("ts", time.time())
+    # Three processes write here; the pid says which (owner changes
+    # cannot be traced without it).
+    payload.setdefault("pid", os.getpid())
     line = json.dumps(payload, default=str) + "\n"
     path = events_path()
     try:

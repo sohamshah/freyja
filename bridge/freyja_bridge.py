@@ -16279,6 +16279,20 @@ def main() -> None:
         sys.exit(1)
 
 
+def _setup_headless_logging() -> None:
+    """Send Python logging to stderr, which the LaunchAgent (plist and
+    launcher shim) appends to ~/.freyja/logs/daemon.log. With no handler,
+    info lines such as the scheduler's ownership changes were dropped and
+    warnings arrived bare: no time, level or logger."""
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+
 async def _main_headless() -> None:
     """Daemon mode — boot _BridgeState + scheduler + gateway, then idle.
 
@@ -16286,6 +16300,7 @@ async def _main_headless() -> None:
     Slack-delivered scheduled jobs can post their output. We don't
     auto-create any sessions; jobs allocate sessions as they fire.
     """
+    _setup_headless_logging()
     # Deliberately no workspace/model line here. This used to log
     # `os.getcwd()`, which the LaunchAgent launcher sets to the app bundle
     # (the cd is load-bearing for the bundled Python's relative pyvenv
