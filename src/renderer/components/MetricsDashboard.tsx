@@ -553,6 +553,8 @@ interface CompactionEventRow {
   scope?: string | null
   reason?: string | null
   resumed_from_previous?: boolean
+  /** media_pruning rows: how many images left the context. */
+  omitted_images?: number | null
 }
 
 interface PressureRow {
@@ -859,6 +861,7 @@ export function aggregateRows(
           scope: row.scope ?? null,
           reason: row.reason ?? null,
           resumed_from_previous: Boolean(row.resumed_from_previous),
+          omitted_images: row.omitted_images ?? null,
         })
       }
     } else if (row.type === 'summarize_context_call') {
@@ -1976,16 +1979,7 @@ function SessionDetailDrawer({
           ) : (
             <div className="flex flex-col gap-1">
               {compactions.map((c, i) => {
-                // A start, skipped or failed row is an attempt: it saved
-                // nothing, and a start row has no size after.
-                const isOutcome =
-                  c.subtype === 'compaction_complete' ||
-                  c.subtype === 'context_pruning' ||
-                  c.subtype === 'media_pruning'
-                const savings =
-                  c.tokens_before > 0
-                    ? ((c.tokens_before - c.tokens_after) / c.tokens_before) * 100
-                    : 0
+                const change = compactionRowChange(c)
                 const color =
                   c.subtype === 'compaction_complete'
                     ? 'var(--chart-1)'
@@ -2034,14 +2028,10 @@ function SessionDetailDrawer({
                           </span>
                         </>
                       )}
-                      <span className="ml-auto text-fg-2">
-                        {isOutcome
-                          ? `${formatTokens(c.tokens_before)} → ${formatTokens(c.tokens_after)}`
-                          : formatTokens(c.tokens_before)}
-                      </span>
-                      {isOutcome && (
-                        <span className={savings < 10 ? 'text-danger' : 'text-ok'}>
-                          {savings.toFixed(0)}%
+                      <span className="ml-auto text-fg-2">{change.label}</span>
+                      {change.savedPct != null && (
+                        <span className={change.savedPct < 10 ? 'text-danger' : 'text-ok'}>
+                          {change.savedPct.toFixed(0)}%
                         </span>
                       )}
                       {hasDetails && (
@@ -2062,6 +2052,36 @@ function SessionDetailDrawer({
       </div>
     </aside>
   )
+}
+
+/**
+ * What a row of the session's compaction log says it did. A summary or a
+ * halving shows its size before and after and the share it saved. An image
+ * prune's event carries no sizes, so it shows how many images it removed
+ * (a dash when the row has no count): as a size change it read "0 → 0" and
+ * a red 0%. A start, skipped or failed row is an attempt: it saved nothing,
+ * and a start row has no size after, so it shows the size it saw.
+ */
+export function compactionRowChange(c: CompactionEventRow): {
+  label: string
+  savedPct: number | null
+} {
+  if (c.subtype === 'media_pruning') {
+    return {
+      label: c.omitted_images != null ? `−${c.omitted_images} img` : '—',
+      savedPct: null,
+    }
+  }
+  if (c.subtype === 'compaction_complete' || c.subtype === 'context_pruning') {
+    return {
+      label: `${formatTokens(c.tokens_before)} → ${formatTokens(c.tokens_after)}`,
+      savedPct:
+        c.tokens_before > 0
+          ? ((c.tokens_before - c.tokens_after) / c.tokens_before) * 100
+          : 0,
+    }
+  }
+  return { label: formatTokens(c.tokens_before), savedPct: null }
 }
 
 /**

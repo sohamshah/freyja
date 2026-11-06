@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict'
 
-const { aggregateRows } = await import('./src/renderer/components/MetricsDashboard.tsx')
+const { aggregateRows, compactionRowChange } = await import('./src/renderer/components/MetricsDashboard.tsx')
 
 let failures = 0
 function check(name, fn) {
@@ -109,6 +109,25 @@ check('an overflow recovery that only dropped images counts as a prune, not a su
     s4.compactionRows.map((c) => c.subtype),
     ['media_pruning', 'media_pruning', 'compaction_start', 'compaction_complete'],
   )
+})
+
+check('an image prune in the session log says how many images it removed, not a size change', () => {
+  // An image prune's event carries no sizes: its rows read "0 → 0" and a red 0%.
+  const pruned = aggregateRows([
+    { ...event('s5', 'media_pruning', 'pre_request'), mechanism: 'recent_computer_screenshots', omitted_images: 3 },
+    { ...event('s5', 'media_pruning', 'pre_request'), mechanism: 'image_dim_fit', omitted_images: null },
+    { ...event('s5', 'media_pruning', 'pre_request'), mechanism: 'recent_computer_screenshots' },
+    event('s5', 'context_pruning', 'pre_request', 100_000, 80_000),
+    event('s5', 'compaction_start', 'pre_request', 100_000),
+  ], 'all')
+  const [s5] = pruned.perSession
+  assert.deepEqual(s5.compactionRows.map(compactionRowChange), [
+    { label: '−3 img', savedPct: null },
+    { label: '—', savedPct: null },
+    { label: '—', savedPct: null },
+    { label: '100k → 80k', savedPct: 20 },
+    { label: '100k', savedPct: null },
+  ])
 })
 
 if (failures > 0) {

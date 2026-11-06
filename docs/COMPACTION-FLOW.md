@@ -285,7 +285,7 @@ ts                         <unix epoch float>
 | Cooperation | `compaction_event` complete rows | The agent's share of every summary. Agent-driven is `agent_summarize_context`; manual is `manual`; every other trigger is the runtime's (`pre_request`, `overflow_cascade`, `restore`, the old `context_pressure`). |
 | Trigger source bars | `compaction_event` outcome rows | Grouped by `trigger`. |
 | Savings trend | `compaction_event` outcome rows with `tokens_before > 0` | `(tokens_before - tokens_after) / tokens_before` over time. |
-| Per-session compaction log | `compaction_event` rows for the session | Every row, sorted by `ts`. Only outcome rows show a size after and a saving. A click shows `summary_text`. |
+| Per-session compaction log | `compaction_event` rows for the session | Every row, sorted by `ts`. Only summary and halving rows show a size after and a saving. An image prune's event carries no sizes, so its row shows the images it removed (`omitted_images`, or a dash without one); before 2026-11-06 it showed "0 → 0" and a red 0%. A click shows `summary_text`. |
 | Agent compaction decisions | `summarize_context_call` | Newest first, with the scope mix. |
 
 ### The three channels
