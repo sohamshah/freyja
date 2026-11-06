@@ -1988,8 +1988,9 @@ class GatewayDaemon:
             "`tool_search` and `call_tool` reach only the tools above. "
             "`write_file`, `edit_file` and `edit_json` write only in the "
             "session's project output directory, and `memory` edits memory. "
-            "A job made with `schedule` keeps this filter. To grant more, "
-            "switch to the Freyja desktop app or flip "
+            "A job made with `schedule` keeps this filter, and `schedule` "
+            "changes and runs only such jobs. To grant more, switch to the "
+            "Freyja desktop app or flip "
             "`slack.enable_tool_filter: false`."
         )
         return "\n".join(lines)

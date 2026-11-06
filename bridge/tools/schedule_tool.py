@@ -220,6 +220,16 @@ class ScheduleTool:
 
     async def _action_update(self, args: dict[str, Any]) -> dict[str, Any]:
         job_id = _require_job_id(args)
+        job = await self._check_tool_filter(job_id)
+        if job is not None and args.get("permission_snapshot") is not None:
+            tier = str(args["permission_snapshot"]).strip().lower()
+            current = str(job.permission_snapshot or "").strip().lower()
+            if _TIER_RANK.get(tier, len(_TIER_RANK)) > _TIER_RANK.get(current, _TIER_RANK["low"]):
+                raise ValueError(
+                    f"with the {job.tool_filter.title()} tool filter on, a job's "
+                    f"permission tier can be lowered but not raised above "
+                    f"{job.permission_snapshot!r}"
+                )
         patch = JobPatch()
         for k in (
             "name", "description", "enabled", "max_fires", "prompt",
@@ -256,6 +266,7 @@ class ScheduleTool:
 
     async def _action_simple(self, what: str, args: dict[str, Any]) -> dict[str, Any]:
         job_id = _require_job_id(args)
+        await self._check_tool_filter(job_id)
         if what == "pause":
             await self._service.pause_job(job_id)
         elif what == "resume":
@@ -266,6 +277,7 @@ class ScheduleTool:
 
     async def _action_run_now(self, args: dict[str, Any]) -> dict[str, Any]:
         job_id = _require_job_id(args)
+        await self._check_tool_filter(job_id)
         run = await self._service.run_job_now(job_id)
         payload = {
             "action": "run_now",
@@ -368,6 +380,7 @@ class ScheduleTool:
         text = (args.get("text") or "").strip()
         if not text:
             raise ValueError("'text' is required and must be non-empty")
+        await self._check_tool_filter(job_id)
         job = await self._service.get_job(job_id)
         if job is None:
             raise KeyError(job_id)
@@ -400,6 +413,27 @@ class ScheduleTool:
         }
 
     # ─── Helpers ─────────────────────────────────────────────────────
+
+    async def _check_tool_filter(self, job_id: str) -> JobRecord | None:
+        """Under a gateway tool filter, refuse to change or run a job made
+        without it, and return the job; None when no filter limits this
+        session. A job made without the filter, such as a desktop one, runs
+        with every tool, so a new prompt or notes, or a run, would reach
+        past the filter."""
+        tool_filter = (
+            self._tool_filter_getter() if self._tool_filter_getter is not None else None
+        )
+        if tool_filter is None:
+            return None
+        job = await self._service.get_job(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if job.tool_filter != tool_filter:
+            raise ValueError(
+                f"with the {tool_filter.title()} tool filter on, schedule changes "
+                f"and runs only jobs made under it, and job {job_id} was not"
+            )
+        return job
 
     def _creator_ref(self):
         src = None
@@ -541,6 +575,11 @@ def _run_full(r) -> dict[str, Any]:
 def _format_payload(p: dict[str, Any]) -> str:
     import json
     return json.dumps(p, indent=2, default=str)
+
+
+# Permission tiers from least to most allowed (_parse_auto_approve in
+# freyja_bridge.py).
+_TIER_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3, "yolo": 4}
 
 
 def _err(call_id: str, msg: str) -> ToolResult:
