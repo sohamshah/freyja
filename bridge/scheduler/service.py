@@ -201,6 +201,7 @@ class SchedulerService:
       ``await resume_job(job_id) -> JobRecord``
       ``await remove_job(job_id) -> bool``
       ``await run_job_now(job_id) -> RunRecord``
+      ``await start_job_now(job_id) -> RunRecord``
       ``await get_runs(job_id, limit) -> list[RunRecord]``
       ``await cancel_run(run_id) -> bool``
       ``await metrics() -> SchedulerMetrics``
@@ -216,8 +217,9 @@ class SchedulerService:
         process polls during its agent turn and cancels the local
         task. A run of the same process also stops at once
         (``runtime.stop_run_now``), without waiting for its next poll.
-      · ``run_job_now`` flocks the job's run lock; if the job is
-        already running, it raises ``RuntimeError`` instead of racing.
+      · ``run_job_now`` and ``start_job_now`` flock the job's run lock;
+        if the job is already running, they raise ``RuntimeError``
+        instead of racing.
     """
 
     def __init__(
@@ -1249,10 +1251,40 @@ class SchedulerService:
         return deleted
 
     async def run_job_now(self, job_id: str) -> RunRecord:
-        """Fire a job immediately. Acquires the job's run lock so a
-        concurrent scheduled tick won't start a second run. Doesn't touch
-        ``next_fire_at`` — manual runs are independent of cadence."""
-        job = await self.get_job(job_id)
+        """Fire a job immediately and wait for its run. Acquires the job's
+        run lock so a concurrent scheduled tick won't start a second run.
+        Doesn't touch ``next_fire_at`` — manual runs are independent of
+        cadence."""
+        job, lock = self._take_run_lock(job_id)
+        return await self._run_now(job, lock)
+
+    async def start_job_now(self, job_id: str) -> RunRecord:
+        """Start a run of ``job_id`` now, as ``run_job_now`` does, and
+        return its record as it starts, without waiting for it; the run's
+        events tell how it goes. The app's bridge handles one command at a
+        time: waiting for the run there held every other command until it
+        ended, and the renderer gave up on the run after 30 s."""
+        job, lock = self._take_run_lock(job_id)
+        run = RunRecord(
+            run_id=new_run_id(), job_id=job.id, job_name=job.name,
+            started_at=time.time(), fire_number=job.fire_count + 1, prompt=job.prompt,
+        )
+        name = f"scheduler-run-now-{job.id}"
+
+        async def _run() -> None:
+            try:
+                await self._run_now(job, lock, run_id=run.run_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("run now crashed (job=%s): %s", job.id, exc)
+            finally:
+                self._in_flight_runs.pop(name, None)
+
+        self._in_flight_runs[name] = asyncio.create_task(_run(), name=name)
+        return run
+
+    def _take_run_lock(self, job_id: str) -> tuple[JobRecord, FileLock]:
+        """``job_id``'s record and its run lock, taken for a run now."""
+        job = load_job(job_id)
         if job is None:
             raise KeyError(job_id)
         lock = FileLock(job_run_lock_path(job_id))
@@ -1260,12 +1292,16 @@ class SchedulerService:
             raise RuntimeError(
                 f"job {job_id} is running; try again when its run ends"
             )
+        return job, lock
+
+    async def _run_now(self, job: JobRecord, lock: FileLock, **kw: Any) -> RunRecord:
+        """Run ``job`` now under its run ``lock``, and release it."""
         try:
             async with self._concurrency:
                 from bridge.scheduler.runtime import fire_job
                 # Re-read inside the lock for freshness.
-                fresh = load_job(job_id) or job
-                return await fire_job(self, fresh)
+                fresh = load_job(job.id) or job
+                return await fire_job(self, fresh, **kw)
         finally:
             lock.release()
 

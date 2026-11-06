@@ -60,6 +60,7 @@ async def fire_job(
     iteration: int = 0,
     scheduled_for: float | None = None,
     attempt: int = 0,
+    run_id: str | None = None,
 ) -> RunRecord:
     """Run one fire of ``job``. Returns the run record. The caller
     (SchedulerService.tick / run_job_now) is responsible for
@@ -71,12 +72,13 @@ async def fire_job(
 
     ``scheduled_for`` is the slot a scheduled fire is for; None for a
     manual run. ``attempt`` is which retry of it this is under the job's
-    retry_policy; 0 for the slot's own run.
+    retry_policy; 0 for the slot's own run. ``run_id`` is the id a run
+    started now was answered with (``SchedulerService.start_job_now``).
     """
     from bridge.scheduler.models import new_run_id
 
     run = RunRecord(
-        run_id=new_run_id(),
+        run_id=run_id or new_run_id(),
         job_id=job.id,
         job_name=job.name,
         started_at=time.time(),

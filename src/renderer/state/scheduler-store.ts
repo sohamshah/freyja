@@ -196,6 +196,18 @@ export const useSchedulerStore = create<SchedulerStore>((set, get) => ({
     // re-render off zustand. Each branch is no-op-safe if the bridge
     // hasn't surfaced the full payload yet.
     const t = (event as { type?: string }).type
+    if (t === 'system_event') {
+      // A run's events from the bridge (scheduler_run_claimed, then how it
+      // ended) name its job: read its runs back. Run now answers as the
+      // run starts, so its outcome reaches the dashboard only this way.
+      const jobId = (event as Extract<BridgeEvent, { type: 'system_event' }>).details?.jobId
+      if (typeof jobId === 'string') {
+        schedulerApi.getRuns(jobId, 100).catch(() => {})
+        schedulerApi.recentRuns(100).catch(() => {})
+        schedulerApi.getJob(jobId).catch(() => {})
+      }
+      return
+    }
     if (t === 'scheduler_job_created'
         || t === 'scheduler_job_updated') {
       const j = (event as any).job
@@ -298,6 +310,17 @@ export const useSchedulerStore = create<SchedulerStore>((set, get) => ({
     }
   },
 }))
+
+
+/** True for the bridge events the scheduler store takes: its answers,
+ *  scheduler_* events, and the system events of a scheduler run. */
+export function isSchedulerEvent(event: any): boolean {
+  const t = event?.type
+  if (t === 'system_event') {
+    return typeof event.subtype === 'string' && event.subtype.startsWith('scheduler_run_')
+  }
+  return typeof t === 'string' && t.startsWith('scheduler_')
+}
 
 
 // ── Bridge call helpers (renderer → bridge) ────────────────────────

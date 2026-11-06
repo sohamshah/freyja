@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { unstable_batchedUpdates } from 'react-dom'
 import { useHarness } from './state/store'
-import { useSchedulerStore } from './state/scheduler-store'
+import { isSchedulerEvent, useSchedulerStore } from './state/scheduler-store'
 import { bindVoiceBridge, useVoiceStore } from './state/voice-store'
 import { startIslandFeed } from './lib/islandFeed'
 import { TitleBar } from './components/TitleBar'
@@ -199,15 +199,13 @@ export function App() {
         // Mirror scheduler-targeted events into the scheduler store
         // so the dashboard updates without going through the main
         // harness store (which has no scheduler awareness).
-        if (event?.type === 'scheduler_response'
-            || (typeof event?.type === 'string'
-                && event.type.startsWith('scheduler_'))) {
+        if (isSchedulerEvent(event)) {
           // Lazy import — scheduler-store is small but the App.tsx
           // import graph already has a lot of weight; this defers
           // the cost to the first scheduler event. Includes both the
           // response envelope and the push lifecycle events
-          // (scheduler_run_* / scheduler_job_*) so the dashboard
-          // stays live without polling.
+          // (scheduler_run_* / scheduler_job_*, and a run's system
+          // events) so the dashboard stays live without polling.
           import('./state/scheduler-store').then(({ useSchedulerStore }) => {
             useSchedulerStore.getState().handleEvent(event)
           }).catch(() => {})

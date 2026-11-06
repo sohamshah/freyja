@@ -16951,8 +16951,10 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         return
 
     if ctype == "scheduler.run_job_now":
+        # Answered as the run starts; its run events tell how it goes.
+        # Waited for, the run held this loop, and every other command.
         try:
-            run = await state.scheduler.run_job_now(cmd.get("jobId", ""))
+            run = await state.scheduler.start_job_now(cmd.get("jobId", ""))
             emit({"type": "scheduler_response", "requestId": cmd.get("id"),
                   "subtype": "run_job_now", "run": run.to_dict()})
         except Exception as exc:  # noqa: BLE001
