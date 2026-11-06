@@ -15455,28 +15455,26 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if sess.kanban_board is None or sess.tool_registry is None:
             return
         task = await sess.kanban_board.get(card_id)
-        if task is None:
-            log("warn", f"kanban_operator_force_dispatch: card {card_id} not found")
-            return
-        if task.status not in ("ready", "triage", "done_unverified"):
-            log(
-                "warn",
-                f"kanban_operator_force_dispatch: card {card_id} status "
-                f"{task.status!r} is not dispatchable",
-            )
-            return
+        sub_tool = sess.tool_registry._tools.get("sub_agent")  # noqa: SLF001
         # Only the tick dropped a card from the dispatched set once its
         # worker left, and no tick runs with autopilot off, so a card sent
         # once could never be sent again. Refresh the set as the tick does.
         live = sess._kanban_live_cards()  # noqa: SLF001
         sess._kanban_dispatched = sess._kanban_dispatched & live  # noqa: SLF001
-        # The tick's gates: a card waits while its worker runs, a triage
-        # card until every parent is done (only `unblock` takes it past a
-        # failed or missing one), any other card while a parent can still
-        # finish, and every card while KANBAN_MAX_PARALLEL workers run.
-        pending = sess.kanban_board._pending_parents(task)  # noqa: SLF001
+        # The app shows the card as it last heard of it, so it can be gone
+        # or have moved on. Then the tick's gates: a card waits while its
+        # worker runs, a triage card until every parent is done (only
+        # `unblock` takes it past a failed or missing one), any other card
+        # while a parent can still finish, and every card while
+        # KANBAN_MAX_PARALLEL workers run. Each refusal says why, or the
+        # app waits on an answer that never comes.
+        pending = sess.kanban_board._pending_parents(task) if task is not None else []  # noqa: SLF001
         note = ""
-        if task.id in live:
+        if task is None:
+            note = "it is not on the board"
+        elif task.status not in ("ready", "triage", "done_unverified"):
+            note = f"it is {task.status.replace('_', ' ')}"
+        elif task.id in live:
             note = "a worker is already on it"
         elif pending:
             note = f"it waits on {', '.join(pending)}"
@@ -15484,6 +15482,8 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             note = "a parent failed, was cancelled or is missing; unblock it first"
         elif len(live) >= sess.KANBAN_MAX_PARALLEL:
             note = f"{sess.KANBAN_MAX_PARALLEL} workers are already running"
+        elif sub_tool is None:
+            note = "this session has no sub_agent tool"
         if note:
             log("info", f"kanban_operator_force_dispatch refused for {card_id}: {note}")
             sess._emit_kanban_event(  # noqa: SLF001
@@ -15491,9 +15491,6 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 f"Could not dispatch {card_id}: {note}",
                 details={"cardId": card_id, "reason": note},
             )
-            return
-        sub_tool = sess.tool_registry._tools.get("sub_agent")  # noqa: SLF001
-        if sub_tool is None:
             return
         if task.status == "done_unverified":
             plan = {

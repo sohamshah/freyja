@@ -1062,3 +1062,31 @@ async def test_force_dispatch_says_why_a_worker_did_not_start(monkeypatch, failu
     assert failed["details"]["cardId"] == card
     assert card not in session._kanban_dispatched
     assert (await board.get(card)).status == "ready"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["missing", "running", "no_sub_agent"])
+async def test_force_dispatch_says_why_it_sent_nothing(monkeypatch, case: str) -> None:
+    """Force dispatch sent no event for a card not on the board, a card
+    whose status had moved on since the app drew it, or a session with no
+    sub_agent tool, so the app waited on an answer that never came."""
+    board = SessionKanbanBoard()
+    card = (await board.create(title="card", assignee="code")).id
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    if case == "running":
+        await board.update(card, actor="worker", status="running", worker_session_id="sub_w")
+    if case == "no_sub_agent":
+        session.tool_registry._tools.clear()
+
+    sent = await _force_dispatch(monkeypatch, session, "card_404" if case == "missing" else card)
+
+    assert sub_tool.calls == []
+    [refused] = [e for e in sent if e["type"] == "system_event"]
+    assert refused["subtype"] == "kanban_operator_force_dispatch_failed"
+    assert refused["details"]["cardId"] == ("card_404" if case == "missing" else card)
+    assert refused["details"]["reason"] == {
+        "missing": "it is not on the board",
+        "running": "it is running",
+        "no_sub_agent": "this session has no sub_agent tool",
+    }[case]
