@@ -1422,3 +1422,38 @@ async def test_review_started_goes_out_once_the_judge_runs(
     # A fresh judge says so while it runs; a sticky one once it is woken.
     [seen] = seen_when_running
     assert ("kanban_review_started" in seen) is not sticky
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["crashed", "timed_out"])
+async def test_force_dispatch_sends_a_crashed_or_timed_out_card_as_the_tick_does(
+    monkeypatch, status: str,
+) -> None:
+    """The tick sends a crashed or timed-out card back to a new worker, but
+    force dispatch refused it ("it is crashed"), so with autopilot off the
+    operator had to unblock it first. It now sends the worker the tick
+    would, behind the same gates."""
+    board = SessionKanbanBoard()
+    card = (await board.create(title="card", assignee="code")).id
+    await board.update(card, actor="worker", status="running", worker_session_id="sub_w")
+    await board.update(card, actor="worker", status=status)
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    session.auto_dispatch_enabled = False
+    session.subagent_registry.records = [
+        _StubRecord(is_running=True, kanban_task_id=f"phantom_{i}")
+        for i in range(_BridgeSession.KANBAN_MAX_PARALLEL)
+    ]
+
+    sent = await _force_dispatch(monkeypatch, session, card)
+    [refused] = [e for e in sent if e["type"] == "system_event"]
+    assert refused["details"]["reason"] == f"{_BridgeSession.KANBAN_MAX_PARALLEL} workers are already running"
+
+    session.subagent_registry.records = []
+    await _force_dispatch(monkeypatch, session, card)
+    forced = [(call["agent_type"], call["label"]) for call in sub_tool.calls]
+    sub_tool.calls.clear()
+    await session._kanban_tick(source="test", force=True)
+    ticked = [(call["agent_type"], call["label"]) for call in sub_tool.calls]
+
+    assert forced == ticked == [("code", f"code {card}")]

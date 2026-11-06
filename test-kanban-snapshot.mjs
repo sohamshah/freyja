@@ -280,12 +280,12 @@ check('a crashed or timed-out tile says autopilot retries it, or that it waits f
     title: 'Worker ended as: timed out. Autopilot retries it on a new worker.', label: 'timed out',
   })
   assert.deepEqual(pipIn(off, 'card_002'), {
-    title: 'Worker ended as: crashed. Autopilot is off, so it waits for you to unblock and dispatch it.',
+    title: 'Worker ended as: crashed. Autopilot is off, so it waits for you to dispatch it.',
     label: 'crashed',
   })
   assert.equal(
     pipIn(off, 'card_003').title,
-    'Worker ended as: timed out. Autopilot is off, so it waits for you to unblock and dispatch it.',
+    'Worker ended as: timed out. Autopilot is off, so it waits for you to dispatch it.',
   )
 })
 

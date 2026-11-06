@@ -305,6 +305,9 @@ function CardOperatorActions({
   const isRunning = status === 'running' || status === 'in_progress' || status === 'in-progress'
   const isDone = status === 'done' || status === 'sealed' || status === 'completed' || status === 'complete'
   const isReadyish = status === 'ready' || status === 'triage' || status === 'done_unverified'
+  // The tick sends a crashed or timed-out card back to a new worker, and so
+  // does force dispatch.
+  const isRetried = status === 'crashed' || status === 'timed_out'
   // Only the tick's review lane judges a card, so with autopilot off a
   // card in review waits for this; the bridge starts the judge the lane
   // would.
@@ -320,7 +323,7 @@ function CardOperatorActions({
   // Force-dispatch is most useful when autopilot is off, but we keep
   // it visible whenever the card is dispatchable so the operator can
   // skip the queue cadence even with autopilot on.
-  const showForceDispatch = (isReadyish || isReview) && card.metadata?.role !== 'mission_root'
+  const showForceDispatch = (isReadyish || isRetried || isReview) && card.metadata?.role !== 'mission_root'
   const showReassign = !isDone
 
   // Nothing to do — render nothing rather than an empty divider.
@@ -1293,7 +1296,7 @@ function StatusPip({
       ? 'Card is in blocked until you intervene.'
       : autoDispatchEnabled
         ? 'Autopilot retries it on a new worker.'
-        : 'Autopilot is off, so it waits for you to unblock and dispatch it.'
+        : 'Autopilot is off, so it waits for you to dispatch it.'
     titleText = `Worker ended as: ${terminalLabel}. ${next}`
   } else if (waiting && waitingOn) {
     label = 'waiting'

@@ -15645,10 +15645,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         live = sess._kanban_live_cards()  # noqa: SLF001
         sess._kanban_dispatched = sess._kanban_dispatched & live  # noqa: SLF001
         # The app shows the card as it last heard of it, so it can be gone
-        # or have moved on. Then the tick's gates: a card waits while its
-        # worker runs, a triage card until every parent is done (only
-        # `unblock` takes it past a failed or missing one), any other card
-        # while a parent can still finish, and every card while
+        # or have moved on. The tick sends a crashed or timed-out card back
+        # to a worker, and so does this. Then the tick's gates: a card
+        # waits while its worker runs, a triage card until every parent is
+        # done (only `unblock` takes it past a failed or missing one), any
+        # other card while a parent can still finish, and every card while
         # KANBAN_MAX_PARALLEL workers run. Each refusal says why, or the
         # app waits on an answer that never comes.
         # The review lane's gates: one judge per card, outside the worker
@@ -15659,7 +15660,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         note = ""
         if task is None:
             note = "it is not on the board"
-        elif task.status not in ("ready", "triage", "done_unverified", "review"):
+        elif task.status not in (
+            "ready", "crashed", "timed_out", "triage", "done_unverified", "review",
+        ):
             note = f"it is {task.status.replace('_', ' ')}"
         elif judging and task.id in sess._kanban_judge_pending:  # noqa: SLF001
             note = "a judge is already on it"
