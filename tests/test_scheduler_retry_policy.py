@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -61,8 +62,8 @@ def service(monkeypatch):
 
 def _report(**fields) -> JobRecord:
     fields.setdefault("retry_policy", RetryPolicy(max_retries=2, backoff_seconds=60))
-    job = JobRecord(id="sched_report", name="daily report",
-                    schedule=CronSchedule(expression="0 6 * * *"), prompt="report",
+    fields.setdefault("schedule", CronSchedule(expression="0 6 * * *"))
+    job = JobRecord(id="sched_report", name="daily report", prompt="report",
                     sinks=[NoopSinkSpec()], **fields)
     job.next_fire_at = time.time() - 1
     save_job(job)
@@ -235,7 +236,14 @@ async def test_passing_failures_between_slots_do_not_hide_the_first_one(service)
 
 
 async def test_a_job_saved_with_more_retries_than_allowed_gets_ten(service):
-    job = _report(retry_policy=RetryPolicy(max_retries=11, backoff_seconds=60))
+    # The tenth retry waits 60 * 2**9 s (8.5 h), and a slot that comes sooner
+    # ends the retries. A fixed 06:00 UTC slot failed the test for 8.5 hours
+    # a day, so the slot is put 11-12 hours out from now.
+    hour = (datetime.now(timezone.utc).hour + 12) % 24
+    job = _report(
+        retry_policy=RetryPolicy(max_retries=11, backoff_seconds=60),
+        schedule=CronSchedule(expression=f"0 {hour} * * *"),
+    )
 
     for _ in range(3 * 11):
         saved = await _run_when_due(service, job.id)
