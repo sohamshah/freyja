@@ -1388,48 +1388,57 @@ async def test_watch_mission_announces_end_to_end(tmp_path, monkeypatch):
 # ── TTS helper ──────────────────────────────────────────────────────────────
 
 
-class _TtsResponse:
-    def __init__(self, status_code, content=b"", text=""):
-        self.status_code = status_code
-        self.content = content
-        self.text = text
+def _fake_speak(monkeypatch, takes):
+    """Each call to the Realtime seam returns (pcm, transcript) from
+    ``takes`` in order, or raises it when it is an exception."""
+    calls = []
 
-    def json(self):
-        return {}
+    async def speak(api_key, model, voice, text):
+        calls.append({"model": model, "voice": voice, "text": text})
+        take = takes[len(calls) - 1]
+        if isinstance(take, Exception):
+            raise take
+        return take
+
+    monkeypatch.setattr(voice_service_module, "_realtime_speak", speak)
+    return calls
 
 
 async def test_synthesize_speech_returns_none_on_every_failure(tmp_path, monkeypatch):
-    """A proactive announcement is best-effort: no key, two 500s (the helper retries once) or two network errors all end in None, never an exception."""
+    """A proactive announcement is best-effort: no key, or two failed
+    sessions (the helper retries once), end in None, never an exception."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     assert await voice_service_module._synthesize_speech("hello", "marin") is None
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    down = _TtsResponse(500, text="server error")
-    calls = install_fake_httpx(monkeypatch, [down, down])
+    calls = _fake_speak(monkeypatch, [ConnectionError("down"), RuntimeError("still down")])
     assert await voice_service_module._synthesize_speech("hello", "marin") is None
     assert len(calls) == 2
 
-    install_fake_httpx(monkeypatch, [ConnectionError("down"), ConnectionError("still down")])
-    assert await voice_service_module._synthesize_speech("hello", "marin") is None
 
-
-async def test_synthesize_speech_success_returns_base64(tmp_path, monkeypatch):
+async def test_a_misread_line_is_read_again_and_the_right_take_is_played(tmp_path, monkeypatch):
+    """gpt-realtime-2.1-mini once said "30003" for "3003" (probed
+    2026-11-18), so a transcript that differs from the text gets a retry."""
     import base64 as _b64
+    import io as _io
+    import wave as _wave
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.delenv("FREYJA_VOICE_TTS_VOICE", raising=False)
-    calls = install_fake_httpx(
-        monkeypatch,
-        [_TtsResponse(200, content=b"\x00\x01\x02mp3bytes"), _TtsResponse(200, content=b"x")],
-    )
-    out = await voice_service_module._synthesize_speech("hi", "shimmer")
-    assert out == _b64.b64encode(b"\x00\x01\x02mp3bytes").decode("ascii")
-    # a real TTS voice passes through…
-    assert calls[0]["json"]["voice"] == "shimmer"
-    assert calls[0]["json"]["response_format"] == "mp3"
-    # …while a realtime-only voice (marin/cedar) maps to the default TTS voice
-    await voice_service_module._synthesize_speech("hi", "marin")
-    assert calls[1]["json"]["voice"] == "shimmer"
+    good = b"\x01\x00" * 2400
+    calls = _fake_speak(monkeypatch, [
+        (b"\x02\x00" * 2400, "Freyja: 30003 tests passed."),
+        (good, "Freyja: 3,003 tests passed"),
+    ])
+
+    out = await voice_service_module._synthesize_speech("Freyja: 3003 tests passed.", "cedar")
+
+    with _wave.open(_io.BytesIO(_b64.b64decode(out))) as w:
+        heard = (w.getframerate(), w.getnchannels(), w.readframes(w.getnframes()))
+    assert heard == (24_000, 1, good)
+    # The live session's own voice, marin/cedar included, reads the line.
+    assert [c["voice"] for c in calls] == ["cedar", "cedar"]
+    assert calls[0]["model"] == "gpt-realtime-2.1-mini"
 
 
 # ── GPT-Live seat (docs/GALDR-LIVE.md) ────────────────────────────────────

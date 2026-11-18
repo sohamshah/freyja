@@ -166,9 +166,10 @@ bridge**.
 - `FREYJA_VOICE_LOOK_MODEL` (optional, default `gpt-5-mini`) — the
   one-shot vision model behind screen.look.
 - `FREYJA_VOICE_TTS_MODEL` / `FREYJA_VOICE_TTS_VOICE` (optional, default
-  `gpt-4o-mini-tts` / `shimmer`) — the TTS behind proactive announcements
-  (the realtime marin/cedar voices aren't TTS voices, so a TTS-appropriate
-  voice is used).
+  `gpt-realtime-2.1-mini` / the live session's voice, else `marin`) — the
+  model behind proactive announcements. OpenAI shuts down `gpt-4o-mini-tts`
+  on 2027-01-06; its named replacement runs only on the Realtime API, so
+  one short session reads each line.
 - `~/.freyja/voice/config.json` — model/voice/VAD/idle-timeout plus
   `proactiveVoice` + `quietHours`, bridge-owned.
 

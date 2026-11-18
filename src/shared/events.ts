@@ -1769,8 +1769,10 @@ export type BridgeEvent = Received & (
       type: 'voice_announce'
       /** The spoken line (also shown in the subtle notice). */
       text: string
-      /** base64 mp3 from the bridge's TTS; may be absent if synth failed. */
+      /** base64 audio from the bridge's TTS; may be absent if synth failed. */
       audioB64?: string
+      /** MIME type of audioB64 (audio/wav since the Realtime TTS); mp3 if absent. */
+      audioMime?: string
       /** What triggered it — 'mission' for a finished background mission. */
       source: 'mission'
     }

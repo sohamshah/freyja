@@ -453,12 +453,12 @@ function stopAnnouncement(): void {
  *  element. Replaces any currently-playing announcement (never queues).
  *  Best-effort: autoplay refusal / decode error just leaves the visible
  *  notice standing. */
-function playAnnouncement(audioB64: string): void {
+function playAnnouncement(audioB64: string, mime = 'audio/mp3'): void {
   stopAnnouncement()
   if (typeof document === 'undefined' || typeof Audio === 'undefined') return
   let el: HTMLAudioElement
   try {
-    el = new Audio(`data:audio/mp3;base64,${audioB64}`)
+    el = new Audio(`data:${mime};base64,${audioB64}`)
   } catch {
     return
   }
@@ -1127,7 +1127,7 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
         // inline. (The bridge won't emit voice_announce while a session is
         // live, but a race between session-open and a report is possible.)
         if (s.active) return
-        if (event.audioB64) playAnnouncement(event.audioB64)
+        if (event.audioB64) playAnnouncement(event.audioB64, event.audioMime)
         // Subtle, auto-dismissing notice so the spoken line is also
         // glanceable — a plain info toast (2.6s auto-dismiss).
         try {

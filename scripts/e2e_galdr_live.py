@@ -44,13 +44,12 @@ import wave
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx
 from aiohttp import web
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from bridge.voice.service import VoiceService  # noqa: E402
+from bridge.voice.service import VoiceService, _realtime_speak  # noqa: E402
 from bridge.voice.verbs import VerbResult  # noqa: E402
 
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -69,21 +68,19 @@ def load_key() -> None:
     sys.exit("OPENAI_API_KEY not found")
 
 
-def speech_wav(text: str, path: Path, tail_sec: float = 2.0) -> float:
-    r = httpx.post(
-        "https://api.openai.com/v1/audio/speech",
-        headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-        json={"model": "gpt-4o-mini-tts", "voice": "alloy", "input": text, "response_format": "pcm"},
-        timeout=60,
+async def speech_wav(text: str, path: Path, tail_sec: float = 2.0) -> float:
+    # gpt-4o-mini-tts shuts down 2027-01-06; the announcements' Realtime TTS
+    # reads the utterance instead (24 kHz PCM, as before).
+    pcm, _said = await _realtime_speak(
+        os.environ["OPENAI_API_KEY"], "gpt-realtime-2.1-mini", "alloy", text
     )
-    r.raise_for_status()
     import array
     import random
 
     # A real mic never sends digital zeros: lay the speech over a faint
     # (~-60 dBFS) noise floor that runs for the whole capture.
     rnd = random.Random(3)
-    speech = array.array("h", r.content)
+    speech = array.array("h", pcm)
     lead, tail = 24000 * 3, int(24000 * tail_sec)
     samples = array.array("h", (rnd.randint(-30, 30) for _ in range(lead + len(speech) + tail)))
     for i, v in enumerate(speech):
@@ -219,7 +216,7 @@ async def main(utterance: str, listen_sec: float, fake_screen: bool, electron: b
     load_key()
     work = Path(tempfile.mkdtemp(prefix="galdr-live-e2e-"))
     wav = work / "utterance.wav"
-    audio_sec = speech_wav(utterance, wav, tail_sec=listen_sec + 5)
+    audio_sec = await speech_wav(utterance, wav, tail_sec=listen_sec + 5)
 
     bundle = work / "harness.js"
     subprocess.run(
