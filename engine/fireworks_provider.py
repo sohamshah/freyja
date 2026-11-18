@@ -126,6 +126,12 @@ FIREWORKS_VISION_MODELS: set[str] = {
 }
 
 FIREWORKS_REASONING_MODE: dict[str, str] = {
+    # DeepSeek V4.1 Flash answers reasoning_effort none..max; "none" turns
+    # thinking off (probed 2026-11-18). Without this entry the picker's
+    # levels were never sent and every call thought at the API default.
+    "deepseek-v4p1-flash": "effort",
+    "accounts/fireworks/models/deepseek-v4p1-flash": "effort",
+    "accounts/fireworks/models/deepseek-v4p1-flash-1017": "effort",
     # Fireworks API docs: DeepSeek V4 supports none/low/medium/high/max
     # and defaults to high. Low/medium are promoted to high by Fireworks.
     # GLM 5.1 exposes reasoning/tool calling in Fireworks model metadata.
@@ -154,6 +160,9 @@ FIREWORKS_REASONING_MODE: dict[str, str] = {
 }
 
 FIREWORKS_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
+    "deepseek-v4p1-flash": ("none", "low", "medium", "high", "max"),
+    "accounts/fireworks/models/deepseek-v4p1-flash": ("none", "low", "medium", "high", "max"),
+    "accounts/fireworks/models/deepseek-v4p1-flash-1017": ("none", "low", "medium", "high", "max"),
     "minimax-m3": ("low", "medium", "high"),
     "accounts/fireworks/models/minimax-m3": ("low", "medium", "high"),
     "minimax-m3.1-flash": ("none", "low", "medium", "high", "max"),

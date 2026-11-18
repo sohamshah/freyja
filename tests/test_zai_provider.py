@@ -108,6 +108,18 @@ def test_fireworks_sends_no_reasoning_history_when_reasoning_is_off():
     assert on["extra_body"]["reasoning_history"] == "preserved"
 
 
+def test_deepseek_gets_the_level_the_picker_set():
+    """DeepSeek V4.1 Flash had no reasoning mode, so no reasoning_effort was
+    ever sent: "none" still thought, and "max" ran at the API default."""
+    from engine.fireworks_provider import FireworksConfig, FireworksProvider
+
+    p = FireworksProvider(FireworksConfig(model="deepseek-v4p1-flash", api_key="dummy-key"))
+    msgs = [Message(role="user", content="hi")]
+    off = p._build_request(msgs, thinking=ThinkingConfig(enabled=False, effort="none"))
+    top = p._build_request(msgs, thinking=ThinkingConfig(enabled=True, effort="max"))
+    assert (off["reasoning_effort"], top["reasoning_effort"]) == ("none", "max")
+
+
 def test_flash_sends_images_as_image_url_parts():
     """glm-5.3-flash is natively multimodal; plain glm-5.3 is text-only."""
     from engine.types import ImageBlock

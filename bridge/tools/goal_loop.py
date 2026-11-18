@@ -291,11 +291,11 @@ The judge has four profiles, ordered by intensity:
                  questions. If there is any real work to do — research,
                  code, analysis, anything multi-turn — pick at least
                  `quick`. When in doubt, do NOT pick skip.
-  · `quick`    — GLM 5.3 Flash, no thinking, single-call. Use when the goal is
+  · `quick`    — GLM 5.3 Flash, least thinking, single-call. Use when the goal is
                  small, mechanical, or genuinely easy to evaluate (e.g.
                  "rename this function", "format this file"). Cheap.
   · `standard` — Gemini 4 Hydrogen (Claude Opus 5.5 when the agent runs
-                 on Hydrogen), no thinking, single-call. The default.
+                 on Hydrogen), least thinking, single-call. The default.
                  Use for routine work where the verdict doesn't need
                  deep verification.
   · `deep`     — the standard judge model with HIGH thinking, runs as a

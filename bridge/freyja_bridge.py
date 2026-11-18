@@ -267,8 +267,8 @@ _KANBAN_JUDGE_MODEL_POOL: tuple[str, ...] = (
 #
 # gemini-4-hydrogen for standard/deep: $1.50/$7.50 flat, a fraction of
 # Opus-tier, and it scores just above Argon, which doubles to $4/$20 on
-# Dec 1, 2026. Its thinking floor is LOW, which the judge's thinking-off
-# calls get from the Google provider.
+# Dec 1, 2026. Judges ask for "none"; a model with no off level, like
+# Hydrogen, runs at its lowest level (_thinking_config_for_model).
 # glm-5.3-flash-fireworks for quick: $0.15/$0.50, cheaper AND stronger
 # than the claude-haiku-4-5 it replaces.
 _GOAL_JUDGE_MODEL = "gemini-4-hydrogen"
@@ -3610,7 +3610,10 @@ def _nearest_reasoning_level(model_id: str, reasoning_level: str | None) -> str:
         raw = "none"
     levels = MODEL_REASONING_META.get(model_id, {}).get("reasoningLevels") or []
     ranked = [str(level).lower() for level in levels if str(level).lower() in _REASONING_RUNGS]
-    if raw in _REASONING_RUNGS and raw not in ranked and ranked:
+    if raw in _REASONING_RUNGS and raw not in ranked:
+        if not ranked:
+            # No ladder on record for this model: pass the level through.
+            return raw
         want = _REASONING_RUNGS.index(raw)
         return min(
             ranked,
@@ -3628,7 +3631,15 @@ def _thinking_config_for_model(model_id: str, reasoning_level: str | None = "aut
     if not supports_thinking:
         return ThinkingConfig()
 
-    level = _normalize_reasoning_level(model_id, reasoning_level)
+    if str(reasoning_level or "").strip().lower() in ("none", "off"):
+        # "none" on a model with no off level (Opus 5.5, Fable, GPT-6.x
+        # Astra/Sol, Gemini 4, GLM 5.3) is its lowest level, not its
+        # default: the goal judge asked Hydrogen for "none" and thought at
+        # HIGH. Stored session levels are already valid, so this only
+        # reaches callers that ask for no thinking.
+        level = _nearest_reasoning_level(model_id, "none")
+    else:
+        level = _normalize_reasoning_level(model_id, reasoning_level)
     if level in ("none", "off"):
         # Keep effort='none' so providers that need an explicit opt-out
         # (OpenAI) can distinguish it from "unspecified default".

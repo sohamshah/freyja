@@ -37,6 +37,20 @@ def test_every_judge_model_is_registered_and_priced():
     assert unpriced == [], f"judge models with no pricing row: {unpriced}"
 
 
+def test_a_judge_asking_for_no_thinking_gets_its_models_lowest_level():
+    """Judges ask for "none". Hydrogen has no off level, and "none" ran the
+    standard goal judge at its default, HIGH."""
+    from bridge.freyja_bridge import MODEL_REASONING_META, _thinking_config_for_model
+
+    for model in _ALL_JUDGE_MODELS:
+        levels = MODEL_REASONING_META[model]["reasoningLevels"]
+        thinking = _thinking_config_for_model(model, "none")
+        if "none" in levels:
+            assert not thinking.enabled, model
+        else:
+            assert (thinking.enabled, thinking.effort) == (True, levels[0]), model
+
+
 def test_board_pool_spans_three_providers():
     """The pool exists to average out single-model bias; that only works
     if the entries actually come from different providers."""

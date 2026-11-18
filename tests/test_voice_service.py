@@ -1424,7 +1424,9 @@ async def test_a_misread_line_is_read_again_and_the_right_take_is_played(tmp_pat
     import wave as _wave
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    monkeypatch.delenv("FREYJA_VOICE_TTS_VOICE", raising=False)
+    # Overrides left from the speech endpoint would fail every session.
+    monkeypatch.setenv("FREYJA_VOICE_TTS_VOICE", "nova")
+    monkeypatch.setenv("FREYJA_VOICE_TTS_MODEL", "gpt-4o-mini-tts")
     good = b"\x01\x00" * 2400
     calls = _fake_speak(monkeypatch, [
         (b"\x02\x00" * 2400, "Freyja: 30003 tests passed."),

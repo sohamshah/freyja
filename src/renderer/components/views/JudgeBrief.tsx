@@ -68,12 +68,12 @@ const JUDGE_PROFILE_META: Record<
   quick: {
     name: 'Quick',
     cost: 'cheap · fast',
-    tagline: 'GLM 5.3 Flash, no thinking. Use when every turn needs a sanity gate.',
+    tagline: 'GLM 5.3 Flash, least thinking. Use when every turn needs a sanity gate.',
   },
   standard: {
     name: 'Standard',
     cost: 'cheap',
-    tagline: 'Gemini 4 Hydrogen, never the agent\'s own model, no thinking. Default rigor.',
+    tagline: 'Gemini 4 Hydrogen, never the agent\'s own model, least thinking. Default rigor.',
   },
   deep: {
     name: 'Deep',

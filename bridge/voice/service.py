@@ -253,29 +253,32 @@ async def _realtime_speak(api_key: str, model: str, voice: str, text: str) -> tu
     pcm = bytearray()
     said: list[str] = []
     client = AsyncOpenAI(api_key=api_key)
-    async with client.realtime.connect(model=model) as conn:
-        await conn.session.update(session={
-            "type": "realtime",
-            "output_modalities": ["audio"],
-            "instructions": _TTS_INSTRUCTIONS,
-            "audio": {
-                "output": {"voice": voice, "format": {"type": "audio/pcm", "rate": _TTS_RATE}},
-            },
-        })
-        await conn.conversation.item.create(item={
-            "type": "message", "role": "user",
-            "content": [{"type": "input_text", "text": text}],
-        })
-        await conn.response.create()
-        async for event in conn:
-            if event.type == "response.output_audio.delta":
-                pcm.extend(base64.b64decode(event.delta))
-            elif event.type == "response.output_audio_transcript.delta":
-                said.append(event.delta)
-            elif event.type == "error":
-                raise RuntimeError(getattr(event.error, "message", "realtime error"))
-            elif event.type == "response.done":
-                break
+    try:
+        async with client.realtime.connect(model=model) as conn:
+            await conn.session.update(session={
+                "type": "realtime",
+                "output_modalities": ["audio"],
+                "instructions": _TTS_INSTRUCTIONS,
+                "audio": {
+                    "output": {"voice": voice, "format": {"type": "audio/pcm", "rate": _TTS_RATE}},
+                },
+            })
+            await conn.conversation.item.create(item={
+                "type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+            })
+            await conn.response.create()
+            async for event in conn:
+                if event.type == "response.output_audio.delta":
+                    pcm.extend(base64.b64decode(event.delta))
+                elif event.type == "response.output_audio_transcript.delta":
+                    said.append(event.delta)
+                elif event.type == "error":
+                    raise RuntimeError(getattr(event.error, "message", "realtime error"))
+                elif event.type == "response.done":
+                    break
+    finally:
+        await client.close()
     return bytes(pcm), "".join(said)
 
 
@@ -310,7 +313,11 @@ async def _synthesize_speech(text: str, voice: str) -> Optional[str]:
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key or not text.strip():
         return None
-    model = os.environ.get("FREYJA_VOICE_TTS_MODEL", "").strip() or _TTS_MODEL_DEFAULT
+    model = os.environ.get("FREYJA_VOICE_TTS_MODEL", "").strip()
+    if not model.startswith("gpt-realtime"):
+        # Unset, or a speech-endpoint model (gpt-4o-mini-tts, tts-1) left
+        # from before the switch: those don't open a Realtime session.
+        model = _TTS_MODEL_DEFAULT
     tts_voice = _tts_voice_for(voice)
     take: bytes | None = None
     for _attempt in range(2):
@@ -318,7 +325,9 @@ async def _synthesize_speech(text: str, voice: str) -> Optional[str]:
             pcm, said = await asyncio.wait_for(
                 _realtime_speak(api_key, model, tts_voice, text), _TTS_TIMEOUT_S
             )
-        except Exception:  # noqa: BLE001 — network/timeout/API error: retry once, then give up
+        except Exception as exc:  # noqa: BLE001 — network/timeout/API error: retry once, then give up
+            print(f"[voice:warn] announcement speech failed: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
             continue
         if not pcm:
             continue
@@ -332,8 +341,9 @@ def _tts_voice_for(voice: str) -> str:
     """The announcement voice: the operator's realtime voice preference when
     the Realtime API has it, else the default. Overridable wholesale via
     FREYJA_VOICE_TTS_VOICE."""
-    override = os.environ.get("FREYJA_VOICE_TTS_VOICE", "").strip()
-    if override:
+    override = os.environ.get("FREYJA_VOICE_TTS_VOICE", "").strip().lower()
+    if override in _TTS_VOICES:
+        # An old speech-endpoint voice (nova, fable, onyx) is ignored.
         return override
     v = (voice or "").strip().lower()
     if v in _TTS_VOICES:
