@@ -94,7 +94,10 @@ def _thinking_level_for(model: str, effort: str) -> str:
     m = (model or "").lower()
     if effort in ("xhigh", "max") and any(base in m for base in _XHIGH_MODELS):
         return "XHIGH"
-    return _EFFORT_TO_THINKING_LEVEL.get(effort, "HIGH")
+    level = _EFFORT_TO_THINKING_LEVEL.get(effort, "HIGH")
+    if level == "MINIMAL":
+        return _floor_thinking_level(model)
+    return level
 
 
 # Gemini reasoning models that REJECT thinking_level=MINIMAL with a 400

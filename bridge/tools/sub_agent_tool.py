@@ -1175,6 +1175,12 @@ Parameters:
             thinking_effort = (
                 str(fork_context.get("thinking_effort") or "") or thinking_effort
             )
+        if thinking_effort not in ("auto", "off", "none", ""):
+            # An agent type names one level for every model it may run on.
+            # A level the child model lacks ("minimal" on Gemini 4, "xhigh"
+            # on Haiku 4.5) is a 400; take the model's closest level.
+            from bridge.freyja_bridge import _nearest_reasoning_level
+            thinking_effort = _nearest_reasoning_level(child_model, thinking_effort)
         child_registry = ToolRegistry()
         for name in sorted(allowed):
             tool = parent_tools.get(name)

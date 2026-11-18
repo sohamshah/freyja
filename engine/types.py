@@ -513,8 +513,14 @@ class ThinkingConfig:
     enabled: bool = False
     effort: str = "high"
     """Effort level for adaptive thinking: low, medium, high, max (Opus 4.6 only)."""
-    budget_tokens: int = 10000
-    """Budget tokens for legacy models (Claude 4.5). Ignored on Claude 4.6."""
+    budget_tokens: int = 0
+    """Budget tokens for legacy models (Claude 4.5). Ignored on Claude 4.6.
+    0 takes the budget for ``effort`` from THINKING_LEVEL_BUDGETS, so the
+    low/medium/high levels of a budget-mode model think different amounts."""
+
+    def __post_init__(self) -> None:
+        if not self.budget_tokens:
+            self.budget_tokens = THINKING_LEVEL_BUDGETS.get(self.effort, 10_000)  # type: ignore[call-overload]
 
     @classmethod
     def from_level(cls, level: ThinkingLevel) -> "ThinkingConfig":

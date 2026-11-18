@@ -3559,6 +3559,28 @@ def _normalize_reasoning_level(model_id: str, reasoning_level: str | None) -> st
     return "none"
 
 
+_REASONING_RUNGS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def _nearest_reasoning_level(model_id: str, reasoning_level: str | None) -> str:
+    """Like _normalize_reasoning_level, but a known level the model lacks
+    moves to the closest level it has (a tie goes up), not to its default.
+    A sub-agent type set to "minimal" means little thinking, and Gemini 4
+    has no minimal: it gets "low" instead of a 400 or the default "high"."""
+    raw = str(reasoning_level or "auto").strip().lower()
+    if raw == "off":
+        raw = "none"
+    levels = MODEL_REASONING_META.get(model_id, {}).get("reasoningLevels") or []
+    ranked = [str(level).lower() for level in levels if str(level).lower() in _REASONING_RUNGS]
+    if raw in _REASONING_RUNGS and raw not in ranked and ranked:
+        want = _REASONING_RUNGS.index(raw)
+        return min(
+            ranked,
+            key=lambda level: (abs(_REASONING_RUNGS.index(level) - want), -_REASONING_RUNGS.index(level)),
+        )
+    return _normalize_reasoning_level(model_id, raw)
+
+
 def _thinking_config_for_model(model_id: str, reasoning_level: str | None = "auto") -> "Any":
     """Return the ThinkingConfig represented by a UI/provider reasoning level."""
     from engine.types import ThinkingConfig

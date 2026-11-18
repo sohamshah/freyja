@@ -52,8 +52,13 @@ def _provider(model: str) -> GoogleProvider:
         # thinking-off and Argon answered 400 (reproduced live 2026-10-28
         # through complete_async with ThinkingConfig(enabled=False)).
         ("gemini-4-argon", ThinkingConfig(enabled=False), {}, "LOW"),
+        # A sub-agent type set to "minimal" ran on Hydrogen as MINIMAL: 400.
+        ("gemini-4-hydrogen", ThinkingConfig(enabled=True, effort="minimal"), {}, "LOW"),
     ],
-    ids=["pro-thinking-off", "pro-structured-output", "flash-thinking-off", "argon-thinking-off"],
+    ids=[
+        "pro-thinking-off", "pro-structured-output", "flash-thinking-off", "argon-thinking-off",
+        "minimal-on-a-model-without-it",
+    ],
 )
 def test_thinking_off_and_structured_calls_send_the_model_floor(model, thinking, kwargs, level):
     tc = _provider(model)._build_thinking_config(thinking, **kwargs)

@@ -613,7 +613,10 @@ class AnthropicProvider:
             await self._image_files.prepare(messages)
         if thinking is not None and thinking.enabled:
             # The effort can change without losing the cache; one token is
-            # all the reply gets anyway.
+            # all the reply gets anyway. A budget-shape model (Haiku 4.5,
+            # Opus 4.5) keeps its budget: a smaller one loses the message
+            # cache (probed 2026-11-18), and max_tokens must exceed the
+            # budget, so its ping thinks briefly (~130 tokens on Haiku 4.5).
             thinking = ThinkingConfig(
                 enabled=True, effort="low", budget_tokens=thinking.budget_tokens,
             )
@@ -1063,10 +1066,9 @@ class AnthropicProvider:
         # Calculate max_tokens
         effective_max_tokens = max_tokens or self._config.max_tokens
 
-        # For Claude 4.5 models with thinking, ensure max_tokens > budget_tokens
-        # Claude 4.6 uses adaptive thinking and doesn't need this constraint
-        is_legacy_model = "4-5" in self._model or "4.5" in self._model
-        if think_config.enabled and self.supports_thinking and is_legacy_model:
+        # Budget-shape models need max_tokens > budget_tokens; adaptive
+        # models don't have this constraint.
+        if think_config.enabled and self._model in LEGACY_THINKING_MODELS:
             # Ensure max_tokens > budget_tokens for legacy models
             effective_max_tokens = max(
                 effective_max_tokens,

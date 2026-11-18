@@ -310,6 +310,31 @@ def test_legacy_thinking_models_get_the_budget_shape():
         assert on.get_output_config(model) is None, model
 
 
+def test_budget_mode_levels_think_different_amounts():
+    """Every level of a budget-mode model sent budget_tokens 10000, so
+    low, medium and high thought the same."""
+    from bridge.freyja_bridge import _thinking_config_for_model
+
+    for model in sorted(LEGACY_THINKING_MODELS):
+        budgets = [
+            _thinking_config_for_model(model, level).to_api_param(model)["budget_tokens"]
+            for level in ("low", "medium", "high")
+        ]
+        assert budgets == sorted(set(budgets)), (model, budgets)
+
+
+def test_a_sub_agent_level_the_model_lacks_moves_to_its_closest_level():
+    """Agent types name one thinking level for any model. "minimal" on
+    Gemini 4 went out as MINIMAL and answered 400."""
+    from bridge.freyja_bridge import MODEL_REASONING_META, _REASONING_RUNGS, _nearest_reasoning_level
+
+    for model, meta in MODEL_REASONING_META.items():
+        for rung in _REASONING_RUNGS:
+            assert _nearest_reasoning_level(model, rung) in meta["reasoningLevels"], (model, rung)
+    assert _nearest_reasoning_level("gemini-4-hydrogen", "minimal") == "low"
+    assert _nearest_reasoning_level("claude-haiku-4-5", "max") == "high"
+
+
 def test_long_prompt_rate_card_applies_to_one_call_over_the_threshold():
     """Haiku 5.5 bills $0.50/$2.50 once a prompt passes 100k tokens. Only a
     single call's prompt counts: a run's summed tokens pass the threshold
