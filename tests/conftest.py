@@ -57,6 +57,10 @@ def _isolated_freyja_home(tmp_path_factory, monkeypatch):
     # launchd has one job registry per macOS user, so a test that installs
     # a LaunchAgent replaces the real Freyja job (bridge/launchd_guard.py).
     monkeypatch.setenv("FREYJA_NO_LAUNCHD", "1")
+    # A session builds its provider as it starts, and that checks only that
+    # the key is set. Tests that started sessions passed only when the shell
+    # had a key or an earlier test had left one behind.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
     # emit() asks the state a process sets as it starts. A test that starts
     # a gateway sets it, and later tests would ask that one.
     bridge = sys.modules.get("bridge.freyja_bridge")

@@ -38,8 +38,12 @@ BRIDGE = pathlib.Path(__file__).resolve().parent.parent / "bridge"
 def test_missing_keys_are_filled_from_the_env_file(monkeypatch):
     import os
 
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    for key in ("ANTHROPIC_API_KEY", "SLACK_BOT_TOKEN"):
+        # setenv first so teardown removes what the loader writes; a bare
+        # delenv of an unset key records nothing and the keys leaked into
+        # every later test.
+        monkeypatch.setenv(key, "")
+        monkeypatch.delenv(key)
 
     # No env file at all: nothing to load, nothing raised.
     monkeypatch.setattr("bridge.gateway.run.read_env", dict)
