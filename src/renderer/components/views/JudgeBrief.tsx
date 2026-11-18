@@ -72,8 +72,8 @@ const JUDGE_PROFILE_META: Record<
   },
   standard: {
     name: 'Standard',
-    cost: 'same as agent',
-    tagline: 'Mirrors the agent model, no thinking. Default rigor.',
+    cost: 'cheap',
+    tagline: 'Gemini 4 Hydrogen, never the agent\'s own model, no thinking. Default rigor.',
   },
   deep: {
     name: 'Deep',

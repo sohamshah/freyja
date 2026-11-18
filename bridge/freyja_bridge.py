@@ -254,9 +254,9 @@ _DEEP_JUDGE_SAFETY_NET_ITERATIONS = 50
 # default resolution at spawn time. Keep this list short — adding more
 # models linearly increases the chance you hit a missing-API-key path.
 _KANBAN_JUDGE_MODEL_POOL: tuple[str, ...] = (
-    "claude-fable-5-1",
-    "gpt-5.6-sol",
-    "gemini-4-argon",
+    "claude-fable-5-2",
+    "gpt-6.2-sol",
+    "gemini-4-hydrogen",
 )
 # Goal-mode judge models. Deliberately NOT the session's own model: a
 # model grading its own work carries its own blind spots into the
@@ -265,14 +265,13 @@ _KANBAN_JUDGE_MODEL_POOL: tuple[str, ...] = (
 # `self.model_id` and the judge was whatever the session happened to be
 # running — so the default-model change made the agent its own grader.
 #
-# gemini-4-argon for standard/deep: Google's flagship at $2/$10 (intro
-# through Nov 30, 2026; $4/$20 after), a fraction of Opus-tier, and it
-# carries the same thinking-floor handling the judge's thinking-off
-# calls need (its floor is LOW, like the 3.1 Pro it replaces here —
-# 3.1 Pro now bills $2/$12 and is the weaker model).
+# gemini-4-hydrogen for standard/deep: $1.50/$7.50 flat, a fraction of
+# Opus-tier, and it scores just above Argon, which doubles to $4/$20 on
+# Dec 1, 2026. Its thinking floor is LOW, which the judge's thinking-off
+# calls get from the Google provider.
 # glm-5.3-flash-fireworks for quick: $0.15/$0.50, cheaper AND stronger
 # than the claude-haiku-4-5 it replaces.
-_GOAL_JUDGE_MODEL = "gemini-4-argon"
+_GOAL_JUDGE_MODEL = "gemini-4-hydrogen"
 _GOAL_JUDGE_MODEL_ALT = "claude-opus-5-5"
 _GOAL_JUDGE_QUICK_MODEL = "glm-5.3-flash-fireworks"
 _GOAL_JUDGE_QUICK_MODEL_ALT = "claude-haiku-5-5"

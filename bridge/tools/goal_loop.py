@@ -294,10 +294,11 @@ The judge has four profiles, ordered by intensity:
   · `quick`    — GLM 5.3 Flash, no thinking, single-call. Use when the goal is
                  small, mechanical, or genuinely easy to evaluate (e.g.
                  "rename this function", "format this file"). Cheap.
-  · `standard` — same model as the agent, no thinking, single-call. The
-                 default. Use for routine work where the verdict
-                 doesn't need deep verification.
-  · `deep`     — same model as the agent with HIGH thinking, runs as a
+  · `standard` — Gemini 4 Hydrogen (Claude Opus 5.5 when the agent runs
+                 on Hydrogen), no thinking, single-call. The default.
+                 Use for routine work where the verdict doesn't need
+                 deep verification.
+  · `deep`     — the standard judge model with HIGH thinking, runs as a
                  subagent with read-only tools (read_file, list_directory,
                  grep, glob, bash, fetch_url). Use when the goal asks for
                  something *checkable* — claims that can be verified by
