@@ -15,11 +15,16 @@ import httpx
 from bridge.tools.base import ImageBlock, TextBlock, ToolDefinition, ToolResult, ToolTier
 from bridge.tools.image_store import ImageAsset, SessionImageStore, strip_data_url
 
-DEFAULT_IMAGE_MODEL = "gpt-image-2.5-sunburst"
+DEFAULT_IMAGE_MODEL = "gpt-image-2.6-sunburst"
 # GPT Image 1 shut down on 2026-10-23; GPT Image 1.5 and 1 Mini are
 # deprecated and shut down on 2026-12-01 (OpenAI deprecations page). They
 # took the legacy fixed sizes and an input_fidelity knob; both went with them.
+# GPT Image 2 shuts down on 2027-02-10; OpenAI names 2.6 as its replacement.
 OPENAI_IMAGE_MODELS = {
+    # GPT Image 2.6 (2026-11-04): same token rates as 2.5, about 50% faster,
+    # and a `complexity` knob. No dated snapshot ids yet (404, 2026-11-18).
+    "gpt-image-2.6-sunburst",
+    "gpt-image-2.6-flare",
     "gpt-image-2.5-sunburst",
     "gpt-image-2.5-sunburst-2026-09-08",
     "gpt-image-2.5-flare",
@@ -51,6 +56,12 @@ SUPPORTED_QUALITIES = {"auto", "low", "medium", "high", "xhigh", "max"}
 SUPPORTED_FORMATS = {"png", "jpeg", "webp"}
 SUPPORTED_BACKGROUNDS = {"auto", "opaque", "transparent"}
 SUPPORTED_MODERATION = {"auto", "low"}
+SUPPORTED_COMPLEXITY = {"low", "medium", "high"}
+# Models with the xhigh/max quality rungs, and the ones that take `complexity`.
+XHIGH_QUALITY_MODELS = {
+    m for m in OPENAI_IMAGE_MODELS if m.startswith(("gpt-image-2.5-", "gpt-image-2.6-"))
+}
+COMPLEXITY_MODELS = {m for m in OPENAI_IMAGE_MODELS if m.startswith("gpt-image-2.6-")}
 
 
 def _timestamp_str() -> str:
@@ -339,7 +350,7 @@ class GenerateImageTool:
         return ToolDefinition(
             name="generate_image",
             summary=(
-                "Generate or edit an image with GPT Image 2.5 Sunburst or Flare, "
+                "Generate or edit an image with GPT Image 2.6 Sunburst or Flare, "
                 "or Gemini Nano Banana 2.1"
             ),
             tier=ToolTier.WARM,
@@ -351,8 +362,10 @@ provided, this edits/transforms those images; otherwise it generates from text.
 The tool returns an inline image, a reusable session ref, and a saved file path.
 
 Model selection:
-- Default: gpt-image-2.5-sunburst, best for precise edits and detail preservation.
-- Choose gpt-image-2.5-flare for fast, high-quality everyday generation.
+- Default: gpt-image-2.6-sunburst, best for precise edits and detail preservation.
+- Choose gpt-image-2.6-flare for fast, high-quality everyday generation.
+- GPT Image 2.5 Sunburst/Flare and GPT Image 2 stay available; 2.6 is about
+  50% faster at the same token rates.
 - Choose gemini-nano-banana-2.1 (Google, needs GEMINI_API_KEY) for fast generation
   with strong text rendering and consistent characters/objects across up to 14
   reference images. It renders at 1K/2K/4K in a fixed set of aspect ratios and
@@ -360,7 +373,7 @@ Model selection:
   jpeg unless output_format asks for something else.
 - An explicit model overrides FREYJA_IMAGE_MODEL, which overrides the default.
 - Dated snapshots are available in the model enum.
-- GPT Image 2 and 2.5 process reference images at high fidelity automatically.
+- GPT Image 2, 2.5 and 2.6 process reference images at high fidelity automatically.
 
 Guidelines:
 - Write the prompt as the actual image brief, not conversational scaffolding.
@@ -386,13 +399,13 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                         "description": (
                             "Sunburst for editing precision; Flare for fast everyday generation; "
                             "gemini-nano-banana-2.1 for Google's Nano Banana 2.1 (GEMINI_API_KEY). "
-                            "Omit to use FREYJA_IMAGE_MODEL or gpt-image-2.5-sunburst."
+                            "Omit to use FREYJA_IMAGE_MODEL or gpt-image-2.6-sunburst."
                         ),
                     },
                     "size": {
                         "type": "string",
                         "description": (
-                            "auto or WIDTHxHEIGHT. GPT Image 2/2.5: edges divisible by 16, "
+                            "auto or WIDTHxHEIGHT. GPT Image 2/2.5/2.6: edges divisible by 16, "
                             "at most 3840px; ratio 1:3–3:1; 655360–8294400 total pixels. "
                             "Examples: 1024x1024, 1536x864, 2048x2048, 3840x2160. "
                             "Above 2560x1440 is experimental. Nano Banana: auto, an "
@@ -405,8 +418,8 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                         "type": "string",
                         "enum": sorted(SUPPORTED_QUALITIES),
                         "description": (
-                            "low for drafts; medium/high for final assets. GPT Image 2.5 also "
-                            "supports xhigh/max. Higher settings can cost more and take longer. "
+                            "low for drafts; medium/high for final assets. GPT Image 2.5 and "
+                            "2.6 also support xhigh/max. Higher settings can cost more and take longer. "
                             "Nano Banana: low/medium render at 1K, high at 2K, xhigh/max at 4K "
                             "unless an explicit WIDTHxHEIGHT size sets the tier."
                         ),
@@ -481,6 +494,15 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                             "mime_type": {"type": "string"},
                         },
                     },
+                    "complexity": {
+                        "type": "string",
+                        "enum": sorted(SUPPORTED_COMPLEXITY),
+                        "description": (
+                            "GPT Image 2.6 only: how much detail the model works into the "
+                            "image. low is faster for simple icons or flat art. Omit for the "
+                            "default (high). Ignored on other models."
+                        ),
+                    },
                     "output_compression": {
                         "type": "integer",
                         "minimum": 0,
@@ -544,7 +566,7 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                 size = _clean_size(arguments.get("size"), model)
             size_label = size
             qualities = SUPPORTED_QUALITIES
-            if not (gemini or model.startswith("gpt-image-2.5-")):
+            if not (gemini or model in XHIGH_QUALITY_MODELS):
                 qualities = qualities - {"xhigh", "max"}
             quality = _clean_enum(
                 arguments.get("quality"), name="quality", allowed=qualities, default="auto"
@@ -581,6 +603,12 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                         f"{model} does not take a mask_image; describe the region to "
                         "change in the prompt"
                     )
+            complexity = None
+            if model in COMPLEXITY_MODELS and arguments.get("complexity") not in ("", None):
+                complexity = _clean_enum(
+                    arguments.get("complexity"), name="complexity",
+                    allowed=SUPPORTED_COMPLEXITY, default="high",
+                )
             output_compression = _clean_compression(arguments.get("output_compression"))
             if output_format == "png":
                 output_compression = None
@@ -631,6 +659,7 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
                     moderation=moderation,
                     input_images=input_images,
                     mask_image=mask_image,
+                    complexity=complexity,
                 )
         except Exception as exc:  # noqa: BLE001
             return ToolResult(
@@ -714,6 +743,7 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
         moderation: str,
         input_images: list[ImageAsset],
         mask_image: ImageAsset | None,
+        complexity: str | None = None,
     ) -> tuple[str, str]:
         client = self._make_client(api_key)
 
@@ -730,6 +760,7 @@ API documentation: https://developers.openai.com/api/docs/guides/image-generatio
             "background": background,
             "output_compression": output_compression,
             "moderation": moderation,
+            "complexity": complexity,
         }
         if input_images:
             kwargs["image"] = [

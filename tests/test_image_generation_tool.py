@@ -136,7 +136,7 @@ async def test_generate_image_returns_inline_image_block(monkeypatch, tmp_path) 
     assert result.content[1].media_type == "image/png"
     assert getattr(result.content[1], "width") == 1
     assert getattr(result.content[1], "height") == 1
-    assert fake.images.kwargs["model"] == "gpt-image-2.5-sunburst"
+    assert fake.images.kwargs["model"] == "gpt-image-2.6-sunburst"
     assert fake.images.kwargs["prompt"] == "a tiny luminous topo map"
     assert fake.images.kwargs["size"] == "1024x1024"
     assert fake.images.kwargs["quality"] == "high"
@@ -238,8 +238,8 @@ def test_generate_image_schema_agrees_with_the_validator() -> None:
 @pytest.mark.parametrize(
     ("env_model", "explicit_model", "expected_model"),
     [
-        (None, None, "gpt-image-2.5-sunburst"),
-        ("   ", None, "gpt-image-2.5-sunburst"),
+        (None, None, "gpt-image-2.6-sunburst"),
+        ("   ", None, "gpt-image-2.6-sunburst"),
         (" gpt-image-2.5-flare ", None, "gpt-image-2.5-flare"),
         ("gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-flare"),
         ("invalid-environment-model", "gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst"),
@@ -262,6 +262,17 @@ async def test_model_selection_precedence(
 
     assert not result.is_error
     assert fake.images.generate_kwargs["model"] == expected_model
+
+
+@pytest.mark.asyncio
+async def test_complexity_reaches_gpt_image_2_6_only() -> None:
+    for model, expected in (("gpt-image-2.6-flare", "low"), ("gpt-image-2.5-flare", None)):
+        fake = FakeClient()
+        tool = GenerateImageTool(client_factory=lambda _key, fake=fake: fake)
+        result = await tool.execute("c", {"prompt": "flat icon", "model": model, "complexity": "low"})
+        assert not result.is_error
+        sent = fake.images.generate_kwargs
+        assert {**sent, **(sent.get("extra_body") or {})}.get("complexity") == expected, model
 
 
 @pytest.mark.asyncio
