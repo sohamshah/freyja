@@ -163,11 +163,11 @@ THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
 # back to standard speed at standard pricing; we still list it so existing
 # requests don't silently break. 4.7 is stricter than 4.6 — it *errors* on
 # speed:"fast" rather than falling back — but it stays listed for the same
-# reason. Only 4.8 and 5.5 get a distinct `-fast` tier id in AVAILABLE_MODELS.
+# reason. Only 5.5 gets a distinct `-fast` tier id in AVAILABLE_MODELS.
+# Opus 4.8 fast mode ends 2026-11-30 (an error after that, not a fallback).
 FAST_MODE_MODELS = {
-    # Opus 5.5 fast mode is $8/$40 (2x standard), vs 4.8's $10/$50.
+    # Opus 5.5 fast mode is $8/$40 (2x standard).
     "claude-opus-5-5",
-    "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-opus-4-6",
 }

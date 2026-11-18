@@ -1427,7 +1427,6 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'claude-sonnet-5-5': 1_000_000,
   // Claude 4.8
   'claude-opus-4-8': 1_000_000,
-  'claude-opus-4-8-fast': 1_000_000,
   // Claude 4.7
   'claude-opus-4-7': 1_000_000,
   // Claude 5
@@ -1445,6 +1444,9 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // OpenAI
   'gpt-6.2-astra': 1_050_000,
   'gpt-6.2-sol': 1_050_000,
+  'gpt-6.2-astra-ultrafast': 1_050_000,
+  'gpt-6.2-sol-ultrafast': 1_050_000,
+  'gpt-6.1-terra': 1_050_000,
   'gpt-6-astra': 1_050_000,
   'gpt-6-astra-ultrafast': 1_050_000,
   'gpt-6.1-sol': 1_050_000,
@@ -1465,6 +1467,7 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // "wrong" because the UI denominator didn't match the provider.
   'deepseek-v4p1-flash': 1_048_576,
   'minimax-m3': 524_288,
+  'minimax-m3.1-flash': 1_040_000,
   'kimi-k3.1-pro': 1_048_576,
   'kimi-k3': 1_048_576,
   'kimi-k3-fast': 1_048_576,
@@ -1503,7 +1506,6 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'claude-opus-5-5': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
   'claude-opus-5-5-fast': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
   'claude-opus-4-8': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
-  'claude-opus-4-8-fast': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-opus-4-7': { levels: ['auto'], defaultLevel: 'auto' },
   'claude-opus-4-6': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'max' },
   // Sonnet 5.5 keeps 'none', but it means between_tools (no up-front
@@ -1519,6 +1521,9 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   // Astra: no 'none' or 'minimal' rung. The GPT-6.2 pair keeps that ladder.
   'gpt-6.2-astra': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'gpt-6.2-sol': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
+  'gpt-6.2-astra-ultrafast': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
+  'gpt-6.2-sol-ultrafast': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
+  'gpt-6.1-terra': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
   'gpt-6-astra': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'gpt-6-astra-ultrafast': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'gpt-6.1-sol': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
@@ -1536,6 +1541,7 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'kimi-k3': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
   'kimi-k3-fast': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
   'minimax-m3': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
+  'minimax-m3.1-flash': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'medium' },
   // GLM 5.3 family — reasoning is mandatory (no 'none' rung), on both
   // the Z.ai and Fireworks routes.
   'glm-5.3': { levels: ['low', 'high', 'max'], defaultLevel: 'high' },

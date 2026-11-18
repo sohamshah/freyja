@@ -75,6 +75,7 @@ logger = logging.getLogger(__name__)
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-6.2-astra": 1_050_000,
     "gpt-6.2-sol": 1_050_000,
+    "gpt-6.1-terra": 1_050_000,
     "gpt-6-astra": 1_050_000,
     "gpt-6.1-sol": 1_050_000,
     "gpt-6-luna": 1_050_000,
@@ -97,9 +98,11 @@ REASONING_MODELS: set[str] = {
     "gpt-6.2-astra",
     "gpt-6.2-sol",
     "gpt-6-astra",
-    # gpt-6.1-sol also rejects "none"/"minimal"; gpt-6-luna accepts "none"
-    # but not "minimal". Both ladders live in MODEL_REASONING_META.
+    # gpt-6.1-sol also rejects "none"/"minimal"; gpt-6-luna and
+    # gpt-6.1-terra accept "none" but not "minimal" (Terra probed
+    # 2026-11-18). The ladders live in MODEL_REASONING_META.
     "gpt-6.1-sol",
+    "gpt-6.1-terra",
     "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -113,6 +116,7 @@ REASONING_MODELS: set[str] = {
 NATIVE_COMPUTER_MODELS: set[str] = {
     "gpt-6.2-astra",
     "gpt-6.2-sol",
+    "gpt-6.1-terra",
     "gpt-6-astra",
     "gpt-6.1-sol",
     "gpt-6-luna",
@@ -127,6 +131,7 @@ NATIVE_COMPUTER_MODELS: set[str] = {
 LONG_PROMPT_CACHE_MODELS: set[str] = {
     "gpt-6.2-astra",
     "gpt-6.2-sol",
+    "gpt-6.1-terra",
     "gpt-6-astra",
     "gpt-6.1-sol",
     "gpt-6-luna",
@@ -136,10 +141,13 @@ LONG_PROMPT_CACHE_MODELS: set[str] = {
 }
 
 # Models that take `service_tier: "ultrafast"`. Freyja lists each as its own
-# `<model>-ultrafast` id, priced at the tier's 6x rates. Other models answer
-# 400 "Invalid service_tier argument".
+# `<model>-ultrafast` id, priced from engine/providers.py
+# SPEED_TIER_PRICE_FACTORS. Other models, GPT-6.1 Terra among them, answer
+# 400 "Invalid service_tier argument" (probed 2026-11-18).
 ULTRAFAST_SUFFIX = "-ultrafast"
 ULTRAFAST_MODELS: set[str] = {
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     "gpt-6-astra",
     "gpt-6.1-sol",
 }

@@ -61,7 +61,9 @@ FIREWORKS_MODEL_MAP: dict[str, str] = {
     # Path verified against the live Fireworks model list on 2026-09-29:
     # it sits under the `fireworks` account, NOT `deepseek-ai`, even though
     # the public playground URL is fireworks.ai/models/deepseek-ai/...
-    "deepseek-v4p1-flash": "accounts/fireworks/models/deepseek-v4p1-flash",
+    # Since 2026-11-18 the id runs the Oct 17 post-training snapshot, which
+    # Fireworks serves beside the Sep 10 build at the same price.
+    "deepseek-v4p1-flash": "accounts/fireworks/models/deepseek-v4p1-flash-1017",
     # The nine ids Fireworks removed from serverless on 2026-09-26 are gone
     # from this map; engine/providers.py:RETIRED_MODEL_REPLACEMENTS says
     # what runs in their place.
@@ -70,6 +72,7 @@ FIREWORKS_MODEL_MAP: dict[str, str] = {
     "glm-5.3-fireworks": "accounts/fireworks/models/glm-5p3",
     "glm-5.3-flash-fireworks": "accounts/fireworks/models/glm-5p3-flash",
     "minimax-m3": "accounts/fireworks/models/minimax-m3",
+    "minimax-m3.1-flash": "accounts/fireworks/models/minimax-m3p1-flash",
     # Kimi K3.1 Pro (2026-11-04). Served at this path; probed 2026-11-17:
     # reasoning_effort none..max all answer, "none" returns no
     # reasoning_content, and image_url input works.
@@ -81,12 +84,15 @@ FIREWORKS_MODEL_MAP: dict[str, str] = {
 FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
     "deepseek-v4p1-flash": 1_048_576,
     "accounts/fireworks/models/deepseek-v4p1-flash": 1_048_576,
+    "accounts/fireworks/models/deepseek-v4p1-flash-1017": 1_048_576,
     "glm-5.3-fireworks": 1_048_576,
     "accounts/fireworks/models/glm-5p3": 1_048_576,
     "glm-5.3-flash-fireworks": 1_048_576,
     "accounts/fireworks/models/glm-5p3-flash": 1_048_576,
     "minimax-m3": 524_288,
     "accounts/fireworks/models/minimax-m3": 524_288,
+    "minimax-m3.1-flash": 1_040_000,
+    "accounts/fireworks/models/minimax-m3p1-flash": 1_040_000,
     "kimi-k3.1-pro": 1_048_576,
     "accounts/fireworks/models/kimi-k3p1-pro": 1_048_576,
     "kimi-k3": 1_048_576,
@@ -98,8 +104,16 @@ FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
 
 # Models that support vision (image_url content blocks)
 FIREWORKS_VISION_MODELS: set[str] = {
+    # Each of these read a three-colour test image right (probed
+    # 2026-11-18). DeepSeek V4.1 Flash was missing, so its images were
+    # never sent.
+    "deepseek-v4p1-flash",
+    "accounts/fireworks/models/deepseek-v4p1-flash",
+    "accounts/fireworks/models/deepseek-v4p1-flash-1017",
     "minimax-m3",
     "accounts/fireworks/models/minimax-m3",
+    "minimax-m3.1-flash",
+    "accounts/fireworks/models/minimax-m3p1-flash",
     # GLM 5.3 Flash is natively multimodal; plain GLM 5.3 is text-only.
     "glm-5.3-flash-fireworks",
     "accounts/fireworks/models/glm-5p3-flash",
@@ -127,6 +141,10 @@ FIREWORKS_REASONING_MODE: dict[str, str] = {
     # Fireworks docs list MiniMax M2 reasoning as required/on by default.
     "minimax-m3": "required",
     "accounts/fireworks/models/minimax-m3": "required",
+    # MiniMax M3.1 Flash answers every reasoning_effort from none to max;
+    # "none" returns no reasoning_content (probed 2026-11-18).
+    "minimax-m3.1-flash": "effort",
+    "accounts/fireworks/models/minimax-m3p1-flash": "effort",
     "kimi-k3.1-pro": "effort",
     "accounts/fireworks/models/kimi-k3p1-pro": "effort",
     "kimi-k3": "effort",
@@ -138,6 +156,8 @@ FIREWORKS_REASONING_MODE: dict[str, str] = {
 FIREWORKS_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
     "minimax-m3": ("low", "medium", "high"),
     "accounts/fireworks/models/minimax-m3": ("low", "medium", "high"),
+    "minimax-m3.1-flash": ("none", "low", "medium", "high", "max"),
+    "accounts/fireworks/models/minimax-m3p1-flash": ("none", "low", "medium", "high", "max"),
     # GLM 5.3 family ladder is low/high/max — there is no "medium" rung
     # and no way to turn thinking off.
     "glm-5.3-fireworks": ("low", "high", "max"),
@@ -155,6 +175,8 @@ FIREWORKS_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
 FIREWORKS_REASONING_HISTORY: dict[str, str] = {
     "minimax-m3": "interleaved",
     "accounts/fireworks/models/minimax-m3": "interleaved",
+    "minimax-m3.1-flash": "interleaved",
+    "accounts/fireworks/models/minimax-m3p1-flash": "interleaved",
     "kimi-k3.1-pro": "preserved",
     "accounts/fireworks/models/kimi-k3p1-pro": "preserved",
     "kimi-k3": "preserved",

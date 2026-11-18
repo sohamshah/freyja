@@ -6,7 +6,7 @@ and its quota drop live in test_fast_mode_quota.py."""
 import pytest
 
 from engine.openai_provider import ULTRAFAST_MODELS, OpenAIConfig, OpenAIProvider
-from engine.providers import MODEL_REGISTRY, compute_cost
+from engine.providers import MODEL_REGISTRY
 from engine.types import Message, ThinkingConfig
 
 
@@ -45,17 +45,3 @@ def test_ultrafast_on_a_model_without_the_tier_is_refused() -> None:
     # The API answers 400 "Invalid service_tier argument" for these.
     with pytest.raises(ValueError, match="Ultrafast requested for gpt-6-luna"):
         _openai("gpt-6-luna-ultrafast")
-
-
-@pytest.mark.parametrize("base", sorted(ULTRAFAST_MODELS))
-def test_ultrafast_costs_six_times_standard(base: str) -> None:
-    usage = dict(
-        input_tokens=1_000_000,
-        output_tokens=1_000_000,
-        cache_read_tokens=1_000_000,
-        cache_write_tokens=1_000_000,
-    )
-
-    assert compute_cost(f"{base}-ultrafast", **usage) == pytest.approx(
-        6 * compute_cost(base, **usage)
-    )

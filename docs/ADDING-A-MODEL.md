@@ -48,6 +48,7 @@ Two companion tables in the same file handle prices that are not one flat card:
 
 - `MODEL_LONG_PROMPT_PRICING_PER_M`: `model → (threshold_tokens, long_rates)` for models that bill a whole call at a second card once the prompt (input + cache read + cache write) passes a size, such as Haiku 5.5 above 100k and the GPT-6.x models above 272k. `compute_cost` applies it only when the caller passes `single_call=True`, because a run's summed tokens pass the threshold long before any one prompt does. Callers that price one model call pass it; callers that price a run's totals do not.
 - `MODEL_PRICE_CHANGES`: `model → ((first_day_utc, rates), ...)` for a price that changes on a known date, such as the end of an introductory price. A call is priced on the day it is made, so nobody has to edit the table that day.
+- `SPEED_TIER_PRICE_FACTORS`: `tier id → ((first_day_utc, factor), ...)` for a speed tier billed at a multiple of every rate of its base model, the long-prompt card included. The ultrafast ids live here instead of in `MODEL_PRICING_PER_M`: 6x on GPT-6 Astra and 6.1 Sol, and 3x on the 6.2 pair through Feb 28, 2027, then 6x.
 
 ### 4. `engine/providers.py` — `FALLBACK_CHAINS`
 Ordered list of fallback model ids tried when the primary is
@@ -115,7 +116,7 @@ Missing entry → smaller window for OpenAI models.
 - `REASONING_MODELS` — gates whether the `reasoning` parameter is sent
   at all. Missing entry → the model silently runs without reasoning and
   the effort selector in the UI does nothing.
-- `ULTRAFAST_MODELS` — the models that take `service_tier: "ultrafast"` (GPT-6 Astra and GPT-6.1 Sol). Freyja lists the tier as its own `<model>-ultrafast` id in every codepoint above, priced at 6x Standard; the provider strips the suffix and sends the tier. Other models answer 400 "Invalid service_tier argument". As with a `-fast` id, `provider.model_id` returns the tier id, because the cost meter prices each call by it.
+- `ULTRAFAST_MODELS` — the models that take `service_tier: "ultrafast"` (GPT-6.2 Astra and Sol, GPT-6 Astra, GPT-6.1 Sol). Freyja lists the tier as its own `<model>-ultrafast` id in every codepoint above, except `MODEL_PRICING_PER_M`: `SPEED_TIER_PRICE_FACTORS` prices it as a dated multiple of the base model's rates. The provider strips the suffix and sends the tier. Other models answer 400 "Invalid service_tier argument". As with a `-fast` id, `provider.model_id` returns the tier id, because the cost meter prices each call by it.
 - `NATIVE_COMPUTER_MODELS` — the models that may take OpenAI's native `computer` tool when `OpenAIConfig.native_computer` is on. It is off by default. While that tool is declared, the API accepts at most one image across all user messages ("Computer tool cannot use multiple image inputs."), so a session stops working once the user attaches a second image. Once the input holds computer calls, the tool must stay declared. Without it, GPT models use Freyja's screen tools as plain functions, like every other provider, and past computer calls go back as plain function calls.
 
 Note the effort ladder itself is **not** enforced here: the OpenAI

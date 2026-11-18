@@ -554,7 +554,6 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
     "claude-opus-5-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-5-5-fast": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-8": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
-    "claude-opus-4-8-fast": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-7": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-sonnet-5-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-sonnet-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
@@ -566,6 +565,9 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
     # OpenAI models (Responses API)
     "gpt-6.2-astra": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-6.2-sol": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
+    "gpt-6.2-astra-ultrafast": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
+    "gpt-6.2-sol-ultrafast": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
+    "gpt-6.1-terra": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-6-astra": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-6-astra-ultrafast": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-6.1-sol": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
@@ -613,6 +615,14 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "thinking": True,
         "reasoning_mode": "required",
         "reasoning_levels": ("low", "medium", "high"),
+        "reasoning_default": "medium",
+    },
+    "minimax-m3.1-flash": {
+        "provider": "fireworks",
+        "context_window": 1_040_000,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("none", "low", "medium", "high", "max"),
         "reasoning_default": "medium",
     },
     "kimi-k3.1-pro": {
@@ -781,7 +791,6 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     # and cache_write stays 1.25x input.
     "claude-opus-5-5-fast": (8.0, 40.0, 0.40, 10.0),
     "claude-opus-4-8": (5.0, 25.0, 0.50),
-    "claude-opus-4-8-fast": (10.0, 50.0, 1.0),  # fast-mode multiplier on 4.8
     "claude-opus-4-7": (5.0, 25.0, 0.50),
     "claude-opus-4-6": (5.0, 25.0, 0.50),
     "claude-opus-4-5": (15.0, 75.0, 1.50),
@@ -814,14 +823,9 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     "gpt-6.2-sol": (2.0, 10.0, 0.10, 2.5),
     "gpt-6-astra": (10.0, 50.0, 1.0, 12.5),
     "gpt-6.1-sol": (2.0, 10.0, 0.10, 2.5),
-    # GPT-6 Luna has a >272K surcharge too, but its long-context rates are
-    # not on the pricing page we checked (2026-11-17), so it is not in
-    # MODEL_LONG_PROMPT_PRICING_PER_M: a long Luna prompt costs more than
-    # the meter shows.
-    # The ultrafast service tier bills 6x every Standard rate (OpenAI's
-    # pricing page, 2026-10-12). Only Astra and 6.1 Sol offer it.
-    "gpt-6-astra-ultrafast": (60.0, 300.0, 6.0, 75.0),
-    "gpt-6.1-sol-ultrafast": (12.0, 60.0, 0.60, 15.0),
+    # GPT-6.1 Terra (2026-10-26) and GPT-6 Luna have the same >272K card.
+    # The `-ultrafast` ids are priced from SPEED_TIER_PRICE_FACTORS.
+    "gpt-6.1-terra": (1.0, 5.0, 0.05, 1.25),
     "gpt-6-luna": (0.10, 0.50, 0.01, 0.125),
     "gpt-5.6-sol": (5.0, 30.0, 0.50),
     "gpt-5.6-terra": (2.5, 15.0, 0.25),
@@ -837,6 +841,9 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     "kimi-k3": (3.00, 15.00, 0.30),
     "kimi-k3-fast": (4.50, 22.50, 0.45),
     "minimax-m3": (0.30, 1.20, 0.06),
+    # MiniMax M3.1 Flash: fireworks.ai/models/fireworks/minimax-m3p1-flash
+    # (2026-11-18); not yet in the docs' pricing table.
+    "minimax-m3.1-flash": (0.15, 0.60, 0.015),
     # Z.ai first-party (same sticker as Fireworks' GLM 5.2).
     # glm-5.3-flash: STANDARD rates. Z.ai ran a launch promo at half
     # these ($0.075/$0.25) that expires 2026-09-09 — too short-lived to
@@ -881,6 +888,17 @@ MODEL_PRICE_CHANGES: dict[str, tuple[tuple[date, _Rates], ...]] = {
     "gemini-3.6-flash": ((date(2027, 1, 1), (1.50, 7.50, 0.15)),),
 }
 
+# Speed tiers billed at a multiple of every rate of their base model,
+# the long-prompt card included: tier id → ((first_day_utc, factor), ...),
+# oldest first. OpenAI's ultrafast tier (pricing page, 2026-11-18): 6x on
+# GPT-6 Astra and 6.1 Sol; 3x on the 6.2 pair through Feb 28, 2027, then 6x.
+SPEED_TIER_PRICE_FACTORS: dict[str, tuple[tuple[date, float], ...]] = {
+    "gpt-6-astra-ultrafast": ((date(2026, 10, 1), 6.0),),
+    "gpt-6.1-sol-ultrafast": ((date(2026, 10, 1), 6.0),),
+    "gpt-6.2-astra-ultrafast": ((date(2026, 11, 17), 3.0), (date(2027, 3, 1), 6.0)),
+    "gpt-6.2-sol-ultrafast": ((date(2026, 11, 17), 3.0), (date(2027, 3, 1), 6.0)),
+}
+
 # A model must not be in both tables below: the long-prompt card replaces
 # the whole row, so it would hide a dated change. The consistency test
 # checks this.
@@ -896,8 +914,9 @@ MODEL_LONG_PROMPT_PRICING_PER_M: dict[str, tuple[int, _Rates]] = {
     "gpt-6.2-sol": (272_000, (4.0, 15.0, 0.20, 5.0)),
     "gpt-6-astra": (272_000, (20.0, 75.0, 2.0, 25.0)),
     "gpt-6.1-sol": (272_000, (4.0, 15.0, 0.20, 5.0)),
-    "gpt-6-astra-ultrafast": (272_000, (120.0, 450.0, 12.0, 150.0)),
-    "gpt-6.1-sol-ultrafast": (272_000, (24.0, 90.0, 1.20, 30.0)),
+    "gpt-6.1-terra": (272_000, (2.0, 7.5, 0.10, 2.5)),
+    # Luna's long card shows only under the pricing page's "Long" toggle.
+    "gpt-6-luna": (272_000, (0.20, 0.75, 0.02, 0.25)),
     "gemini-3.1-pro-preview": (200_000, (4.0, 18.0, 0.40)),
 }
 
@@ -937,10 +956,23 @@ def compute_cost(
     Totals over a run leave it False and are priced at the base card.
     ``on`` is the day to price for (default: today, UTC).
     """
+    day = on or datetime.now(timezone.utc).date()
+    factors = SPEED_TIER_PRICE_FACTORS.get(model)
+    if factors:
+        factor = factors[0][1]
+        for first_day, changed_factor in factors:
+            if day >= first_day:
+                factor = changed_factor
+        base = compute_cost(
+            standard_tier_model_id(model),
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens,
+            single_call=single_call, on=day,
+        )
+        return None if base is None else base * factor
     rates: _Rates | None = MODEL_PRICING_PER_M.get(model)
     if rates is None:
         return None
-    day = on or datetime.now(timezone.utc).date()
     for first_day, changed in MODEL_PRICE_CHANGES.get(model, ()):
         if day >= first_day:
             rates = changed
@@ -973,7 +1005,6 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "claude-opus-5-5": ["claude-opus-4-8", "claude-opus-4-7", "kimi-k3"],
     "claude-opus-5-5-fast": ["claude-opus-5-5", "claude-opus-4-8"],
     "claude-opus-4-8": ["claude-opus-5-5", "claude-opus-4-7", "kimi-k3"],
-    "claude-opus-4-8-fast": ["claude-opus-4-8", "claude-opus-4-7"],
     "claude-opus-4-7": ["claude-opus-5-5", "claude-opus-4-8", "kimi-k3"],
     "claude-opus-4-6": ["claude-opus-5-5", "kimi-k3", "glm-5.3-fireworks"],
     # Sonnet tier degrades within Anthropic first, then off-provider.
@@ -989,11 +1020,14 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "gpt-6.2-sol": ["gpt-6.1-sol", "gpt-6.2-astra", "gpt-6-luna"],
     "gpt-6-astra": ["gpt-6.2-astra", "gpt-6.1-sol", "gpt-6-luna"],
     "gpt-6-astra-ultrafast": ["gpt-6-astra", "gpt-6.1-sol"],
+    "gpt-6.2-astra-ultrafast": ["gpt-6.2-astra", "gpt-6.2-sol"],
+    "gpt-6.2-sol-ultrafast": ["gpt-6.2-sol", "gpt-6.2-astra"],
+    "gpt-6.1-terra": ["gpt-6.2-sol", "gpt-6-luna"],
     "gpt-6.1-sol": ["gpt-6.2-sol", "gpt-6-astra", "gpt-6-luna"],
     "gpt-6.1-sol-ultrafast": ["gpt-6.1-sol", "gpt-6-astra"],
     "gpt-6-luna": ["gpt-6.1-sol", "gpt-5.6-luna"],
     "gpt-5.6-sol": ["gpt-6.1-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
-    "gpt-5.6-terra": ["gpt-6.1-sol", "gpt-5.6-luna"],
+    "gpt-5.6-terra": ["gpt-6.1-terra", "gpt-6.1-sol", "gpt-5.6-luna"],
     "gpt-5.6-luna": ["gpt-6-luna", "gpt-5.6-terra"],
     "gpt-5.5": ["gpt-6.1-sol", "gpt-5.4", "gpt-5.4-mini"],
     "gpt-5.4": ["gpt-6.1-sol", "gpt-5.4-mini"],
@@ -1007,6 +1041,7 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "kimi-k3": ["kimi-k3.1-pro", "kimi-k3-fast", "glm-5.3-fireworks"],
     "kimi-k3-fast": ["kimi-k3", "glm-5.3-fireworks", "deepseek-v4p1-flash"],
     "minimax-m3": ["kimi-k3", "glm-5.3-fireworks"],
+    "minimax-m3.1-flash": ["glm-5.3-flash-fireworks", "deepseek-v4p1-flash"],
     # ── Z.ai first-party ──
     # Cross-provider first (same weights, separate key and quota pool).
     "glm-5.3": ["glm-5.3-fireworks", "kimi-k3", "minimax-m3"],
@@ -1042,6 +1077,10 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
 # from MODEL_REGISTRY means adding it here; the consistency test checks that
 # no retired id survives in any table and that every replacement is live.
 RETIRED_MODEL_REPLACEMENTS: dict[str, str] = {
+    # Fast mode on Opus 4.8 ends 2026-11-30, and then `speed: "fast"` is an
+    # error. This org never had quota for it, so a session on the id
+    # already ran at standard 4.8.
+    "claude-opus-4-8-fast": "claude-opus-4-8",
     "claude-sonnet-4-5": "claude-sonnet-5-5",
     "gpt-5.3-codex": "gpt-6.1-sol",
     "gpt-5.4-nano": "gpt-6-luna",

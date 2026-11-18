@@ -62,6 +62,8 @@ REMOVED_MODEL_IDS = frozenset({
     "gemini-3.1-flash",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
+    # Opus 4.8 fast mode ends 2026-11-30; the org never had quota for it.
+    "claude-opus-4-8-fast",
 })
 
 
@@ -90,8 +92,6 @@ def _base(model: str) -> str:
 
 def test_every_registry_model_is_priced():
     """Unpriced model → cost meter reads $0.000 forever."""
-    missing = sorted(m for m in MODEL_REGISTRY if m not in MODEL_PRICING_PER_M)
-    assert missing == [], f"models with no pricing row: {missing}"
     unpriced = sorted(m for m in MODEL_REGISTRY if compute_cost(m, input_tokens=1) is None)
     assert unpriced == [], f"compute_cost() returned None for: {unpriced}"
 
@@ -326,11 +326,16 @@ def test_budget_mode_levels_think_different_amounts():
 def test_a_sub_agent_level_the_model_lacks_moves_to_its_closest_level():
     """Agent types name one thinking level for any model. "minimal" on
     Gemini 4 went out as MINIMAL and answered 400."""
-    from bridge.freyja_bridge import MODEL_REASONING_META, _REASONING_RUNGS, _nearest_reasoning_level
+    from bridge.freyja_bridge import (
+        _REASONING_RUNGS,
+        MODEL_REASONING_META,
+        _nearest_reasoning_level,
+    )
 
     for model, meta in MODEL_REASONING_META.items():
         for rung in _REASONING_RUNGS:
-            assert _nearest_reasoning_level(model, rung) in meta["reasoningLevels"], (model, rung)
+            level = _nearest_reasoning_level(model, rung)
+            assert level in meta["reasoningLevels"], (model, rung)
     assert _nearest_reasoning_level("gemini-4-hydrogen", "minimal") == "low"
     assert _nearest_reasoning_level("claude-haiku-4-5", "max") == "high"
 
@@ -339,7 +344,9 @@ def test_long_prompt_rate_card_applies_to_one_call_over_the_threshold():
     """Haiku 5.5 bills $0.50/$2.50 once a prompt passes 100k tokens. Only a
     single call's prompt counts: a run's summed tokens pass the threshold
     long before any one prompt does."""
-    short = compute_cost("claude-haiku-5-5", input_tokens=50_000, output_tokens=1_000, single_call=True)
+    short = compute_cost(
+        "claude-haiku-5-5", input_tokens=50_000, output_tokens=1_000, single_call=True,
+    )
     long = compute_cost(
         "claude-haiku-5-5", input_tokens=10_000, cache_read_tokens=150_000,
         output_tokens=1_000, single_call=True,
@@ -350,6 +357,25 @@ def test_long_prompt_rate_card_applies_to_one_call_over_the_threshold():
     assert short == pytest.approx((50_000 * 0.10 + 1_000 * 0.50) / 1e6)
     assert long == pytest.approx((10_000 * 0.50 + 150_000 * 0.05 + 1_000 * 2.50) / 1e6)
     assert summed == pytest.approx((10_000 * 0.10 + 150_000 * 0.01 + 1_000 * 0.50) / 1e6)
+
+
+def test_a_speed_tier_bills_its_dated_multiple_of_the_base_rates():
+    """GPT-6.2 ultrafast bills 3x every Standard rate through Feb 28, 2027,
+    then 6x, the long-prompt card included."""
+    from datetime import date
+
+    def cost(model, on, **tokens):
+        return compute_cost(model, single_call=True, on=on, **tokens)
+
+    short = {"input_tokens": 10_000, "output_tokens": 1_000}
+    long = {"input_tokens": 300_000, "output_tokens": 1_000}
+    for tokens in (short, long):
+        base = cost("gpt-6.2-sol", date(2027, 2, 28), **tokens)
+        assert cost("gpt-6.2-sol-ultrafast", date(2027, 2, 28), **tokens) == pytest.approx(3 * base)
+        assert cost("gpt-6.2-sol-ultrafast", date(2027, 3, 1), **tokens) == pytest.approx(6 * base)
+    assert cost("gpt-6.2-sol-ultrafast", date(2027, 2, 28), **long) == pytest.approx(
+        (300_000 * 12.0 + 1_000 * 45.0) / 1e6
+    )
 
 
 def test_dated_price_change_applies_from_its_first_day():

@@ -2,7 +2,8 @@
 
 Without fast-mode quota for a model the API answers every `speed: "fast"`
 request with 429 "rate limit of 0 fast mode input tokens per minute"
-(Opus 4.8 and Opus 5 on this org, probed 2026-11-05; Opus 5.5 is served).
+(Opus 4.8 and Opus 5 on this org, probed 2026-11-05; Opus 5.5 is served,
+so these tests use its tier id).
 That reads like a rate limit but never clears. The provider drops the
 `-fast` tier on the first one, the runner resends at once at standard speed
 and posts a chat notice, and the picker gates a `-fast` id the org has no
@@ -71,7 +72,7 @@ def _midstream_error(provider: AnthropicProvider, body: dict):
     return provider._client._make_status_error(f"{body}", body=body, response=response)
 
 
-def _fast(model: str = "claude-opus-4-8-fast") -> AnthropicProvider:
+def _fast(model: str = "claude-opus-5-5-fast") -> AnthropicProvider:
     return AnthropicProvider(AnthropicConfig(api_key="test-key", model=model))
 
 
@@ -92,20 +93,20 @@ def test_zero_quota_429_drops_the_fast_tier_for_the_rest_of_the_provider():
     p = _fast()
     sent = p._build_request(messages=_hello())
     assert _asks_for_fast(sent)
-    assert p.model_id == "claude-opus-4-8-fast"
+    assert p.model_id == "claude-opus-5-5-fast"
 
-    err = p._request_error(_http_error(p, 429, _no_quota_body("claude-opus-4-8")), sent)
+    err = p._request_error(_http_error(p, 429, _no_quota_body("claude-opus-5-5")), sent)
 
     assert isinstance(err, FastModeUnavailableError)
     assert err.code == "fast_mode_unavailable" and err.retryable
-    assert err.model == "claude-opus-4-8" and err.tier_model_id == "claude-opus-4-8-fast"
+    assert err.model == "claude-opus-5-5" and err.tier_model_id == "claude-opus-5-5-fast"
     # The resend goes at standard speed, and the meter prices it so.
     resend = p._build_request(messages=_hello())
     assert not _asks_for_fast(resend)
     assert "speed" not in (resend.get("extra_body") or {})
-    assert p.model_id == "claude-opus-4-8"
+    assert p.model_id == "claude-opus-5-5"
     # Nothing left to drop: a second one is an ordinary rate limit, no loop.
-    again = p._request_error(_http_error(p, 429, _no_quota_body("claude-opus-4-8")), resend)
+    again = p._request_error(_http_error(p, 429, _no_quota_body("claude-opus-5-5")), resend)
     assert isinstance(again, RateLimitError) and not isinstance(again, FastModeUnavailableError)
 
 
@@ -121,23 +122,23 @@ def test_a_burst_429_on_a_fast_provider_keeps_the_tier():
 
 
 def test_zero_quota_wording_on_a_standard_provider_is_a_plain_rate_limit():
-    p = AnthropicProvider(AnthropicConfig(api_key="test-key", model="claude-opus-4-8"))
+    p = AnthropicProvider(AnthropicConfig(api_key="test-key", model="claude-opus-5-5"))
     sent = p._build_request(messages=_hello())
 
-    err = p._request_error(_http_error(p, 429, _no_quota_body("claude-opus-4-8")), sent)
+    err = p._request_error(_http_error(p, 429, _no_quota_body("claude-opus-5-5")), sent)
 
     assert isinstance(err, RateLimitError) and not isinstance(err, FastModeUnavailableError)
-    assert p.model_id == "claude-opus-4-8"
+    assert p.model_id == "claude-opus-5-5"
 
 
 def test_a_midstream_zero_quota_event_drops_the_tier_too():
     p = _fast()
     sent = p._build_request(messages=_hello())
 
-    err = p._request_error(_midstream_error(p, _no_quota_body("claude-opus-4-8")), sent)
+    err = p._request_error(_midstream_error(p, _no_quota_body("claude-opus-5-5")), sent)
 
     assert isinstance(err, FastModeUnavailableError) and err.retryable
-    assert p.model_id == "claude-opus-4-8"
+    assert p.model_id == "claude-opus-5-5"
     assert not _asks_for_fast(p._build_request(messages=_hello()))
 
 
@@ -165,16 +166,16 @@ async def test_runner_resends_at_once_at_standard_speed_and_says_so(monkeypatch)
 
         def __init__(self):
             self.calls = 0
-            self.model_id = "claude-opus-4-8-fast"
+            self.model_id = "claude-opus-5-5-fast"
 
         async def complete_async(self, **kwargs):
             self.calls += 1
             if self.calls == 1:
-                self.model_id = "claude-opus-4-8"
+                self.model_id = "claude-opus-5-5"
                 raise FastModeUnavailableError(
-                    str(_no_quota_body("claude-opus-4-8")),
-                    model="claude-opus-4-8",
-                    tier_model_id="claude-opus-4-8-fast",
+                    str(_no_quota_body("claude-opus-5-5")),
+                    model="claude-opus-5-5",
+                    tier_model_id="claude-opus-5-5-fast",
                 )
             return ProviderResponse(
                 content="done",
@@ -194,25 +195,26 @@ async def test_runner_resends_at_once_at_standard_speed_and_says_so(monkeypatch)
     dropped = [e for e in events if e.type == "fast_mode_dropped"]
     assert len(dropped) == 1
     assert dropped[0].details["chatVisible"] is True
-    assert dropped[0].details["model"] == "claude-opus-4-8"
-    assert dropped[0].details["tierModel"] == "claude-opus-4-8-fast"
-    assert "claude-opus-4-8" in dropped[0].message
+    assert dropped[0].details["model"] == "claude-opus-5-5"
+    assert dropped[0].details["tierModel"] == "claude-opus-5-5-fast"
+    assert "claude-opus-5-5" in dropped[0].message
     assert "standard speed" in dropped[0].message
 
 
 # ─── bridge ───────────────────────────────────────────────────────────
 
 
-def test_picker_gates_the_fast_id_the_org_has_no_quota_for(monkeypatch):
-    from bridge.freyja_bridge import AVAILABLE_MODELS, _annotate_models
+def test_picker_gates_a_fast_id_the_org_has_no_quota_for(monkeypatch):
+    from bridge.freyja_bridge import _annotate_models
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    by_id = {m["id"]: m for m in _annotate_models(AVAILABLE_MODELS)}
+    reason = "Fast mode is not enabled for this model on this org."
+    by_id = {m["id"]: m for m in _annotate_models([
+        {"id": "claude-opus-5-5-fast", "envVar": "ANTHROPIC_API_KEY", "gated": reason},
+        {"id": "claude-opus-5-5", "envVar": "ANTHROPIC_API_KEY"},
+    ])}
 
-    gated = by_id["claude-opus-4-8-fast"]
-    assert gated["available"] is False
-    assert "fast mode" in gated["unavailableReason"].lower()
-    assert "rate limit of 0 fast mode" in gated["unavailableReason"]
-    served = by_id["claude-opus-5-5-fast"]
-    assert served["available"] is True
-    assert "unavailableReason" not in served
+    assert by_id["claude-opus-5-5-fast"]["available"] is False
+    assert by_id["claude-opus-5-5-fast"]["unavailableReason"] == reason
+    assert by_id["claude-opus-5-5"]["available"] is True
+    assert "unavailableReason" not in by_id["claude-opus-5-5"]

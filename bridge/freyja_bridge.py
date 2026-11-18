@@ -2792,25 +2792,6 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Latest Opus. Long-horizon coding, mid-conversation system messages, ~4x fewer code flaws than 4.7. Adaptive thinking, 128k output.",
     },
     {
-        "id": "claude-opus-4-8-fast",
-        "family": "anthropic",
-        "label": "Claude Opus 4.8 (Fast)",
-        "tier": "max",
-        "contextWindow": 1_000_000,
-        "thinking": True,
-        "envVar": "ANTHROPIC_API_KEY",
-        # Probed 2026-11-05 with the app's own key: every fast request on
-        # 4.8 (and on Opus 5) answers 429 "rate limit of 0 fast mode input
-        # tokens per minute", while 5.5 fast is served. That is the org's
-        # quota, not the code, so the picker holds the seat and says why.
-        # A session already on this id keeps working: the provider drops
-        # the tier on the first 429 and posts a fast_mode_dropped notice.
-        # Drop `gated` (here and in ModelPicker.tsx FALLBACK_MODELS) once
-        # Anthropic grants the quota.
-        "gated": "Fast mode is not enabled for Opus 4.8 on this org: the API answers 'rate limit of 0 fast mode input tokens per minute' (probed Nov 5, 2026). Ask Anthropic for fast-mode quota.",
-        "description": "Opus 4.8 with fast mode enabled (research preview): same weights at premium pricing ($10/$50 per MTok). Needs fast-mode quota on the org; this org has none for 4.8 (429 'rate limit of 0 fast mode input tokens per minute', Nov 5, 2026), so a session on this id runs at standard speed with a notice.",
-    },
-    {
         "id": "claude-opus-4-7",
         "family": "anthropic",
         "label": "Claude Opus 4.7",
@@ -2910,6 +2891,36 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "thinking": True,
         "envVar": "OPENAI_API_KEY",
         "description": "Everyday GPT-6.2 tier (Nov 17, 2026), successor to 6.1 Sol at the same $2/$10 ($0.10 cached). 1.05M ctx, 128k output, computer use. Effort low..max (no off/minimal). Prompts over 272k input bill 2x input and 1.5x output.",
+    },
+    {
+        "id": "gpt-6.2-astra-ultrafast",
+        "family": "openai",
+        "label": "GPT-6.2 Astra (Ultrafast)",
+        "tier": "max",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "GPT-6.2 Astra on OpenAI's ultrafast service tier: the same model, context and effort ladder at 3x Standard prices through Feb 28, 2027 ($24/$120 per MTok), then 6x.",
+    },
+    {
+        "id": "gpt-6.2-sol-ultrafast",
+        "family": "openai",
+        "label": "GPT-6.2 Sol (Ultrafast)",
+        "tier": "balanced",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "GPT-6.2 Sol on OpenAI's ultrafast service tier: the same model, context and effort ladder at 3x Standard prices through Feb 28, 2027 ($6/$30 per MTok), then 6x.",
+    },
+    {
+        "id": "gpt-6.1-terra",
+        "family": "openai",
+        "label": "GPT-6.1 Terra",
+        "tier": "fast",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "Mid-tier GPT-6 model (Oct 26, 2026) for computer use and writing: $1/$5 per MTok, $0.05 cached. 1.05M ctx, 128k output, computer use. Keeps an off rung; no minimal. Prompts over 272k input bill 2x input and 1.5x output. No ultrafast tier.",
     },
     {
         "id": "gpt-6-astra",
@@ -3070,7 +3081,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_048_576,
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
-        "description": "DeepSeek's V4.1 Flash via Fireworks (Sep 2026) — the replacement for the retired V4 Pro line. 552B MoE, native image input, 1M ctx, $0.30/$1.20 with $0.006 cached input. Cheapest capable Fireworks slot.",
+        "description": "DeepSeek's V4.1 Flash via Fireworks (the Oct 17, 2026 post-training snapshot) — the replacement for the retired V4 Pro line. 552B MoE, native image input, 1M ctx, $0.30/$1.20 with $0.006 cached input. Cheapest capable Fireworks slot.",
     },
     {
         "id": "glm-5.3-fireworks",
@@ -3101,6 +3112,16 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
         "description": "MiniMax M3 via Fireworks. Native multimodal (text/image/video), 512k ctx, MiniMax Sparse Attention, frontier agentic coding.",
+    },
+    {
+        "id": "minimax-m3.1-flash",
+        "family": "fireworks",
+        "label": "MiniMax M3.1 Flash",
+        "tier": "fast",
+        "contextWindow": 1_040_000,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "MiniMax M3.1 Flash via Fireworks: image input, 1M ctx, $0.15/$0.60 with $0.015 cached input. Reasoning none..max. Cheap fanout slot.",
     },
     # ─── Z.ai first-party (ZAI_API_KEY) ────────────────────────────────
     {
@@ -3258,11 +3279,6 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
         "reasoningDefault": "high",
     },
-    "claude-opus-4-8-fast": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
-        "reasoningDefault": "high",
-    },
     "claude-opus-4-7": {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
@@ -3325,6 +3341,23 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
     "gpt-6.2-sol": {
         "reasoningMode": "required",
         "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "medium",
+    },
+    "gpt-6.2-astra-ultrafast": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "high",
+    },
+    "gpt-6.2-sol-ultrafast": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "medium",
+    },
+    # Terra keeps Luna's "none" rung and, like it, has no "minimal" (400,
+    # probed 2026-11-18). The API default is medium.
+    "gpt-6.1-terra": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
         "reasoningDefault": "medium",
     },
     "gpt-6-astra": {
@@ -3414,6 +3447,12 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
     "minimax-m3": {
         "reasoningMode": "required",
         "reasoningLevels": ["low", "medium", "high"],
+        "reasoningDefault": "medium",
+        "reasoningHistory": ["interleaved"],
+    },
+    "minimax-m3.1-flash": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "max"],
         "reasoningDefault": "medium",
         "reasoningHistory": ["interleaved"],
     },

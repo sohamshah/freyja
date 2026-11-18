@@ -65,7 +65,6 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-sonnet-5-5": 1_000_000,
     # Claude 4.8
     "claude-opus-4-8": 1_000_000,
-    "claude-opus-4-8-fast": 1_000_000,
     # Claude 4.7
     "claude-opus-4-7": 1_000_000,
     # Claude 5
@@ -81,7 +80,10 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # OpenAI. The `-ultrafast` ids are the ultrafast service tier of the
     # same model, listed for the same reason as the `-fast` ids above.
     "gpt-6.2-astra": 1_050_000,
+    "gpt-6.2-astra-ultrafast": 1_050_000,
     "gpt-6.2-sol": 1_050_000,
+    "gpt-6.2-sol-ultrafast": 1_050_000,
+    "gpt-6.1-terra": 1_050_000,
     "gpt-6-astra": 1_050_000,
     "gpt-6-astra-ultrafast": 1_050_000,
     "gpt-6.1-sol": 1_050_000,
@@ -100,6 +102,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # Fireworks
     "deepseek-v4p1-flash": 1_048_576,
     "minimax-m3": 524_288,
+    "minimax-m3.1-flash": 1_040_000,
     "kimi-k3.1-pro": 1_048_576,
     "kimi-k3": 1_048_576,
     "kimi-k3-fast": 1_048_576,
