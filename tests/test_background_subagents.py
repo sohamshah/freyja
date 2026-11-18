@@ -1313,6 +1313,8 @@ async def test_a_child_stopped_with_a_deleted_session_saves_no_transcript_or_sid
             await asyncio.Event().wait()
 
     monkeypatch.setattr(runner_module, "AsyncAgentRunner", _Runner)
+    # initialize() builds the session's provider, which needs a key to exist.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     state, sess = _live_session(tmp_path)
     await sess.initialize()
     tool = sess.tool_registry.get("sub_agent")
