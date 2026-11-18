@@ -73,6 +73,8 @@ logger = logging.getLogger(__name__)
 # OpenAI-specific duplicate of engine/constants.py:MODEL_CONTEXT_WINDOWS.
 # See docs/ADDING-A-MODEL.md for the full per-model checklist.
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "gpt-6.2-astra": 1_050_000,
+    "gpt-6.2-sol": 1_050_000,
     "gpt-6-astra": 1_050_000,
     "gpt-6.1-sol": 1_050_000,
     "gpt-6-luna": 1_050_000,
@@ -90,6 +92,10 @@ REASONING_MODELS: set[str] = {
     # Astra's effort ladder has no "none" or "minimal" rung — see
     # MODEL_REASONING_META in bridge/freyja_bridge.py, which is what keeps
     # an unsupported level from ever reaching `reasoning.effort` here.
+    # GPT-6.2 Astra and Sol (2026-11-17) take the same low..max ladder; both
+    # answered 400 to "none" and "minimal" (probed 2026-11-17).
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     "gpt-6-astra",
     # gpt-6.1-sol also rejects "none"/"minimal"; gpt-6-luna accepts "none"
     # but not "minimal". Both ladders live in MODEL_REASONING_META.
@@ -105,6 +111,8 @@ REASONING_MODELS: set[str] = {
 }
 
 NATIVE_COMPUTER_MODELS: set[str] = {
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     "gpt-6-astra",
     "gpt-6.1-sol",
     "gpt-6-luna",
@@ -117,6 +125,8 @@ NATIVE_COMPUTER_MODELS: set[str] = {
 # Models that keep a prompt cached for 30 minutes after its last use, and bill
 # the cache write (`input_tokens_details.cache_write_tokens`).
 LONG_PROMPT_CACHE_MODELS: set[str] = {
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     "gpt-6-astra",
     "gpt-6.1-sol",
     "gpt-6-luna",

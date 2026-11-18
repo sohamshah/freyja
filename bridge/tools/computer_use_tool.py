@@ -898,7 +898,9 @@ click/type/scroll tools until the memo arrives.
             from engine.providers import compute_cost as _compute_cost
 
             cu_model = self._sub_spec.standard_tier_model or ""
-            cost_estimate = _compute_cost(
+            # Priced call by call as they were counted; the totals are the
+            # fallback for a run whose calls were not.
+            cost_estimate = record.cost_usd or _compute_cost(
                 cu_model,
                 input_tokens=int(record.input_tokens or 0),
                 output_tokens=int(record.output_tokens or 0),

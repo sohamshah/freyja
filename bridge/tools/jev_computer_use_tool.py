@@ -699,7 +699,9 @@ the run stops with status=blocked instead of clicking into the other app.
         try:
             from engine.providers import compute_cost
 
-            cost = float(compute_cost(
+            # Priced call by call as they were counted; the totals are the
+            # fallback for a run whose calls were not.
+            cost = float(record.cost_usd or compute_cost(
                 self._llm_model or default_llm_model(),
                 input_tokens=record.input_tokens,
                 output_tokens=record.output_tokens,

@@ -5,9 +5,9 @@ Implements the ModelProvider protocol for Claude models via the
 Anthropic Python SDK, with full support for:
 - Async/await operations
 - Streaming responses
-- Extended thinking (claude-opus-4-5) — budget_tokens
-- Adaptive thinking (claude-sonnet-4-6, claude-haiku-4-5, claude-opus-4-6,
-  claude-opus-4-7, claude-opus-4-8, claude-fable-5) — type="adaptive" + output_config.effort
+- Extended thinking (claude-opus-4-5, claude-haiku-4-5) — budget_tokens
+- Adaptive thinking (every 4.6+ model, Haiku 5.5, the Fable tiers; see
+  ADAPTIVE_THINKING_MODELS) — type="adaptive" + output_config.effort
 - Tool use with thinking block preservation
 """
 
@@ -105,11 +105,12 @@ ADAPTIVE_THINKING_MODELS = {
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-opus-4-6",
-    "claude-haiku-4-5",
+    "claude-haiku-5-5",
     "claude-opus-4-7",
     "claude-opus-4-8",
     "claude-fable-5",
     "claude-fable-5-1",
+    "claude-fable-5-2",
 }
 # Models whose "thinking off" setting is `between_tools` instead of
 # omitting the `thinking` field. Keep in sync with
@@ -119,8 +120,12 @@ ADAPTIVE_THINKING_MODELS = {
 BETWEEN_TOOLS_THINKING_MODELS = {
     "claude-sonnet-5-5",
 }
+# Haiku 4.5 sat in the adaptive set until 2026-11-17 and answered every
+# thinking-on request with 400 "adaptive thinking is not supported on this
+# model" (probed); it takes the budget shape and no effort.
 LEGACY_THINKING_MODELS = {
     "claude-opus-4-5",
+    "claude-haiku-4-5",
 }
 THINKING_MODELS = ADAPTIVE_THINKING_MODELS | LEGACY_THINKING_MODELS
 
@@ -132,7 +137,26 @@ ALWAYS_THINKING_MODELS = {
     "claude-opus-5-5",
     "claude-fable-5",
     "claude-fable-5-1",
+    "claude-fable-5-2",
 }
+
+# Models whose thinking blocks are checked against the conversation that
+# produced them on EVERY account. A block replayed after any edit to
+# `system`, `tools` or an earlier message is a 400 ("The block is bound to a
+# different conversation"), and resending the same body fails the same way.
+# Freyja edits history on purpose (compaction, halving, retries), so these
+# requests ask the API to drop the stale blocks instead:
+# `thinking.block_binding.prefix_mismatch_behavior = "drop_block"` under the
+# THINKING_BINDING_BETA header. Probed 2026-11-17 on Fable 5.2: an edited
+# system prompt gave the 400 without it and a `thinking_dropped` entry in
+# `input_transformations` with it. Opus 5.5, Sonnet 5.5, Haiku 5.5 and
+# Fable 5.1 run the same check only for accounts created on or after
+# 2026-08-31, and sending the field would opt this older account in, so
+# they are left out on purpose.
+THINKING_BINDING_DROP_MODELS = {
+    "claude-fable-5-2",
+}
+THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
 
 # Models that accept fast mode (speed: "fast" + fast-mode-2026-02-01 beta).
 # Per Anthropic docs: 4.6 fast mode is deprecated as of 4.8 launch and falls
@@ -164,6 +188,9 @@ _FAST_MODE_NO_QUOTA = re.compile(r"rate limit of 0 fast mode", re.IGNORECASE)
 # the model.
 INLINE_SYSTEM_MESSAGE_MODELS = {
     "claude-opus-5-5",
+    # Both answered a user → system message with 200 (probed 2026-11-17).
+    "claude-fable-5-2",
+    "claude-haiku-5-5",
     # Sonnet 5.5 supports these; plain Sonnet 5 does not, so this is a real
     # gain when moving the Sonnet tier forward — post-compaction summaries
     # reach the model as operator text instead of a squashed user prefix.
@@ -180,6 +207,8 @@ INLINE_SYSTEM_MESSAGE_MODELS = {
 # haiku-4-5 all accept forced tool use. complete_structured falls back to
 # "auto" for these; the retry-on-400 path covers any future model not listed.
 FORCED_TOOL_CHOICE_UNSUPPORTED_MODELS = {
+    # Substring match: also covers claude-fable-5-1 and claude-fable-5-2.
+    # Haiku 5.5 accepts forced tool use (probed 2026-11-17), so it stays out.
     "claude-fable-5",
     # Opus 5.5 joins the Fable tier here: tool_choice {"type":"any"} and
     # {"type":"tool"} both 400 with
@@ -217,6 +246,9 @@ def _model_rejects_forced_tool_choice(model: str) -> bool:
 # 2026-10-09: Fable 5 / 5.1 and Opus 5.5 allow claude-opus-4-8 and
 # claude-opus-5; Sonnet 5.5 allows only claude-sonnet-5. If the API refuses a
 # target anyway, the provider drops it and retries (see _request_error).
+# Fable 5.1 and 5.2 take the claude-fable-5 row through the substring match
+# (Fable 5.2 with opus-4-8 and drop_block: 200, probed 2026-11-17). Haiku 5.5
+# has no server-side fallback (a fallbacks list is a 400) and matches no row.
 REFUSAL_FALLBACK_TARGETS = {
     "claude-fable-5": "claude-opus-4-8",
     "claude-mythos-5": "claude-opus-4-8",
@@ -239,6 +271,17 @@ SERVER_FALLBACK_BETA = "server-side-fallback-2026-06-01"
 # target lacks). Requests for that model go without the fallback from then
 # on, so a changed allow-list costs one failed call, not every turn.
 _REFUSED_FALLBACKS: dict[tuple[str, str], str] = {}
+
+
+def _add_beta(request_kwargs: dict[str, Any], beta: str) -> None:
+    """Add `beta` to the request's comma-separated `anthropic-beta` header."""
+    extra_headers = request_kwargs.get("extra_headers") or {}
+    existing = extra_headers.get("anthropic-beta")
+    betas = existing.split(",") if existing else []
+    if beta not in betas:
+        betas.append(beta)
+    extra_headers["anthropic-beta"] = ",".join(betas)
+    request_kwargs["extra_headers"] = extra_headers
 
 
 def _api_error_message(error: Exception) -> str:
@@ -285,7 +328,7 @@ def _normalize_stop_details(raw: Any) -> dict[str, Any] | None:
 # NOTE: currently unreferenced — nothing reads this dict. Kept in sync
 # anyway so a future reader doesn't wire up a stale "most capable" alias.
 MODEL_SPEED_TIERS = {
-    "fast": "claude-haiku-4-5",       # Fastest, most cost-effective
+    "fast": "claude-haiku-5-5",       # Fastest, most cost-effective
     "medium": "claude-sonnet-5-5",    # Balanced speed/capability
     "slow": "claude-opus-5-5",        # Most capable (adaptive thinking, 128k out)
 }
@@ -990,7 +1033,7 @@ class AnthropicProvider:
             est_tokens // 1000,
             len(tools) if tools else 0,
             max_tokens,
-            "on" if thinking else "off",
+            "off" if not thinking or thinking.get("type") == "disabled" else "on",
             last_role,
             preview,
         )
@@ -1104,9 +1147,20 @@ class AnthropicProvider:
             extra_body = request_kwargs.get("extra_body") or {}
             extra_body["speed"] = "fast"
             request_kwargs["extra_body"] = extra_body
-            extra_headers = request_kwargs.get("extra_headers") or {}
-            extra_headers["anthropic-beta"] = FAST_MODE_BETA
-            request_kwargs["extra_headers"] = extra_headers
+            _add_beta(request_kwargs, FAST_MODE_BETA)
+
+        # Drop stale thinking blocks instead of failing the turn, on models
+        # that check every account (see THINKING_BINDING_DROP_MODELS). Also
+        # on a thinking-off call: these models think anyway, and the check
+        # runs on every replayed block either way.
+        if self._model in THINKING_BINDING_DROP_MODELS:
+            thinking = request_kwargs.get("thinking") or {"type": "adaptive"}
+            if thinking.get("type") == "adaptive":
+                request_kwargs["thinking"] = {
+                    **thinking,
+                    "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+                }
+                _add_beta(request_kwargs, THINKING_BINDING_BETA)
 
         # Server-side refusal fallbacks (beta). Fable-class safety
         # classifiers can decline a request with stop_reason="refusal" —
@@ -1130,13 +1184,7 @@ class AnthropicProvider:
             extra_body = request_kwargs.get("extra_body") or {}
             extra_body["fallbacks"] = [{"model": fallback_target}]
             request_kwargs["extra_body"] = extra_body
-            extra_headers = request_kwargs.get("extra_headers") or {}
-            existing_beta = extra_headers.get("anthropic-beta")
-            extra_headers["anthropic-beta"] = (
-                f"{existing_beta},{SERVER_FALLBACK_BETA}"
-                if existing_beta else SERVER_FALLBACK_BETA
-            )
-            request_kwargs["extra_headers"] = extra_headers
+            _add_beta(request_kwargs, SERVER_FALLBACK_BETA)
 
         return request_kwargs
 
@@ -1382,6 +1430,23 @@ class AnthropicProvider:
         # BEFORE the last fallback block is the declined model's partial and
         # must not be echoed back on later turns (thinking/tool_use from the
         # refused portion are rejected on replay), so track block positions.
+        # Thinking blocks the API dropped (THINKING_BINDING_DROP_MODELS): the
+        # model re-thinks where they were, so a run of these shows where the
+        # harness edited history. Logged, not acted on.
+        dropped = [
+            t for t in (getattr(response, "input_transformations", None) or [])
+            if (t.get("type") if isinstance(t, dict) else getattr(t, "type", None))
+            == "thinking_dropped"
+        ]
+        if dropped:
+            first = dropped[0]
+            logger.info(
+                "%s dropped %d replayed thinking block(s), first at %s (%s)",
+                self._model, len(dropped),
+                first.get("path") if isinstance(first, dict) else getattr(first, "path", "?"),
+                first.get("reason") if isinstance(first, dict) else getattr(first, "reason", "?"),
+            )
+
         text_parts = []
         tool_calls = []
         thinking_blocks = []

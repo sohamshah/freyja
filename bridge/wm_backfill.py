@@ -64,8 +64,9 @@ MIN_CONVERSATION_CHARS = 600
 DEFAULT_PASS_LIMIT = 8
 
 # Cheap, structured-output-capable default. Sessions are summaries, not
-# prose art — haiku-class is plenty.
-DEFAULT_MODEL = "claude-haiku-4-5"
+# prose art — haiku-class is plenty. Haiku 5.5 is a tenth of Haiku 4.5's
+# price and accepts forced tool use, which complete_structured relies on.
+DEFAULT_MODEL = "claude-haiku-5-5"
 
 # Session-id prefixes that never get standalone summaries:
 #   sub_*        sub-agent workers (their learnings roll up to the parent)

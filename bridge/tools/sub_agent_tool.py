@@ -1744,7 +1744,9 @@ Parameters:
                     output_tokens=out_tok,
                     cache_read_tokens=cr_tok,
                     cache_write_tokens=cw_tok,
+                    single_call=True,
                 )
+                record.cost_usd += float(cost or 0.0)
                 append_telemetry({
                     "type": "llm_call_metric",
                     "session_id": sub_id_local,
@@ -2779,7 +2781,7 @@ Parameters:
                 or self._spec.parent_model
                 or ""
             )
-            cost_estimate = _compute_cost(
+            cost_estimate = record.cost_usd or _compute_cost(
                 sub_model,
                 input_tokens=int(record.input_tokens or 0),
                 output_tokens=int(record.output_tokens or 0),
@@ -3141,7 +3143,9 @@ def count_computer_calls(
                 output_tokens=out_tok,
                 cache_read_tokens=cr_tok,
                 cache_write_tokens=cw_tok,
+                single_call=True,
             )
+            record.cost_usd += float(cost or 0.0)
             _tell_parent_of_call(
                 parent_session_id, record, input_tokens=in_tok,
                 output_tokens=out_tok, cache_read_tokens=cr_tok, cost=cost,

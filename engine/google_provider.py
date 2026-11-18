@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import uuid
+import warnings
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable
 
@@ -68,7 +69,8 @@ logger = logging.getLogger(__name__)
 
 
 # Maps ThinkingConfig.effort (low/medium/high/max) onto Gemini's ThinkingLevel
-# enum. Gemini doesn't expose a "max" level, so it pins to HIGH.
+# enum. Gemini doesn't expose a "max" level, so it pins to HIGH, or to XHIGH
+# on the models in _XHIGH_MODELS.
 _EFFORT_TO_THINKING_LEVEL: dict[str, str] = {
     "minimal": "MINIMAL",
     "low": "LOW",
@@ -76,6 +78,23 @@ _EFFORT_TO_THINKING_LEVEL: dict[str, str] = {
     "high": "HIGH",
     "max": "HIGH",
 }
+
+# Models with an XHIGH thinking level above HIGH. Gemini 4 Hydrogen
+# (2026-11-12) is the only one: probed 2026-11-17, Hydrogen answered XHIGH
+# with 200 while Argon and Carbon answered 400. google-genai 2.0.0 has no
+# XHIGH member but passes the string through. Everywhere else "xhigh" and
+# "max" stay at HIGH, so a ladder mistake can't turn into a 400.
+_XHIGH_MODELS: tuple[str, ...] = (
+    "gemini-4-hydrogen",
+)
+
+
+def _thinking_level_for(model: str, effort: str) -> str:
+    """Gemini ThinkingLevel for an internal effort on ``model``."""
+    m = (model or "").lower()
+    if effort in ("xhigh", "max") and any(base in m for base in _XHIGH_MODELS):
+        return "XHIGH"
+    return _EFFORT_TO_THINKING_LEVEL.get(effort, "HIGH")
 
 
 # Gemini reasoning models that REJECT thinking_level=MINIMAL with a 400
@@ -97,10 +116,10 @@ _MINIMAL_UNSUPPORTED_MODELS: tuple[str, ...] = (
     # supported for this model"; without this entry every thinking-off
     # call (title generation, judge synthesis) on Argon died that way.
     "gemini-4-argon",
-    # Gemini 4 Carbon is gated and unprobed (2026-10-28). LOW is the safe
-    # floor: every Gemini accepts it, and a model that also takes MINIMAL
-    # just thinks a little more on thinking-off calls.
+    # Gemini 4 Carbon (served since 2026-11-10) and Hydrogen (2026-11-12):
+    # both answered MINIMAL with the same 400 (probed 2026-11-17).
     "gemini-4-carbon",
+    "gemini-4-hydrogen",
 )
 
 
@@ -582,11 +601,15 @@ class GoogleProvider:
             return gtypes.ThinkingConfig(thinking_level=floor, include_thoughts=False)
 
         effort = str(getattr(thinking, "effort", "high")).lower()
-        level = _EFFORT_TO_THINKING_LEVEL.get(effort, "HIGH")
+        level = _thinking_level_for(self._model, effort)
         include_thoughts = True if force_include_thoughts is None else bool(force_include_thoughts)
-        return gtypes.ThinkingConfig(
-            thinking_level=level, include_thoughts=include_thoughts
-        )
+        with warnings.catch_warnings():
+            # "XHIGH is not a valid ThinkingLevel": google-genai 2.0.0 lacks
+            # the member but sends the value, which Hydrogen accepts.
+            warnings.simplefilter("ignore", UserWarning)
+            return gtypes.ThinkingConfig(
+                thinking_level=level, include_thoughts=include_thoughts
+            )
 
     @staticmethod
     def _image_block_to_function_response_blob(

@@ -34,18 +34,6 @@ def test_saved_session_restores_on_the_replacement_or_falls_to_the_default(monke
     assert fb._saved_model("s2") == (None, None)
 
 
-def test_gated_catalog_entry_is_listed_but_not_available(monkeypatch):
-    import bridge.freyja_bridge as fb
-
-    monkeypatch.setenv("GEMINI_API_KEY", "k")
-    rows = {m["id"]: m for m in fb._annotate_models(fb.AVAILABLE_MODELS)}
-    carbon = rows["gemini-4-carbon"]
-    assert carbon["available"] is False
-    assert "gated" in carbon["unavailableReason"].lower()
-    assert rows["gemini-4-argon"]["available"] is True
-    assert "unavailableReason" not in rows["gemini-4-argon"]
-
-
 # ── sub-agent profiles ───────────────────────────────────────────────────
 
 

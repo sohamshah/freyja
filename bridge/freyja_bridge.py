@@ -275,7 +275,7 @@ _KANBAN_JUDGE_MODEL_POOL: tuple[str, ...] = (
 _GOAL_JUDGE_MODEL = "gemini-4-argon"
 _GOAL_JUDGE_MODEL_ALT = "claude-opus-5-5"
 _GOAL_JUDGE_QUICK_MODEL = "glm-5.3-flash-fireworks"
-_GOAL_JUDGE_QUICK_MODEL_ALT = "claude-haiku-4-5"
+_GOAL_JUDGE_QUICK_MODEL_ALT = "claude-haiku-5-5"
 
 
 def _distinct_judge_model(session_model: str, preferred: str, alt: str) -> str:
@@ -2733,6 +2733,16 @@ async def _main() -> None:
 AVAILABLE_MODELS: list[dict[str, Any]] = [
     # ─── Anthropic (ANTHROPIC_API_KEY) ─────────────────────────────────
     {
+        "id": "claude-fable-5-2",
+        "family": "anthropic",
+        "label": "Claude Fable 5.2",
+        "tier": "max",
+        "contextWindow": 1_000_000,
+        "thinking": True,
+        "envVar": "ANTHROPIC_API_KEY",
+        "description": "Newest Fable (Nov 9, 2026). Anthropic's most capable widely released model, for the hardest reasoning and long agentic runs, at $8/$40 per MTok (cache reads $0.20), 20% under Fable 5.1. Thinking always on, 1M ctx, 128k output. Its thinking blocks are bound to the exact history, so Freyja asks the API to drop stale ones after a compaction instead of failing the turn.",
+    },
+    {
         "id": "claude-fable-5-1",
         "family": "anthropic",
         "label": "Claude Fable 5.1",
@@ -2740,7 +2750,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_000_000,
         "thinking": True,
         "envVar": "ANTHROPIC_API_KEY",
-        "description": "Newest Mythos-class Claude (Sep 2026). Most capable model for demanding reasoning and long-horizon agentic work. Adaptive thinking (always on), 128k output. $10/$50 per MTok, but cache reads are 4x cheaper than Fable 5 ($0.25 vs $1.00).",
+        "description": "Mythos-class Claude (Sep 2026), succeeded by Fable 5.2. Capable model for demanding reasoning and long-horizon agentic work. Adaptive thinking (always on), 128k output. $10/$50 per MTok, but cache reads are 4x cheaper than Fable 5 ($0.25 vs $1.00).",
     },
     {
         "id": "claude-fable-5",
@@ -2852,6 +2862,16 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Anthropic's most agentic Sonnet. 1M ctx, adaptive extended thinking, vision.",
     },
     {
+        "id": "claude-haiku-5-5",
+        "family": "anthropic",
+        "label": "Claude Haiku 5.5",
+        "tier": "fast",
+        "contextWindow": 1_000_000,
+        "thinking": True,
+        "envVar": "ANTHROPIC_API_KEY",
+        "description": "Fastest and cheapest Claude (Oct 7, 2026). $0.10/$0.50 per MTok for prompts up to 100k tokens, $0.50/$2.50 above. 1M ctx, 128k output, effort levels low..max (default medium). Thinking is on unless set to none. Good for fan-out, titles and quick edits.",
+    },
+    {
         "id": "claude-haiku-4-5",
         "family": "anthropic",
         "label": "Claude Haiku 4.5",
@@ -2859,7 +2879,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 200_000,
         "thinking": True,
         "envVar": "ANTHROPIC_API_KEY",
-        "description": "Fastest Claude. Good for quick edits and fanout.",
+        "description": "Previous Haiku ($1/$5 per MTok, 200k ctx). Haiku 5.5 is cheaper and stronger.",
     },
     {
         "id": "claude-opus-4-5",
@@ -2873,6 +2893,26 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
     },
     # ─── OpenAI (OPENAI_API_KEY) ───────────────────────────────────────
     {
+        "id": "gpt-6.2-astra",
+        "family": "openai",
+        "label": "GPT-6.2 Astra",
+        "tier": "max",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "OpenAI's newest flagship (Nov 17, 2026) for the hardest professional work: reasoning, coding, computer use, research. $8/$40 per MTok ($0.40 cached), 20% under GPT-6 Astra. 1.05M ctx, 128k output. Effort low..max, no off or minimal rung. Prompts over 272k input bill 2x input and 1.5x output.",
+    },
+    {
+        "id": "gpt-6.2-sol",
+        "family": "openai",
+        "label": "GPT-6.2 Sol",
+        "tier": "balanced",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "Everyday GPT-6.2 tier (Nov 17, 2026), successor to 6.1 Sol at the same $2/$10 ($0.10 cached). 1.05M ctx, 128k output, computer use. Effort low..max (no off/minimal). Prompts over 272k input bill 2x input and 1.5x output.",
+    },
+    {
         "id": "gpt-6-astra",
         "family": "openai",
         "label": "GPT-6 Astra",
@@ -2880,7 +2920,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_050_000,
         "thinking": True,
         "envVar": "OPENAI_API_KEY",
-        "description": "OpenAI's newest flagship (Sep 2026), built for the hardest end-to-end work. Complex reasoning, coding, computer use, research. 1.05M ctx, 128k output, $10/$50 per MTok. Effort ladder is low..max with no off or minimal rung.",
+        "description": "GPT-6 flagship (Sep 2026), succeeded by GPT-6.2 Astra, built for the hardest end-to-end work. Complex reasoning, coding, computer use, research. 1.05M ctx, 128k output, $10/$50 per MTok. Effort ladder is low..max with no off or minimal rung.",
     },
     {
         "id": "gpt-6-astra-ultrafast",
@@ -2994,6 +3034,16 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
     },
     # ─── Fireworks (FIREWORKS_API_KEY) ─────────────────────────────────
     {
+        "id": "kimi-k3.1-pro",
+        "family": "fireworks",
+        "label": "Kimi K3.1 Pro",
+        "tier": "max",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "Moonshot's Kimi K3.1 Pro via Fireworks (Nov 4, 2026). Post-trained from K3 with sparse attention; beats K3 on every benchmark Fireworks lists and costs less ($2/$10 per MTok, $0.20 cached). Native vision + 1M ctx.",
+    },
+    {
         "id": "kimi-k3",
         "family": "fireworks",
         "label": "Kimi K3",
@@ -3093,13 +3143,20 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_048_576,
         "thinking": True,
         "envVar": "GEMINI_API_KEY",
-        # Announced 2026-10-28: cyber defenders this week, the Fairwind
-        # Program next, developers "soon". Every id probed that day 404s
-        # and models.list shows only Argon, so the picker holds the seat
-        # and refuses the click until Google serves it. Drop `gated`
-        # (and re-probe the thinking ladder) when it answers.
-        "gated": "Gemini 4 Carbon is not served to API keys yet (gated rollout since Oct 28, 2026)",
-        "description": "Google's strongest model (announced Oct 28, 2026): gains over Argon on coding, agentic work and cyber defense. Gated rollout — cyber defenders first, developers later. Priced at Argon's intro rate ($2/$10). 1M ctx and Argon's thinking ladder assumed until it is reachable.",
+        # Gated from its 2026-10-28 announcement until the API served it
+        # (GA 2026-11-10). Probed 2026-11-17: LOW/MEDIUM/HIGH answer,
+        # MINIMAL and XHIGH are 400s, so it keeps Argon's ladder.
+        "description": "Google's strongest model (GA Nov 10, 2026): gains over Argon on coding, agentic work and cyber defense. 1M ctx, 64k out; text, image, video, audio and PDF in. Intro $2/$10 through Nov 30, 2026, then $4/$20.",
+    },
+    {
+        "id": "gemini-4-hydrogen",
+        "family": "google",
+        "label": "Gemini 4 Hydrogen",
+        "tier": "balanced",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "GEMINI_API_KEY",
+        "description": "Fast Gemini 4 for agentic work and everyday coding (Nov 12, 2026). Scores just above Argon at $1.50/$7.50 flat, and finishes tasks ~2.5x faster than 3.8 Flash. The only Gemini with an xhigh thinking level. 1M ctx.",
     },
     {
         "id": "gemini-3.1-pro-preview",
@@ -3165,6 +3222,11 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
     # an "off" request just omitted the `thinking` field and the model
     # reasoned anyway — billed, with the UI claiming reasoning was off.
     # Caught 2026-09-29 by tests/test_model_registry_consistency.py.
+    "claude-fable-5-2": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "high",
+    },
     "claude-fable-5-1": {
         "reasoningMode": "required",
         "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
@@ -3234,8 +3296,17 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["none", "low", "medium", "high"],
         "reasoningDefault": "high",
     },
-    "claude-haiku-4-5": {
+    # Haiku 5.5 keeps a "none" rung, sent as `thinking: {"type":
+    # "disabled"}` because an omitted field means adaptive thinking on this
+    # model (engine/types.py). Default "medium" is the model's own default.
+    "claude-haiku-5-5": {
         "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "medium",
+    },
+    # Haiku 4.5 takes the budget shape, not adaptive + effort.
+    "claude-haiku-4-5": {
+        "reasoningMode": "budget",
         "reasoningLevels": ["none", "low", "medium", "high"],
         "reasoningDefault": "high",
     },
@@ -3245,7 +3316,18 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningDefault": "high",
     },
     # Astra drops both the "none" and "minimal" rungs the 5.x family has;
-    # reasoning.effort accepts only low/medium/high/xhigh/max.
+    # reasoning.effort accepts only low/medium/high/xhigh/max. The 6.2 pair
+    # keeps that ladder (probed 2026-11-17; the API default is medium on both).
+    "gpt-6.2-astra": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "high",
+    },
+    "gpt-6.2-sol": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "medium",
+    },
     "gpt-6-astra": {
         "reasoningMode": "required",
         "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
@@ -3312,6 +3394,12 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["none", "low", "medium", "high", "max"],
         "reasoningDefault": "high",
     },
+    "kimi-k3.1-pro": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "max"],
+        "reasoningDefault": "high",
+        "reasoningHistory": ["preserved"],
+    },
     "kimi-k3": {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "low", "medium", "high", "max"],
@@ -3361,11 +3449,17 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["low", "medium", "high"],
         "reasoningDefault": "medium",
     },
-    # Carbon: Argon's ladder, assumed — gated and unprobed as of 2026-10-28.
+    # Carbon: Argon's ladder (probed 2026-11-17: MINIMAL and XHIGH 400).
     "gemini-4-carbon": {
         "reasoningMode": "effort",
         "reasoningLevels": ["low", "medium", "high"],
         "reasoningDefault": "medium",
+    },
+    # Hydrogen adds XHIGH above HIGH and defaults to HIGH; no MINIMAL.
+    "gemini-4-hydrogen": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["low", "medium", "high", "xhigh"],
+        "reasoningDefault": "high",
     },
     "gemini-3.1-pro-preview": {
         "reasoningMode": "effort",
@@ -9582,8 +9676,10 @@ class _BridgeSession:
                 f"USER:\n{u}\n\n"
                 f"ASSISTANT:\n{a}"
             )
+            # Haiku 5.5 thinks unless told not to; "none" becomes
+            # `thinking: {"type": "disabled"}` (engine/types.py).
             provider = build_provider(
-                "claude-haiku-4-5-20251001", thinking_level="none",
+                "claude-haiku-5-5", thinking_level="none",
             )
             response = await provider.complete_async(
                 # role is `Literal["user", ...]`; pass the literal string
@@ -12572,6 +12668,7 @@ class _BridgeSession:
                 output_tokens=out_tok,
                 cache_read_tokens=cr_tok,
                 cache_write_tokens=cw_tok,
+                single_call=True,
             )
             # Accumulate per-call cost on the session so the displayed
             # spend reflects the actual model pricing (including cache

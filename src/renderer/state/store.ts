@@ -1417,6 +1417,7 @@ async function downscaleImageForLLM(
 // the wrong denominator on cold start.
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Fable 5
+  'claude-fable-5-2': 1_000_000,
   'claude-fable-5-1': 1_000_000,
   'claude-fable-5': 1_000_000,
   // Claude 5.5
@@ -1434,12 +1435,16 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Claude 4.6
   'claude-opus-4-6': 1_000_000,
   'claude-sonnet-4-6': 1_000_000,
+  // Claude Haiku 5.5
+  'claude-haiku-5-5': 1_000_000,
   // Claude 4.5 / 4
   'claude-haiku-4-5': 200_000,
   'claude-opus-4-5': 200_000,
   'claude-sonnet-4': 200_000,
   'claude-opus-4': 200_000,
   // OpenAI
+  'gpt-6.2-astra': 1_050_000,
+  'gpt-6.2-sol': 1_050_000,
   'gpt-6-astra': 1_050_000,
   'gpt-6-astra-ultrafast': 1_050_000,
   'gpt-6.1-sol': 1_050_000,
@@ -1460,6 +1465,7 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // "wrong" because the UI denominator didn't match the provider.
   'deepseek-v4p1-flash': 1_048_576,
   'minimax-m3': 524_288,
+  'kimi-k3.1-pro': 1_048_576,
   'kimi-k3': 1_048_576,
   'kimi-k3-fast': 1_048_576,
   // Z.ai first-party (+ the same models via Fireworks)
@@ -1471,8 +1477,9 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // These were missing here, so gemini-* sessions showed `ctx N/200k` while
   // the real window is ~1M — the dashboard denominator (not the provider /
   // compaction, which read the registry) was wrong.
-  'gemini-4-argon': 1_048_576,
   'gemini-4-carbon': 1_048_576,
+  'gemini-4-hydrogen': 1_048_576,
+  'gemini-4-argon': 1_048_576,
   'gemini-3.1-pro-preview': 1_048_576,
   'gemini-3.8-flash': 1_048_576,
   'gemini-3.6-flash': 1_048_576,
@@ -1489,6 +1496,7 @@ function contextWindowFor(model: string): number {
 // keep in sync with bridge/freyja_bridge.py:MODEL_REASONING_META.
 const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel: string }> = {
   // Fable tiers: thinking is always on, so there is no 'none' rung.
+  'claude-fable-5-2': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-fable-5-1': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-fable-5': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   // Opus 5.5: no 'none' rung — thinking cannot be disabled on this model.
@@ -1504,9 +1512,13 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'claude-sonnet-5-5': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-sonnet-5': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-sonnet-4-6': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  // Haiku 5.5: 'none' is sent as thinking {type: 'disabled'}.
+  'claude-haiku-5-5': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
   'claude-haiku-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'claude-opus-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
-  // Astra: no 'none' or 'minimal' rung.
+  // Astra: no 'none' or 'minimal' rung. The GPT-6.2 pair keeps that ladder.
+  'gpt-6.2-astra': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
+  'gpt-6.2-sol': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
   'gpt-6-astra': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'gpt-6-astra-ultrafast': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'gpt-6.1-sol': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
@@ -1520,6 +1532,7 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'gpt-5.4-pro': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'high' },
   'gpt-5.4-mini': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'medium' },
   'deepseek-v4p1-flash': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
+  'kimi-k3.1-pro': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
   'kimi-k3': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
   'kimi-k3-fast': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
   'minimax-m3': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
@@ -1532,6 +1545,8 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   // Google Gemini (keep in sync with bridge MODEL_REASONING_META).
   'gemini-4-argon': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
   'gemini-4-carbon': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
+  // Hydrogen is the only Gemini with an 'xhigh' rung.
+  'gemini-4-hydrogen': { levels: ['low', 'medium', 'high', 'xhigh'], defaultLevel: 'high' },
   'gemini-3.1-pro-preview': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'gemini-3.8-flash': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
   'gemini-3.6-flash': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'medium' },

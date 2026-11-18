@@ -291,7 +291,7 @@ The judge has four profiles, ordered by intensity:
                  questions. If there is any real work to do — research,
                  code, analysis, anything multi-turn — pick at least
                  `quick`. When in doubt, do NOT pick skip.
-  · `quick`    — Haiku 4.5, no thinking, single-call. Use when the goal is
+  · `quick`    — GLM 5.3 Flash, no thinking, single-call. Use when the goal is
                  small, mechanical, or genuinely easy to evaluate (e.g.
                  "rename this function", "format this file"). Cheap.
   · `standard` — same model as the agent, no thinking, single-call. The

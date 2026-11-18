@@ -68,7 +68,7 @@ const JUDGE_PROFILE_META: Record<
   quick: {
     name: 'Quick',
     cost: 'cheap · fast',
-    tagline: 'Haiku 4.5, no thinking. Use when every turn needs a sanity gate.',
+    tagline: 'GLM 5.3 Flash, no thinking. Use when every turn needs a sanity gate.',
   },
   standard: {
     name: 'Standard',

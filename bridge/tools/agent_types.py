@@ -560,7 +560,7 @@ AGENT_TYPES: dict[str, AgentType] = {
         model=["gpt-6-luna", "glm-5.3-flash-fireworks", "gemini-3.5-flash-lite"],
         thinking_effort="off",
         model_policy="random_available",
-        model_fallbacks=("claude-haiku-4-5",),
+        model_fallbacks=("claude-haiku-5-5",),
         tool_include=frozenset({
             "web_search", "web_fetch", "twitter_search",
             "bash", "read_file", "list_directory",

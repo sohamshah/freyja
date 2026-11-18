@@ -44,6 +44,11 @@ Used by the cost meter (`session_spend` in the activity panel).
 Missing entry → cost shows as `$0.000` forever; operator can't see real
 spend.
 
+Two companion tables in the same file handle prices that are not one flat card:
+
+- `MODEL_LONG_PROMPT_PRICING_PER_M`: `model → (threshold_tokens, long_rates)` for models that bill a whole call at a second card once the prompt (input + cache read + cache write) passes a size, such as Haiku 5.5 above 100k and the GPT-6.x models above 272k. `compute_cost` applies it only when the caller passes `single_call=True`, because a run's summed tokens pass the threshold long before any one prompt does. Callers that price one model call pass it; callers that price a run's totals do not.
+- `MODEL_PRICE_CHANGES`: `model → ((first_day_utc, rates), ...)` for a price that changes on a known date, such as the end of an introductory price. A call is priced on the day it is made, so nobody has to edit the table that day.
+
 ### 4. `engine/providers.py` — `FALLBACK_CHAINS`
 Ordered list of fallback model ids tried when the primary is
 unavailable. Used by `resolve_model_choice` (sub-agent profiles) and
@@ -92,6 +97,7 @@ each one is a request the API rejects if the set is wrong:
   `auto` for these. Missing entry on a rejecting model → every
   structured-output call 400s until the retry path catches it.
 - `REFUSAL_FALLBACK_TARGETS` — models whose safety classifiers can end a turn with `stop_reason="refusal"`, each mapped to the model that re-serves a declined request (server-side fallbacks). Missing entry → a declined request is a dead turn instead of a rescued one. The target must be in the model's `allowed_fallback_models` (`GET /v1/models/{model}`), and the API checks every request against the target too: a target outside the list, or one that lacks a feature the request uses, is a 400 on every request. Sonnet 5.5 shipped with `claude-opus-4-8` and answered nothing for ten days; its only allowed target is `claude-sonnet-5`, which also lacks `between_tools` thinking, so thinking-off requests go without a fallback. Probe the new model with a real request at each reasoning level, fallback included. If the API refuses a fallback anyway, the provider drops it for that model and resends at once (`_request_error`).
+- `THINKING_BINDING_DROP_MODELS` — models that check each replayed thinking block against the history that produced it on every account (Fable 5.2). A block replayed after any edit to `system`, `tools` or an earlier message is a 400 that resending cannot clear, and Freyja edits history on purpose (compaction, halving). These requests send `thinking.block_binding.prefix_mismatch_behavior: "drop_block"` with the `thinking-binding-controls-2026-08-01` beta, so the API drops stale blocks and logs them in `input_transformations` instead. Models that run the check only for accounts created on or after 2026-08-31 (Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1) stay out: sending the field would opt this older account into the check.
 - `ALWAYS_THINKING_MODELS` — models where thinking cannot be turned off
   by any means. Read by `supports_thinking_off`. Their reasoning ladders
   in #11 and #13 must omit the `none` rung.
@@ -129,6 +135,8 @@ Missing entry on a model without a MINIMAL rung → every thinking-off
 call (title generation, judge synthesis, compaction summaries) 400s on
 that model. Argon reproduced this exactly on 2026-10-28 until it was
 added. The reasoning ladders in #11 and #13 must omit `minimal` too.
+
+`_XHIGH_MODELS` in the same file lists the Gemini models with an XHIGH thinking level above HIGH (Gemini 4 Hydrogen). Only those get XHIGH for an `xhigh` or `max` effort; every other Gemini stays at HIGH, because Argon and Carbon answer XHIGH with a 400. google-genai 2.0.0 has no XHIGH member but sends the string.
 
 Two Gemini-specific notes while you are in this file:
 
@@ -176,6 +184,11 @@ Missing entry on a between_tools model → asking for `none` sends no
 `thinking` field, which on such a model means **full adaptive thinking**.
 It does not error; it just silently bills reasoning on the cheap fan-out
 sub-agents that asked for none.
+
+### 9b. `engine/types.py` — `_EXPLICIT_DISABLED_THINKING_MODEL_IDS`
+Models that think when the request has no `thinking` field but still accept `{"type": "disabled"}` (Haiku 5.5). On these, "off" must be sent explicitly, or a call that asked for no reasoning bills full adaptive thinking. Disabled is accepted at effort low/medium/high and is a 400 at xhigh/max, so `get_output_config` sends no effort while thinking is off.
+
+Missing entry → the `none` rung silently runs adaptive thinking.
 
 ### 10. `bridge/freyja_bridge.py` — `AVAILABLE_MODELS`
 The catalog the bridge sends to the renderer on the `ready` event.

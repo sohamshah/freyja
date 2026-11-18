@@ -44,6 +44,11 @@ class SubAgentRecord:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    # Its model calls' cost, priced one call at a time as they are counted.
+    # The pane shows this rather than re-pricing the totals above: a run's
+    # totals pass a long-prompt threshold (Haiku 5.5 above 100k, GPT-6.x
+    # above 272k) that no single call may have, and miss the calls that did.
+    cost_usd: float = 0.0
     context_tokens: int = 0
     iterations: int = 0
     tools_called: int = 0

@@ -547,6 +547,8 @@ class ThinkingConfig:
             # Deliberately no `display` key: sending one is a 400.
             if _is_between_tools_model(model):
                 return {"type": "between_tools"}
+            if _is_explicit_disabled_model(model):
+                return {"type": "disabled"}
             return None
 
         # Claude 4.6+ adaptive thinking. On 4.7 the docs silently changed
@@ -606,11 +608,12 @@ _ADAPTIVE_THINKING_MODEL_IDS: set[str] = {
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-opus-4-6",
-    "claude-haiku-4-5",
+    "claude-haiku-5-5",
     "claude-opus-4-7",
     "claude-opus-4-8",
     "claude-fable-5",
     "claude-fable-5-1",
+    "claude-fable-5-2",
 }
 
 
@@ -630,6 +633,25 @@ _ADAPTIVE_THINKING_MODEL_IDS: set[str] = {
 _BETWEEN_TOOLS_THINKING_MODEL_IDS: set[str] = {
     "claude-sonnet-5-5",
 }
+
+
+# Models that think when the request has no `thinking` field, but still
+# accept `{"type": "disabled"}`. Omitting the field would bill reasoning on a
+# call that asked for none, so "off" is sent explicitly. Claude Haiku 5.5 is
+# the first: disabled is accepted at effort low/medium/high and is a 400 at
+# xhigh/max (probed 2026-11-17), which get_output_config keeps unreachable by
+# sending no effort while thinking is off.
+_EXPLICIT_DISABLED_THINKING_MODEL_IDS: set[str] = {
+    "claude-haiku-5-5",
+}
+
+
+def _is_explicit_disabled_model(model: str) -> bool:
+    """Whether `model` needs `{"type": "disabled"}` to turn thinking off."""
+    if not model:
+        return False
+    base = model[:-5] if model.endswith("-fast") else model
+    return base in _EXPLICIT_DISABLED_THINKING_MODEL_IDS
 
 
 def _is_between_tools_model(model: str) -> bool:

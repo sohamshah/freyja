@@ -52,7 +52,8 @@ is 50k so 32k is well within reach."""
 # (200k) and Opus 4.8 sessions compacted 5× early before this dict
 # learned about it.
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    # Fable 5 (Mythos-class, GA 2026-06-09)
+    # Fable 5 (Mythos-class, GA 2026-06-09); Fable 5.2 GA 2026-11-09
+    "claude-fable-5-2": 1_000_000,
     "claude-fable-5-1": 1_000_000,
     "claude-fable-5": 1_000_000,
     # Claude 5.5 (GA 2026-09-22). Fast mode is a request flag, not a
@@ -72,11 +73,15 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # Claude 4.6
     "claude-opus-4-6": 1_000_000,
     "claude-sonnet-4-6": 1_000_000,
+    # Claude Haiku 5.5 (GA 2026-10-07). 1M ctx, up from Haiku 4.5's 200k.
+    "claude-haiku-5-5": 1_000_000,
     # Claude 4.5
     "claude-haiku-4-5": 200_000,
     "claude-opus-4-5": 200_000,
     # OpenAI. The `-ultrafast` ids are the ultrafast service tier of the
     # same model, listed for the same reason as the `-fast` ids above.
+    "gpt-6.2-astra": 1_050_000,
+    "gpt-6.2-sol": 1_050_000,
     "gpt-6-astra": 1_050_000,
     "gpt-6-astra-ultrafast": 1_050_000,
     "gpt-6.1-sol": 1_050_000,
@@ -95,6 +100,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # Fireworks
     "deepseek-v4p1-flash": 1_048_576,
     "minimax-m3": 524_288,
+    "kimi-k3.1-pro": 1_048_576,
     "kimi-k3": 1_048_576,
     "kimi-k3-fast": 1_048_576,
     # Google Gemini — keep in sync with engine/providers.py MODEL_REGISTRY.
@@ -102,8 +108,9 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "glm-5.3-flash": 1_048_576,
     "glm-5.3-fireworks": 1_048_576,
     "glm-5.3-flash-fireworks": 1_048_576,
-    "gemini-4-argon": 1_048_576,
     "gemini-4-carbon": 1_048_576,
+    "gemini-4-hydrogen": 1_048_576,
+    "gemini-4-argon": 1_048_576,
     "gemini-3.1-pro-preview": 1_048_576,
     "gemini-3.8-flash": 1_048_576,
     "gemini-3.6-flash": 1_048_576,

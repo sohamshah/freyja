@@ -70,6 +70,10 @@ FIREWORKS_MODEL_MAP: dict[str, str] = {
     "glm-5.3-fireworks": "accounts/fireworks/models/glm-5p3",
     "glm-5.3-flash-fireworks": "accounts/fireworks/models/glm-5p3-flash",
     "minimax-m3": "accounts/fireworks/models/minimax-m3",
+    # Kimi K3.1 Pro (2026-11-04). Served at this path; probed 2026-11-17:
+    # reasoning_effort none..max all answer, "none" returns no
+    # reasoning_content, and image_url input works.
+    "kimi-k3.1-pro": "accounts/fireworks/models/kimi-k3p1-pro",
     "kimi-k3": "accounts/fireworks/models/kimi-k3",
     "kimi-k3-fast": "accounts/fireworks/routers/kimi-k3-fast",
 }
@@ -83,6 +87,8 @@ FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
     "accounts/fireworks/models/glm-5p3-flash": 1_048_576,
     "minimax-m3": 524_288,
     "accounts/fireworks/models/minimax-m3": 524_288,
+    "kimi-k3.1-pro": 1_048_576,
+    "accounts/fireworks/models/kimi-k3p1-pro": 1_048_576,
     "kimi-k3": 1_048_576,
     "accounts/fireworks/models/kimi-k3": 1_048_576,
     "kimi-k3-fast": 1_048_576,
@@ -97,6 +103,8 @@ FIREWORKS_VISION_MODELS: set[str] = {
     # GLM 5.3 Flash is natively multimodal; plain GLM 5.3 is text-only.
     "glm-5.3-flash-fireworks",
     "accounts/fireworks/models/glm-5p3-flash",
+    "kimi-k3.1-pro",
+    "accounts/fireworks/models/kimi-k3p1-pro",
     "kimi-k3",
     "accounts/fireworks/models/kimi-k3",
     "kimi-k3-fast",
@@ -119,6 +127,8 @@ FIREWORKS_REASONING_MODE: dict[str, str] = {
     # Fireworks docs list MiniMax M2 reasoning as required/on by default.
     "minimax-m3": "required",
     "accounts/fireworks/models/minimax-m3": "required",
+    "kimi-k3.1-pro": "effort",
+    "accounts/fireworks/models/kimi-k3p1-pro": "effort",
     "kimi-k3": "effort",
     "accounts/fireworks/models/kimi-k3": "effort",
     "kimi-k3-fast": "effort",
@@ -134,6 +144,8 @@ FIREWORKS_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
     "accounts/fireworks/models/glm-5p3": ("low", "high", "max"),
     "glm-5.3-flash-fireworks": ("low", "high", "max"),
     "accounts/fireworks/models/glm-5p3-flash": ("low", "high", "max"),
+    "kimi-k3.1-pro": ("none", "low", "medium", "high", "max"),
+    "accounts/fireworks/models/kimi-k3p1-pro": ("none", "low", "medium", "high", "max"),
     "kimi-k3": ("none", "low", "medium", "high", "max"),
     "accounts/fireworks/models/kimi-k3": ("none", "low", "medium", "high", "max"),
     "kimi-k3-fast": ("none", "low", "medium", "high", "max"),
@@ -143,6 +155,8 @@ FIREWORKS_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
 FIREWORKS_REASONING_HISTORY: dict[str, str] = {
     "minimax-m3": "interleaved",
     "accounts/fireworks/models/minimax-m3": "interleaved",
+    "kimi-k3.1-pro": "preserved",
+    "accounts/fireworks/models/kimi-k3p1-pro": "preserved",
     "kimi-k3": "preserved",
     "accounts/fireworks/models/kimi-k3": "preserved",
     "kimi-k3-fast": "preserved",
@@ -704,8 +718,15 @@ class FireworksProvider:
         if reasoning_effort is not None:
             request_kwargs["reasoning_effort"] = reasoning_effort
 
+        # No history mode on a reasoning-off call: there is no reasoning to
+        # carry, and Kimi K3.1 Pro given `reasoning_effort: "none"` with
+        # `reasoning_history: "preserved"` wrote its reasoning into the reply
+        # ("I need respond single word ok. ... Respond ok.") in 2 of 3 raw
+        # API calls, against 0 of 3 without the field (probed 2026-11-17).
+        # K3 and K3.1 Pro both answered a multi-turn off call that carried
+        # earlier turns' reasoning_content, without the field, cleanly.
         reasoning_history = self._reasoning_history()
-        if reasoning_history:
+        if reasoning_history and reasoning_effort != "none":
             request_kwargs.setdefault("extra_body", {})["reasoning_history"] = reasoning_history
 
         return request_kwargs

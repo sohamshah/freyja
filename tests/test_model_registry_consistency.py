@@ -33,6 +33,7 @@ from engine.providers import (
 from engine.types import (
     _ADAPTIVE_THINKING_MODEL_IDS,
     _BETWEEN_TOOLS_THINKING_MODEL_IDS,
+    _EXPLICIT_DISABLED_THINKING_MODEL_IDS,
     ThinkingConfig,
     _is_adaptive_thinking_model,
 )
@@ -275,13 +276,67 @@ def test_between_tools_model_emits_the_exact_accepted_shape(model):
         assert leaked.get_output_config(model) is None
 
 
+@pytest.mark.parametrize("model", sorted(_EXPLICIT_DISABLED_THINKING_MODEL_IDS))
+def test_explicit_disabled_model_sends_disabled_and_no_effort(model):
+    """Haiku 5.5 thinks when `thinking` is omitted, so "off" must be sent as
+    disabled. Disabled with an xhigh/max effort is a 400 (probed 2026-11-17),
+    so no effort may ride along, even one that leaked into an off config."""
+    for effort in ("none", "xhigh", "max"):
+        off = ThinkingConfig(enabled=False, effort=effort)
+        assert off.to_api_param(model) == {"type": "disabled"}
+        assert off.get_output_config(model) is None
+
+
 def test_every_other_anthropic_model_omits_thinking_when_off():
     """Regression guard: the _build_request gate was loosened for
     between_tools; everything else must keep sending no thinking field."""
     off = ThinkingConfig(enabled=False)
+    explicit = BETWEEN_TOOLS_THINKING_MODELS | _EXPLICIT_DISABLED_THINKING_MODEL_IDS
     sent = {
         m: off.to_api_param(m)
         for m in _anthropic_models()
-        if _base(m) not in BETWEEN_TOOLS_THINKING_MODELS and off.to_api_param(m) is not None
+        if _base(m) not in explicit and off.to_api_param(m) is not None
     }
     assert sent == {}, f"thinking sent with thinking off: {sent}"
+
+
+def test_legacy_thinking_models_get_the_budget_shape():
+    """Haiku 4.5 sat in the adaptive set and answered every thinking-on
+    request with 400 "adaptive thinking is not supported on this model"
+    (probed 2026-11-17). Legacy models must get a budget and no effort."""
+    on = ThinkingConfig(enabled=True, effort="high")
+    for model in sorted(LEGACY_THINKING_MODELS):
+        assert on.to_api_param(model)["type"] == "enabled", model
+        assert on.get_output_config(model) is None, model
+
+
+def test_long_prompt_rate_card_applies_to_one_call_over_the_threshold():
+    """Haiku 5.5 bills $0.50/$2.50 once a prompt passes 100k tokens. Only a
+    single call's prompt counts: a run's summed tokens pass the threshold
+    long before any one prompt does."""
+    short = compute_cost("claude-haiku-5-5", input_tokens=50_000, output_tokens=1_000, single_call=True)
+    long = compute_cost(
+        "claude-haiku-5-5", input_tokens=10_000, cache_read_tokens=150_000,
+        output_tokens=1_000, single_call=True,
+    )
+    summed = compute_cost(
+        "claude-haiku-5-5", input_tokens=10_000, cache_read_tokens=150_000, output_tokens=1_000,
+    )
+    assert short == pytest.approx((50_000 * 0.10 + 1_000 * 0.50) / 1e6)
+    assert long == pytest.approx((10_000 * 0.50 + 150_000 * 0.05 + 1_000 * 2.50) / 1e6)
+    assert summed == pytest.approx((10_000 * 0.10 + 150_000 * 0.01 + 1_000 * 0.50) / 1e6)
+
+
+def test_dated_price_change_applies_from_its_first_day():
+    """Argon's intro price ends Nov 30, 2026; the meter must double on Dec 1
+    without anyone editing the table that day."""
+    from datetime import date
+
+    from engine.providers import MODEL_LONG_PROMPT_PRICING_PER_M, MODEL_PRICE_CHANGES
+
+    # A long-prompt card replaces the whole row, so it would hide a dated change.
+    assert not set(MODEL_LONG_PROMPT_PRICING_PER_M) & set(MODEL_PRICE_CHANGES)
+    usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+    assert compute_cost("gemini-4-argon", on=date(2026, 11, 30), **usage) == pytest.approx(12.0)
+    assert compute_cost("gemini-4-argon", on=date(2026, 12, 1), **usage) == pytest.approx(24.0)
+

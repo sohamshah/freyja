@@ -224,6 +224,7 @@ def _call_stats(provider: Any, response: Any, duration_ms: int) -> dict[str, Any
             output_tokens=stats["output_tokens"],
             cache_read_tokens=stats["cache_read_tokens"],
             cache_write_tokens=stats["cache_write_tokens"],
+            single_call=True,
         )
     except Exception:
         cost = None

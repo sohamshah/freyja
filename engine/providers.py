@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import time
 from abc import abstractmethod
+from datetime import date, datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
@@ -547,6 +548,7 @@ class ModelFallbackChain:
 # provider routing + context window + thinking flag.
 MODEL_REGISTRY: dict[str, dict[str, object]] = {
     # Anthropic models
+    "claude-fable-5-2": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-fable-5-1": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-fable-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-5-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
@@ -558,9 +560,12 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
     "claude-sonnet-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-sonnet-4-6": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-6": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
+    "claude-haiku-5-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-haiku-4-5": {"provider": "anthropic", "context_window": 200_000, "thinking": True},
     "claude-opus-4-5": {"provider": "anthropic", "context_window": 200_000, "thinking": True},
     # OpenAI models (Responses API)
+    "gpt-6.2-astra": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
+    "gpt-6.2-sol": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-6-astra": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-6-astra-ultrafast": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-6.1-sol": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
@@ -610,6 +615,14 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "reasoning_levels": ("low", "medium", "high"),
         "reasoning_default": "medium",
     },
+    "kimi-k3.1-pro": {
+        "provider": "fireworks",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("none", "low", "medium", "high", "max"),
+        "reasoning_default": "high",
+    },
     "kimi-k3": {
         "provider": "fireworks",
         "context_window": 1_048_576,
@@ -655,10 +668,9 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "reasoning_levels": ("low", "medium", "high"),
         "reasoning_default": "medium",
     },
-    # Gemini 4 Carbon: announced 2026-10-28, gated (cyber defenders first,
-    # then the Fairwind Program, developers "soon"). Not served to API keys
-    # yet — every id probed that day 404s — so the ladder below is Argon's,
-    # assumed, and the catalog entry is marked gated until it answers.
+    # Gemini 4 Carbon: announced 2026-10-28 and gated until the API served
+    # it (GA 2026-11-10). Argon's ladder: MINIMAL and XHIGH 400 (probed
+    # 2026-11-17).
     "gemini-4-carbon": {
         "provider": "google",
         "context_window": 1_048_576,
@@ -666,6 +678,17 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "reasoning_mode": "effort",
         "reasoning_levels": ("low", "medium", "high"),
         "reasoning_default": "medium",
+    },
+    # Hydrogen (2026-11-12) is the only Gemini with an "xhigh" rung (probed
+    # 2026-11-17: Argon and Carbon answer 400 to XHIGH, all three to MINIMAL).
+    # Its API default is "high".
+    "gemini-4-hydrogen": {
+        "provider": "google",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("low", "medium", "high", "xhigh"),
+        "reasoning_default": "high",
     },
     "gemini-3.1-pro-preview": {
         "provider": "google",
@@ -711,13 +734,13 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
 }
 
 MODEL_SPEED_TIERS = {
-    "fast": "claude-haiku-4-5",
+    "fast": "claude-haiku-5-5",
     "medium": "claude-sonnet-5-5",
     "slow": "claude-opus-5-5",   # latest Opus; older ones stay in registry as fallback targets
-    "openai": "gpt-5.6-sol",     # OpenAI flagship (GPT-5.6 Sol)
+    "openai": "gpt-6.2-astra",   # OpenAI flagship (GPT-6.2 Astra, 2026-11-17)
     # gpt-5.3-codex was deprecated 2026-10-01 (shutdown 2027-04-01); OpenAI
     # points Codex users at the Sol line.
-    "codex": "gpt-6.1-sol",
+    "codex": "gpt-6.2-sol",
     # No "cerebras" tier: zai-glm-4.7 was archived by Cerebras (2026-10-28).
     # Retargeted 2026-09-29: kimi-k2.6, glm-5.1, deepseek-v4-pro and
     # minimax-m2.7 were all removed from Fireworks serverless and 404.
@@ -740,6 +763,9 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     # (the migration guide for 4.7 says "at the same $5/$25 per MTok pricing"
     # as 4.6; 4.5 keeps the legacy $15/$75 tier). Cache_read = 10% of input.
     # Fable 5 is a premium $10/$50 tier (cache_read $1, cache_write $12.50).
+    # Fable 5.2 (2026-11-09) cuts it to $8/$40, cache reads $0.20 (still
+    # 0.025x input), 5m cache writes $10.
+    "claude-fable-5-2": (8.0, 40.0, 0.20, 10.0),
     # Fable 5.1 is the same $10/$50 tier as Fable 5, but cache reads bill at
     # 0.025x input ($0.25/MTok) instead of the usual 0.1x — the only models
     # with that multiplier. Cache write is unchanged at 1.25x ($12.50).
@@ -768,18 +794,30 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     # session by 50%.
     "claude-sonnet-5": (2.0, 10.0, 0.20, 2.5),
     "claude-sonnet-4-6": (3.0, 15.0, 0.30),
-    "claude-haiku-4-5": (0.80, 4.0, 0.08),
+    # Haiku 5.5 (2026-10-07): $0.10/$0.50 for a prompt of 100k tokens or
+    # fewer, $0.50/$2.50 above (MODEL_LONG_PROMPT_PRICING_PER_M). Cache
+    # reads 0.1x input, 5m writes 1.25x.
+    "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125),
+    # Was (0.80, 4.0, 0.08): Haiku 3.5's card. Haiku 4.5 is $1/$5.
+    "claude-haiku-4-5": (1.0, 5.0, 0.10),
     # OpenAI Responses API. GPT-5.6 (Sol/Terra/Luna): cache_read is 10% of
     # input; cache_write defaults to 1.25× input (OpenAI's stated markup).
     # Sol output is $30/M — double GPT-5.5's $15 — so don't copy 5.5's tuple.
     # GPT-6 Astra publishes cached input ($1) and cache writes ($12.50)
     # explicitly rather than leaving them to the 0.1x / 1.25x defaults.
+    # GPT-6.2 Astra (2026-11-17) is 20% cheaper with cached input at 0.05x;
+    # 6.2 Sol keeps 6.1 Sol's card. Prompts over 272K input tokens bill 2x
+    # input and cache rates and 1.5x output on all four, priced from
+    # MODEL_LONG_PROMPT_PRICING_PER_M (developers.openai.com pricing,
+    # 2026-11-17; the cache-write column is the 30m write).
+    "gpt-6.2-astra": (8.0, 40.0, 0.40, 10.0),
+    "gpt-6.2-sol": (2.0, 10.0, 0.10, 2.5),
     "gpt-6-astra": (10.0, 50.0, 1.0, 12.5),
-    # GPT-6.1 Sol / GPT-6 Luna both publish cached-input and cache-write
-    # rates. Neither tuple models the >272K-input surcharge (2x input and
-    # cache rates, and 1.5x output) — a long-context turn costs more than
-    # the meter shows. Flagged rather than silently averaged.
     "gpt-6.1-sol": (2.0, 10.0, 0.10, 2.5),
+    # GPT-6 Luna has a >272K surcharge too, but its long-context rates are
+    # not on the pricing page we checked (2026-11-17), so it is not in
+    # MODEL_LONG_PROMPT_PRICING_PER_M: a long Luna prompt costs more than
+    # the meter shows.
     # The ultrafast service tier bills 6x every Standard rate (OpenAI's
     # pricing page, 2026-10-12). Only Astra and 6.1 Sol offer it.
     "gpt-6-astra-ultrafast": (60.0, 300.0, 6.0, 75.0),
@@ -794,6 +832,8 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     "gpt-5.4-mini": (0.30, 1.20, 0.03),
     # Fireworks
     "deepseek-v4p1-flash": (0.30, 1.20, 0.006),
+    # Kimi K3.1 Pro (2026-11-04) is cheaper than K3 (fireworks.ai blog).
+    "kimi-k3.1-pro": (2.00, 10.00, 0.20),
     "kimi-k3": (3.00, 15.00, 0.30),
     "kimi-k3-fast": (4.50, 22.50, 0.45),
     "minimax-m3": (0.30, 1.20, 0.06),
@@ -808,22 +848,57 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     "glm-5.3-flash-fireworks": (0.15, 0.50, 0.03),
     # Google Gemini (USD per 1M tokens — input/output/cache_read).
     # Cache write defaults to 1.25× input.
-    # Gemini 4 Argon: introductory pricing through Nov 30, 2026 — doubles to
-    # (4.0, 20.0, 0.20) on Dec 1, 2026 (ai.google.dev pricing page, 2026-10-28).
-    # Caching is implicit only; thinking tokens bill at the output rate.
+    # Gemini 4 Argon and Carbon: introductory pricing through Nov 30, 2026;
+    # both double on Dec 1, 2026 (MODEL_PRICE_CHANGES). Hydrogen has no
+    # intro price. Caching is implicit only; thinking tokens bill at the
+    # output rate. No prompt-length tiers (aistudio pricing page, 2026-11-17).
     "gemini-4-argon": (2.0, 10.0, 0.10),
-    # Gemini 4 Carbon: announced at Argon's intro price ($2/$10, $4/$20
-    # regular, cached input 95% off). Not on the pricing page yet.
     "gemini-4-carbon": (2.0, 10.0, 0.10),
-    # 3.1 Pro: the ≤200k-prompt tier. Prompts above 200k bill (4.0, 18.0, 0.40).
+    "gemini-4-hydrogen": (1.50, 7.50, 0.075),
+    # 3.1 Pro: the ≤200k-prompt tier; above 200k is in
+    # MODEL_LONG_PROMPT_PRICING_PER_M.
     # Was (1.25, 10.0, 0.31) here; the pricing page lists $2/$12 (2026-10-28).
     "gemini-3.1-pro-preview": (2.0, 12.0, 0.20),
-    # 3.8/3.6 Flash: introductory pricing through Dec 31, 2026 — doubles to
-    # (1.50, 7.50, 0.15) on Jan 1, 2027 (per ai.google.dev pricing page).
+    # 3.8/3.6 Flash: introductory pricing through Dec 31, 2026; doubles on
+    # Jan 1, 2027 (MODEL_PRICE_CHANGES).
     "gemini-3.8-flash": (0.75, 3.75, 0.075),
     "gemini-3.6-flash": (0.75, 3.75, 0.075),
     "gemini-3.5-flash-lite": (0.30, 2.50, 0.03),
     "gemini-3.1-flash-lite": (0.10, 0.40, 0.025),
+}
+
+
+_Rates = tuple[float, float, float] | tuple[float, float, float, float]
+
+# Rate cards that replace a model's MODEL_PRICING_PER_M row from a date on,
+# so the meter stays right after an introductory price ends without anyone
+# editing the table that day. Each entry is ((first_day_utc, rates), ...),
+# oldest first. A call is priced on the day it is made.
+MODEL_PRICE_CHANGES: dict[str, tuple[tuple[date, _Rates], ...]] = {
+    "gemini-4-argon": ((date(2026, 12, 1), (4.0, 20.0, 0.20)),),
+    "gemini-4-carbon": ((date(2026, 12, 1), (4.0, 20.0, 0.20)),),
+    "gemini-3.8-flash": ((date(2027, 1, 1), (1.50, 7.50, 0.15)),),
+    "gemini-3.6-flash": ((date(2027, 1, 1), (1.50, 7.50, 0.15)),),
+}
+
+# A model must not be in both tables below: the long-prompt card replaces
+# the whole row, so it would hide a dated change. The consistency test
+# checks this.
+
+# Models that bill a whole call at a second rate card once its prompt
+# (input + cache read + cache write tokens) is larger than a threshold:
+# model → (threshold_tokens, long_prompt_rates). Applied only when
+# compute_cost is told the counts are ONE call (`single_call=True`); a sum
+# over a run would cross the threshold long before any single prompt does.
+MODEL_LONG_PROMPT_PRICING_PER_M: dict[str, tuple[int, _Rates]] = {
+    "claude-haiku-5-5": (100_000, (0.50, 2.50, 0.05, 0.625)),
+    "gpt-6.2-astra": (272_000, (16.0, 60.0, 0.80, 20.0)),
+    "gpt-6.2-sol": (272_000, (4.0, 15.0, 0.20, 5.0)),
+    "gpt-6-astra": (272_000, (20.0, 75.0, 2.0, 25.0)),
+    "gpt-6.1-sol": (272_000, (4.0, 15.0, 0.20, 5.0)),
+    "gpt-6-astra-ultrafast": (272_000, (120.0, 450.0, 12.0, 150.0)),
+    "gpt-6.1-sol-ultrafast": (272_000, (24.0, 90.0, 1.20, 30.0)),
+    "gemini-3.1-pro-preview": (200_000, (4.0, 18.0, 0.40)),
 }
 
 
@@ -852,11 +927,28 @@ def compute_cost(
     output_tokens: int = 0,
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
+    single_call: bool = False,
+    on: date | None = None,
 ) -> float | None:
-    """Estimate USD cost for one API call. Returns None if model is unpriced."""
-    rates = MODEL_PRICING_PER_M.get(model)
+    """Estimate USD cost for API usage. Returns None if model is unpriced.
+
+    ``single_call`` says the counts come from one model call, which lets a
+    model's long-prompt rate card apply (MODEL_LONG_PROMPT_PRICING_PER_M).
+    Totals over a run leave it False and are priced at the base card.
+    ``on`` is the day to price for (default: today, UTC).
+    """
+    rates: _Rates | None = MODEL_PRICING_PER_M.get(model)
     if rates is None:
         return None
+    day = on or datetime.now(timezone.utc).date()
+    for first_day, changed in MODEL_PRICE_CHANGES.get(model, ()):
+        if day >= first_day:
+            rates = changed
+    long_prompt = MODEL_LONG_PROMPT_PRICING_PER_M.get(model)
+    if single_call and long_prompt is not None:
+        threshold, long_rates = long_prompt
+        if input_tokens + cache_read_tokens + cache_write_tokens > threshold:
+            rates = long_rates
     in_rate, out_rate, cache_read_rate = rates[0], rates[1], rates[2]
     cache_write_rate = rates[3] if len(rates) >= 4 else in_rate * 1.25
     return (
@@ -875,6 +967,7 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     # table was retargeted 2026-09-29 onto models verified live against the
     # Fireworks API that day: glm-5.3-fireworks, kimi-k3(-fast), minimax-m3,
     # glm-5.3-flash-fireworks, deepseek-v4p1-flash.
+    "claude-fable-5-2": ["claude-fable-5-1", "claude-opus-5-5", "kimi-k3.1-pro"],
     "claude-fable-5-1": ["claude-fable-5", "claude-opus-5-5", "kimi-k3"],
     "claude-fable-5": ["claude-opus-5-5", "claude-opus-4-8", "kimi-k3"],
     "claude-opus-5-5": ["claude-opus-4-8", "claude-opus-4-7", "kimi-k3"],
@@ -887,12 +980,16 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "claude-sonnet-5-5": ["claude-sonnet-5", "claude-opus-5-5", "glm-5.3-fireworks"],
     "claude-sonnet-5": ["claude-sonnet-5-5", "glm-5.3-fireworks", "kimi-k3"],
     "claude-sonnet-4-6": ["claude-sonnet-5-5", "glm-5.3-fireworks", "kimi-k3"],
-    "claude-haiku-4-5": ["glm-5.3-flash-fireworks", "kimi-k3"],
+    # Not Haiku 4.5: a 200k window under Haiku 5.5's 1M, at 10x the price.
+    "claude-haiku-5-5": ["glm-5.3-flash-fireworks", "gemini-4-hydrogen"],
+    "claude-haiku-4-5": ["claude-haiku-5-5", "glm-5.3-flash-fireworks", "kimi-k3"],
     "claude-opus-4-5": ["claude-opus-5-5", "claude-opus-4-8"],
     # ── OpenAI ──
-    "gpt-6-astra": ["gpt-6.1-sol", "gpt-5.6-sol", "gpt-6-luna"],
+    "gpt-6.2-astra": ["gpt-6-astra", "gpt-6.2-sol", "gpt-6.1-sol"],
+    "gpt-6.2-sol": ["gpt-6.1-sol", "gpt-6.2-astra", "gpt-6-luna"],
+    "gpt-6-astra": ["gpt-6.2-astra", "gpt-6.1-sol", "gpt-6-luna"],
     "gpt-6-astra-ultrafast": ["gpt-6-astra", "gpt-6.1-sol"],
-    "gpt-6.1-sol": ["gpt-6-astra", "gpt-5.6-sol", "gpt-6-luna"],
+    "gpt-6.1-sol": ["gpt-6.2-sol", "gpt-6-astra", "gpt-6-luna"],
     "gpt-6.1-sol-ultrafast": ["gpt-6.1-sol", "gpt-6-astra"],
     "gpt-6-luna": ["gpt-6.1-sol", "gpt-5.6-luna"],
     "gpt-5.6-sol": ["gpt-6.1-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
@@ -906,7 +1003,8 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "deepseek-v4p1-flash": ["glm-5.3-fireworks", "kimi-k3"],
     "glm-5.3-fireworks": ["glm-5.3", "kimi-k3", "minimax-m3"],
     "glm-5.3-flash-fireworks": ["glm-5.3-flash", "glm-5.3-fireworks", "kimi-k3"],
-    "kimi-k3": ["kimi-k3-fast", "glm-5.3-fireworks", "deepseek-v4p1-flash"],
+    "kimi-k3.1-pro": ["kimi-k3", "glm-5.3-fireworks", "deepseek-v4p1-flash"],
+    "kimi-k3": ["kimi-k3.1-pro", "kimi-k3-fast", "glm-5.3-fireworks"],
     "kimi-k3-fast": ["kimi-k3", "glm-5.3-fireworks", "deepseek-v4p1-flash"],
     "minimax-m3": ["kimi-k3", "glm-5.3-fireworks"],
     # ── Z.ai first-party ──
@@ -916,9 +1014,10 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     # ── Google Gemini ──
     # Retired Gemini ids (3.7/3.5 Flash routed to 3.8/3.6, 3.1 Flash 404,
     # the access-limited 2.5 models) live in RETIRED_MODEL_REPLACEMENTS
-    # below, not here. Carbon is gated and never a TARGET.
-    "gemini-4-argon": ["gemini-3.8-flash", "gemini-3.1-pro-preview"],
-    "gemini-4-carbon": ["gemini-4-argon", "gemini-3.8-flash"],
+    # below, not here.
+    "gemini-4-carbon": ["gemini-4-argon", "gemini-4-hydrogen"],
+    "gemini-4-hydrogen": ["gemini-4-argon", "gemini-3.8-flash"],
+    "gemini-4-argon": ["gemini-4-hydrogen", "gemini-3.8-flash"],
     "gemini-3.1-pro-preview": ["gemini-4-argon", "gemini-3.8-flash"],
     "gemini-3.8-flash": ["gemini-3.6-flash", "gemini-3.5-flash-lite"],
     "gemini-3.6-flash": ["gemini-3.8-flash", "gemini-3.5-flash-lite"],

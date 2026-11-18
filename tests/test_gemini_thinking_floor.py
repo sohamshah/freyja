@@ -24,10 +24,11 @@ def test_floor_thinking_level_detection():
     # 3.8-flash rejects MINIMAL per its model page; 3.6 still accepts.
     assert _floor_thinking_level("gemini-3.8-flash") == "LOW"
     # Gemini 4 Argon rejects MINIMAL too (probed live 2026-10-28; the
-    # thinking docs list low/medium/high with medium as default). Carbon is
-    # gated and unprobed, so it takes the safe floor.
+    # thinking docs list low/medium/high with medium as default). Carbon and
+    # Hydrogen answered MINIMAL with the same 400 (probed 2026-11-17).
     assert _floor_thinking_level("gemini-4-argon") == "LOW"
     assert _floor_thinking_level("gemini-4-carbon") == "LOW"
+    assert _floor_thinking_level("gemini-4-hydrogen") == "LOW"
     assert _floor_thinking_level("gemini-3.6-flash") == "MINIMAL"
     assert _floor_thinking_level("gemini-3.5-flash-lite") == "MINIMAL"
     assert _floor_thinking_level("gemini-3.1-flash-lite") == "MINIMAL"
@@ -65,3 +66,16 @@ def test_default_output_cap_leaves_room_for_thinking():
     2026-10-28). Callers that pass no max_tokens must not get a cap a few
     thousand tokens of thought can exhaust."""
     assert GoogleConfig().max_tokens >= 65_536
+
+
+@pytest.mark.parametrize(
+    "model,level",
+    [("gemini-4-hydrogen", "XHIGH"), ("gemini-4-argon", "HIGH"), ("gemini-4-carbon", "HIGH")],
+)
+def test_xhigh_reaches_the_wire_only_on_models_that_have_it(model, level):
+    """Hydrogen has an XHIGH level; Argon and Carbon answer it with 400
+    (probed 2026-11-17), so there it stays at HIGH."""
+    for effort in ("xhigh", "max"):
+        tc = _provider(model)._build_thinking_config(ThinkingConfig(enabled=True, effort=effort))
+        assert tc is not None and tc.thinking_level.value == level
+

@@ -92,6 +92,22 @@ def test_fireworks_required_mode_omits_effort_when_disabled():
     assert "reasoning_effort" not in kwargs
 
 
+def test_fireworks_sends_no_reasoning_history_when_reasoning_is_off():
+    """Kimi K3.1 Pro given reasoning_effort "none" with reasoning_history
+    "preserved" wrote its reasoning into the reply (2 of 3 calls, probed
+    2026-11-17). Off calls carry no history mode; on calls keep it."""
+    from engine.fireworks_provider import FireworksConfig, FireworksProvider
+
+    p = FireworksProvider(FireworksConfig(model="kimi-k3.1-pro", api_key="dummy-key"))
+    msgs = [Message(role="user", content="hi")]
+    off = p._build_request(msgs, thinking=ThinkingConfig(enabled=False, effort="none"))
+    on = p._build_request(msgs, thinking=ThinkingConfig(enabled=True, effort="high"))
+    assert off["reasoning_effort"] == "none"
+    assert "reasoning_history" not in (off.get("extra_body") or {})
+    assert on["reasoning_effort"] == "high"
+    assert on["extra_body"]["reasoning_history"] == "preserved"
+
+
 def test_flash_sends_images_as_image_url_parts():
     """glm-5.3-flash is natively multimodal; plain glm-5.3 is text-only."""
     from engine.types import ImageBlock
