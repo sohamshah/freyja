@@ -3752,6 +3752,20 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           memories: { ...prev.memories, [ev.memory.id]: ev.memory },
         }
       }
+      if (ev.type === 'memory_edit_failed') {
+        // The inspector toasts success once the command is sent; this
+        // replaces that toast when the bridge refused the edit.
+        const what = {
+          memory_update: 'save',
+          memory_delete: 'archive',
+          memory_restore: 'restore',
+          memory_merge: 'merge',
+        }[ev.action] ?? 'change'
+        return {
+          ...prev,
+          toast: { id: nextId('toast'), message: `Couldn't ${what} that memory: ${ev.error}`, tone: 'warn', at: Date.now() },
+        }
+      }
       if (ev.type === 'memories_snapshot') {
         if (!Array.isArray(ev.memories)) return prev
         const memories = { ...prev.memories }

@@ -1355,6 +1355,13 @@ export type BridgeEvent = Received & (
       type: 'memories_snapshot'
       memories: MemoryRecord[]
     }
+  | {
+      /** A memory edit (update, archive, restore, merge) did not happen. */
+      type: 'memory_edit_failed'
+      id: string
+      action: 'memory_update' | 'memory_delete' | 'memory_restore' | 'memory_merge'
+      error: string
+    }
   | ({ type: 'skill_retrieved'; skill: Skill; reason?: string } & SessionId)
   | ({ type: 'skill_loaded'; skill: Skill; reason?: string } & SessionId)
   | ({ type: 'skill_pruned'; skill: Skill; reason?: string } & SessionId)

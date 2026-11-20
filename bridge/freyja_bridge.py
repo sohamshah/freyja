@@ -16724,13 +16724,29 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         return
 
     if ctype in ("memory_update", "memory_delete", "memory_restore", "memory_merge"):
+
+        def _memory_edit_failed(error: str) -> None:
+            # Each early return below used to be silent, and the inspector
+            # still said "Memory restored". This tells the renderer the
+            # edit did not happen. No session id, like memories_snapshot.
+            emit(
+                {
+                    "type": "memory_edit_failed",
+                    "id": str(cmd.get("id") or ""),
+                    "action": ctype,
+                    "error": error,
+                }
+            )
+
         # All memory mutation commands need a session id so the audit
         # trail records which session the user was in when they made the
-        # edit. Fall back to the active session if not provided.
+        # edit.
         if not session_id:
+            _memory_edit_failed("no session is open")
             return
         sess = await state.ensure_session(session_id)
         if sess.memory_store is None:
+            _memory_edit_failed("memory is off in this workspace")
             return
         actor = "user"
         try:
@@ -16762,6 +16778,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             else:  # memory_merge
                 ids = cmd.get("ids")
                 if not isinstance(ids, list) or len(ids) < 2:
+                    _memory_edit_failed("a merge needs two or more memories")
                     return
                 item = sess.memory_store.merge_items(
                     [str(i) for i in ids],
@@ -16775,8 +16792,10 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 )
         except Exception as exc:  # noqa: BLE001
             log("warn", f"memory {ctype} failed: {exc}")
+            _memory_edit_failed(str(exc) or type(exc).__name__)
             return
         if item is None:
+            _memory_edit_failed("that memory was not found")
             return
         # Push the updated record to the renderer so the sidebar and any
         # open inspector popup refresh immediately.
