@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useHarness } from '../state/store'
+import { useEscapeClose } from '../lib/useEscapeClose'
 
 /**
  * First-run wizard for computer-use permissions.
@@ -30,17 +31,10 @@ export function ComputerPermissionWizard() {
     if (open) setStep(0)
   }, [open])
 
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        setOpen(false)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, setOpen])
+  // On the Esc stack: opened from Settings, it closes first and Settings
+  // stays. A plain window listener let App's Escape also close what was
+  // under it.
+  useEscapeClose(open, () => setOpen(false))
 
   if (!open) return null
 
@@ -69,7 +63,10 @@ export function ComputerPermissionWizard() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]">
+    // z-[59]: Settings (z-58) opens it, from the computer toggle or "Re-run
+    // permission wizard", and stays open under it. At z-50 the wizard
+    // opened hidden behind Settings. Below ⌘K (z-60).
+    <div className="fixed inset-0 z-[59] flex items-start justify-center pt-[10vh]">
       <div
         className="absolute inset-0 scrim-soft backdrop-blur-[2px]"
         onClick={() => setOpen(false)}
