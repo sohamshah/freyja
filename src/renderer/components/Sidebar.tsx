@@ -2004,13 +2004,17 @@ const SessionRow = memo(function SessionRow({
     return sub?.state === 'running' || sub?.state === 'pending'
   })
   const [menuOpen, setMenuOpen] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  useEffect(() => {
+    if (!menuOpen) setConfirmingDelete(false)
+  }, [menuOpen])
   const [forking, setForking] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(s.title)
   const inputRef = useRef<HTMLInputElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
 
-  // Close context menu on click outside
+  // Close context menu on click outside or Escape
   useEffect(() => {
     if (!menuOpen) return
     const handler = (e: MouseEvent) => {
@@ -2018,8 +2022,19 @@ const SessionRow = memo(function SessionRow({
         setMenuOpen(false)
       }
     }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      // Capture phase, so the stream-stop and pane handlers don't also
+      // act on the Escape that only meant "close this menu".
+      e.stopPropagation()
+      setMenuOpen(false)
+    }
     document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('mousedown', handler)
+      window.removeEventListener('keydown', onKey, true)
+    }
   }, [menuOpen])
 
   const label = s.messageCount > 0 ? `${s.messageCount} msg` : 'empty'
@@ -2284,7 +2299,7 @@ const SessionRow = memo(function SessionRow({
               downloadSession(s.id)
             }}
           />
-          {!isActive && isInSlackThread(useHarness.getState().sessions, s.id) && (
+          {isInSlackThread(useHarness.getState().sessions, s.id) ? (
             <CtxBtn
               label="Hide here"
               title="Hides it in the app. The conversation stays in Slack, and nothing is deleted."
@@ -2293,16 +2308,28 @@ const SessionRow = memo(function SessionRow({
                 deleteSession(s.id)
               }}
             />
-          )}
-          {!isActive && !isInSlackThread(useHarness.getState().sessions, s.id) && (
+          ) : (
+            // Two clicks: the files go for good, and the session may be
+            // the one on screen.
             <CtxBtn
               label={
-                subagentCount > 0
-                  ? `Delete (+${subagentCount} subagent${subagentCount === 1 ? '' : 's'})`
-                  : 'Delete'
+                confirmingDelete
+                  ? 'Click again to delete'
+                  : subagentCount > 0
+                    ? `Delete (+${subagentCount} subagent${subagentCount === 1 ? '' : 's'})`
+                    : 'Delete'
+              }
+              title={
+                isActive
+                  ? 'Deletes this session and its files. The view moves to your previous session.'
+                  : 'Deletes this session and its files.'
               }
               danger
               onClick={() => {
+                if (!confirmingDelete) {
+                  setConfirmingDelete(true)
+                  return
+                }
                 setMenuOpen(false)
                 deleteSession(s.id)
               }}

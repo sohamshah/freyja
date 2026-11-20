@@ -1127,6 +1127,29 @@ function isInScheduledJob(sessions: SessionSnapshot[], sessionId: string): boole
  *  many sub-agents went with each. */
 const pendingJobDeletes = new Map<string, number>()
 
+/** Where the view goes when the session on screen is deleted: its parent
+ *  when a sub-agent goes alone, else the last session viewed, else the
+ *  newest top-level session left. Null when every session goes. */
+function deleteFallbackSession(
+  state: HarnessState,
+  deletedId: string,
+  idsToDelete: Set<string>,
+): string | null {
+  const { byId } = sessionTreeIndex(state.sessions)
+  const usable = (id: string | undefined): id is string =>
+    !!id && !idsToDelete.has(id) && byId.has(id)
+  const parent = byId.get(deletedId)?.parentSessionId
+  if (usable(parent)) return parent
+  const recent = state.sessionMRU.find(usable)
+  if (recent) return recent
+  let newest: SessionSnapshot | null = null
+  for (const s of state.sessions) {
+    if (s.parentSessionId || !usable(s.id)) continue
+    if (!newest || s.updatedAt > newest.updatedAt) newest = s
+  }
+  return newest?.id ?? null
+}
+
 function deletedToast(subagents: number): string {
   if (subagents === 0) return 'Session deleted'
   const noun = subagents === 1 ? 'subagent' : 'subagents'
@@ -6283,24 +6306,27 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
   },
 
   async deleteSession(sessionId) {
-    const state = useHarness.getState()
-    // Don't allow deleting the currently active session — switch first.
-    if (sessionId === state.activeSessionId) {
-      state.showToast("Can't delete the active session", 'warn')
-      return
-    }
+    let state = useHarness.getState()
     // Cascade through every subagent / nested-subagent session of the
     // target so the user doesn't end up with orphaned transcripts on
     // disk after a parent is removed.
     const descendants = collectDescendantSessionIds(state.sessions, sessionId)
-    if (descendants.includes(state.activeSessionId)) {
-      state.showToast(
-        "Can't delete — the active session is a subagent of this one. Switch first.",
-        'warn',
-      )
-      return
-    }
     const idsToDelete = new Set<string>([sessionId, ...descendants])
+    // Deleting the session on screen (or the parent of the sub-agent on
+    // screen): move the view off it first, to the session the user would
+    // go back to, or to a fresh one when nothing is left.
+    if (idsToDelete.has(state.activeSessionId)) {
+      const fallback = deleteFallbackSession(state, sessionId, idsToDelete)
+      if (fallback) await state.switchSession(fallback)
+      if (idsToDelete.has(useHarness.getState().activeSessionId)) {
+        await useHarness.getState().newSession()
+      }
+      state = useHarness.getState()
+      if (idsToDelete.has(state.activeSessionId)) {
+        state.showToast("Couldn't move off this session, so it was not deleted", 'warn')
+        return
+      }
+    }
     // A Slack session's thread runs in the gateway, which saves its files:
     // the app only stops showing it and its sub-agents, and every file
     // stays. Deleting it here removed the gateway's transcript.
