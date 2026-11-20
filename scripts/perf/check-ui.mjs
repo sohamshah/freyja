@@ -179,6 +179,22 @@ const toastText = await page.evaluate(() => document.body.innerText)
 check('no unknown-command toast', !/unknown command/i.test(toastText))
 await shot('7-path-message')
 
+// A mistyped command is held once with a suggestion; Enter again sends it.
+const sendsBefore = (await commands()).filter((c) => c === 'send_message').length
+await page.waitForTimeout(3500) // let the earlier toast clear
+await box.click()
+await box.fill('/compcat')
+await page.keyboard.press('Enter')
+await page.waitForTimeout(400)
+const heldText = await page.evaluate(() => document.body.innerText)
+check('a mistyped command is held, with a suggestion', /did you mean \/compact/i.test(heldText))
+check('…and stays in the composer', (await box.inputValue()) === '/compcat', await box.inputValue())
+check('…and is not sent', (await commands()).filter((c) => c === 'send_message').length === sendsBefore)
+await page.keyboard.press('Enter')
+await page.waitForTimeout(400)
+check('Enter again sends it', (await commands()).filter((c) => c === 'send_message').length === sendsBefore + 1)
+await shot('8-mistyped-command')
+
 check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '))
 await browser.close()
 server.close()
