@@ -216,6 +216,18 @@ export function MorningRoom() {
     )
   }, [b.doc, newSession, sendMessage, showToast, markDispatched, unmarkDispatched])
 
+  // One batch at a time: the button waits while it runs.
+  const [runningAll, setRunningAll] = useState(false)
+  const onRunAll = async () => {
+    if (runningAll) return
+    setRunningAll(true)
+    try {
+      await runAllToday()
+    } finally {
+      setRunningAll(false)
+    }
+  }
+
   const generateNow = useCallback(async () => {
     if (!b.brieferJobId || generating) return
     setGenerating(true)
@@ -319,6 +331,13 @@ export function MorningRoom() {
   const todayCount =
     doc?.today?.filter(
       (t) => t.intent && t.intent.kind !== 'open_session',
+    ).length ?? 0
+  // The ones not started yet, one by one or by "run all". The button used
+  // to offer "run all 3" after all three had started, and answered
+  // "Nothing to dispatch".
+  const todayLeft =
+    doc?.today?.filter(
+      (t, i) => t.intent && t.intent.kind !== 'open_session' && !dispatched.has(`today-${i}`),
     ).length ?? 0
 
   return (
@@ -528,8 +547,16 @@ export function MorningRoom() {
           <div className="mroom-commit-left">
             <em>{todayCount}</em> staged for today
           </div>
-          <button className="mroom-commit-primary" onClick={runAllToday}>
-            run all {todayCount} in parallel
+          <button
+            className="mroom-commit-primary"
+            onClick={onRunAll}
+            disabled={runningAll || todayLeft === 0}
+          >
+            {runningAll
+              ? 'starting…'
+              : todayLeft === 0
+                ? 'all started'
+                : `run ${todayLeft === todayCount ? 'all ' : ''}${todayLeft}${todayLeft === todayCount ? '' : ' left'} in parallel`}
           </button>
         </div>
       )}
