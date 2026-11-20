@@ -146,6 +146,9 @@ export function Island() {
     if (expanded) void api.control({ type: 'hover', over: true })
     // The field unmounts with the sheet, and an unmount fires no blur.
     if (!expanded) setComposing(false)
+    // A banner's reply aims this one opening of the sheet, like a row's
+    // reply key. Kept, it aimed every later opening at that old session.
+    if (!expanded) setReplyTo(null)
   }, [expanded, api])
   useEffect(() => () => {
     clearTimer(openTimer)
