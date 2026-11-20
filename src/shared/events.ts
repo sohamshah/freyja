@@ -718,6 +718,8 @@ export type BridgeCommand =
       requestId?: string
     }
   | { type: 'list_skills'; sessionId?: string }
+  /** Answered by `memories_snapshot`. */
+  | { type: 'list_memories'; sessionId?: string }
   | { type: 'list_subagents'; sessionId?: string }
   | { type: 'list_tools'; sessionId?: string }
   | {
@@ -1347,6 +1349,12 @@ export type BridgeEvent = Received & (
     } & SessionId)
   | ({ type: 'memory_retrieved'; memory: MemoryRecord; reason?: string } & SessionId)
   | ({ type: 'memory_updated'; memory: MemoryRecord; reason?: string } & SessionId)
+  | {
+      /** Reply to `list_memories`: every memory on disk, archived ones
+       *  too. No session id: memories belong to no one session. */
+      type: 'memories_snapshot'
+      memories: MemoryRecord[]
+    }
   | ({ type: 'skill_retrieved'; skill: Skill; reason?: string } & SessionId)
   | ({ type: 'skill_loaded'; skill: Skill; reason?: string } & SessionId)
   | ({ type: 'skill_pruned'; skill: Skill; reason?: string } & SessionId)

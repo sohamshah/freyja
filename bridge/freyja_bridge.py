@@ -17965,6 +17965,33 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             log("warn", f"skill list failed: {exc}")
         return
 
+    if ctype == "list_memories":
+        # The renderer hears only of memories a turn retrieved or an edit
+        # changed, so one archived in an earlier run never reached the
+        # sidebar, and nothing could restore it. This answers with every
+        # record, archived ones too, in one event. It names no session:
+        # a session's id would also write the whole list into that
+        # session's events file.
+        try:
+            sess = state.get(session_id)
+            if sess is not None and sess.memory_store is not None:
+                memory_store = sess.memory_store
+            else:
+                from bridge.knowledge import MemoryStore
+
+                memory_store = MemoryStore(Path(state.workspace))
+            items = memory_store.list_items(include_archived=True)
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"memory list failed: {exc}")
+            return
+        emit(
+            {
+                "type": "memories_snapshot",
+                "memories": [item.to_event() for item in items],
+            }
+        )
+        return
+
     if ctype == "list_subagents":
         # Sub-agent state lives only in this process, but the renderer
         # persists its records, so after a restart they say `running`
