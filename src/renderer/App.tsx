@@ -474,8 +474,12 @@ export function App() {
     const active = state.activeSessionId
     const sessionById = new Map(state.sessions.map((s) => [s.id, s]))
 
-    // Bucket 1: currently-streaming sessions (excluding active), most
-    // recently updated first. These are "wants your attention now."
+    // MRU sessions the operator actually visited, in recency order,
+    // leaving out anything that no longer exists (deleted / unloaded).
+    const mru = state.sessionMRU.filter((id) => id !== active && sessionById.has(id))
+
+    // Currently-streaming sessions (excluding active), most recently
+    // updated first. These are "wants your attention now."
     const streaming = state.sessions
       .filter(
         (s) =>
@@ -485,24 +489,25 @@ export function App() {
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((s) => s.id)
 
-    // Bucket 2: MRU sessions the operator actually visited, preserving
-    // recency order. Filter out anything already in bucket 1 or that
-    // no longer exists in the sessions list (deleted / unloaded).
-    const seen = new Set<string>([active, ...streaming])
-    const mru = state.sessionMRU.filter(
-      (id) => !seen.has(id) && sessionById.has(id),
-    )
-    for (const id of mru) seen.add(id)
-
-    // Bucket 3: fill out remaining slots with the most-recently-active
-    // sessions overall so a fresh-launch operator (empty MRU) still
-    // gets a useful switcher rather than an empty one.
+    // The rest of the sessions, most recently active first, so a
+    // fresh-launch operator (empty MRU) still gets a useful switcher
+    // rather than an empty one.
     const others = state.sessions
-      .filter((s) => !seen.has(s.id))
+      .slice()
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((s) => s.id)
 
-    return [...streaming, ...mru, ...others].slice(0, 10)
+    // The previous session comes first, so one Ctrl+Tab goes back to it
+    // even while other sessions stream in the background. Then the
+    // streaming sessions, the rest of the MRU and the others.
+    const seen = new Set<string>([active])
+    const out: string[] = []
+    for (const id of [...mru.slice(0, 1), ...streaming, ...mru, ...others]) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      out.push(id)
+    }
+    return out.slice(0, 10)
   }, [])
 
   useEffect(() => {
