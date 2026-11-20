@@ -82,7 +82,7 @@ export function ArtifactsSection() {
 
       <Fold open={expanded} stagger={false}>
       {artifacts.length === 0 ? (
-        <div className="px-4 pb-3 pt-1 text-[11px] italic text-fg-3">No file changes yet</div>
+        <div className="px-4 pb-3 pt-1 text-[11px] italic text-fg-3">No artifacts yet</div>
       ) : (
         <div className="space-y-3 px-4 pb-3 pt-1">
           {groups.map((group) => (
