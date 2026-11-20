@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useEscapeClose } from '../lib/useEscapeClose'
 
 interface BranchSessionDialogProps {
   /** Default name pre-filled in the input. */
@@ -38,16 +39,10 @@ export function BranchSessionDialog({
     inputRef.current?.select()
   }, [])
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        onCancel()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onCancel])
+  // Esc closes this dialog only. A bubble-phase window listener added when
+  // the dialog opened ran after App's global Escape handler, which closed
+  // whatever App had open as well.
+  useEscapeClose(true, onCancel)
 
   const submit = () => {
     const trimmed = name.trim()
