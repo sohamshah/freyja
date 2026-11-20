@@ -138,9 +138,9 @@ export function SkillCandidatesPanel() {
     // The form stays open until the candidate leaves the list (the effect
     // below). Closing it here threw away what was typed when the bridge
     // refused the promote (name taken, guard verdict after the edit), and
-    // the card stayed for a retry with the old text. A failed send already
-    // shows a toast.
-    resolve(candidateId, action, edits, overwrite).catch(() => {})
+    // the card stayed for a retry with the old text. A failed send shows a
+    // toast (resolveSkillCandidate does not throw).
+    void resolve(candidateId, action, edits, overwrite)
   }
 
   const editGone = editId != null && !pending.some((c) => c.candidateId === editId)

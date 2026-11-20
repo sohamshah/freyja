@@ -6711,6 +6711,10 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       // Send itself failed (IPC dead). Toast a warn so the operator
       // doesn't think the button silently no-op'd. Candidate stays
       // queued; another click after IPC recovers will succeed.
+      // No rethrow: the toast is the answer, and the four buttons that
+      // call this dropped the promise, so a rethrow was an unhandled
+      // rejection in the console every time.
+      console.warn('skill_candidate_resolve send failed', err)
       set((prev) => ({
         toast: {
           id: nextId('toast'),
@@ -6719,7 +6723,6 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           at: Date.now(),
         },
       }))
-      throw err
     }
   },
 
