@@ -43,6 +43,7 @@ import {
   migrateLegacySessionFiles,
   saveSessionIndex as persistSaveSessionIndex,
   saveSession as persistSaveSession,
+  sessionsDirectory as persistSessionsDirectory,
   flushPersistenceWrites,
   hasPendingPersistenceWrites,
   type PersistedSession,
@@ -60,6 +61,7 @@ import { GatewayLogTailer } from './gatewayLogTail.js'
 import { SchedulerDaemonLogTailer } from './schedulerDaemonLogTail.js'
 import { sendControlCommand } from './controlChannel.js'
 import { readCompactionTelemetry } from './telemetryReader.js'
+import { createSessionSearcher, type SessionSearcher } from './sessionSearch.js'
 import {
   ingest as artifactIndexIngest,
   query as artifactIndexQuery,
@@ -305,6 +307,7 @@ let inputProxy: InputProxy | null = null
 let gatewayLogTailer: GatewayLogTailer | null = null
 let schedulerDaemonLogTailer: SchedulerDaemonLogTailer | null = null
 let island: IslandWindow | null = null
+let sessionSearcher: SessionSearcher | null = null
 // Buffer bridge events that fire before the renderer is ready.
 // The `ready` event (with the full model list) typically arrives in
 // ~1-2 seconds, but the Electron window + React app takes 2-3s to
@@ -1171,6 +1174,33 @@ function setupIpc() {
       return { ok: true }
     } catch (err) {
       return { ok: false, error: String(err) }
+    }
+  })
+
+  // Sidebar search over every session file, not just the loaded ones. The
+  // files are read on a worker; its per-file cache sits next to the
+  // artifact index, outside the sessions dir that other readers list.
+  ipcMain.handle(IPC.sessionSearch, async (_event, query: unknown) => {
+    try {
+      if (!sessionSearcher) {
+        const dir = persistSessionsDirectory()
+        sessionSearcher = createSessionSearcher({
+          sessionsDir: dir,
+          cacheFile: path.join(path.dirname(dir), 'session-search-index.json'),
+        })
+      }
+      const started = Date.now()
+      const result = await sessionSearcher.search(typeof query === 'string' ? query : '')
+      const ms = Date.now() - started
+      if (ms > 1000) {
+        console.log(
+          `[sessionSearch] ${ms}ms: ${result.sessions ?? 0} sessions, ` +
+            `${result.reread ?? 0} re-read, ${result.ids.length} hits`,
+        )
+      }
+      return result
+    } catch (err) {
+      return { ok: false, ids: [], error: String(err) }
     }
   })
 

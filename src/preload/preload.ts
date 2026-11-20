@@ -20,6 +20,7 @@ import {
   type SkillRollupResult,
   type SkillListResult,
   type SkillReadResult,
+  type SessionSearchResult,
 } from '../shared/events.js'
 import type { LedgerTurn } from '../shared/turnLedger.js'
 import type { IslandAction, IslandDigest, IslandPaletteIndex } from '../shared/island.js'
@@ -84,6 +85,10 @@ const api = {
   },
   async sessionHide(id: string): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke(IPC.sessionHide, id)
+  },
+  /** Ids of sessions on disk whose text matches every token of `query`. */
+  async sessionSearch(query: string): Promise<SessionSearchResult> {
+    return ipcRenderer.invoke(IPC.sessionSearch, query)
   },
   async compactionMetrics(): Promise<{ ok: boolean; rows?: any[]; error?: string }> {
     return ipcRenderer.invoke(IPC.compactionMetrics)

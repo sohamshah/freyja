@@ -1873,6 +1873,8 @@ export const IPC = {
   sessionIndexSave: 'session:index-save',
   sessionDelete: 'session:delete',
   sessionHide: 'session:hide',
+  /** Sidebar search over the text of every session file on disk. */
+  sessionSearch: 'session:search',
   sessionExport: 'session:export',
   sessionDownload: 'session:download',
   settingsGet: 'settings:get',
@@ -1943,6 +1945,19 @@ export const IPC = {
   /** The ⌘K rows for the island's field: main renderer → main → island. */
   islandPalette: 'island:palette',
 } as const
+
+/** Answer to `session:search` (src/main/sessionSearch.ts). */
+export interface SessionSearchResult {
+  ok: boolean
+  /** Sessions whose title or message text holds every query token as the
+   *  start of a word, the sidebar's own match rule. */
+  ids: string[]
+  /** Session files the index holds. */
+  sessions?: number
+  /** Files this query had to read because they changed since the last one. */
+  reread?: number
+  error?: string
+}
 
 // ── Gateway IPC result types ────────────────────────────────────
 
