@@ -72,21 +72,30 @@ export function Sheet(p: SheetProps) {
   useEffect(() => {
     if (replyTo) setChosen(replyTo)
   }, [replyTo])
+  const liveTitles = useRef(new Map<string, string>())
+  for (const row of live) liveTitles.current.set(row.id, row.title)
   const options = useMemo(() => {
     const rows: IslandSessionRow[] = []
     const seen = new Set<string>()
-    if (active) {
-      rows.push({ id: active.id, title: active.title, updatedAt: Date.now(), streaming: active.streaming })
-      seen.add(active.id)
+    const push = (row: IslandSessionRow) => {
+      if (seen.has(row.id)) return
+      rows.push(row)
+      seen.add(row.id)
     }
-    for (const row of sessions) {
-      if (!seen.has(row.id)) {
-        rows.push(row)
-        seen.add(row.id)
-      }
+    if (active) push({ id: active.id, title: active.title, updatedAt: Date.now(), streaming: active.streaming })
+    // A reply aimed at a helper, or at a session older than the six recent
+    // roots, has no row in that list. The field fell back to the first
+    // option, the active session, and the reply went there without a word.
+    if (chosen && !seen.has(chosen) && !sessions.some((row) => row.id === chosen)) {
+      const liveRow = live.find((row) => row.id === chosen)
+      // A helper that finished while the reply was typed leaves `live`; its
+      // remembered title keeps the target from jumping.
+      const title = liveRow?.title ?? (done?.sessionId === chosen ? done.title : null) ?? liveTitles.current.get(chosen) ?? null
+      if (title) push({ id: chosen, title, updatedAt: Date.now(), streaming: !!liveRow })
     }
+    for (const row of sessions) push(row)
     return rows
-  }, [sessions, active])
+  }, [sessions, active, chosen, live, done])
   const target = options.find((row) => row.id === chosen) ?? options[0] ?? null
 
   // ── The keyboard ─────────────────────────────────────────────────────
