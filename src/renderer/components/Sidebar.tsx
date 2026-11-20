@@ -279,9 +279,18 @@ export function Sidebar() {
   // asks the bridge for all of them. With no bridge no answer comes, and
   // the section keeps what events brought.
   const listMemories = useHarness((s) => s.listMemories)
+  // Asked again when the bridge comes up (or restarts): a section open at
+  // launch asked before the bridge could answer.
+  const bridgeMode = useHarness((s) => s.mode)
   useEffect(() => {
     if (open.memory) void listMemories()
-  }, [open.memory, listMemories])
+  }, [open.memory, listMemories, bridgeMode])
+  // The fold closes with its last memory, so the next one archived does
+  // not show up already open.
+  const hasArchived = archivedMemories.length > 0
+  useEffect(() => {
+    if (!hasArchived) setShowArchived(false)
+  }, [hasArchived])
 
   // Inspector popup for a skill or memory, opened by clicking the row.
   const [inspectItem, setInspectItem] = useState<
@@ -891,7 +900,7 @@ export function Sidebar() {
           )}
           {sortedMemories.length === 0 && (
             <div className="px-2 py-2 text-[11px] italic text-fg-2">
-              No memory loaded yet
+              {archivedMemories.length > 0 ? 'Every memory is archived' : 'No memory loaded yet'}
             </div>
           )}
           {archivedMemories.length > 0 && (
