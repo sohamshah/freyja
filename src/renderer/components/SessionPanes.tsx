@@ -151,6 +151,9 @@ function PaneHeader({
         {paneCount > 1 && (
           <button
             type="button"
+            // A mouse-down on the pane switches to its session; closing a
+            // background pane must not switch to it first.
+            onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation()
               onClose()
@@ -527,6 +530,14 @@ function PaneChatbox({
     }
   }
 
+  // The chatbox of a background pane sends to its session without
+  // switching to it, so using it must not focus the pane: that switched
+  // the app, made the pane writable and unmounted the force button
+  // before its click landed.
+  const focusPane = () => {
+    if (writable) onFocus()
+  }
+
   return (
     <div
       className={`hairline-t flex shrink-0 items-start gap-2 px-3 py-2 transition-shadow ${
@@ -534,7 +545,7 @@ function PaneChatbox({
       }`}
       onMouseDown={(event) => {
         event.stopPropagation()
-        onFocus()
+        focusPane()
       }}
     >
       <span
@@ -550,7 +561,7 @@ function PaneChatbox({
         onChange={(e) => onChange(e.target.value)}
         onFocus={() => {
           setFocused(true)
-          onFocus()
+          focusPane()
         }}
         onBlur={() => setFocused(false)}
         onKeyDown={onKeyDown}
