@@ -20,8 +20,28 @@ try {
 const dom = new JSDOM('<!doctype html><body></body>', { pretendToBeVisual: true })
 globalThis.window = dom.window
 globalThis.document = dom.window.document
-globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window)
-globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window)
+// Animation frames run by hand, stamped on performance.now(), the clock the
+// fold's motion starts from. jsdom's frames are stamped on the window's own
+// clock, which starts when the window is made: behind performance.now() by
+// the time the imports took (0.6 s, and 1.2 s with six copies running), so
+// the motion ran that much longer, and a wall-clock sleep raced its end.
+const frames = new Map()
+let lastFrame = 0
+window.requestAnimationFrame = globalThis.requestAnimationFrame = (cb) => {
+  frames.set(++lastFrame, cb)
+  return lastFrame
+}
+window.cancelAnimationFrame = globalThis.cancelAnimationFrame = (id) => { frames.delete(id) }
+/** Run the frames asked for, 1/60 s apart from now, until none is asked
+ *  for, over at most `ms` of frame time. */
+function runFrames(ms = 10_000) {
+  const start = performance.now()
+  for (let t = start; frames.size && t - start <= ms; t += 1000 / 60) {
+    const due = [...frames.values()]
+    frames.clear()
+    for (const cb of due) cb(t)
+  }
+}
 globalThis.IS_REACT_ACT_ENVIRONMENT = false
 window.harness = {
   sendCommand: async () => {},
@@ -150,7 +170,7 @@ await check('a stretch shows lines while the agent works, then gathers when the 
   const stretch = host.querySelector('.wk-stretch')
   assert.equal(stretch.dataset.mode, 'folded')
   assert.ok(stretch.classList.contains('wk-gathering'), 'the fold animates')
-  await sleep(2800)
+  runFrames()
   assert.ok(!stretch.classList.contains('wk-gathering'), 'and leaves nothing behind')
   assert.equal(host.querySelectorAll('.wk-ghost').length, 0)
   assert.equal(host.querySelector('.wk-seam-svg path').style.strokeDashoffset, '')
