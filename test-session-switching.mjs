@@ -120,6 +120,24 @@ await check('closing a pane whose session is still loading keeps the closed sess
   assert.deepEqual(switched, [])
 })
 
+await check('a session already open in a pane is focused there, not shown twice', async () => {
+  const switched = seed({ active: 'a', archived: ['b', 'c'], panes: ['a', 'b'] })
+  await H().switchSession('b')
+  assert.deepEqual(shown(), ['a', 'b'])
+  assert.equal(H().activePaneId, 'pane-1')
+  assert.equal(H().activeSessionId, 'b')
+  // A session in no pane still goes into the active one.
+  await H().switchSession('c')
+  assert.deepEqual(shown(), ['a', 'c'])
+  assert.deepEqual(switched, ['b', 'c'])
+
+  // "Split" on a session that has a pane opens no second pane, and says so.
+  await H().openSessionPane('a', 'split')
+  assert.deepEqual(shown(), ['a', 'c'])
+  assert.equal(H().activePaneId, 'pane-main')
+  assert.equal(H().toast?.message, 'Already open in a pane')
+})
+
 fs.rmSync(home, { recursive: true, force: true })
 if (failures) {
   console.log(`\n${failures} failed`)

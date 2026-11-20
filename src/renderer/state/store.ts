@@ -5499,10 +5499,15 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       const existingPanes = p.sessionPanes.length > 0
         ? p.sessionPanes
         : [{ id: 'pane-main', sessionId: p.activeSessionId, createdAt: Date.now() }]
-      const activePaneId = p.activePaneId || existingPanes[0]?.id || 'pane-main'
-      const sessionPanes = existingPanes.map((pane) =>
-        pane.id === activePaneId ? { ...pane, sessionId } : pane,
-      )
+      // A session already open in a pane becomes active there; putting it
+      // in the active pane too showed it twice.
+      const shownIn = existingPanes.find((pane) => pane.sessionId === sessionId)
+      const activePaneId = shownIn?.id ?? (p.activePaneId || existingPanes[0]?.id || 'pane-main')
+      const sessionPanes = shownIn
+        ? existingPanes
+        : existingPanes.map((pane) =>
+            pane.id === activePaneId ? { ...pane, sessionId } : pane,
+          )
       // MRU update: the session we're leaving moves to slot 0; the
       // session we're entering drops out (it's the active one now).
       // Cap at 20 — the switcher only renders ~10, the extra buffer
@@ -5605,9 +5610,11 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       await state.loadPersistedSessionIntoArchive(sessionId)
     }
 
+    let alreadyOpen = false
     set((prev) => {
       const existing = prev.sessionPanes.find((pane) => pane.sessionId === sessionId)
       if (existing) {
+        alreadyOpen = true
         return { activePaneId: existing.id }
       }
       const id = nextId('pane')
@@ -5619,7 +5626,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         activePaneId: id,
       }
     })
-    useHarness.getState().showToast('Opened split pane', 'info')
+    useHarness.getState().showToast(alreadyOpen ? 'Already open in a pane' : 'Opened split pane', 'info')
   },
 
   async closeSessionPane(paneId) {
