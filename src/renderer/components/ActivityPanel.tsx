@@ -645,8 +645,12 @@ function SkillCandidatesPanelContainer() {
   const [open, setOpen] = useState(pendingCount > 0)
   // Auto-expand the section when a fresh candidate arrives — the
   // operator usually wants to see it without hunting for the section.
+  // Only when the count goes up: promoting or discarding one from the
+  // toast lowered it and opened a section you had folded.
+  const prevPending = useRef(pendingCount)
   useEffect(() => {
-    if (pendingCount > 0) setOpen(true)
+    if (pendingCount > prevPending.current) setOpen(true)
+    prevPending.current = pendingCount
   }, [pendingCount])
   const total = Math.max(pendingCount, cachedCount)
   const inFlight = drafterRuns.find((r) => r.finishedAt === undefined)
