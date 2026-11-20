@@ -14,7 +14,10 @@ import { VoiceSigil } from './VoiceSigil'
  * the session (handled with priority in App.tsx); typing any printable
  * character opens an inline floor-command input.
  *
- * z-40: above the shell, below PermissionPrompt (z-50).
+ * z-[57]: above every full-screen view (Morning Room z-45, dashboard and
+ * scheduler z-50, Artifacts z-55), since Esc ends voice before it closes
+ * any of them; at z-40 it talked from under the room. Below Settings
+ * (z-58), ⌘K (z-60) and the permission prompts (z-65).
  */
 
 export function VoiceHUD() {
@@ -110,7 +113,7 @@ function VoiceHudBody() {
     // -translate-x-1/2 for the duration of the entry animation and
     // make the capsule jump half a width to the right.
     <div
-      className="pointer-events-auto fixed bottom-24 left-1/2 z-40 -translate-x-1/2"
+      className="pointer-events-auto fixed bottom-24 left-1/2 z-[57] -translate-x-1/2"
       style={{ width: 'min(620px, 88vw)' }}
     >
       <div className="animate-fade-in overflow-hidden rounded-2xl glass-strong shadow-2xl ring-hairline-strong">
