@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useHarness } from '../state/store'
+import { useEscapeClose } from '../lib/useEscapeClose'
 import { formatCost, formatDuration, formatTokens } from '../lib/format'
 import { ScrambleText } from './ScrambleText'
 import type { CompactionTelemetryRow } from '@shared/events'
@@ -81,20 +82,14 @@ export function MetricsDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  // Close on Esc; close the drawer first if open.
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        if (selectedProfileId) setSelectedProfileId(null)
-        else if (selectedSessionId) setSelectedSessionId(null)
-        else toggle(false)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, selectedSessionId, selectedProfileId, toggle])
+  // Close on Esc; close the drawer first if open. On the Esc stack, so
+  // App's Escape does not also close the sub-agent view or the debug
+  // drawer under the dashboard, or end a voice exchange.
+  useEscapeClose(open, () => {
+    if (selectedProfileId) setSelectedProfileId(null)
+    else if (selectedSessionId) setSelectedSessionId(null)
+    else toggle(false)
+  })
 
   // Apply time-range filter to the raw rows before aggregation.
   const filteredRows = useMemo(() => {
