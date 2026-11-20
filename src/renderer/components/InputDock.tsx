@@ -226,10 +226,17 @@ export function InputDock() {
   //   "context: /skills"  → token at 9 (after the space)
   //   "see foo/bar"       → no token (slash not after whitespace)
   const slashToken = useMemo(() => detectSlashToken(draft, caret), [draft, caret])
+  // The slash or @ popup the operator closed with Esc, named by its token
+  // (kind, where it starts, what it holds). It stays closed until the
+  // token changes. Esc used to only clear the caret, and the same key's
+  // keyup put it back, and the popup with it: Enter then picked a row
+  // instead of sending.
+  const [dismissedToken, setDismissedToken] = useState<string | null>(null)
+  const slashKey = slashToken ? `/${slashToken.start}:${slashToken.query}` : null
   const slashSuggestions: SlashCommand[] = useMemo(() => {
-    if (!slashToken) return []
+    if (!slashToken || slashKey === dismissedToken) return []
     return matchSlash('/' + slashToken.query)
-  }, [slashToken])
+  }, [slashToken, slashKey, dismissedToken])
   const activeSession = sessions.find((session) => session.id === activeSessionId)
   // Background sub-agents of this session that are still working. They
   // outlive the turn that spawned them, so they get their own stop.
@@ -259,6 +266,32 @@ export function InputDock() {
   // `~/`, `./`, `../`, or `/dir/...`. Local fs read, no bridge round-
   // trip. Token shape mirrors @-mentions for consistency.
   const pathToken = useMemo(() => detectPathToken(draft, caret), [draft, caret])
+  const atKey = atToken ? `@${atToken.start}:${atToken.query}` : null
+  const pathOpen = !!pathToken && pathMatches.length > 0
+  const atOpen = !!atToken && fileMatches.length > 0 && atKey !== dismissedToken
+
+  // A dismissal ends once its token is gone, so coming back to the same
+  // text later opens the popup again.
+  useEffect(() => {
+    if (dismissedToken && dismissedToken !== slashKey && dismissedToken !== atKey) {
+      setDismissedToken(null)
+    }
+  }, [dismissedToken, slashKey, atKey])
+
+  // The open popup's row count. When it shrinks under the highlight
+  // (results narrowing as you type), the highlight moves to the last row,
+  // or Enter and Tab would pick nothing.
+  const suggestionCount =
+    slashSuggestions.length > 0
+      ? slashSuggestions.length
+      : pathOpen
+        ? pathMatches.length
+        : atOpen
+          ? fileMatches.length
+          : 0
+  useEffect(() => {
+    setSelectedSuggestion((i) => Math.min(i, Math.max(0, suggestionCount - 1)))
+  }, [suggestionCount])
 
   // Fire a list_files request (debounced via the focus effect below).
   useEffect(() => {
@@ -560,15 +593,14 @@ export function InputDock() {
         }
       }
       if (e.key === 'Escape') {
-        // Dismiss the popup by collapsing selection state. The token
-        // detector will re-fire on the next caret/draft change.
+        // Close the popup until this token changes (see dismissedToken).
         e.preventDefault()
         setSelectedSuggestion(0)
-        setCaret(-1)
+        setDismissedToken(slashKey)
         return
       }
     }
-    if (pathToken && pathMatches.length > 0) {
+    if (pathOpen) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
         setSelectedSuggestion((i) => (i + 1) % pathMatches.length)
@@ -594,7 +626,7 @@ export function InputDock() {
         return
       }
     }
-    if (atToken && fileMatches.length > 0) {
+    if (atOpen) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
         setSelectedSuggestion((i) => (i + 1) % fileMatches.length)
@@ -614,11 +646,10 @@ export function InputDock() {
         }
       }
       if (e.key === 'Escape') {
+        // Close the popup until this token changes (see dismissedToken).
         e.preventDefault()
-        // Collapse the popup by deleting the lone @ char if it's still
-        // floating; otherwise just move caret past the token.
         setSelectedSuggestion(0)
-        setCaret(-1)
+        setDismissedToken(atKey)
         return
       }
     }
@@ -806,7 +837,7 @@ export function InputDock() {
           </div>
         </div>
       )}
-      {pathToken && pathMatches.length > 0 && slashSuggestions.length === 0 && (
+      {pathToken && pathOpen && slashSuggestions.length === 0 && (
         <div className="absolute bottom-full left-1/2 z-20 mb-3 w-[560px] -translate-x-1/2 rounded-xl glass-strong p-1.5 shadow-2xl ring-hairline-strong">
           <div className="flex items-center justify-between px-2 py-1.5 label">
             <span>paths · {pathToken.prefix}</span>
@@ -834,7 +865,7 @@ export function InputDock() {
           </div>
         </div>
       )}
-      {atToken && fileMatches.length > 0 && slashSuggestions.length === 0 && pathMatches.length === 0 && (
+      {atToken && atOpen && slashSuggestions.length === 0 && !pathOpen && (
         <div className="absolute bottom-full left-1/2 z-20 mb-3 w-[560px] -translate-x-1/2 rounded-xl glass-strong p-1.5 shadow-2xl ring-hairline-strong">
           <div className="flex items-center justify-between px-2 py-1.5 label">
             <span>files{atToken.query ? ` · @${atToken.query}` : ''}</span>
