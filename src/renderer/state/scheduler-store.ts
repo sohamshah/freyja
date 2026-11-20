@@ -113,6 +113,8 @@ interface PendingRequest {
   resolve: (event: any) => void
   reject: (err: Error) => void
   ts: number
+  // The request's timeout, cleared when its answer arrives.
+  timer: ReturnType<typeof setTimeout>
 }
 
 interface SchedulerStore {
@@ -188,11 +190,10 @@ export const useSchedulerStore = create<SchedulerStore>((set, get) => ({
   setDaemonStatus(s) { set({ daemonStatus: s }) },
 
   registerPending(id, subtype, resolve, reject) {
-    const map = new Map(get().pendingRequests)
-    map.set(id, { subtype, resolve, reject, ts: Date.now() })
-    set({ pendingRequests: map })
-    // Time out after 30s so stuck requests don't leak.
-    setTimeout(() => {
+    // Time out after 30s so stuck requests don't leak. An answered
+    // request clears its timer: left running, every request held the
+    // process (and its closure) for 30 s after its answer.
+    const timer = setTimeout(() => {
       const cur = get().pendingRequests.get(id)
       if (cur) {
         cur.reject(new Error(`scheduler request timed out: ${subtype}`))
@@ -201,10 +202,14 @@ export const useSchedulerStore = create<SchedulerStore>((set, get) => ({
         set({ pendingRequests: m })
       }
     }, 30_000)
+    const map = new Map(get().pendingRequests)
+    map.set(id, { subtype, resolve, reject, ts: Date.now(), timer })
+    set({ pendingRequests: map })
   },
   resolvePending(id, event) {
     const cur = get().pendingRequests.get(id)
     if (!cur) return false
+    clearTimeout(cur.timer)
     cur.resolve(event)
     const m = new Map(get().pendingRequests)
     m.delete(id)
