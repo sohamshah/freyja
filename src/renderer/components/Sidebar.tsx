@@ -1380,10 +1380,12 @@ function InspectorPopup({
   // the sidebar's bounding box AND stuck behind sibling z-indices
   // in the main pane. Portal to document.body so the overlay covers
   // the whole window and obeys global stacking.
+  // z-[75]: above the other dialogs (up to z-70), under the toast (z-80):
+  // at z-1000 it hid the toasts of its own save and delete.
   if (typeof document === 'undefined') return null
   const content = (
     <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center scrim backdrop-blur-md"
+      className="fixed inset-0 z-[75] flex items-center justify-center scrim backdrop-blur-md"
       role="dialog"
       aria-modal="true"
     >
@@ -2404,9 +2406,13 @@ const SessionRow = memo(function SessionRow({
         <BranchSessionDialog
           mode="whole"
           defaultName={`${s.title} (fork)`}
-          onCancel={() => setForking(false)}
+          onCancel={() => {
+            setForking(false)
+            useHarness.getState().focusComposer()
+          }}
           onConfirm={(name) => {
             setForking(false)
+            useHarness.getState().focusComposer()
             void useHarness.getState().branchSessionFrom(null, name, { sessionId: s.id })
           }}
         />
