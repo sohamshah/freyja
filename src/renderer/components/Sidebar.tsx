@@ -18,6 +18,7 @@ import { BranchSessionDialog } from './BranchSessionDialog'
 import { TopoBackdrop } from './TopoBackdrop'
 import { oppositeTheme, useEffectiveTheme } from '../lib/theme'
 import { useEscapeClose } from '../lib/useEscapeClose'
+import { useDiskSessionSearch, warmDiskSessionSearch } from '../lib/useDiskSessionSearch'
 
 type Section = 'sessions' | 'skills' | 'subagents' | 'memory' | 'runs'
 
@@ -385,6 +386,12 @@ export function Sidebar() {
     return trimmed.split(/\s+/).filter(Boolean)
   }, [sessionQuery])
 
+  // The in-memory index above only knows transcripts this window has
+  // loaded. Main searches every session file too; its hits are unioned in
+  // below. The local index still matters: it holds the live session's text
+  // that is not saved yet.
+  const diskMatches = useDiskSessionSearch(searchTokens.join(' '))
+
   // Set of every session id whose ROOT is a slack-gateway session.
   // The Slack badge in the row footer is set per-session by checking
   // `agentType === 'gateway-slack'` directly; for filter purposes we
@@ -435,7 +442,7 @@ export function Sidebar() {
     if (noSearch && noOrigin) return null
     const matched = new Set<string>()
     for (const s of sessions) {
-      if (!noSearch) {
+      if (!noSearch && !diskMatches?.has(s.id)) {
         const text = sessionSearchIndex.get(s.id) ?? ''
         if (!matchesAllTokens(text, searchTokens)) continue
       }
@@ -444,7 +451,7 @@ export function Sidebar() {
       matched.add(s.id)
     }
     return matched
-  }, [sessions, sessionSearchIndex, searchTokens, originFilter, slackRootedIds])
+  }, [sessions, sessionSearchIndex, searchTokens, diskMatches, originFilter, slackRootedIds])
 
   // Per-session timestamp of the most recent USER message. Drives
   // top-level recency sort below. We pick "last user message" instead
@@ -1078,6 +1085,7 @@ function SessionSearch({
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onFocus={warmDiskSessionSearch}
         placeholder="search sessions"
         spellCheck={false}
         className="w-full rounded-md bg-black/30 px-3 py-1.5 pl-7 pr-7 text-[12px] text-fg-0 placeholder:text-fg-3 ring-1 ring-white/[0.07] focus:outline-none focus:ring-accent/40"
