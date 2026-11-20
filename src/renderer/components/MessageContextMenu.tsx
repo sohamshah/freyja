@@ -33,7 +33,7 @@ interface MessageContextMenuProps {
 /**
  * Right-click context menu rendered in a portal so it can spill out of
  * any clipped scroll containers. Closes on outside click / Escape /
- * scroll. Positions itself flush to the cursor and flips to fit inside
+ * the operator scrolling. Positions itself flush to the cursor and flips to fit inside
  * the viewport edges.
  */
 export function MessageContextMenu({
@@ -77,14 +77,24 @@ export function MessageContextMenu({
         onClose()
       }
     }
-    const onScroll = () => onClose()
+    // Close when the operator scrolls, not on every scroll event: while a
+    // reply streams, stick-to-bottom sets scrollTop on each delta, and that
+    // closed the menu under the cursor. A scrollbar drag starts with a
+    // mousedown, which closes it above.
+    const onUserScroll = (e: Event) => {
+      const el = menuRef.current
+      if (el && e.target instanceof Node && el.contains(e.target)) return
+      onClose()
+    }
     window.addEventListener('mousedown', onDocMouseDown, true)
     window.addEventListener('keydown', onKey, true)
-    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('wheel', onUserScroll, { capture: true, passive: true })
+    window.addEventListener('touchmove', onUserScroll, { capture: true, passive: true })
     return () => {
       window.removeEventListener('mousedown', onDocMouseDown, true)
       window.removeEventListener('keydown', onKey, true)
-      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('wheel', onUserScroll, true)
+      window.removeEventListener('touchmove', onUserScroll, true)
     }
   }, [onClose])
 
