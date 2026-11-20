@@ -14,8 +14,10 @@ export function Toast() {
           ? 'text-danger border-danger/30 bg-danger/10'
           : 'text-accent border-accent/30 bg-accent/10'
 
+  // Above every modal (z-40..z-70): a toast often answers something done
+  // inside one. Still under the splash and idle-sleep covers.
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-[54px] z-30 flex justify-center">
+    <div className="pointer-events-none fixed inset-x-0 top-[54px] z-[80] flex justify-center">
       <button
         onClick={() => clear()}
         className={`pointer-events-auto animate-fade-in rounded-lg border px-4 py-2 font-mono text-[11px] uppercase tracking-[0.1em] backdrop-blur-md shadow-lg ${toneClass}`}
