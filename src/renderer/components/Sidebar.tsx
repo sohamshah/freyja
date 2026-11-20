@@ -390,7 +390,13 @@ export function Sidebar() {
   // loaded. Main searches every session file too; its hits are unioned in
   // below. The local index still matters: it holds the live session's text
   // that is not saved yet.
-  const diskMatches = useDiskSessionSearch(searchTokens.join(' '))
+  // Asked again when a session is saved, at most every five seconds while
+  // one streams.
+  const savedBucket = useMemo(
+    () => Math.floor(sessions.reduce((max, s) => Math.max(max, s.updatedAt ?? 0), 0) / 5000),
+    [sessions],
+  )
+  const diskMatches = useDiskSessionSearch(searchTokens.join(' '), savedBucket)
 
   // Set of every session id whose ROOT is a slack-gateway session.
   // The Slack badge in the row footer is set per-session by checking

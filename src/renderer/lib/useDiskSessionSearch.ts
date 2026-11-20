@@ -21,8 +21,13 @@ function searchApi(): SearchApi | undefined {
  * wins: an answer that arrives after the query moved on is dropped. When the
  * call fails, or the method is missing (the perf mock harness), it stays
  * null and the sidebar shows its in-memory matches alone.
+ *
+ * `refreshKey` changes when sessions are saved. The same query is asked
+ * again then, and the shown ids stay up until the new answer lands; before,
+ * a session saved after the search ran was not found until the query was
+ * edited.
  */
-export function useDiskSessionSearch(query: string): ReadonlySet<string> | null {
+export function useDiskSessionSearch(query: string, refreshKey: number = 0): ReadonlySet<string> | null {
   const [result, setResult] = useState<{ query: string; ids: ReadonlySet<string> } | null>(null)
   const seq = useRef(0)
 
@@ -49,7 +54,7 @@ export function useDiskSessionSearch(query: string): ReadonlySet<string> | null 
       )
     }, DEBOUNCE_MS)
     return () => window.clearTimeout(timer)
-  }, [query])
+  }, [query, refreshKey])
 
   return result && result.query === query ? result.ids : null
 }
