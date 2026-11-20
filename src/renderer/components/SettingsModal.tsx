@@ -96,7 +96,9 @@ export function SettingsModal() {
   const currentTier = settings.permissions.autoApprove
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]">
+    // z-[58]: above the dashboard (z-50) and Artifacts (z-55), which it
+    // opened under with ⌘,; below ⌘K (z-60) and the permission prompt.
+    <div className="fixed inset-0 z-[58] flex items-start justify-center pt-[10vh]">
       <div className="absolute inset-0 scrim backdrop-blur-[2px]" onClick={() => toggle(false)} />
       <div className="relative w-[640px] max-h-[82vh] flex flex-col overflow-hidden rounded-2xl modal-opaque shadow-2xl ring-hairline-strong">
         <div className="flex items-center gap-3 px-5 py-4 hairline-b">

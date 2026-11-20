@@ -99,10 +99,13 @@ export function LogStreamModal({ onClose }: { onClose: () => void }) {
           `${formatTimestamp(l.at)} ${l.level.padEnd(5)} ${l.message}`,
       )
       .join('\n')
+    // It said nothing either way, so a blocked clipboard looked like a copy.
+    const { showToast } = useHarness.getState()
     try {
       await navigator.clipboard.writeText(text)
+      showToast(`Copied ${filtered.length} log ${filtered.length === 1 ? 'entry' : 'entries'}`, 'ok')
     } catch {
-      // ignore — clipboard may be blocked in dev
+      showToast("Couldn't copy to the clipboard", 'warn')
     }
   }
 

@@ -1417,7 +1417,17 @@ function RunDetailDrawer(props: {
           {run.status === 'running' && (
             <button
               type="button"
-              onClick={() => schedulerApi.cancelRun(run.run_id).catch(() => {})}
+              onClick={async () => {
+                // A refusal or a failed call was swallowed: the run kept
+                // going and nothing said why.
+                let error: string | null
+                try {
+                  error = actionError(await schedulerApi.cancelRun(run.run_id))
+                } catch (e) {
+                  error = (e as Error).message
+                }
+                if (error) useHarness.getState().showToast(`Couldn't cancel the run: ${error}`, 'warn')
+              }}
               className="rounded border border-danger/[0.30] bg-danger/[0.06] px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-danger transition hover:bg-danger/[0.10]"
             >
               cancel run
