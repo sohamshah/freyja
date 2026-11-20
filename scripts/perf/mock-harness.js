@@ -69,6 +69,11 @@
     get(target, prop) {
       if (prop in target) return target[prop]
       if (typeof prop === 'symbol') return undefined
+      // The preload's event subscriptions (onVoiceToggle, …) return an
+      // unsubscribe function, which the app calls on cleanup.
+      if (/^on[A-Z]/.test(prop)) return () => () => {}
+      // The palette reads a clipboard description, not an error object.
+      if (prop === 'paletteClipboard') return async () => ({ kind: 'empty' })
       return async () => ({ ok: false, error: 'harness: not mocked', rows: [], sessions: [] })
     },
   })

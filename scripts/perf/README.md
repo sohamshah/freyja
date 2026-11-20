@@ -52,6 +52,11 @@ shows on hover.
 measure-by-collapsing method, that the side panels are layout-contained,
 and that overlays opened from them still cover the window.
 
+`check-ui.mjs` checks UI behaviour on synthetic sessions, so it needs no
+session of yours: deleting the session on screen, the delete confirm, Esc
+layering (⌘K over the dashboard, the permission prompt above it), a rename
+with a space, and a message that starts with a path.
+
 `dom-breakdown.mjs` prints DOM node counts per panel.
 
 The harness runs your installed Chrome, which is newer than the app's
