@@ -262,8 +262,8 @@ const COMPACTION_TOOL = 'summarize_context'
 /** The call's own plain-language account of itself, when the tool takes
  *  one: bash's `summary`, the computer-use agents' `goal`. It beats any
  *  raw argument for the header — "Verify the rebuilt app…" says more than
- *  the first 80 chars of a shell one-liner. Exported so ParallelToolGroup
- *  picks the same line. */
+ *  the first 80 chars of a shell one-liner. Exported so the seams pick
+ *  the same line. */
 export function describeCall(name: string, args?: Record<string, unknown>): string {
   if (!args || HANDOFF_SUMMARY_TOOLS.has(name)) return ''
   // Compaction: the reason the agent gives for it is the header.
@@ -299,8 +299,8 @@ export function summarizeArgs(name: string, args?: Record<string, unknown>): str
  *  so the chip header shows something more than a spinner before the
  *  full JSON parses. Order matches `summarizeArgs` so the live summary
  *  doesn't visually re-shuffle when the full args land. Returns the
- *  empty string when nothing meaningful is available yet. Exported so
- *  ParallelToolGroup can share the same regex extraction. */
+ *  empty string when nothing meaningful is available yet. Exported for
+ *  other call headers to share the same extraction. */
 export function summarizePartialJson(name: string, partial?: string): string {
   if (!partial) return ''
   const grab = (key: string, max?: number): string | undefined => {

@@ -33,7 +33,6 @@ const { resolveToolCall } = await import('./src/renderer/lib/toolCall.ts')
 const { ToolCallChip, describeCall, summarizePartialJson } = await import(
   './src/renderer/components/ToolCallChip.tsx'
 )
-const { ParallelToolGroup } = await import('./src/renderer/components/ParallelToolGroup.tsx')
 
 const h = () => useHarness.getState()
 const emit = (ev) => h().handleEvent(ev)
@@ -202,24 +201,6 @@ check('chip: a direct summarize_context shows the reason', () => {
   const t = text(renderToStaticMarkup(createElement(ToolCallChip, { id: 'c7' })))
   assert.ok(t.includes(REASON), t)
 })
-check('lanes: every call_tool lane names its tool, and bash shows its summary', () => {
-  runCallTool('p1', 'bash', { command: 'gh pr view 16716', summary: 'Confirm the earlier PR' })
-  runCallTool('p2', 'read_file', { path: '/tmp/a.txt' })
-  runCallTool('p3', 'summarize_context', INNER)
-  const html = renderToStaticMarkup(createElement(ParallelToolGroup, { ids: ['p1', 'p2', 'p3'] }))
-  const t = text(html)
-  assert.ok(!t.includes('call_tool'), t)
-  for (const want of ['bash', 'Confirm the earlier PR', 'read_file', '/tmp/a.txt', 'summarize_context', REASON]) {
-    assert.ok(t.includes(want), `${want} missing from ${t}`)
-  }
-})
-check('lanes: the category color follows the inner tool', () => {
-  const html = renderToStaticMarkup(createElement(ParallelToolGroup, { ids: ['p1'] }))
-  // Category hues are theme tokens (styles/globals.css): the lane carries
-  // the shell token, which the light and dark shells resolve differently.
-  assert.ok(html.includes('var(--tool-shell)'), `bash is the shell color: ${html.slice(0, 400)}`)
-})
-
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

@@ -3,7 +3,7 @@ import { highlightRuns } from '../lib/searchHighlight'
 
 /** Current in-session search query, shared across every conversation part so
  *  text AND tool chips can highlight matches. Empty string = no active search.
- *  Lives in its own module so leaf components (ToolCallChip, ParallelToolGroup)
+ *  Lives in its own module so leaf components (ToolCallChip, the seams)
  *  can consume it without importing Conversation.tsx (which imports them). */
 export const SearchQueryContext = createContext<string>('')
 
