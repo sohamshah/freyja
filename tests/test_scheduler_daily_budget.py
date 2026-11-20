@@ -120,6 +120,12 @@ def _spent(job: JobRecord, cost: float, *, at: float, n: int = 1) -> None:
     time.sleep(0.01)  # runs are ordered by file mtime
 
 
+def _earlier_today(seconds: float) -> float:
+    """``seconds`` ago, or the start of the day when that was yesterday:
+    the daily budget counts only the runs that started today."""
+    return max(time.time() - seconds, START_OF_TODAY)
+
+
 async def _when_due(service: SchedulerService, job: JobRecord) -> JobRecord:
     fresh = load_job(job.id)
     fresh.next_fire_at = time.time() - 1
@@ -131,8 +137,8 @@ async def _when_due(service: SchedulerService, job: JobRecord) -> JobRecord:
 
 async def test_a_job_that_spent_its_daily_budget_skips_its_slot(service):
     job = _job("abort_run")
-    _spent(job, 0.40, at=time.time() - 600, n=1)
-    _spent(job, 0.30, at=time.time() - 300, n=2)
+    _spent(job, 0.40, at=_earlier_today(600), n=1)
+    _spent(job, 0.30, at=_earlier_today(300), n=2)
 
     saved = await _when_due(service, job)
 
@@ -146,7 +152,7 @@ async def test_an_interval_job_that_spent_its_daily_budget_waits_for_its_first_s
     job = _job("abort_run")
     job.last_fire_at = time.time() - 600
     save_job(job)
-    _spent(job, 0.70, at=time.time() - 600)
+    _spent(job, 0.70, at=_earlier_today(600))
 
     saved = await _when_due(service, job)
 
@@ -160,7 +166,7 @@ async def test_a_cron_job_that_spent_its_daily_budget_waits_for_its_first_slot_t
     job = _job("abort_run")
     job.schedule = CronSchedule(expression="*/15 * * * *")
     save_job(job)
-    _spent(job, 0.70, at=time.time() - 600)
+    _spent(job, 0.70, at=_earlier_today(600))
 
     saved = await _when_due(service, job)
 
@@ -170,7 +176,7 @@ async def test_a_cron_job_that_spent_its_daily_budget_waits_for_its_first_slot_t
 
 async def test_a_job_under_its_daily_budget_runs(service):
     job = _job("abort_run")
-    _spent(job, 0.50, at=time.time() - 600)
+    _spent(job, 0.50, at=_earlier_today(600))
 
     await _when_due(service, job)
 
@@ -189,7 +195,7 @@ async def test_what_it_spent_yesterday_does_not_count(service):
 
 async def test_a_job_that_spent_its_daily_budget_is_stopped_and_says_so(service):
     job = _job("abort_job")
-    _spent(job, 0.70, at=time.time() - 600)
+    _spent(job, 0.70, at=_earlier_today(600))
 
     saved = await _when_due(service, job)
 
@@ -211,7 +217,7 @@ async def test_the_run_a_daily_budget_stops_reaches_the_dashboard(service, monke
     told: list[dict] = []
     monkeypatch.setattr(service, "emit_event", lambda **kw: told.append(kw))
     job = _job("abort_job")
-    _spent(job, 0.70, at=time.time() - 600)
+    _spent(job, 0.70, at=_earlier_today(600))
 
     await _when_due(service, job)
 
@@ -234,7 +240,7 @@ async def test_a_loop_that_spent_its_daily_budget_waits_for_the_next_day(service
     job = _job("abort_run")
     job.schedule = SelfPacedSchedule(min_delay_seconds=60, max_delay_seconds=600)
     save_job(job)
-    _spent(job, 0.70, at=time.time() - 600)
+    _spent(job, 0.70, at=_earlier_today(600))
 
     saved = await _when_due(service, job)
 
@@ -258,7 +264,7 @@ async def test_a_job_its_daily_budget_holds_runs_again_today_once_the_budget_all
     job = _job("abort_run")
     job.schedule = schedule
     save_job(job)
-    _spent(job, 0.70, at=time.time() - 600)
+    _spent(job, 0.70, at=_earlier_today(600))
     held = await _when_due(service, job)
     assert held.next_fire_at == START_OF_TOMORROW
 
@@ -271,7 +277,7 @@ async def test_a_job_still_over_its_new_daily_budget_waits_for_the_next_day(serv
     job = _job("abort_run")
     job.schedule = _LOOP
     save_job(job)
-    _spent(job, 0.70, at=time.time() - 600)
+    _spent(job, 0.70, at=_earlier_today(600))
     await _when_due(service, job)
 
     updated = await service.update_job(job.id, JobPatch(budget=BudgetSpec(max_cost_usd_per_day=0.65)))
@@ -284,7 +290,7 @@ async def test_a_new_budget_leaves_the_next_fire_a_loop_chose_for_itself(service
     job.schedule = _LOOP
     job.next_fire_at = START_OF_TOMORROW + 3600
     save_job(job)
-    _spent(job, 0.70, at=time.time() - 600)
+    _spent(job, 0.70, at=_earlier_today(600))
 
     updated = await service.update_job(job.id, JobPatch(budget=BudgetSpec(max_cost_usd_per_day=2.0)))
 
@@ -302,7 +308,7 @@ def _one_shot(job: JobRecord) -> JobRecord:
 async def test_a_one_shot_that_spent_its_daily_budget_waits_for_the_next_day(service, monkeypatch):
     # Its earlier attempts today spent the budget, so its retry is held.
     job = _one_shot(_job("abort_run"))
-    _spent(job, 0.70, at=time.time() - 600)
+    _spent(job, 0.70, at=_earlier_today(600))
 
     held = await _when_due(service, job)
 
@@ -320,7 +326,7 @@ async def test_a_one_shot_that_spent_its_daily_budget_waits_for_the_next_day(ser
 
 async def test_a_one_shot_its_daily_budget_holds_runs_today_once_the_budget_allows(service):
     job = _one_shot(_job("abort_run"))
-    _spent(job, 0.70, at=time.time() - 600)
+    _spent(job, 0.70, at=_earlier_today(600))
     await _when_due(service, job)
 
     updated = await service.update_job(job.id, JobPatch(budget=BudgetSpec(max_cost_usd_per_day=2.0)))

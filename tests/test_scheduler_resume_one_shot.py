@@ -34,7 +34,7 @@ from bridge.scheduler.persistence import (
     save_job,
     save_run,
 )
-from bridge.scheduler.service import SchedulerService
+from bridge.scheduler.service import SchedulerService, _start_of_today
 from engine.session import TranscriptManager
 from engine.tools import ToolRegistry
 from engine.types import Message
@@ -141,9 +141,11 @@ async def test_a_one_shot_paused_over_its_time_runs_late_when_resumed(service, h
 @pytest.mark.parametrize("how", ["resume_job", "enabled=True"])
 async def test_a_one_shot_stopped_on_its_daily_budget_runs_late_when_resumed(service, how):
     # Its first run failed after spending the day's budget; abort_job
-    # stopped its retry before it started.
+    # stopped its retry before it started. The run started today: in the
+    # first two hours of the local day, DUE + 60 is yesterday, whose spend
+    # the daily budget does not count.
     job = _reminder(budget=BudgetSpec(max_cost_usd_per_day=0.60, on_exceeded="abort_job"))
-    _ran(job, "failed", at=DUE + 60, cost=0.70)
+    _ran(job, "failed", at=max(DUE + 60, _start_of_today()), cost=0.70)
     job = load_job(job.id)
     job.next_fire_at = DUE
     save_job(job)
