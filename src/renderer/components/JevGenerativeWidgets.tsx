@@ -495,41 +495,47 @@ function ArtifactExplorer({ slots, onClose, onToast, handoff, crumbs }: WidgetPr
         <Slot label="About" value={text || undefined} hint="a topic? “about jev”" />
       </Well>
       <div className="space-y-1">
+        {/* "open" and "copy path" were spans inside the row's button: a
+            keyboard could not reach them, and a button inside a button is
+            not valid. They are sibling buttons now. */}
         {rows.map((r) => (
-          <button
-            key={r.id}
-            type="button"
-            onClick={() => handoff({ type: 'artifact_preview', label: 'Preview', context: { path: r.path, row: r } })}
-            className="flex w-full items-center justify-between rounded px-2 py-1 text-left ring-hairline hover:bg-white/[0.04]"
-          >
-            <span className="min-w-0">
-              <span className="block truncate text-[11.5px] text-fg-0">{r.filename}</span>
-              <span className="block truncate text-[10px] text-fg-3">{r.sessionTitle ?? r.sessionId}</span>
-            </span>
-            <span className="ml-2 flex shrink-0 items-center gap-2 text-[9.5px] text-fg-3">
-              <span>{(r.bytes / 1024).toFixed(0)} KB</span>
-              <span
+          <div key={r.id} className="flex w-full items-center rounded ring-hairline hover:bg-white/[0.04]">
+            <button
+              type="button"
+              onClick={() => handoff({ type: 'artifact_preview', label: 'Preview', context: { path: r.path, row: r } })}
+              className="flex min-w-0 flex-1 items-center justify-between px-2 py-1 text-left"
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-[11.5px] text-fg-0">{r.filename}</span>
+                <span className="block truncate text-[10px] text-fg-3">{r.sessionTitle ?? r.sessionId}</span>
+              </span>
+              <span className="ml-2 shrink-0 text-[9.5px] text-fg-3">{(r.bytes / 1024).toFixed(0)} KB</span>
+            </button>
+            <span className="flex shrink-0 items-center gap-2 pr-2 text-[9.5px] text-fg-3">
+              <button
+                type="button"
                 className="kbd text-[8.5px]"
-                onClick={(e) => {
-                  e.stopPropagation()
+                onClick={() => {
                   useHarness.getState().toggleArtifactsBrowser(true, r.path)
                   onClose()
                 }}
               >
                 open
-              </span>
-              <span
+              </button>
+              <button
+                type="button"
                 className="kbd text-[8.5px]"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  void navigator.clipboard.writeText(r.path)
-                  onToast('Path copied')
+                onClick={() => {
+                  navigator.clipboard.writeText(r.path).then(
+                    () => onToast('Path copied'),
+                    () => onToast('Could not copy the path'),
+                  )
                 }}
               >
                 copy path
-              </span>
+              </button>
             </span>
-          </button>
+          </div>
         ))}
         {rows.length === 0 && <div className="py-3 text-center text-[11px] text-fg-3">Nothing indexed for that yet.</div>}
       </div>
