@@ -105,8 +105,16 @@ function ScreenshotCanvas({ session }: { session: ComputerSessionState }) {
   const [box, setBox] = useState<{ w: number; h: number } | null>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
 
+  const frame = session.latestFrame
+  const planned = session.plannedAction
+  const src = useFrameObjectUrl(frame)
+  const hasImage = !!src
+
   // Observe the wrapper so the highlight ring can be positioned in
-  // *display* pixels not original screenshot pixels.
+  // *display* pixels not original screenshot pixels. The wrapper only
+  // mounts with the first frame; observed once at mount, a view opened
+  // while it waited for that frame never measured it and never drew
+  // the ring.
   useEffect(() => {
     const el = wrapRef.current
     if (!el) return
@@ -116,11 +124,7 @@ function ScreenshotCanvas({ session }: { session: ComputerSessionState }) {
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [])
-
-  const frame = session.latestFrame
-  const planned = session.plannedAction
-  const src = useFrameObjectUrl(frame)
+  }, [hasImage])
 
   // Compute the ring position in the wrapper's pixel space.
   const ring = useMemo(() => {
