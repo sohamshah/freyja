@@ -171,9 +171,10 @@ function Output({ text, bad, query }: { text: string; bad?: boolean; query: stri
       <pre className={`wk-out${bad ? ' wk-bad' : ''}`} data-clip={clip ? 'true' : 'false'}>
         <HighlightText text={text} query={query} />
       </pre>
-      {clip && (
-        <button type="button" className="wk-more" onClick={() => setAll(true)}>
-          show all {lines} lines
+      {/* "show all" used to be one-way: a long result stayed open. */}
+      {lines > CLIP_LINES && !query && (
+        <button type="button" className="wk-more" onClick={() => setAll(!all)}>
+          {all ? 'show fewer lines' : `show all ${lines} lines`}
         </button>
       )}
     </>
@@ -340,9 +341,9 @@ export const Crowd = memo(function Crowd({ ids, u, records }: { ids: string[]; u
           )
         })}
       </div>
-      {n > 12 && !all && (
-        <button type="button" className="wk-more wk-crowd-more" onClick={() => setAll(true)}>
-          show all {n}
+      {n > 12 && (
+        <button type="button" className="wk-more wk-crowd-more" onClick={() => setAll(!all)}>
+          {all ? 'show fewer' : `show all ${n}`}
         </button>
       )}
       <Fold open={!!openCall} stagger={false}>
