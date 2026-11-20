@@ -66,6 +66,57 @@ export function splitSlashCommand(content: string): { name: string; args: string
   return match ? { name: match[1], args: match[2] ?? '' } : null
 }
 
+/** The command closest to a mistyped name (`/compcat` → `/compact`), by
+ *  edit distance, when it is close enough to be the likely intent. */
+export function nearestCommand(name: string): string | null {
+  const typed = name.toLowerCase()
+  let best: string | null = null
+  let bestDistance = Infinity
+  for (const command of SLASH_COMMANDS) {
+    const d = editDistance(typed, command.name)
+    if (d < bestDistance) {
+      best = command.name
+      bestDistance = d
+    }
+  }
+  const limit = Math.min(2, Math.floor((typed.length - 1) / 2))
+  return best && bestDistance <= limit ? best : null
+}
+
+function editDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+    prev = cur
+  }
+  return prev[b.length]
+}
+
+export type SubmitAction =
+  | { kind: 'command' }
+  | { kind: 'hold'; name: string; suggestion: string | null }
+  | { kind: 'send' }
+
+/** What Enter does with the composer text. A known command runs. A first
+ *  word shaped like a command that names none (`/compcat`) is held once,
+ *  with a suggestion: sent straight to the agent, a typo cost a turn.
+ *  Enter again on the same text sends it, for a message that really starts
+ *  that way. Anything else, a pasted path included, is sent. */
+export function submitAction(
+  content: string,
+  run: (name: string, args: string) => boolean,
+  held: string | null,
+): SubmitAction {
+  const command = splitSlashCommand(content)
+  if (!command) return { kind: 'send' }
+  if (run(command.name, command.args)) return { kind: 'command' }
+  if (held === content.trim()) return { kind: 'send' }
+  return { kind: 'hold', name: command.name, suggestion: nearestCommand(command.name) }
+}
+
 export function matchSlash(query: string): SlashCommand[] {
   if (!query.startsWith('/')) return []
   const q = query.slice(1).toLowerCase()

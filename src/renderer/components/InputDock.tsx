@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useHarness } from '../state/store'
-import { matchSlash, splitSlashCommand, type SlashCommand } from '../lib/slash'
+import { matchSlash, submitAction, type SlashCommand } from '../lib/slash'
 import { couldRecall, stepHistory, type HistoryCursor } from '../lib/composerHistory'
 import { AppshotCard } from './AppshotCard'
 
@@ -217,6 +217,8 @@ export function InputDock() {
   // dropping it.
   const [history, setHistory] = useState<HistoryCursor | null>(null)
   const stashedDraftRef = useRef('')
+  // Text held back once as an unknown command; Enter on it again sends it.
+  const heldUnknownRef = useRef<string | null>(null)
 
   const MAX_PX = 260
 
@@ -442,14 +444,24 @@ export function InputDock() {
     if (!content && pendingAttachments.length === 0) return
     setHistory(null)
     stashedDraftRef.current = ''
-    // Only a known command runs as one. Anything else that starts with a
-    // slash (a pasted path, a typo of a command) is sent as a message;
-    // it used to be dropped with an "unknown command" toast.
-    const command = splitSlashCommand(content)
-    if (command && runSlashCommand(command.name, command.args)) {
+    // A known command runs. A command-shaped typo (/compcat) stays in the
+    // box once, with a suggestion; Enter again sends it. A pasted path is
+    // sent. See submitAction.
+    const action = submitAction(content, runSlashCommand, heldUnknownRef.current)
+    if (action.kind === 'command') {
+      heldUnknownRef.current = null
       setDraft('')
       return
     }
+    if (action.kind === 'hold') {
+      heldUnknownRef.current = content
+      showToast(
+        `No command ${action.name}.${action.suggestion ? ` Did you mean ${action.suggestion}?` : ''} Press Enter again to send it as a message.`,
+        'warn',
+      )
+      return
+    }
+    heldUnknownRef.current = null
     await send(content, { force: !!opts?.force, afterTurn: !!opts?.afterTurn })
   }
 

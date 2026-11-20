@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { splitSlashCommand } from './src/renderer/lib/slash.ts'
+import { splitSlashCommand, submitAction } from './src/renderer/lib/slash.ts'
 
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'freyja-slash-test-'))
 globalThis.window = globalThis.window ?? {}
@@ -24,10 +24,10 @@ async function check(name, fn) {
   }
 }
 
-/** What the composer does on Enter: run a known command, else send. */
-function submit(content) {
-  const command = splitSlashCommand(content)
-  return command && useHarness.getState().runSlashCommand(command.name, command.args) ? 'command' : 'message'
+/** What the composer does on Enter (InputDock's submit). */
+function submit(content, held = null) {
+  const action = submitAction(content, (n, a) => useHarness.getState().runSlashCommand(n, a), held)
+  return { command: 'command', send: 'message', hold: 'held' }[action.kind]
 }
 
 await check('a pasted path is sent as a message', () => {
@@ -43,10 +43,12 @@ await check('a known command runs with its arguments, a newline included', () =>
   assert.match(useHarness.getState().toast?.message ?? '', /^context /)
 })
 
-await check('an unknown command name is sent as a message, with no toast', () => {
-  useHarness.setState({ toast: null })
-  assert.equal(submit('/modle gpt-6.2-sol'), 'message')
-  assert.equal(useHarness.getState().toast, null)
+await check('a mistyped command is held once with a suggestion, then sent on a second Enter', () => {
+  const first = submitAction('/compcat', () => false, null)
+  assert.deepEqual(first, { kind: 'hold', name: '/compcat', suggestion: '/compact' })
+  assert.equal(submit('/modle gpt-6.2-sol'), 'held')
+  assert.equal(submit('/modle gpt-6.2-sol', '/modle gpt-6.2-sol'), 'message')
+  assert.equal(submitAction('/zzzzzz', () => false, null).suggestion, null)
 })
 
 if (failures) {
