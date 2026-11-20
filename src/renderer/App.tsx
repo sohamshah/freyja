@@ -759,6 +759,7 @@ export function App() {
         else if (schedulerOpen) closeScheduler()
         else if (missionDashboardOpen) toggleMissionDashboard(false)
         else if (commandPaletteOpen) toggleCommandPalette(false)
+        else if (useHarness.getState().morningRoomOpen) useHarness.getState().toggleMorningRoom(false)
         else if (debugOpen) toggleDebug(false)
         else if (activeSubagentId) openSubagent(null)
         return

@@ -124,32 +124,10 @@ export function MorningRoom() {
     load().catch(() => setB((p) => ({ ...p, loading: false })))
   }, [load])
 
-  // Esc closes — but only when the room is actually the topmost
-  // surface, and never on modified Esc (⌘Esc cancels the turn,
-  // ⌘⇧Esc / triple-Esc is the computer emergency stop — those must
-  // pass through untouched).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
-      const s = useHarness.getState()
-      if (
-        s.commandPaletteOpen ||
-        s.missionDashboardOpen ||
-        s.settingsOpen ||
-        s.modelPickerOpen ||
-        s.recallDrawer.open
-      ) {
-        return // a stacked overlay owns this Esc
-      }
-      e.stopPropagation()
-      toggleMorningRoom(false)
-    }
-    // Bubble phase (not capture) so capture-phase listeners on stacked
-    // overlays run first and can stopPropagation before we see it.
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [toggleMorningRoom])
+  // App's Escape handler closes the room, after the views drawn over it
+  // (the scheduler, the dashboard, ⌘K) and after the voice HUD. A listener
+  // of our own also ran on the Esc that closed one of those, so one press
+  // closed the room with it.
 
   // ── Intent dispatch ─────────────────────────────────────────────
   const dispatchIntent = useCallback(
