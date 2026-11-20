@@ -91,6 +91,9 @@ const TimelineChart = memo(function TimelineChart({ records }: { records: Timeli
   // One tooltip for the whole chart, positioned over the hovered bar —
   // a tooltip subtree per bar was most of this panel's DOM.
   const [hover, setHover] = useState<{ record: TimelineRecord; left: number; top: number } | null>(null)
+  // A bar opens its call in the conversation, like a change's "jump". The
+  // bars only had a hover tooltip, with no way to get to the call itself.
+  const focusToolCall = useHarness((s) => s.focusToolCall)
 
   // Segment the timeline: when there's a long idle gap between tool
   // calls (session continued hours later), collapse it into a fixed
@@ -342,7 +345,8 @@ const TimelineChart = memo(function TimelineChart({ records }: { records: Timeli
           return (
             <div
               key={record.id}
-              className="absolute group"
+              className="absolute group cursor-pointer"
+              onClick={() => focusToolCall(record.id)}
               onMouseEnter={() =>
                 setHover({ record, left: startPct, top: row * ROW_HEIGHT + 4 + TOP_PAD })
               }
