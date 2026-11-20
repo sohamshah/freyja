@@ -1,7 +1,7 @@
 import React, { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { collectDescendantSessionIds, isInSlackThread, useHarness } from '../state/store'
-import { runStatusLabel, useSchedulerStore } from '../state/scheduler-store'
+import { runStatusLabel, useSchedulerStore, type SchedulerRun } from '../state/scheduler-store'
 import type {
   CoordinationStrategy,
   MemoryRecord,
@@ -17,6 +17,7 @@ import { Fold, FoldCaret } from './Fold'
 import { BranchSessionDialog } from './BranchSessionDialog'
 import { TopoBackdrop } from './TopoBackdrop'
 import { oppositeTheme, useEffectiveTheme } from '../lib/theme'
+import { useEscapeClose } from '../lib/useEscapeClose'
 
 type Section = 'sessions' | 'skills' | 'subagents' | 'memory' | 'runs'
 
@@ -116,6 +117,19 @@ export function Sidebar() {
   // of _index.json (so they never leak into the briefer's recency
   // shortlist), so they'd otherwise be invisible in the workspace.
   const recentRuns = useSchedulerStore((s) => s.recentRuns)
+  // A job that starts a new session per fire reuses one
+  // `scheduler:<job>.ephemeral` session and resets it each fire, so it
+  // holds only the newest fire. Older rows open their run record instead:
+  // they all opened that one transcript.
+  const newestRunOfSession = useMemo(() => {
+    const newest = new Map<string, SchedulerRun>()
+    for (const r of recentRuns) {
+      const sid = r.execution_session_id || `scheduler:${r.job_id}.ephemeral`
+      const cur = newest.get(sid)
+      if (!cur || r.fire_number > cur.fire_number) newest.set(sid, r)
+    }
+    return newest
+  }, [recentRuns])
   const messageCount = useHarness((s) => s.messages.length)
   const toggleSidebar = useHarness((s) => s.toggleSidebar)
   const sidebarWidth = useHarness((s) => s.sidebarWidth)
@@ -255,6 +269,9 @@ export function Sidebar() {
   // slack' — that way subagents of a slack-originated session also
   // show up under the Slack filter instead of being orphaned.
   const [originFilter, setOriginFilter] = useState<'all' | 'local' | 'slack'>('all')
+  // The memory list shows the newest 8 until "+N more" is clicked. The
+  // count was plain text, and no other view lists memories.
+  const [allMemories, setAllMemories] = useState(false)
 
   // Inspector popup for a skill or memory, opened by clicking the row.
   const [inspectItem, setInspectItem] = useState<
@@ -262,15 +279,7 @@ export function Sidebar() {
     | { kind: 'memory'; item: MemoryRecord }
     | null
   >(null)
-  // Escape closes the inspector if it's open.
-  useEffect(() => {
-    if (!inspectItem) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setInspectItem(null)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [inspectItem])
+  // The inspector handles its own Escape (it steps out of an edit first).
 
   // Ancestor chain of the active session — these auto-expand so the
   // active session is always visible in the tree without the user
@@ -792,6 +801,13 @@ export function Sidebar() {
               <button
                 key={run.run_id}
                 onClick={() => {
+                  if (sid.endsWith('.ephemeral') && newestRunOfSession.get(sid)?.run_id !== run.run_id) {
+                    const scheduler = useSchedulerStore.getState()
+                    scheduler.selectJob(run.job_id)
+                    scheduler.selectRun(run.run_id)
+                    scheduler.openDashboard()
+                    return
+                  }
                   void switchSession(sid)
                 }}
                 title={`${run.job_name} · fire ${run.fire_number} · ${runStatusLabel(run.status)}`}
@@ -847,7 +863,7 @@ export function Sidebar() {
           open={open.memory}
           onToggle={() => setOpen((p) => ({ ...p, memory: !p.memory }))}
         >
-          {sortedMemories.slice(0, 8).map((memory) => (
+          {(allMemories ? sortedMemories : sortedMemories.slice(0, 8)).map((memory) => (
             <MemoryRow
               key={memory.id}
               memory={memory}
@@ -855,9 +871,13 @@ export function Sidebar() {
             />
           ))}
           {sortedMemories.length > 8 && (
-            <div className="px-2 py-1 text-[10.5px] text-fg-3">
-              +{sortedMemories.length - 8} more in memory
-            </div>
+            <button
+              type="button"
+              onClick={() => setAllMemories((v) => !v)}
+              className="w-full rounded px-2 py-1 text-left text-[10.5px] text-fg-3 hover:bg-white/[0.04] hover:text-fg-1"
+            >
+              {allMemories ? 'show fewer' : `+${sortedMemories.length - 8} more in memory`}
+            </button>
           )}
           {sortedMemories.length === 0 && (
             <div className="px-2 py-2 text-[11px] italic text-fg-2">
@@ -1246,12 +1266,21 @@ function InspectorPopup({
     }
   }, [liveMemory?.text, liveMemory?.kind, editing, item.kind])
 
+  // Esc steps back one level: out of an edit or a delete confirm first,
+  // then closes. It closed the popup outright, with the typing in it.
+  useEscapeClose(true, () => {
+    if (editing) setEditing(false)
+    else if (skillEditing) setSkillEditing(false)
+    else if (confirmDelete) setConfirmDelete(false)
+    else onClose()
+  })
+
   // Click-outside closes the popup. While editing or confirming delete
   // we suppress the auto-close so a stray click in the field can't drop
   // the user's typing on the floor.
   const cardRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (editing || confirmDelete) return
+    if (editing || skillEditing || confirmDelete) return
     const handler = (e: MouseEvent) => {
       if (cardRef.current && !cardRef.current.contains(e.target as Node)) {
         onClose()
@@ -1259,7 +1288,7 @@ function InspectorPopup({
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [onClose, editing, confirmDelete])
+  }, [onClose, editing, skillEditing, confirmDelete])
 
   const isSkill = item.kind === 'skill'
   const skillItem = item.kind === 'skill' ? item.item : null
@@ -2004,6 +2033,21 @@ const SessionRow = memo(function SessionRow({
     return sub?.state === 'running' || sub?.state === 'pending'
   })
   const [menuOpen, setMenuOpen] = useState(false)
+  // Open the menu upward when the list has no room for it below the row:
+  // on the oldest sessions it opened past the list's edge, Delete last.
+  const [menuUp, setMenuUp] = useState(false)
+  const toggleMenu = () => {
+    if (!menuOpen) {
+      const row = rowRef.current
+      const list = row?.closest('.overflow-y-auto')
+      if (row && list) {
+        const r = row.getBoundingClientRect()
+        const l = list.getBoundingClientRect()
+        setMenuUp(l.bottom - r.bottom < 230 && r.top - l.top > l.bottom - r.bottom)
+      }
+    }
+    setMenuOpen((v) => !v)
+  }
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   useEffect(() => {
     if (!menuOpen) setConfirmingDelete(false)
@@ -2074,7 +2118,7 @@ const SessionRow = memo(function SessionRow({
       className="group relative"
       onContextMenu={(e) => {
         e.preventDefault()
-        setMenuOpen((v) => !v)
+        toggleMenu()
       }}
     >
       <button
@@ -2157,9 +2201,23 @@ const SessionRow = memo(function SessionRow({
               value={renameValue}
               onChange={(e) => setRenameValue(e.target.value)}
               onBlur={commitRename}
+              // The field sits inside the row's button, and Chromium runs the
+              // button's own key handling for keys typed here: a space or an
+              // Enter clicked the row (switching session, or folding its
+              // sub-sessions). preventDefault stops that, not the typing.
               onKeyDown={(e) => {
-                if (e.key === 'Enter') commitRename()
-                if (e.key === 'Escape') setRenaming(false)
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  commitRename()
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setRenaming(false)
+                }
+              }}
+              onKeyUp={(e) => {
+                if (e.key === ' ') e.preventDefault()
               }}
               className="w-full rounded bg-black/40 px-1 py-0.5 text-[12px] text-fg-0 ring-1 ring-accent/40 focus:outline-none"
               autoFocus
@@ -2256,8 +2314,9 @@ const SessionRow = memo(function SessionRow({
           <span
             onClick={(e) => {
               e.stopPropagation()
-              setMenuOpen((v) => !v)
+              toggleMenu()
             }}
+            title="More options"
             className="rounded px-1 py-0.5 text-[11px] text-fg-3 hover:bg-white/[0.08] hover:text-fg-0"
           >
             ⋯
@@ -2267,7 +2326,11 @@ const SessionRow = memo(function SessionRow({
 
       {/* Context menu */}
       {menuOpen && (
-        <div className="absolute right-2 top-full z-30 mt-0.5 w-[140px] rounded-lg glass-strong py-1 shadow-xl ring-hairline-strong">
+        <div
+          className={`absolute right-2 z-30 w-[140px] rounded-lg glass-strong py-1 shadow-xl ring-hairline-strong ${
+            menuUp ? 'bottom-full mb-0.5' : 'top-full mt-0.5'
+          }`}
+        >
           <CtxBtn
             label="Open here"
             onClick={() => {
