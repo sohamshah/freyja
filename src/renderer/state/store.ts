@@ -1150,6 +1150,14 @@ function deleteFallbackSession(
   return newest?.id ?? null
 }
 
+/** The session whose goal the dashboard's judge controls act on: the
+ *  mission it shows, which is the parent when a worker or judge
+ *  sub-session is on screen. The controls wrote to that sub-session. */
+function goalSessionId(state: HarnessState): string {
+  const active = sessionTreeIndex(state.sessions).byId.get(state.activeSessionId)
+  return active?.parentSessionId ?? state.activeSessionId
+}
+
 function deletedToast(subagents: number): string {
   if (subagents === 0) return 'Session deleted'
   const noun = subagents === 1 ? 'subagent' : 'subagents'
@@ -6815,7 +6823,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     if (!api) return
     api.sendCommand({
       type: 'goal_control',
-      sessionId: state.activeSessionId,
+      sessionId: goalSessionId(state),
       action: 'set_rules',
       rules,
     })
@@ -6828,7 +6836,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     if (!api) return
     api.sendCommand({
       type: 'goal_control',
-      sessionId: state.activeSessionId,
+      sessionId: goalSessionId(state),
       action: 'recalibrate_judge',
     })
   },
@@ -6840,7 +6848,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     if (!api) return
     api.sendCommand({
       type: 'goal_control',
-      sessionId: state.activeSessionId,
+      sessionId: goalSessionId(state),
       action: 'accept_calibration',
     })
   },
@@ -6852,7 +6860,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     if (!api) return
     api.sendCommand({
       type: 'goal_control',
-      sessionId: state.activeSessionId,
+      sessionId: goalSessionId(state),
       action: 'dismiss_calibration',
     })
   },

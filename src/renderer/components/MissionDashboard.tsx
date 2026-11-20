@@ -676,10 +676,10 @@ export function MissionDashboard() {
       memoriesCount: Object.keys(memories).length,
       rootUsage: missionSlice?.usage ?? usage,
       coordinationStrategy: missionSession?.coordinationStrategy ?? missionSlice?.coordinationStrategy ?? coordinationStrategy,
-      // Mirror the active session's autopilot flag here too so consumers
-      // downstream (KanbanBridgeView's toggle) read the same value the
-      // store reducer updates on `kanban_autopilot_enabled/_disabled`.
-      autoDispatchEnabled,
+      // The mission's autopilot flag, the one the board's toggle writes.
+      // With a worker or judge sub-session on screen, the active session's
+      // flag was shown instead, so the toggle looked stuck.
+      autoDispatchEnabled: missionSlice?.autoDispatchEnabled ?? autoDispatchEnabled,
       screenshotFrames: Object.values(computerSessions)
         .filter((computer) => !missionSession || computer.parentSessionId === missionSession.id || computer.sessionId === missionSession.id)
         .reduce((acc, computer) => acc + computer.frameCount, 0),
