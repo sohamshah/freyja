@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useHarness } from '../state/store'
 import type { ArtifactRecord } from '@shared/events'
-import { relativeTime } from '../lib/format'
+import { openLocalFile } from '../lib/openLocalFile'
 import { ArtifactLibrary } from './ArtifactLibrary'
 import { StickyHeader } from './StickyHeader'
 import { Fold, FoldCaret } from './Fold'
@@ -55,18 +55,6 @@ export function ArtifactsSection() {
     }))
   }, [artifacts])
 
-  const openFile = (path: string) => {
-    const api = (window as any).harness
-    if (api?.openExternal) {
-      // For HTML files, open in browser; for others, use default app
-      if (path.endsWith('.html') || path.endsWith('.htm')) {
-        api.openExternal(`file://${path}`)
-      } else {
-        api.openExternal(`file://${path}`)
-      }
-    }
-  }
-
   return (
     <div className="hairline-b">
       {libraryOpen && <ArtifactLibrary onClose={() => setLibraryOpen(false)} />}
@@ -118,7 +106,7 @@ export function ArtifactsSection() {
                   <ArtifactRow
                     key={artifact.id}
                     artifact={artifact}
-                    onOpen={() => openFile(artifact.path)}
+                    onOpen={() => void openLocalFile(artifact.path)}
                   />
                 ))}
               </div>

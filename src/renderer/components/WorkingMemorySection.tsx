@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Fold, FoldCaret } from './Fold'
 import { useHarness } from '../state/store'
+import { openLocalFile } from '../lib/openLocalFile'
 import { activityTickOf } from './ActionLedgerSection'
 import {
   ChildLabel,
@@ -71,9 +72,7 @@ function wsPip(status?: string): PipStatus {
 }
 
 function openFile(path?: string) {
-  if (!path) return
-  const api = (window as any).harness
-  if (api?.openExternal) api.openExternal(`file://${path}`)
+  if (path) void openLocalFile(path)
 }
 
 export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) {

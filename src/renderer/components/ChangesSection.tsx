@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useHarness } from '../state/store'
 import type { FileChangeSet } from '@shared/events'
 import { relativeTime } from '../lib/format'
+import { openLocalFile } from '../lib/openLocalFile'
 import { ArtifactLibrary } from './ArtifactLibrary'
 import { FileChangeCard } from './FileChangeCard'
 import { StickyHeader } from './StickyHeader'
@@ -13,11 +14,6 @@ export function ChangesSection() {
   const focusToolCall = useHarness((s) => s.focusToolCall)
   const [expanded, setExpanded] = useState(true)
   const [libraryOpen, setLibraryOpen] = useState(false)
-
-  const openExternal = (path: string) => {
-    const api = (window as any).harness
-    if (api?.openExternal) api.openExternal(`file://${path}`)
-  }
 
   const ordered = useMemo(
     () => [...changeSets].sort((a, b) => b.createdAt - a.createdAt),
@@ -83,7 +79,7 @@ export function ChangesSection() {
               key={changeSet.id}
               changeSet={changeSet}
               onJump={() => focusToolCall(changeSet.toolCallId)}
-              onOpenFile={openExternal}
+              onOpenFile={(path) => void openLocalFile(path)}
             />
           ))}
           {ordered.length > 8 && (
