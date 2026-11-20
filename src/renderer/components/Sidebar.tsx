@@ -2377,7 +2377,7 @@ const SessionRow = memo(function SessionRow({
             <CtxBtn
               label={
                 confirmingDelete
-                  ? 'Click again to delete'
+                  ? 'Confirm delete'
                   : subagentCount > 0
                     ? `Delete (+${subagentCount} subagent${subagentCount === 1 ? '' : 's'})`
                     : 'Delete'
