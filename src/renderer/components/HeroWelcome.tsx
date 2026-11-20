@@ -121,7 +121,7 @@ export function HeroWelcome() {
                 onClick={triggerBurst}
                 className="mt-2 rounded-md bg-accent/10 px-3 py-1 text-[11px] text-accent ring-1 ring-accent/30 hover:bg-accent/20"
               >
-                ▸ trigger demo burst (⌘B)
+                ▸ trigger demo burst
               </button>
             )}
           </div>
