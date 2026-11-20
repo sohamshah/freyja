@@ -106,8 +106,12 @@ export function TitleBar() {
       </div>
       <div className="h-[14px] w-px bg-white/10" />
       <BridgeStatus mode={mode} modeDetail={modeDetail} />
+      {/* Hidden on narrow windows to save room, except while the sidebar
+          is collapsed: then it is the only visible way back. */}
       <TitleControl
-        className="no-drag hidden h-[28px] px-2.5 text-[10px] lg:inline-flex"
+        className={`no-drag h-[28px] px-2.5 text-[10px] ${
+          sidebarCollapsed ? 'inline-flex' : 'hidden lg:inline-flex'
+        }`}
         onClick={() => toggleSidebar()}
         title="Toggle workspace sidebar (⌘[)"
         active={!sidebarCollapsed}
@@ -226,7 +230,9 @@ export function TitleBar() {
         <SchedulerPill />
         <GatewayStatusPill />
         <TitleControl
-          className="no-drag hidden h-[28px] px-2.5 text-[10px] xl:inline-flex"
+          className={`no-drag h-[28px] px-2.5 text-[10px] ${
+            activityPanelCollapsed ? 'inline-flex' : 'hidden xl:inline-flex'
+          }`}
           onClick={() => toggleActivityPanel()}
           title="Toggle activity panel (⌘])"
           active={!activityPanelCollapsed}
