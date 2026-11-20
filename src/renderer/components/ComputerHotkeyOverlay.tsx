@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useHarness } from '../state/store'
+import { useEscapeClose } from '../lib/useEscapeClose'
 
 /**
  * Floating ⌘⇧K overlay — Vy-style "summon" prompt for a computer task.
@@ -22,6 +23,7 @@ export function ComputerHotkeyOverlay() {
   const enabled = useHarness((s) => s.settings.computer.enabled)
   const sendMessage = useHarness((s) => s.sendMessage)
   const toggleSettings = useHarness((s) => s.toggleSettings)
+  const focusComposer = useHarness((s) => s.focusComposer)
 
   // Listen for the main-process-dispatched open event. The bridge IPC
   // already pipes system_event into the store, but we also need the
@@ -45,24 +47,23 @@ export function ComputerHotkeyOverlay() {
     return unsub
   }, [])
 
+  // A goal typed and then dismissed (Esc, a stray click on the backdrop)
+  // comes back selected on the next open, so it can be run or typed over.
   useEffect(() => {
     if (open) {
-      setDraft('')
-      setTimeout(() => inputRef.current?.focus(), 50)
+      setTimeout(() => inputRef.current?.select(), 50)
     }
   }, [open])
 
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        setOpen(false)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open])
+  const close = () => {
+    setOpen(false)
+    focusComposer()
+  }
+
+  // On the Esc stack: a plain window listener let App's Escape also act
+  // on the same press, ending a voice exchange or closing the view under
+  // the overlay.
+  useEscapeClose(open, close)
 
   if (!open) return null
 
@@ -77,12 +78,13 @@ export function ComputerHotkeyOverlay() {
     sendMessage(
       `Use the \`computer_use\` tool with goal: "${goal}". Watch mode is on.`,
     )
-    setOpen(false)
+    setDraft('')
+    close()
   }
 
   return (
     <div className="fixed inset-0 z-[70] flex items-start justify-center pt-[14vh]">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-[3px]" onClick={() => setOpen(false)} />
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-[3px]" onClick={close} />
       <div className="relative w-[560px] overflow-hidden rounded-2xl glass-strong shadow-2xl ring-hairline-strong">
         <div className="flex items-center gap-3 px-5 py-3 hairline-b">
           <span className="label text-warn">computer</span>
@@ -111,7 +113,7 @@ export function ComputerHotkeyOverlay() {
               (requires Screen Recording + Accessibility permissions).
               <div className="mt-3 flex gap-2">
                 <button
-                  onClick={() => setOpen(false)}
+                  onClick={close}
                   className="rounded-md bg-white/[0.04] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-fg-1 ring-hairline hover:bg-white/[0.08]"
                 >
                   cancel
