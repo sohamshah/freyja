@@ -14452,14 +14452,21 @@ def _root_session_id(session_id: str) -> str:
     return session_id
 
 
-def _refuse_rewind(session_id: str, cmd: dict[str, Any], reason: str | None = None) -> None:
+def _refuse_rewind(
+    session_id: str, cmd: dict[str, Any], reason: str | None = None, *, turn_running: bool = False
+) -> None:
     """Edit, rerun or delete did nothing. The renderer cut its chat at the
     message when it sent the command: tell it to put the chat back, so it
     shows what the agent still has. ``reason`` is shown to the operator
-    (a summarized anchor's refusal has said why already)."""
+    (a summarized anchor's refusal has said why already). ``turn_running``
+    says a turn is why: the cut also took that turn off the renderer's
+    screen, and it puts the turn back too."""
     if reason:
         emit_error(reason, recoverable=True)
-    emit({"type": "rewind_refused", "sessionId": session_id, "requestId": cmd.get("requestId")})
+    event = {"type": "rewind_refused", "sessionId": session_id, "requestId": cmd.get("requestId")}
+    if turn_running:
+        event["turnRunning"] = True
+    emit(event)
 
 
 def _edited_user_content(original: Any, new_text: str, old_text: str = "") -> Any:
@@ -17409,7 +17416,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             return
         if sess.pending_task and not sess.pending_task.done():
             log("warn", "edit_user_message: turn in progress, ignoring")
-            _refuse_rewind(session_id, cmd, _REWIND_TURN_RUNNING.format(verb="edit"))
+            _refuse_rewind(session_id, cmd, _REWIND_TURN_RUNNING.format(verb="edit"), turn_running=True)
             return
         if _refuse_summarized_anchor(sess, cmd, "edit"):
             _refuse_rewind(session_id, cmd)
@@ -17478,7 +17485,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             return
         if sess.pending_task and not sess.pending_task.done():
             log("warn", "rerun_user_message: turn in progress, ignoring")
-            _refuse_rewind(session_id, cmd, _REWIND_TURN_RUNNING.format(verb="rerun"))
+            _refuse_rewind(session_id, cmd, _REWIND_TURN_RUNNING.format(verb="rerun"), turn_running=True)
             return
         if _refuse_summarized_anchor(sess, cmd, "rerun"):
             _refuse_rewind(session_id, cmd)
@@ -17843,7 +17850,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             return
         if sess.pending_task and not sess.pending_task.done():
             log("warn", "delete_messages_from: turn in progress, ignoring")
-            _refuse_rewind(session_id, cmd, _REWIND_TURN_RUNNING.format(verb="delete from"))
+            _refuse_rewind(session_id, cmd, _REWIND_TURN_RUNNING.format(verb="delete from"), turn_running=True)
             return
         if _refuse_summarized_anchor(sess, cmd, "delete from"):
             _refuse_rewind(session_id, cmd)

@@ -1554,6 +1554,9 @@ export type BridgeEvent = Received & (
        *  command, and puts it back. */
       type: 'rewind_refused'
       requestId?: string | null
+      /** Refused because a turn is running: the renderer puts that turn
+       *  back on screen as well as the chat. */
+      turnRunning?: boolean
     } & SessionId)
   | ({
       /** The bridge did not deliver a message typed for a session: a Slack

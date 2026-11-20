@@ -123,6 +123,24 @@ await check('a refusal of an earlier command does not undo the latest one', asyn
   assert.deepEqual(ids(), ['u1'])
 })
 
+await check('a rewind refused because a turn runs puts that turn back on screen', async () => {
+  // The cut took the turn off screen: no stop button, deltas dropped.
+  reset()
+  useHarness.setState({ isStreaming: true, currentStreamingMessageId: 'a3', currentTurnId: 'turn-7' })
+  await useHarness.getState().rerunUserMessage('u2')
+  assert.equal(useHarness.getState().isStreaming, false)
+  ev({ type: 'rewind_refused', requestId: sent.at(-1).requestId, turnRunning: true })
+  const s = useHarness.getState()
+  assert.deepEqual([s.isStreaming, s.currentStreamingMessageId, s.currentTurnId], [true, 'a3', 'turn-7'])
+  ev({ type: 'text_delta', text: ' Shipped.' })
+  assert.equal(useHarness.getState().messages.find((m) => m.id === 'a3').parts.at(-1).text, 'All fixed. Shipped.')
+  ev({ type: 'turn_complete', turnId: 'turn-7', success: true })
+  // Refused for another reason, nothing was running to put back.
+  await useHarness.getState().rerunUserMessage('u2')
+  ev({ type: 'rewind_refused', requestId: sent.at(-1).requestId })
+  assert.equal(useHarness.getState().isStreaming, false)
+})
+
 await check("a reply is shown from the bridge's turn_start stamp, past its user message's entry", async () => {
   reset()
   const at = Date.now() - 50.5

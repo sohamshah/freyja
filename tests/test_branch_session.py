@@ -810,8 +810,10 @@ async def test_a_refused_rewind_tells_the_renderer_to_put_its_chat_back(sessions
     )
     assert sess.turns == []
     assert [e.id for e in sess.session.transcript.entries] == ["c1", "u2", "a2", "u3"]
+    # A running turn also goes back on the renderer's screen.
+    running = {"turnRunning": True} if why == "turn running" else {}
     assert [e for e in events if e["type"] == "rewind_refused"] == [
-        {"type": "rewind_refused", "sessionId": sid, "requestId": "r1"}
+        {"type": "rewind_refused", "sessionId": sid, "requestId": "r1", **running}
     ]
 
 

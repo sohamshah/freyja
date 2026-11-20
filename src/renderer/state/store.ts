@@ -881,12 +881,27 @@ function messageFingerprint(
 }
 
 /** The chat an edit, rerun or delete cut when it was sent, by session (the
- *  latest per session): what the cut took out, and the edited message put
- *  in its place. A `rewind_refused` from the bridge puts it back. */
+ *  latest per session): what the cut took out, the edited message put in
+ *  its place, and the turn it took off screen. A `rewind_refused` from the
+ *  bridge puts it back. */
+type TurnOnScreen = Pick<SessionSlice, 'isStreaming' | 'currentStreamingMessageId' | 'currentTurnId' | 'thinking'>
 const pendingRewinds = new Map<
   string,
-  { requestId: string; at: number; removed: Message[]; edited?: { id: string; text: string } }
+  {
+    requestId: string
+    at: number
+    removed: Message[]
+    edited?: { id: string; text: string }
+    turn: TurnOnScreen
+  }
 >()
+
+const turnOnScreen = (s: TurnOnScreen): TurnOnScreen => ({
+  isStreaming: s.isStreaming,
+  currentStreamingMessageId: s.currentStreamingMessageId,
+  currentTurnId: s.currentTurnId,
+  thinking: s.thinking,
+})
 
 /** The model, mode and autopilot changes the app showed for a session at
  *  once, by session, oldest first, each with its request id and what the
@@ -3747,7 +3762,10 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       }
       // The bridge did not act on an edit, rerun or delete: put back the
       // chat the command cut, so it shows what the agent still has. An
-      // edit's new text goes back into the composer.
+      // edit's new text goes back into the composer. When it refused
+      // because a turn is running, the turn the cut took off screen comes
+      // back too: the stop button had gone and the turn's deltas had no
+      // message to land on. Not over a turn that started since.
       if (ev.type === 'rewind_refused') {
         const sid = ev.sessionId
         const cut = sid ? pendingRewinds.get(sid) : undefined
@@ -3757,10 +3775,12 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           const kept = messages.filter((m) => m.id !== cut.edited?.id)
           return [...kept.slice(0, cut.at), ...cut.removed, ...kept.slice(cut.at)]
         }
+        const turn = (slice: TurnOnScreen) => (ev.turnRunning && !slice.isStreaming ? cut.turn : {})
         queueMicrotask(() => schedulePersistSession(sid))
         if (sid === prev.activeSessionId) {
           return {
             ...prev,
+            ...turn(prev),
             messages: restore(prev.messages),
             inputDraft: cut.edited ? restoreIntoDraft(prev.inputDraft, cut.edited.text) : prev.inputDraft,
           }
@@ -3769,7 +3789,10 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         if (!archived) return prev
         return {
           ...prev,
-          sessionArchive: { ...prev.sessionArchive, [sid]: { ...archived, messages: restore(archived.messages) } },
+          sessionArchive: {
+            ...prev.sessionArchive,
+            [sid]: { ...archived, ...turn(archived), messages: restore(archived.messages) },
+          },
         }
       }
       // The bridge did not deliver a message typed for a session (a Slack
@@ -5844,6 +5867,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       const newId = nextId('msg')
       pendingRewinds.set(sessionId, {
         requestId, at: idx, removed: prev.messages.slice(idx), edited: { id: newId, text: trimmed },
+        turn: turnOnScreen(prev),
       })
       const newMessage: Message = {
         id: newId,
@@ -5888,7 +5912,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     set((prev) => {
       const idx = prev.messages.findIndex((m) => m.id === messageId)
       if (idx < 0) return {}
-      pendingRewinds.set(sessionId, { requestId, at: idx, removed: prev.messages.slice(idx) })
+      pendingRewinds.set(sessionId, {
+        requestId, at: idx, removed: prev.messages.slice(idx), turn: turnOnScreen(prev),
+      })
       return {
         messages: prev.messages.slice(0, idx),
         currentStreamingMessageId: null,
@@ -5919,7 +5945,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     set((prev) => {
       const idx = prev.messages.findIndex((m) => m.id === messageId)
       if (idx < 0) return {}
-      pendingRewinds.set(sessionId, { requestId, at: idx, removed: prev.messages.slice(idx) })
+      pendingRewinds.set(sessionId, {
+        requestId, at: idx, removed: prev.messages.slice(idx), turn: turnOnScreen(prev),
+      })
       return {
         messages: prev.messages.slice(0, idx),
         currentStreamingMessageId: null,

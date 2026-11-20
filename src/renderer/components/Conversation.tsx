@@ -770,10 +770,14 @@ function ScrollToBottomButton({
 
 function UserMessageEditor({
   initialText,
+  busy,
   onCancel,
   onSave,
 }: {
   initialText: string
+  /** A turn is running. The bridge refuses an edit then, so save waits:
+   *  the editor can stay open while a turn starts under it. */
+  busy: boolean
   onCancel: () => void
   onSave: (text: string) => void
 }) {
@@ -794,6 +798,7 @@ function UserMessageEditor({
     return () => el.removeEventListener('input', grow)
   }, [])
   const submit = () => {
+    if (busy) return
     const trimmed = text.trim()
     if (!trimmed) {
       onCancel()
@@ -825,7 +830,9 @@ function UserMessageEditor({
           placeholder="Edit message…"
         />
         <div className="flex items-center justify-between gap-2 hairline-t px-3 py-2 font-mono text-[10px] uppercase tracking-[0.08em]">
-          <span className="text-fg-3">edit + rerun · ⌘↵ save · esc cancel</span>
+          <span className="text-fg-3">
+            {busy ? 'save waits for the turn to end · esc cancel' : 'edit + rerun · ⌘↵ save · esc cancel'}
+          </span>
           <div className="flex items-center gap-2">
             <button
               onClick={onCancel}
@@ -835,7 +842,7 @@ function UserMessageEditor({
             </button>
             <button
               onClick={submit}
-              disabled={!text.trim()}
+              disabled={busy || !text.trim()}
               className="rounded bg-accent/15 px-2 py-[2px] text-accent ring-1 ring-accent/30 hover:bg-accent/25 disabled:opacity-60"
             >
               save + rerun
@@ -1489,6 +1496,7 @@ const MessageView = memo(function MessageView({ message, endsTurn = false }: { m
       return (
         <UserMessageEditor
           initialText={textContent}
+          busy={isStreaming}
           onCancel={actions.cancelEdit}
           onSave={(text) => actions.saveEdit(message.id, text)}
         />
