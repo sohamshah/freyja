@@ -158,7 +158,12 @@ export function SubagentCard({ id }: { id: string }) {
 
   return (
     <div
-      onClick={(event) => handleAttach(event.metaKey || event.ctrlKey ? 'split' : 'replace')}
+      onClick={(event) => {
+        // The click that ends a drag-select of the card's text is not a
+        // request to open the session.
+        if (window.getSelection()?.toString()) return
+        handleAttach(event.metaKey || event.ctrlKey ? 'split' : 'replace')
+      }}
       className={`group rounded-xl glass-raised p-3 transition-all ${
         childSnapshot ? 'card-hover-accent cursor-pointer' : ''
       }`}
