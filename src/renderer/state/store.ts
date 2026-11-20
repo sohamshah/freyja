@@ -3237,6 +3237,13 @@ function withBatchedNotifications(
   }
 }
 
+/** Counts session switches. A switch that waits for its session to load
+ *  from disk gives up if a newer switch (or a new session) started in the
+ *  meantime, so the last click wins. `switchLoadingId` is the session that
+ *  the newest switch is still loading. */
+let switchSeq = 0
+let switchLoadingId: string | null = null
+
 export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNotifications((set, get) => ({
   ...emptyState(),
 
@@ -5337,6 +5344,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     )
     const chosenStrategy = normalizeCoordinationStrategy(state.coordinationStrategy)
     const chosenRuntime: import('@shared/events').SessionRuntime = runtime ?? 'native'
+    // A switch still loading from disk must not land on top of the new session.
+    switchSeq++
+    switchLoadingId = null
 
     set((prev) => {
       // Archive the current slice unless it's empty (nothing to save).
@@ -5420,6 +5430,10 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
 
   async switchSession(sessionId) {
     const prev = useHarness.getState()
+    // Taken before the early return: a click on the session already on
+    // screen still cancels a slower switch away from it.
+    const seq = ++switchSeq
+    switchLoadingId = null
     if (sessionId === prev.activeSessionId) return
     // Gateway-mirrored sessions (Slack DMs) advance independently on
     // disk via the daemon process. The renderer's cached slice in
@@ -5451,7 +5465,11 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       isGateway && !cachedIsStreaming ? undefined : cachedSlice
     if (!archivedSlice) {
       // Try to load from disk.
+      switchLoadingId = sessionId
       const loaded = await prev.loadPersistedSessionIntoArchive(sessionId)
+      // A newer switch started while this one loaded: it wins.
+      if (seq !== switchSeq) return
+      switchLoadingId = null
       if (loaded) {
         archivedSlice = useHarness.getState().sessionArchive[sessionId]
       }
@@ -5615,6 +5633,12 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     }
     const closing = panes.find((pane) => pane.id === paneId)
     if (!closing) return
+    // A switch to this pane's session still loading from disk would land
+    // after the close and bring the closed session back.
+    if (switchLoadingId === closing.sessionId) {
+      switchSeq++
+      switchLoadingId = null
+    }
     const remaining = panes.filter((pane) => pane.id !== paneId)
     const nextActivePaneId =
       state.activePaneId === paneId
