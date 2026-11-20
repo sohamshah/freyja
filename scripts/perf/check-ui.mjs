@@ -195,6 +195,37 @@ await page.waitForTimeout(400)
 check('Enter again sends it', (await commands()).filter((c) => c === 'send_message').length === sendsBefore + 1)
 await shot('8-mistyped-command')
 
+// Archived memories: opening the memory section asks for the full list, an
+// archived one shows under "archived (N)", and Restore sends the command.
+const memHead = page.locator('button.fold-head').filter({ hasText: /^memory/ })
+await memHead.scrollIntoViewIfNeeded()
+await memHead.click()
+await page.waitForTimeout(400)
+check('opening the memory section asks for every memory', (await commands()).includes('list_memories'))
+const mem = (id, text, archived) => ({ id, scope: 'user', kind: 'preference', text, summary: text, tags: [], archived, updatedAt: Date.now() })
+await page.evaluate((list) => window.__emit({ type: 'memories_snapshot', memories: list }), [
+  mem('mem-kept', 'Prefer short answers.', false),
+  mem('mem-gone', 'Use imperial units.', true),
+])
+await page.waitForTimeout(500)
+const archivedToggle = page.getByRole('button', { name: 'archived (1)' })
+check('an archived memory is counted under the list', await archivedToggle.isVisible())
+await archivedToggle.click()
+await page.waitForTimeout(400)
+await page.getByRole('button', { name: /Use imperial units/ }).click()
+await page.waitForTimeout(400)
+await shot('9-archived-memory')
+const restore = page.getByRole('button', { name: 'Restore', exact: true })
+check('its inspector offers Restore', await restore.isVisible())
+await restore.click()
+await page.waitForTimeout(400)
+check('Restore sends memory_restore', (await commands()).includes('memory_restore'))
+await page.evaluate(() => window.__emit({ type: 'memory_edit_failed', id: 'mem-gone', action: 'memory_restore', error: 'that memory was not found' }))
+await page.waitForTimeout(300)
+check('a refused restore says so', /couldn't restore that memory/i.test(await page.evaluate(() => document.body.innerText)))
+await page.keyboard.press('Escape')
+await page.waitForTimeout(300)
+
 check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '))
 await browser.close()
 server.close()
