@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useHarness } from '../state/store'
+import { useEscapeClose } from '../lib/useEscapeClose'
 import { DatelineTS } from './memory/primitives'
 
 /**
@@ -132,15 +134,16 @@ export function RecallPanel({ open, onClose, sessionId, initialQuery = '' }: Rec
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialQuery])
 
-  // Close on Escape while open.
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  // Closing unmounts the focused search field; focus goes back to the
+  // composer instead of falling to <body>, where typing went nowhere.
+  const focusComposer = useHarness((s) => s.focusComposer)
+  const close = () => {
+    onClose()
+    focusComposer()
+  }
+  // Esc closes the drawer through the shared stack, so the same press no
+  // longer also ends a voice exchange or closes the layer under it.
+  useEscapeClose(open, close)
 
   // Debounce the query (~250ms). The trimmed debounced value is what we fetch.
   useEffect(() => {
@@ -211,7 +214,7 @@ export function RecallPanel({ open, onClose, sessionId, initialQuery = '' }: Rec
     <div className="fixed inset-0 z-30 flex justify-end" role="dialog" aria-label="Recall archive">
       <div
         className="absolute inset-0 bg-black/40 backdrop-blur-[1px]"
-        onClick={onClose}
+        onClick={close}
         aria-hidden="true"
       />
       <div className="relative flex h-full w-[560px] flex-col glass-panel glass-strong ring-hairline-strong">
@@ -225,7 +228,7 @@ export function RecallPanel({ open, onClose, sessionId, initialQuery = '' }: Rec
               </span>
             </div>
             <button
-              onClick={onClose}
+              onClick={close}
               className="rounded bg-white/[0.05] px-2 py-[3px] font-mono text-[10px] uppercase tracking-[0.08em] text-fg-1 ring-hairline hover:bg-white/[0.08]"
             >
               close ✕
