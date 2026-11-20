@@ -167,6 +167,26 @@ await check('clicking the seam opens the lines under it', async () => {
   host.remove()
 })
 
+await check('a jump to a call in a crowd opens the seam and that call, and lands on it', async () => {
+  const ids = ['w1', 'w2', 'w3', 'w4', 'w5']
+  for (const id of ids) emit({ type: 'tool_use_start', id, name: 'web_search' })
+  for (const id of ids) {
+    emit({ type: 'tool_input_end', id, arguments: { query: `q ${id}` } })
+    emit({ type: 'tool_result', id, preview: `hits for ${id}`, isError: false, durationMs: 30 })
+  }
+  const crowd = [{ kind: 'calls', ids, groupId: h().toolCalls.w1.groupId }]
+  const { host, root } = mount(createElement(WorkStretch, { items: crowd, closed: true, liveIndex: -1 }))
+  assert.equal(host.querySelector('.wk-stretch').dataset.mode, 'folded')
+  flushSync(() => h().focusToolCall('w4'))
+  await sleep(50)
+  assert.equal(host.querySelector('.wk-stretch').dataset.mode, 'open')
+  const word = host.querySelector('[data-tool-call-id="w4"]')
+  assert.ok(word, 'the conversation has an element to scroll to')
+  assert.equal(word.getAttribute('aria-expanded'), 'true')
+  root.unmount()
+  host.remove()
+})
+
 await check('a helper shows its task while it works, then its reply in its place', async () => {
   const { Helpers } = await import('./src/renderer/components/seam/Helpers.tsx')
   h().handleEvent({ type: 'session_spawned', sessionId: 'kid', parentSessionId: S, title: 'Store', model: 'm', task: 'Find the selectors', createdAt: Date.now() })

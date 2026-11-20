@@ -275,6 +275,17 @@ export const Crowd = memo(function Crowd({ ids, u, records }: { ids: string[]; u
   const now = useNow(running)
   const [openId, setOpenId] = useState<string | null>(null)
   const [all, setAll] = useState(false)
+  // A jump to one of these calls (activity panel, timeline) opens it here.
+  // Its word carries the call's id, so the conversation can scroll to it;
+  // with no element to find, the jump used to do nothing.
+  const focused = useHarness((s) =>
+    s.focusedToolCallId && ids.includes(s.focusedToolCallId) ? `${s.focusedToolCallSerial}|${s.focusedToolCallId}` : '',
+  )
+  useEffect(() => {
+    if (!focused) return
+    setOpenId(focused.slice(focused.indexOf('|') + 1))
+    setAll(true)
+  }, [focused])
   const n = ids.length
   const settled = recs.filter((c) => c && c.status !== 'running').length
   const errs = recs.filter((c) => c?.status === 'error').length
@@ -318,6 +329,7 @@ export const Crowd = memo(function Crowd({ ids, u, records }: { ids: string[]; u
               <button
                 type="button"
                 className="wk-crowd-word"
+                data-tool-call-id={id}
                 data-state={c?.status ?? 'running'}
                 aria-expanded={openId === id}
                 onClick={() => setOpenId(openId === id ? null : id)}
