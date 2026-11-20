@@ -50,11 +50,8 @@ export function BriefMemo({
   preview,
 }: BriefMemoProps) {
   // ESC closes — wired here so every brief surface gets it for free and
-  // the close button can advertise the keystroke. Uses the capture-first
-  // guard so Esc closes the brief instead of the whole dashboard (whose
-  // ancestor capture listener would otherwise win). Registered at mount
-  // (this component stays mounted while `open` toggles) so it precedes
-  // the dashboard listener in capture order.
+  // the close button can advertise the keystroke. It closes the brief,
+  // not the dashboard under it (see useEscapeClose).
   useEscapeClose(open, onClose)
 
   if (!open) return null

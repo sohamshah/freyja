@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useEscapeClose } from '../lib/useEscapeClose'
 
 /**
  * Modal showing the unified diff between a pending candidate and the
@@ -65,21 +66,20 @@ export function SkillDiffModal({
     }
   }, [candidateId])
 
-  // Dismiss on Esc — matches the rest of the modal palette.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  // Esc closes the diff only, not the skill detail it opened from.
+  useEscapeClose(true, onClose)
 
   // Portaled: the side panels contain their layout (see Sidebar /
   // ActivityPanel), which would otherwise trap a fixed overlay inside them.
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center scrim backdrop-blur-sm"
-      onClick={onClose}
+      onClick={(e) => {
+        // It renders inside the skill detail's backdrop: a click here
+        // must not bubble on and close that too.
+        e.stopPropagation()
+        onClose()
+      }}
     >
       <div
         className="flex max-h-[88vh] w-[920px] max-w-[calc(100vw-3rem)] flex-col overflow-hidden rounded-xl glass-strong shadow-2xl ring-hairline-strong"

@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { useHarness } from '../state/store'
 import { useSchedulerStore } from '../state/scheduler-store'
 import { scrollToReveal, stepSelection } from '../lib/listNavigation'
+import { useEscapeClose } from '../lib/useEscapeClose'
 import { buildPaletteItems, type PaletteItem } from '../lib/paletteItems'
 import { JevWidget } from './JevGenerativeWidgets'
 import type { Handoff } from './palette/chrome'
@@ -380,26 +381,26 @@ export function CommandPalette() {
       }
       if (filtered[selected]) filtered[selected].action()
       else if (trimmedQuery.length >= 3) askFreyja()
-    } else if (e.key === 'Escape') {
-      if (top) {
-        e.preventDefault()
-        e.stopPropagation()
-        setStack((st) => st.slice(0, -1))
-        setQuery(top.queryBefore)
-        return
-      }
-      if (widgetType) {
-        // App.tsx closes the palette on a bubbled Esc; inside a widget the
-        // first Esc only steps back to the list.
-        e.preventDefault()
-        e.stopPropagation()
-        setPinnedDomain(null)
-        setQuery('')
-        return
-      }
-      close(false)
     }
   }
+
+  // Esc steps back one level: a pushed card, then a widget, then the
+  // palette itself. Window-level and on the Esc stack, so it works with
+  // focus on a card chip, and the view under ⌘K (dashboard, Artifacts)
+  // stays open.
+  useEscapeClose(true, () => {
+    if (top) {
+      setStack((st) => st.slice(0, -1))
+      setQuery(top.queryBefore)
+      return
+    }
+    if (widgetType) {
+      setPinnedDomain(null)
+      setQuery('')
+      return
+    }
+    close(false)
+  })
 
   const askFreyja = () => {
     setDraft(trimmedQuery)

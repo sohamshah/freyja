@@ -4,6 +4,7 @@ import gsap from 'gsap'
 import type { KanbanCardView } from '../shared/types'
 import { useHarness } from '../../state/store'
 import { VectorFieldBackdrop } from './VectorFieldBackdrop'
+import { useEscapeClose } from '../../lib/useEscapeClose'
 
 /** Modal-shape "+ Add task" form, mounted into document.body via a
  *  portal so the dropdown popovers + the form chrome never get
@@ -318,6 +319,8 @@ function DependencyField({
   } | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const popRef = useRef<HTMLDivElement>(null)
+  // Esc closes the picker only, not the form with its typed title.
+  useEscapeClose(open, () => setOpen(false))
 
   const POP_WIDTH = 320
   const POP_MAX_H = 280

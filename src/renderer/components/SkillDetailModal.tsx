@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useEscapeClose } from '../lib/useEscapeClose'
 import { SkillDiffModal } from './SkillDiffModal'
 
 /**
@@ -82,13 +83,7 @@ export function SkillDetailModal({
     }
   }, [candidateId])
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  useEscapeClose(true, onClose)
 
   const isCaution = guardVerdict === 'caution'
   const overwrites = existingSkill?.exists === true

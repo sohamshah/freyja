@@ -45,9 +45,8 @@ export function DetailDrawer({
   footer,
   backdrop,
 }: DetailDrawerProps) {
-  // Capture-first Esc so closing a detail panel that lives inside the
-  // mission dashboard doesn't fall through to the dashboard's own Esc
-  // (which would close the entire dashboard). See useEscapeClose.
+  // Esc closes this panel, not the dashboard it sits in (see
+  // useEscapeClose).
   useEscapeClose(open, onClose)
 
   if (!open) return null

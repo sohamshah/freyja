@@ -402,8 +402,7 @@ function AgentsDock({
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-  // Registered unconditionally so Esc closes the panel before it can
-  // reach the dashboard (see useEscapeClose).
+  // Esc closes the panel, not the dashboard (see useEscapeClose).
   useEscapeClose(open, () => setOpen(false))
   useEffect(() => {
     if (!open) return

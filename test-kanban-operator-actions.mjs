@@ -7,9 +7,6 @@
 //   npx tsx test-kanban-operator-actions.mjs
 
 import assert from 'node:assert/strict'
-import { createElement } from 'react'
-import { flushSync } from 'react-dom'
-import { createRoot } from 'react-dom/client'
 
 // Needs a DOM, so install jsdom first (it is not a project dependency):
 //   npm i --no-save jsdom
@@ -28,6 +25,11 @@ globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.windo
 globalThis.IS_REACT_ACT_ENVIRONMENT = false
 // The board's done-column backdrop asks for WebGL; jsdom has none.
 dom.window.HTMLCanvasElement.prototype.getContext = () => null
+// React reads the DOM's features as it loads, so it loads after jsdom
+// (loaded first, it took the input event as missing and broke on focus).
+const { createElement } = await import('react')
+const { flushSync } = await import('react-dom')
+const { createRoot } = await import('react-dom/client')
 const sent = []
 window.harness = {
   sendCommand: async (cmd) => { sent.push(cmd) },
@@ -69,7 +71,7 @@ async function openCard(cards, cardId, props = {}) {
   flushSync(() => article.click())
   const button = (label) => [...host.querySelectorAll('footer button')].find((b) => b.textContent === label)
   const pip = host.querySelector('section span[title]')
-  return { root, button, pip }
+  return { root, button, pip, host }
 }
 
 /** What the bridge sends back for the session. */
@@ -263,18 +265,28 @@ const pressed = [
   },
   {
     label: 'Reassign…', status: 'ready', command: { type: 'kanban_operator_reassign', assignee: 'code' },
+    // Electron has no window.prompt: the agent type is typed inline.
+    async press({ button, host }) {
+      button('Reassign…').click()
+      await settle()
+      const input = host.querySelector('footer input')
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, 'code')
+      input.dispatchEvent(new window.Event('input', { bubbles: true }))
+      await settle()
+      button('Reassign').click()
+    },
     done: ['kanban_operator_reassigned', 'Operator reassigned card_002 → code', { assignee: 'code' }],
     toast: 'Reassigned card_002 → code',
     refused: ['kanban_operator_reassign_failed', 'Could not reassign card_002: it is not on the board'],
   },
 ]
 window.confirm = () => true
-window.prompt = () => 'code'
 for (const action of pressed) {
   await check(`${action.label} toasts the bridge's refusal, not that it was done`, async () => {
     useHarness.setState({ activeSessionId: SESSION, toast: null })
-    const { root, button } = await openCard([tile('card_002', action.status)], 'card_002')
-    button(action.label).click()
+    const card = await openCard([tile('card_002', action.status)], 'card_002')
+    const { root } = card
+    await (action.press ? action.press(card) : card.button(action.label).click())
     await settle()
     assert.deepEqual(sent.at(-1), { ...action.command, sessionId: SESSION, cardId: 'card_002' })
     assert.equal(H().toast, null)
@@ -288,8 +300,9 @@ for (const action of pressed) {
 
   await check(`${action.label} toasts that it was done when the bridge did it`, async () => {
     useHarness.setState({ activeSessionId: SESSION, toast: null })
-    const { root, button } = await openCard([tile('card_002', action.status)], 'card_002')
-    button(action.label).click()
+    const card = await openCard([tile('card_002', action.status)], 'card_002')
+    const { root } = card
+    await (action.press ? action.press(card) : card.button(action.label).click())
     await settle()
     assert.equal(H().toast, null)
     const [subtype, message, details] = action.done

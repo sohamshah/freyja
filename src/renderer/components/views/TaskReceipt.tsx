@@ -23,8 +23,8 @@ interface Props {
  * printed body, and a barcode from the task id at the foot. The paper,
  * stamp ink and shadows live in globals.css under `.ticket-*`.
  *
- * Always mounted: the Esc handler registers once so it wins over the
- * dashboard's own (see useEscapeClose); it renders nothing while closed.
+ * Always mounted; it renders nothing while closed. Esc closes the receipt,
+ * not the dashboard (see useEscapeClose).
  */
 export function TaskReceipt({ task, tasks, onClose, onOpenTask, onAttach }: Props) {
   useEscapeClose(task != null, onClose)

@@ -3,6 +3,7 @@ import { useHarness } from '../state/store'
 import { useVoiceStore } from '../state/voice-store'
 import { McpServersPanel } from './mcp/McpServersPanel'
 import { useEffectiveTheme } from '../lib/theme'
+import { useEscapeClose } from '../lib/useEscapeClose'
 import type { AppearanceTheme, PermissionTier, VoiceConfig } from '@shared/events'
 
 interface AppearanceOption {
@@ -86,17 +87,9 @@ export function SettingsModal() {
   const voiceHotkey = useVoiceStore((s) => s.hotkeyLabel)
   const openWizard = useHarness((s) => s.openComputerWizard)
 
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        toggle(false)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, toggle])
+  // On the Esc stack: Settings opened over the dashboard closes first,
+  // before a drawer open under it.
+  useEscapeClose(open, () => toggle(false))
 
   if (!open) return null
 
@@ -170,7 +163,18 @@ export function SettingsModal() {
                 return (
                   <button
                     key={opt.tier}
-                    onClick={() => setPermissionTier(opt.tier)}
+                    onClick={() => {
+                      // One stray click here used to switch off every prompt,
+                      // destructive commands included, and save it.
+                      if (
+                        opt.tier === 'yolo' &&
+                        !isActive &&
+                        !window.confirm('Auto-approve everything? Destructive commands will run without asking.')
+                      ) {
+                        return
+                      }
+                      setPermissionTier(opt.tier)
+                    }}
                     className={`group flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left transition-colors ${
                       isActive
                         ? 'bg-accent/15 ring-1 ring-accent/30'

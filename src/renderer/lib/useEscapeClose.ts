@@ -1,51 +1,58 @@
 import { useEffect, useRef } from 'react'
 
 /**
- * Close-on-Escape that WINS against ancestor Escape handlers.
+ * Close-on-Escape for layered views: one Esc closes only the layer opened
+ * last.
  *
- * MissionDashboard (and App) register capture-phase `window` keydown
- * listeners that close the whole dashboard on Escape. A modal that
- * registers its own Escape listener lazily *when it opens* is added to
- * `window` LATER than those ancestor listeners, so in capture order it
- * fires after them — the dashboard is already gone before the modal's
- * handler runs. That's why hitting Esc in the card detail / a brief used
- * to blow away the entire dashboard.
+ * Every open layer joins one stack when it becomes `active`. A single
+ * capture-phase `window` listener closes the top of the stack and
+ * swallows the key (`stopImmediatePropagation`), so App's bubble-phase
+ * Escape handler (which closes the dashboard, the scheduler and Settings)
+ * and the layers below do not also act on it.
  *
- * This hook instead registers ONCE at mount. React runs child effects
- * before parent effects, so a modal that lives *below* MissionDashboard
- * in the tree registers its listener first and therefore fires first in
- * the capture phase. When `active`, it swallows the event with
- * `stopImmediatePropagation()` so no ancestor handler runs; when
- * inactive it's a no-op and the ancestor handlers behave normally.
- *
- * IMPORTANT: call this unconditionally at the top of a component that is
- * ALWAYS MOUNTED while its open/closed state toggles (e.g. a modal shell
- * rendered as `<Modal open={...}/>`, or an always-mounted ancestor that
- * owns the open flag). Do NOT gate the call — or the render — behind
- * `active`, or the listener registers too late to win the ordering.
+ * Order of opening decides, not order of mounting: a picker opened inside
+ * a form closes before the form, and a receipt opened inside a dashboard
+ * tab closes before the tab's other layers. Before, each hook added its
+ * own capture listener at mount, so whichever mounted first won, and one
+ * Esc in a dependency picker threw the whole add-task form away.
  */
-export function useEscapeClose(active: boolean, onClose: () => void): void {
-  const activeRef = useRef(active)
-  const onCloseRef = useRef(onClose)
 
-  useEffect(() => {
-    activeRef.current = active
-  }, [active])
+interface Layer {
+  close: () => void
+}
+
+const layers: Layer[] = []
+let listening = false
+
+function onEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return
+  const top = layers[layers.length - 1]
+  if (!top) return
+  e.stopImmediatePropagation()
+  e.preventDefault()
+  top.close()
+}
+
+export function useEscapeClose(active: boolean, onClose: () => void): void {
+  const onCloseRef = useRef(onClose)
   useEffect(() => {
     onCloseRef.current = onClose
   }, [onClose])
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && activeRef.current) {
-        // Beat the dashboard's same-target capture listener + swallow the
-        // event so it doesn't also close the dashboard / bubble to App.
-        e.stopImmediatePropagation()
-        e.preventDefault()
-        onCloseRef.current()
-      }
+    if (!listening) {
+      window.addEventListener('keydown', onEscape, { capture: true })
+      listening = true
     }
-    window.addEventListener('keydown', onKey, { capture: true })
-    return () => window.removeEventListener('keydown', onKey, { capture: true })
   }, [])
+
+  useEffect(() => {
+    if (!active) return
+    const layer: Layer = { close: () => onCloseRef.current() }
+    layers.push(layer)
+    return () => {
+      const i = layers.indexOf(layer)
+      if (i >= 0) layers.splice(i, 1)
+    }
+  }, [active])
 }

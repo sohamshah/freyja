@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useHarness, type SessionSlice, type SystemEventRecord } from '../state/store'
 import type {
   ArtifactRecord,
@@ -402,16 +402,10 @@ export function MissionDashboard() {
   const focusToolCall = useHarness((s) => s.focusToolCall)
   const showToast = useHarness((s) => s.showToast)
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation()
-        toggleDashboard(false)
-      }
-    }
-    window.addEventListener('keydown', onKey, { capture: true })
-    return () => window.removeEventListener('keydown', onKey, { capture: true })
-  }, [toggleDashboard])
+  // No Escape listener here: App's closes the dashboard after Settings and
+  // the scheduler opened over it. One of our own in the capture phase ran
+  // before those of tab views mounted after it (a receipt, a card, a
+  // brief), so Esc there closed the whole dashboard.
 
   const dashboard = useMemo(() => {
     const activeSession =

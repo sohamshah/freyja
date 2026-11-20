@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useHarness } from '../state/store'
 import type { PermissionTier } from '@shared/events'
 
@@ -41,16 +41,27 @@ export function PermissionPrompt() {
   const answer = useHarness((s) => s.answerPermission)
   const escalate = useHarness((s) => s.escalateSessionPolicy)
   const toggleSettings = useHarness((s) => s.toggleSettings)
-  const current = queue[0]
+  // "change defaults →" opens Settings, which sat dimmed and unclickable
+  // under this prompt. Step aside until it closes.
+  const settingsOpen = useHarness((s) => s.settingsOpen)
+  const current = settingsOpen ? undefined : queue[0]
   const [rememberForSession, setRememberForSession] = useState(false)
+  // When the request on screen appeared. Answering removes it and the
+  // next one takes its place under the same buttons, so a double-click or
+  // a held Enter answered a request nobody had read.
+  const shownAt = useRef(0)
 
   // Reset the toggle whenever we show a new request.
   useEffect(() => {
-    if (current) setRememberForSession(false)
+    if (!current) return
+    setRememberForSession(false)
+    shownAt.current = Date.now()
   }, [current?.requestId])
 
+  const tooSoon = () => Date.now() - shownAt.current < 400
+
   const approve = () => {
-    if (!current) return
+    if (!current || tooSoon()) return
     if (rememberForSession) {
       // Escalate the session that triggered the prompt — important
       // because a Slack-routed session can fire a permission_request
@@ -63,36 +74,39 @@ export function PermissionPrompt() {
   }
 
   const deny = () => {
-    if (!current) return
+    if (!current || tooSoon()) return
     answer(current.requestId, false)
   }
 
   useEffect(() => {
     if (!current) return
     const onKey = (e: KeyboardEvent) => {
-      // Enter typed into a text field belongs to that field — the
-      // composer sends (and ⌃↵ cuts into the running turn) while a
-      // prompt is up; that must not also approve the tool call.
+      if (e.key !== 'Enter' && e.key !== 'Escape') return
+      if (e.repeat) return
+      // A key typed into a text field with text in it belongs to that
+      // field: the composer sends (and ⌃↵ cuts into the running turn)
+      // while a prompt is up. An empty composer, where focus stays after
+      // sending, and the "remember" checkbox are not typing, so ↵ and esc
+      // work there as the buttons say.
       const target = e.target as HTMLElement | null
+      if (target?.isContentEditable) return
       if (
-        target &&
-        (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT' || target.isContentEditable)
+        (target instanceof HTMLTextAreaElement ||
+          (target instanceof HTMLInputElement && target.type !== 'checkbox')) &&
+        target.value !== ''
       ) {
         return
       }
-      if (e.key === 'Enter' && current.level !== 'dangerous') {
-        e.preventDefault()
-        approve()
-        return
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        deny()
-        return
-      }
+      if (e.key === 'Enter' && current.level === 'dangerous') return
+      // Capture phase + stop: App's Escape would also close the
+      // dashboard or the scheduler under the prompt.
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      if (e.key === 'Enter') approve()
+      else deny()
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
     // Intentionally excluding approve/deny to keep the handler stable across
     // renders — they read fresh state via closures anyway.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -103,7 +117,9 @@ export function PermissionPrompt() {
   const tone = LEVEL_TONE[current.level] ?? LEVEL_TONE.medium
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[14vh]">
+    // z-[65]: above the full-screen views (z-50/55) and ⌘K (z-60). Under
+    // them, a request waited unseen behind the dashboard.
+    <div className="fixed inset-0 z-[65] flex items-start justify-center pt-[14vh]">
       <div className="absolute inset-0 scrim-soft backdrop-blur-[2px]" />
       <div className="relative w-[560px] overflow-hidden rounded-2xl glass-strong shadow-2xl ring-hairline-strong">
         <div className="flex items-center gap-3 px-5 py-4 hairline-b">

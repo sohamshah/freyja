@@ -349,7 +349,9 @@ export function McpElicitationPrompt() {
     if (!current) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // Stopped, so App's Escape does not also close what is under it.
         e.preventDefault()
+        e.stopImmediatePropagation()
         void answer(current.requestId, 'cancel')
       }
       // Enter is handled by the card's accept button for form mode so
@@ -362,13 +364,15 @@ export function McpElicitationPrompt() {
         void answer(current.requestId, 'accept')
       }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
   }, [current?.requestId, current?.mode, answer])
 
   if (!current) return null
   return (
-    <div className="fixed inset-0 z-[49] flex items-start justify-center pt-[14vh]">
+    // z-[65]: above the full-screen views and ⌘K. At z-49 a request sat
+    // behind an open dashboard until it timed out and cancelled itself.
+    <div className="fixed inset-0 z-[65] flex items-start justify-center pt-[14vh]">
       <div className="absolute inset-0 scrim-soft backdrop-blur-[2px]" />
       <McpElicitationCard
         request={current}

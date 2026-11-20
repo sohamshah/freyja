@@ -203,11 +203,9 @@ export function KanbanBridgeView({
   const openCard = openCardId ? cards.find((c) => c.id === openCardId) ?? null : null
   const cardJudgeHistory = openCard ? verdictsByCard.get(openCard.id) ?? [] : []
 
-  // Esc closes the card focus view / add-task form back to the board
-  // before the dashboard-level Esc handler can fire (which would otherwise
-  // close the whole dashboard). See useEscapeClose — both are registered
-  // at this always-mounted component's mount so they win the capture-order
-  // race against MissionDashboard's listener.
+  // Esc closes the card focus view / add-task form back to the board, not
+  // the whole dashboard. See useEscapeClose: the layer opened last closes
+  // first.
   useEscapeClose(openCard != null, () => setOpenCardId(null))
   useEscapeClose(addOpen, () => setAddOpen(false))
 
@@ -318,11 +316,23 @@ function CardOperatorActions({
   onCancel: () => void | Promise<void>
   onUnblock: () => void | Promise<void>
   onForceDispatch: () => void | Promise<void>
-  onReassign: () => void | Promise<void>
+  onReassign: (agentType: string) => void | Promise<void>
 }) {
   // suppress unused-var warning — sessionId is captured by the
   // parent's onCancel/onUnblock/... callbacks; we don't need it here.
   void sessionId
+  // The agent type being typed for Reassign, or null when not reassigning.
+  // Inline because Electron has no window.prompt: the old prompt threw and
+  // the button did nothing.
+  const [reassignTo, setReassignTo] = useState<string | null>(null)
+  useEffect(() => setReassignTo(null), [card.id])
+  useEscapeClose(reassignTo !== null, () => setReassignTo(null))
+  const commitReassign = () => {
+    if (reassignTo === null) return
+    const next = reassignTo.trim()
+    setReassignTo(null)
+    void onReassign(next)
+  }
   const status = (card.status ?? '').toLowerCase()
   const isRunning = status === 'running' || status === 'in_progress' || status === 'in-progress'
   const isDone = status === 'done' || status === 'sealed' || status === 'completed' || status === 'complete'
@@ -379,12 +389,28 @@ function CardOperatorActions({
           Unblock
         </DrawerAction>
       ) : null}
-      {showReassign ? (
-        <DrawerAction
-          onClick={() => {
-            void onReassign()
+      {showReassign && reassignTo !== null ? (
+        <form
+          className="flex items-center gap-1.5"
+          onSubmit={(e) => {
+            e.preventDefault()
+            commitReassign()
           }}
         >
+          <input
+            autoFocus
+            value={reassignTo}
+            onChange={(e) => setReassignTo(e.target.value)}
+            placeholder="agent type (blank = unassigned)"
+            className="w-[220px] rounded-md border border-white/[0.10] bg-black/30 px-2 py-1.5 font-mono text-[11px] text-fg-0 placeholder:text-fg-3 focus:border-accent/40 focus:outline-none"
+          />
+          <DrawerAction variant="accent" onClick={commitReassign}>
+            Reassign
+          </DrawerAction>
+          <DrawerAction onClick={() => setReassignTo(null)}>Cancel</DrawerAction>
+        </form>
+      ) : showReassign ? (
+        <DrawerAction onClick={() => setReassignTo(card.assignee ?? '')}>
           Reassign…
         </DrawerAction>
       ) : null}
@@ -2490,13 +2516,7 @@ function CardFocusView({
           onForceDispatch={async () => {
             await forceDispatchKanbanCard(sessionId, card.id)
           }}
-          onReassign={async () => {
-            const current = card.assignee ?? ''
-            const next = window.prompt(
-              `Reassign ${card.id} agent_type (blank = unassigned):`,
-              current,
-            )
-            if (next == null) return
+          onReassign={async (next) => {
             await reassignKanbanCard(sessionId, card.id, next)
           }}
         />

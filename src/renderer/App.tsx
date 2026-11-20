@@ -713,6 +713,10 @@ export function App() {
         }
       }
       if (e.key === 'Escape') {
+        // An Escape the find bar, a menu, the inline editor or a composer
+        // popup already used is done. Without this one press closed the
+        // find bar and also ended the voice session or closed a drawer.
+        if (e.defaultPrevented) return
         // Voice HUD has Esc priority — one press ends the exchange (or
         // dismisses a mint-error capsule) before any dialog handling
         // below runs. Read via getState() so the handler doesn't churn

@@ -146,8 +146,7 @@ export function ArtifactsBrowser() {
   // A pending deep-link, consumed once the row it names shows up in a page.
   const pendingFocus = useRef<string | null>(null)
 
-  // Escape must be registered unconditionally at mount so it wins the capture
-  // race against the ancestor handlers — see useEscapeClose's doc comment.
+  // Esc closes this view, not what is under it (see useEscapeClose).
   // Edit mode swallows the first Escape so an accidental key doesn't discard
   // unsaved text along with the whole view.
   useEscapeClose(open, () => {
