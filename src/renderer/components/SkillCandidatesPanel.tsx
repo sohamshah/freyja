@@ -135,9 +135,18 @@ export function SkillCandidatesPanel() {
     const cand = pending.find((c) => c.candidateId === candidateId)
     const overwrite =
       action === 'promote' && Boolean(cand?.existingSkill?.exists)
-    void resolve(candidateId, action, edits, overwrite)
-    setEditId(null)
+    // The form stays open until the candidate leaves the list (the effect
+    // below). Closing it here threw away what was typed when the bridge
+    // refused the promote (name taken, guard verdict after the edit), and
+    // the card stayed for a retry with the old text. A failed send already
+    // shows a toast.
+    resolve(candidateId, action, edits, overwrite).catch(() => {})
   }
+
+  const editGone = editId != null && !pending.some((c) => c.candidateId === editId)
+  useEffect(() => {
+    if (editGone) setEditId(null)
+  }, [editGone])
 
   // Tabs row sits at the top of the section (no duplicate label —
   // the outer SkillCandidatesPanelContainer header already names the
@@ -337,7 +346,10 @@ export function SkillCandidatesPanel() {
         )}
         {tab === 'learned' &&
           (promoted ?? []).map((rec) => {
-            const isOpen = openId === rec.candidateId
+            // A promote logged without a candidate id is keyed by its name;
+            // comparing against the empty id kept that row from ever opening.
+            const openKey = rec.candidateId || rec.name
+            const isOpen = openId === openKey
             return (
               <div
                 key={`${rec.candidateId || rec.name}-${rec.promotedAt}`}
@@ -345,7 +357,7 @@ export function SkillCandidatesPanel() {
               >
                 <button
                   type="button"
-                  onClick={() => setOpenId(isOpen ? null : rec.candidateId || rec.name)}
+                  onClick={() => setOpenId(isOpen ? null : openKey)}
                   className="w-full text-left"
                 >
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
