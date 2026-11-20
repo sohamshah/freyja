@@ -56,6 +56,16 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/restart-bridge', description: 'Kill + respawn the Python bridge (use after editing bridge/ code)', hidden: true },
 ]
 
+/** The command name and arguments a sent message would run, when its first
+ *  word has the shape of a command name (`/compact`, `/model gpt-6.2-sol`).
+ *  Null when the message only starts with a slash, as a pasted path does
+ *  (`/Users/me/app/log.txt shows a crash, why?`): that goes to the agent.
+ *  Whether the name is a known command is runSlashCommand's to say. */
+export function splitSlashCommand(content: string): { name: string; args: string } | null {
+  const match = /^(\/[\w-]+)(?:\s+([\s\S]*))?$/.exec(content.trim())
+  return match ? { name: match[1], args: match[2] ?? '' } : null
+}
+
 export function matchSlash(query: string): SlashCommand[] {
   if (!query.startsWith('/')) return []
   const q = query.slice(1).toLowerCase()

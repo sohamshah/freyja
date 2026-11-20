@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useHarness } from '../state/store'
-import { matchSlash, type SlashCommand } from '../lib/slash'
+import { matchSlash, splitSlashCommand, type SlashCommand } from '../lib/slash'
 import { couldRecall, stepHistory, type HistoryCursor } from '../lib/composerHistory'
 import { AppshotCard } from './AppshotCard'
 
@@ -408,16 +408,11 @@ export function InputDock() {
     if (!content && pendingAttachments.length === 0) return
     setHistory(null)
     stashedDraftRef.current = ''
-    if (content.startsWith('/')) {
-      const space = content.indexOf(' ')
-      const name = space === -1 ? content : content.slice(0, space)
-      const args = space === -1 ? '' : content.slice(space + 1)
-      const handled = runSlashCommand(name, args)
-      if (handled) {
-        setDraft('')
-        return
-      }
-      showToast(`unknown command: ${name}`, 'warn')
+    // Only a known command runs as one. Anything else that starts with a
+    // slash (a pasted path, a typo of a command) is sent as a message;
+    // it used to be dropped with an "unknown command" toast.
+    const command = splitSlashCommand(content)
+    if (command && runSlashCommand(command.name, command.args)) {
       setDraft('')
       return
     }
@@ -554,8 +549,8 @@ export function InputDock() {
               setDraft('')
               setSelectedSuggestion(0)
             } else {
+              // Keep what was typed: a failed command must not cost it.
               showToast(`unknown command: ${picked.name}`, 'warn')
-              setDraft('')
             }
             return
           }
