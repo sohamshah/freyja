@@ -26,10 +26,21 @@ export function ComputerPermissionWizard() {
   const setOpen = useHarness((s) => s.openComputerWizard)
   const settings = useHarness((s) => s.settings)
   const [step, setStep] = useState<0 | 1 | 2 | 3>(0)
+  const [saveError, setSaveError] = useState('')
 
+  // The wizard asks for a relaunch after each permission, and it used to
+  // start again at step 0 every time it opened. It now comes back at the
+  // step it was left on, until it is finished. "Re-run permission wizard"
+  // after a finish starts at the top.
   useEffect(() => {
-    if (open) setStep(0)
+    if (!open) return
+    setSaveError('')
+    const done = useHarness.getState().settings.computer.wizardState === 'done'
+    setStep(done ? 0 : readSavedStep())
   }, [open])
+  useEffect(() => {
+    if (open) writeSavedStep(step)
+  }, [open, step])
 
   // On the Esc stack: opened from Settings, it closes first and Settings
   // stays. A plain window listener let App's Escape also close what was
@@ -41,9 +52,21 @@ export function ComputerPermissionWizard() {
   const finish = async () => {
     const api = (window as any).harness
     if (api?.settingsUpdate) {
-      await api.settingsUpdate({
-        computer: { ...settings.computer, wizardState: 'done' },
-      })
+      // A refused save used to close the wizard as if it were done, and it
+      // opened again on the next toggle with no word why.
+      let error = ''
+      try {
+        const res = await api.settingsUpdate({
+          computer: { ...settings.computer, wizardState: 'done' },
+        })
+        if (res && res.ok === false) error = res.error || 'the settings could not be saved'
+      } catch (err) {
+        error = String(err)
+      }
+      if (error) {
+        setSaveError(error)
+        return
+      }
       useHarness.setState((prev) => ({
         settings: {
           ...prev.settings,
@@ -51,6 +74,7 @@ export function ComputerPermissionWizard() {
         },
       }))
     }
+    writeSavedStep(0)
     setOpen(false)
   }
 
@@ -315,6 +339,11 @@ export function ComputerPermissionWizard() {
                   stops everything
                 </li>
               </ul>
+              {saveError && (
+                <p className="mb-3 select-text font-mono text-[11px] leading-[1.5] text-warn">
+                  Couldn't save that setup is done: {saveError}
+                </p>
+              )}
               <div className="flex justify-end gap-2">
                 <button
                   onClick={() => setStep(2)}
@@ -335,4 +364,23 @@ export function ComputerPermissionWizard() {
       </div>
     </div>
   )
+}
+
+const STEP_KEY = 'freyja.computerWizard.step'
+
+function readSavedStep(): 0 | 1 | 2 | 3 {
+  try {
+    const n = Number(localStorage.getItem(STEP_KEY))
+    return n === 1 || n === 2 || n === 3 ? n : 0
+  } catch {
+    return 0
+  }
+}
+
+function writeSavedStep(step: number): void {
+  try {
+    localStorage.setItem(STEP_KEY, String(step))
+  } catch {
+    // Storage blocked: the wizard starts at the top next time, as before.
+  }
 }

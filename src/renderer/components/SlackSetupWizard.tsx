@@ -50,6 +50,8 @@ const STEP_ORDER: Step[] = [
 
 export function SlackSetupWizard({ open, onClose }: Props) {
   const [step, setStep] = useState<Step>('welcome')
+  const stepRef = useRef(step)
+  stepRef.current = step
   const [manifestJson, setManifestJson] = useState<string>('')
   const [manifestPath, setManifestPath] = useState<string>('')
   const [manifestCopied, setManifestCopied] = useState(false)
@@ -89,18 +91,23 @@ export function SlackSetupWizard({ open, onClose }: Props) {
   // makes the guard synchronous.
   const verifyInFlightRef = useRef(false)
 
-  // Reset state when the modal opens.
+  // When the modal opens, pick up where it was left: it used to start at
+  // "welcome" every time, with the tokens still filled in further on. Only
+  // a finished setup starts over. Errors and in-flight flags always clear.
   useEffect(() => {
     if (open) {
-      setStep('welcome')
-      setManifestJson('')
-      setManifestPath('')
+      const startOver = stepRef.current === 'done'
+      if (startOver) {
+        setStep('welcome')
+        setManifestJson('')
+        setManifestPath('')
+        setVerifyResult(null)
+        setInstallResult('')
+      }
       setManifestCopied(false)
       setManifestError('')
       setManifestLoading(false)
-      setVerifyResult(null)
       setVerifyError('')
-      setInstallResult('')
       setInstallError('')
       setAllowlistError('')
       setLlmKeys(null)
