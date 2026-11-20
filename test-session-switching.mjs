@@ -138,6 +138,19 @@ await check('a session already open in a pane is focused there, not shown twice'
   assert.equal(H().toast?.message, 'Already open in a pane')
 })
 
+await check('a pasted screenshot stays with its caption across switches', async () => {
+  seed({ active: 'a', archived: ['b'] })
+  const shot = { id: 'att-1', type: 'image', mimeType: 'image/png', dataBase64: 'AA==', previewUrl: 'data:image/png;base64,AA==' }
+  useHarness.setState({ inputDraft: 'what is this?', pendingAttachments: [shot] })
+  await H().switchSession('b')
+  await H().switchSession('a')
+  assert.equal(H().inputDraft, 'what is this?')
+  assert.deepEqual(H().pendingAttachments, [shot])
+  await H().newSession()
+  assert.equal(H().inputDraft, 'what is this?')
+  assert.deepEqual(H().pendingAttachments, [shot])
+})
+
 fs.rmSync(home, { recursive: true, force: true })
 if (failures) {
   console.log(`\n${failures} failed`)

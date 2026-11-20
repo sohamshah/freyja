@@ -3393,7 +3393,6 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
             availableHarnesses: ((ev.capabilities?.harnesses as
               import('@shared/events').HarnessChoice[] | undefined)
               ?? prev.availableHarnesses),
-            pendingAttachments: [],
           }
         }
         return {
@@ -5396,7 +5395,6 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           },
           ...prev.sessions.filter((s) => s.id !== prev.activeSessionId || hasContent),
         ],
-        pendingAttachments: [],
         toast: {
           id: nextId('toast'),
           message:
@@ -5525,7 +5523,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         sessionMRU: nextMRU,
         sessionPanes,
         activePaneId,
-        pendingAttachments: [],
+        // The composer's draft and attachments stay as they are, as one:
+        // clearing only the attachments lost a pasted screenshot while its
+        // caption stayed.
       }
     })
     // Route through showToast so it gets the standard 2.6s auto-dismiss
