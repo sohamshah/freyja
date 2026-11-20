@@ -1160,6 +1160,15 @@ function NarratorLine({ event }: { event: SystemEventRecord }) {
   )
 }
 
+/** Whether a click on a report or message body should fold or unfold it.
+ *  Not the click that ends a drag-select: that collapsed the report whose
+ *  text you were selecting. A double-click selects a word, so its second
+ *  click folds back what its first one changed. */
+function clickToggles(e: React.MouseEvent): boolean {
+  if (e.detail === 2) return true
+  return !window.getSelection()?.toString()
+}
+
 /** A background sub-agent reporting back: the memo the parent received
  *  when the child finished. Sits in the timeline where it arrived — the
  *  agent's reaction to it (a wake turn, or the rest of the running turn)
@@ -1247,7 +1256,12 @@ function MemoChip({
         {!!meta?.stillRunning && <span className="wk-report-meta">{meta.stillRunning} still working</span>}
         {meta?.subagentId && <ReportSeam id={meta.subagentId} />}
       </div>
-      <div className="wk-rule wk-report-body" onClick={() => setExpanded((v) => !v)}>
+      <div
+        className="wk-rule wk-report-body"
+        onClick={(e) => {
+          if (clickToggles(e)) setExpanded((v) => !v)
+        }}
+      >
         {jev ? (
           <JevResultSummary result={jev} clamp={!expanded} showStatus={false} />
         ) : (
@@ -1334,7 +1348,9 @@ function InboxChip({
         )}
       </div>
       <div
-        onClick={() => setExpanded((v) => !v)}
+        onClick={(e) => {
+          if (clickToggles(e)) setExpanded((v) => !v)
+        }}
         className="mt-1 cursor-pointer whitespace-pre-wrap"
       >
         {expanded ? content : preview}
