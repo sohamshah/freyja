@@ -547,10 +547,11 @@ function Briefing({ onClose, crumbs }: WidgetProps) {
   const since = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
   const todays = sessions.filter((s) => s.updatedAt >= since)
   const running = Object.values(subagents).filter((a) => a.state === 'running')
-  const upcoming = jobs
+  // Every job with a next fire counts; the list below shows the first three.
+  const scheduled = jobs
     .filter((j) => j.enabled && j.next_fire_at)
     .sort((a, b) => (a.next_fire_at ?? 0) - (b.next_fire_at ?? 0))
-    .slice(0, 3)
+  const upcoming = scheduled.slice(0, 3)
 
   return (
     <Frame
@@ -574,7 +575,7 @@ function Briefing({ onClose, crumbs }: WidgetProps) {
         {[
           ['Sessions today', todays.length],
           ['Agents running', running.length],
-          ['Scheduled', upcoming.length],
+          ['Scheduled', scheduled.length],
         ].map(([k, v]) => (
           <Well key={String(k)} className="!p-2.5">
             <div className="text-[18px] text-fg-0">{v}</div>
@@ -885,8 +886,17 @@ function Diagnostics({ slots, onClose, onToast, crumbs }: WidgetProps) {
 
 // ─── voice ────────────────────────────────────────────────────────────────
 
+/** Turn the voice exchange on or off, whatever it is now. `toggleVoice`
+ *  alone flips it: "start" ended a running exchange, and "mute" opened the
+ *  mic when it was off. */
+function setVoiceOn(on: boolean): void {
+  const voice = useVoiceStore.getState()
+  if (on && !voice.active) voice.toggleVoice()
+  else if (!on && voice.active) voice.endVoice('palette')
+}
+
 function Voice({ onClose, onToast, crumbs }: WidgetProps) {
-  const toggleVoice = useVoiceStore((s) => s.toggleVoice)
+  const active = useVoiceStore((s) => s.active)
   return (
     <Frame
       crumbs={crumbs}
@@ -897,12 +907,12 @@ function Voice({ onClose, onToast, crumbs }: WidgetProps) {
         <Btn
           primary
           onClick={() => {
-            toggleVoice()
-            onToast('Voice on')
+            setVoiceOn(!active)
+            onToast(active ? 'Voice off' : 'Voice on')
             onClose()
           }}
         >
-          Start voice
+          {active ? 'End voice' : 'Start voice'}
         </Btn>
       }
     >
@@ -966,8 +976,12 @@ function Appearance({ slots, onClose, onToast, crumbs }: WidgetProps) {
 }
 
 function Mic({ slots, onClose, onToast, crumbs }: WidgetProps) {
-  const toggleVoice = useVoiceStore((s) => s.toggleVoice)
+  const active = useVoiceStore((s) => s.active)
   const want = slots.mute
+  // What the person asked for: "mute" is off, "unmute" is on, and a bare
+  // "mic" flips what is there now.
+  const on = want === undefined ? !active : !want
+  const already = on === active
   return (
     <Frame
       crumbs={crumbs}
@@ -975,29 +989,41 @@ function Mic({ slots, onClose, onToast, crumbs }: WidgetProps) {
       title={want === undefined ? 'Voice input' : want ? 'Mute' : 'Unmute'}
       badge="⌥Space"
       footer={
-        <Btn
-          primary
-          onClick={() => {
-            toggleVoice()
-            onToast(want ? 'Voice off' : 'Voice on')
-            onClose()
-          }}
-        >
-          {want ? 'Stop listening' : 'Start listening'}
-        </Btn>
+        already ? (
+          <Btn onClick={onClose}>Close</Btn>
+        ) : (
+          <Btn
+            primary
+            onClick={() => {
+              setVoiceOn(on)
+              onToast(on ? 'Voice on' : 'Voice off')
+              onClose()
+            }}
+          >
+            {on ? 'Start listening' : 'Stop listening'}
+          </Btn>
+        )
       }
     >
-      <Well className="text-[11px] text-fg-2">Freyja only listens during a voice turn. {want ? 'Stopping ends the current turn.' : 'Starting opens a voice turn in this session.'}</Well>
+      <Well className="text-[11px] text-fg-2">
+        {already
+          ? active
+            ? 'Freyja is listening now.'
+            : 'Freyja is not listening. It only listens during a voice turn.'
+          : `Freyja only listens during a voice turn. ${on ? 'Starting opens a voice turn in this session.' : 'Stopping ends the current turn.'}`}
+      </Well>
     </Frame>
   )
 }
 
 function QuickControls({ onClose, onToast, crumbs }: WidgetProps) {
   const setAppearanceTheme = useHarness((s) => s.setAppearanceTheme)
-  const toggleVoice = useVoiceStore((s) => s.toggleVoice)
+  const voiceActive = useVoiceStore((s) => s.active)
   const items: Array<[string, string, () => void]> = [
     ['Appearance', 'dark · light · system', () => void setAppearanceTheme('system')],
-    ['Voice', 'start a voice turn', () => toggleVoice()],
+    voiceActive
+      ? ['Voice', 'end the voice turn', () => setVoiceOn(false)]
+      : ['Voice', 'start a voice turn', () => setVoiceOn(true)],
     ['Scheduled jobs', 'cron, daemon status', () => useSchedulerStore.getState().openDashboard()],
     ['Artifacts', 'every file every session made', () => useHarness.getState().toggleArtifactsBrowser(true)],
   ]
