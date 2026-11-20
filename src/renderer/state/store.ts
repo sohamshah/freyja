@@ -657,6 +657,10 @@ export interface HarnessActions {
   updateMemory(id: string, patch: { text?: string; kind?: string; scope?: string; tags?: string[]; note?: string }): Promise<void>
   deleteMemory(id: string, note?: string): Promise<void>
   restoreMemory(id: string, note?: string): Promise<void>
+  /** Ask the bridge for every memory on disk, archived ones too
+   *  (`memories_snapshot`). Events alone bring only the memories this
+   *  run retrieved or changed. */
+  listMemories(): Promise<void>
   mergeMemories(ids: string[], text: string, opts?: { kind?: string; scope?: string; tags?: string[]; note?: string }): Promise<void>
   listTools(): Promise<void>
   toggleDebug(open?: boolean): void
@@ -3748,6 +3752,12 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           memories: { ...prev.memories, [ev.memory.id]: ev.memory },
         }
       }
+      if (ev.type === 'memories_snapshot') {
+        if (!Array.isArray(ev.memories)) return prev
+        const memories = { ...prev.memories }
+        for (const m of ev.memories) if (m?.id) memories[m.id] = m
+        return { ...prev, memories }
+      }
       // A scheduled job's session the app deleted: the bridge kept its
       // files when another process owns the tick and runs the job on them.
       if (ev.type === 'session_deleted') {
@@ -6827,6 +6837,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       id,
       note,
     })
+    // The bridge runs commands in order, so this list comes after the
+    // change and also picks up edits another process made.
+    await get().listMemories()
   },
 
   async restoreMemory(id, note) {
@@ -6839,6 +6852,16 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       id,
       note,
     })
+    await get().listMemories()
+  },
+
+  async listMemories() {
+    const api = (window as any).harness
+    if (!api?.sendCommand) return
+    const sessionId = useHarness.getState().activeSessionId
+    await Promise.resolve(
+      api.sendCommand({ type: 'list_memories', ...(sessionId ? { sessionId } : {}) }),
+    ).catch(() => {})
   },
 
   async mergeMemories(ids, text, opts) {
@@ -7235,7 +7258,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       }
       case '/memory':
         state.setFocusedPanel('sidebar')
-        show(`${Object.keys(state.memories).length} memory item(s) loaded`, 'info')
+        show(`${Object.values(state.memories).filter((m) => !m.archived).length} memory item(s) loaded`, 'info')
         return true
       case '/export': {
         // Persist whatever's in the current store to disk first so the

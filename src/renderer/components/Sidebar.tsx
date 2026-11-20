@@ -245,14 +245,14 @@ export function Sidebar() {
     })
   }, [skills])
 
-  const sortedMemories = useMemo(() => {
-    return Object.values(memories)
-      .filter((m) => !m.archived)
-      .sort((a, b) => {
-        const at = a.updatedAt ?? a.createdAt ?? 0
-        const bt = b.updatedAt ?? b.createdAt ?? 0
-        return bt - at
-      })
+  // Newest first, split into the main list and the archived fold.
+  const [sortedMemories, archivedMemories] = useMemo(() => {
+    const byRecent = Object.values(memories).sort((a, b) => {
+      const at = a.updatedAt ?? a.createdAt ?? 0
+      const bt = b.updatedAt ?? b.createdAt ?? 0
+      return bt - at
+    })
+    return [byRecent.filter((m) => !m.archived), byRecent.filter((m) => m.archived)]
   }, [memories])
 
   // Children of the active session — treat each as a first-class sub-session.
@@ -272,6 +272,16 @@ export function Sidebar() {
   // The memory list shows the newest 8 until "+N more" is clicked. The
   // count was plain text, and no other view lists memories.
   const [allMemories, setAllMemories] = useState(false)
+  // Archived memories sit in their own fold under the list.
+  const [showArchived, setShowArchived] = useState(false)
+  // Events bring only the memories this run retrieved or changed, so a
+  // memory archived in an earlier run never showed. Opening the section
+  // asks the bridge for all of them. With no bridge no answer comes, and
+  // the section keeps what events brought.
+  const listMemories = useHarness((s) => s.listMemories)
+  useEffect(() => {
+    if (open.memory) void listMemories()
+  }, [open.memory, listMemories])
 
   // Inspector popup for a skill or memory, opened by clicking the row.
   const [inspectItem, setInspectItem] = useState<
@@ -884,6 +894,28 @@ export function Sidebar() {
               No memory loaded yet
             </div>
           )}
+          {archivedMemories.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowArchived((v) => !v)}
+              aria-expanded={showArchived}
+              className="w-full rounded px-2 py-1 text-left text-[10.5px] text-fg-3 hover:bg-white/[0.04] hover:text-fg-1"
+            >
+              {showArchived ? 'hide archived' : `archived (${archivedMemories.length})`}
+            </button>
+          )}
+          {archivedMemories.length > 0 && (
+            <Fold open={showArchived} innerClassName="space-y-0.5">
+              {archivedMemories.map((memory) => (
+                <MemoryRow
+                  key={memory.id}
+                  memory={memory}
+                  muted
+                  onSelect={() => setInspectItem({ kind: 'memory', item: memory })}
+                />
+              ))}
+            </Fold>
+          )}
         </Section>
       </div>
 
@@ -1171,21 +1203,33 @@ function SkillRow({ skill, onSelect }: { skill: Skill; onSelect?: () => void }) 
   )
 }
 
-function MemoryRow({ memory, onSelect }: { memory: MemoryRecord; onSelect?: () => void }) {
+/** One memory in the sidebar list. `muted` is an archived memory: grey
+ *  dot and dimmer text, the same row otherwise. */
+function MemoryRow({
+  memory,
+  muted = false,
+  onSelect,
+}: {
+  memory: MemoryRecord
+  muted?: boolean
+  onSelect?: () => void
+}) {
   const text = memory.summary || memory.text
   return (
     <button
       type="button"
       onClick={onSelect}
       className="group flex w-full items-start gap-2 rounded-md px-2 py-[6px] text-left hover:bg-white/[0.04]"
-      title={`Open ${memory.kind} memory`}
+      title={muted ? `Open archived ${memory.kind} memory` : `Open ${memory.kind} memory`}
     >
-      <span className="mt-[7px] inline-block h-1.5 w-1.5 rounded-full fold-dot bg-accent" />
+      <span
+        className={`mt-[7px] inline-block h-1.5 w-1.5 rounded-full fold-dot ${muted ? 'bg-fg-3' : 'bg-accent'}`}
+      />
       <div className="min-w-0 flex-1">
-        <div className="line-clamp-2 text-[11.5px] leading-[1.35] text-fg-0">
+        <div className={`line-clamp-2 text-[11.5px] leading-[1.35] ${muted ? 'text-fg-2' : 'text-fg-0'}`}>
           {text}
         </div>
-        <div className="mt-[2px] flex items-center gap-1.5 text-[10.5px] text-fg-2">
+        <div className={`mt-[2px] flex items-center gap-1.5 text-[10.5px] ${muted ? 'text-fg-3' : 'text-fg-2'}`}>
           <span className="uppercase">{memory.scope}</span>
           <span>·</span>
           <span>{memory.kind}</span>

@@ -674,7 +674,8 @@ export function MissionDashboard() {
       toolCalls: allToolCalls,
       cost,
       skillsCount: Object.keys(skills).length,
-      memoriesCount: Object.keys(memories).length,
+      // The store also holds archived memories (the sidebar lists them).
+      memoriesCount: Object.values(memories).filter((m) => !m.archived).length,
       rootUsage: missionSlice?.usage ?? usage,
       coordinationStrategy: missionSession?.coordinationStrategy ?? missionSlice?.coordinationStrategy ?? coordinationStrategy,
       // The mission's autopilot flag, the one the board's toggle writes.
