@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Fold, FoldCaret } from './Fold'
 import { useHarness } from '../state/store'
+import { activityTickOf } from './ActionLedgerSection'
 import {
   ChildLabel,
   DatelineTS,
@@ -20,7 +21,7 @@ import {
  * to one quiet sage line at the bottom.
  *
  * Reads the ONE working_memory.json doc via window.harness.getWorkingMemory,
- * refetched on the activityTick (systemEvents.length), exactly cloning the
+ * refetched on the activityTick (see activityTickOf), exactly cloning the
  * ActionLedgerSection fetch idiom. Every visual atom comes from the shared
  * memory primitives so the panel reads as one crafted system.
  */
@@ -79,43 +80,47 @@ export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) 
   const activeSessionId = useHarness((s) => s.activeSessionId)
   const openRecallDrawer = useHarness((s) => s.openRecallDrawer)
   // Refetch when new activity lands (cheap, avoids polling) — same tick as the ledger.
-  const activityTick = useHarness((s) => s.systemEvents.length)
+  const activityTick = useHarness(activityTickOf)
   const [entities, setEntities] = useState<Record<string, Entity>>({})
   const [overview, setOverview] = useState<Overview | null>(null)
-  const [loaded, setLoaded] = useState(false)
+  // The session whose memory is on screen. The ghost shows only while
+  // another session's memory loads: a refresh of this one keeps the cards
+  // up, where it used to swap them for the ghost on every new event.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null)
+  const loaded = loadedFor === activeSessionId
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(true)
   const [showDone, setShowDone] = useState(false)
 
   useEffect(() => {
     let cancelled = false
-    setLoaded(false)
+    const sessionId = activeSessionId
     const run = async () => {
       const api = (window as any).harness
-      if (!api?.getWorkingMemory || !activeSessionId) {
+      if (!api?.getWorkingMemory || !sessionId) {
         setEntities({})
         setOverview(null)
-        setLoaded(true)
+        setLoadedFor(sessionId)
         return
       }
       try {
-        const res = await api.getWorkingMemory(activeSessionId)
+        const res = await api.getWorkingMemory(sessionId)
         if (cancelled) return
         if (!res?.ok) {
           setError(res?.error ?? 'failed to load')
           setEntities({})
           setOverview(null)
-          setLoaded(true)
+          setLoadedFor(sessionId)
           return
         }
         setError(null)
         setEntities((res.entities ?? {}) as Record<string, Entity>)
         setOverview((res.overview ?? null) as Overview | null)
-        setLoaded(true)
+        setLoadedFor(sessionId)
       } catch (err) {
         if (!cancelled) {
           setError(String(err))
-          setLoaded(true)
+          setLoadedFor(sessionId)
         }
       }
     }

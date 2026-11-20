@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useHarness } from '../state/store'
+import { useHarness, type HarnessState } from '../state/store'
 import { StickyHeader } from './StickyHeader'
 import { Fold, FoldCaret } from './Fold'
 
@@ -50,6 +50,16 @@ function opMeta(op?: string) {
   return OP_META[op ?? ''] ?? { glyph: '·', color: 'text-fg-3' }
 }
 
+/** Changes when the ledger and working memory may have moved: a new system
+ *  event, or a turn starting or ending (file edits and commands land in
+ *  turns that may send no system event). Keyed on the last event's id, not
+ *  the count: the store keeps the last 101 events, so in a long session
+ *  the count stopped changing and both sections stopped refreshing. */
+export function activityTickOf(s: HarnessState): string {
+  const last = s.systemEvents[s.systemEvents.length - 1]
+  return `${last?.id ?? ''}|${s.isStreaming ? 1 : 0}`
+}
+
 /**
  * "Actions this session" — the durable, runtime-authored ledger of what the
  * agent created/edited/ran, surfaced read-only via IPC (session:actionLedger).
@@ -58,7 +68,7 @@ function opMeta(op?: string) {
 export function ActionLedgerSection() {
   const activeSessionId = useHarness((s) => s.activeSessionId)
   // Refetch when new activity lands (cheap, avoids polling).
-  const activityTick = useHarness((s) => s.systemEvents.length)
+  const activityTick = useHarness(activityTickOf)
   const [rows, setRows] = useState<LedgerRow[]>([])
   const [expanded, setExpanded] = useState(true)
   const [error, setError] = useState<string | null>(null)
