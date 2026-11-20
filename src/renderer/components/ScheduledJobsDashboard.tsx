@@ -20,7 +20,8 @@
  * polling is needed — this component only hydrates once on mount.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEscapeClose } from '../lib/useEscapeClose'
 import {
   runStatusLabel,
   schedulerApi,
@@ -340,19 +341,25 @@ function DaemonChip(props: { status: DaemonStatus | null; onClick: () => void })
 function DaemonStrip(props: { status: DaemonStatus | null; onClose: () => void }) {
   const s = props.status
   const [busy, setBusy] = useState(false)
-  const install = async () => {
+  const [error, setError] = useState<string | null>(null)
+  // The bridge's refusal used to be dropped: the button came back and
+  // nothing said why.
+  const run = async (fn: () => Promise<unknown>) => {
     setBusy(true)
+    setError(null)
     try {
-      await schedulerApi.daemonInstall('renderer_button')
-      await schedulerApi.daemonStatus()
-    } finally { setBusy(false) }
+      setError(actionError(await fn()))
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      schedulerApi.daemonStatus().catch(() => {})
+      setBusy(false)
+    }
   }
-  const uninstall = async () => {
-    setBusy(true)
-    try {
-      await schedulerApi.daemonUninstall()
-      await schedulerApi.daemonStatus()
-    } finally { setBusy(false) }
+  const install = () => run(() => schedulerApi.daemonInstall('renderer_button'))
+  const uninstall = () => {
+    if (!window.confirm('Uninstall the background daemon? Schedules stop firing while Freyja is closed.')) return
+    void run(() => schedulerApi.daemonUninstall())
   }
   return (
     <div className="flex shrink-0 items-center justify-between gap-6 border-b border-white/[0.06] bg-white/[0.02] px-6 py-3 font-mono text-[11px] text-fg-1">
@@ -370,6 +377,7 @@ function DaemonStrip(props: { status: DaemonStatus | null; onClose: () => void }
         ) : (
           <span className="text-fg-3">loading…</span>
         )}
+        {error && <span className="text-[10.5px] text-danger">{error}</span>}
       </div>
       <div className="flex gap-2">
         {s?.installed
@@ -892,6 +900,14 @@ function ScheduleDetail(props: {
     setError(null)
   }
 
+  // Back to the list, Esc included (one level up, not the whole
+  // scheduler). Unsaved edits are asked about first: leaving dropped them.
+  const back = () => {
+    if (dirty && !window.confirm('Discard your unsaved changes to this schedule?')) return
+    props.onBack()
+  }
+  useEscapeClose(true, back)
+
   const cadenceSummary = formatSchedule(job.schedule)
   const lastRun = runs[0]
 
@@ -900,7 +916,7 @@ function ScheduleDetail(props: {
       {/* Crumb + back */}
       <button
         type="button"
-        onClick={props.onBack}
+        onClick={back}
         className="mb-4 self-start font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3 transition hover:text-fg-0"
       >
         ← back to all schedules
@@ -1515,6 +1531,19 @@ function NewScheduleModal(props: { onClose: () => void; onCreated: () => void })
   const [preview, setPreview] = useState<number[] | null>(null)
   const [previewError, setPreviewError] = useState<string | null>(null)
 
+  // Esc, the close button and the backdrop close only this form, and ask
+  // first when something is typed. Esc used to reach App and close the
+  // whole scheduler with the form.
+  const requestClose = () => {
+    const typed = name.trim() || prompt.trim() || when.trim()
+    if (typed && !window.confirm('Discard this new schedule?')) return
+    props.onClose()
+  }
+  useEscapeClose(true, requestClose)
+  // A drag that starts in a field and ends on the backdrop is a text
+  // selection, not a click to close.
+  const pressedBackdrop = useRef(false)
+
   // Debounced live preview of the next 5 fires.
   useEffect(() => {
     const trimmed = when.trim()
@@ -1571,7 +1600,12 @@ function NewScheduleModal(props: { onClose: () => void; onCreated: () => void })
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-[6px]"
-      onClick={props.onClose}
+      onMouseDown={(e) => {
+        pressedBackdrop.current = e.target === e.currentTarget
+      }}
+      onClick={(e) => {
+        if (pressedBackdrop.current && e.target === e.currentTarget) requestClose()
+      }}
     >
       <form
         onSubmit={submit}
@@ -1582,7 +1616,7 @@ function NewScheduleModal(props: { onClose: () => void; onCreated: () => void })
           <h2 className="m-0 font-serif text-[20px] font-light leading-tight text-fg-0">
             New schedule
           </h2>
-          <button type="button" onClick={props.onClose}
+          <button type="button" onClick={requestClose}
             className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-3 transition hover:text-fg-0">
             esc · close
           </button>
