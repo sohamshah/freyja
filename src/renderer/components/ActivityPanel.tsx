@@ -344,9 +344,15 @@ function TaskProgressSection({ tasks }: { tasks: ActivityTaskItem[] }) {
   const openDashboardTask = useHarness((s) => s.openDashboardTask)
   const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
   if (tasks.length === 0) return null
-  const done = tasks.filter((task) => task.status === 'done').length
-  const blocked = tasks.filter((task) => task.status === 'blocked').length
-  const pct = Math.round(tasks.reduce((acc, task) => acc + task.progress, 0) / tasks.length)
+  // A cancelled task will never be done. Counted as open work at 0%, it
+  // kept a finished plan at "4/5 · 80%"; it leaves the tally and the bar.
+  const counted = tasks.filter((task) => task.status !== 'cancelled')
+  const cancelledCount = tasks.length - counted.length
+  const done = counted.filter((task) => task.status === 'done').length
+  const blocked = counted.filter((task) => task.status === 'blocked').length
+  const pct = counted.length
+    ? Math.round(counted.reduce((acc, task) => acc + task.progress, 0) / counted.length)
+    : 0
   const visible = [...tasks].sort(activityTaskSort).slice(0, 9)
   const hidden = Math.max(0, tasks.length - visible.length)
 
@@ -357,7 +363,8 @@ function TaskProgressSection({ tasks }: { tasks: ActivityTaskItem[] }) {
           <div className="flex items-baseline gap-2">
             <div className="label">progress</div>
             <div className="font-mono text-[10px] text-fg-3">
-              {done}/{tasks.length}{blocked > 0 ? ` · ${blocked} blocked` : ''}
+              {done}/{counted.length}{blocked > 0 ? ` · ${blocked} blocked` : ''}
+              {cancelledCount > 0 ? ` · ${cancelledCount} cancelled` : ''}
             </div>
           </div>
           <div className="flex items-center gap-2">
