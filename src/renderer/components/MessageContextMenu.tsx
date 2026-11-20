@@ -19,8 +19,12 @@ interface MessageContextMenuProps {
   /** Whether edit/rerun should be enabled. False for assistant messages
    *  per the agreed UX: only user messages are editable/rerunnable. */
   isUserMessage: boolean
-  /** Whether actions are temporarily blocked (e.g. a turn is streaming). */
+  /** A turn is running. The bridge refuses edit, rerun and delete then;
+   *  pin and branch work mid-turn. */
   busy?: boolean
+  /** False for a Claude Code / Codex session: its transcript lives in the
+   *  external CLI, so there is nothing here to branch. */
+  canBranch?: boolean
   /** True when this message is currently pinned (compaction_excluded). */
   isPinned?: boolean
   /** True when text inside this message was selected when the menu opened,
@@ -41,6 +45,7 @@ export function MessageContextMenu({
   y,
   isUserMessage,
   busy,
+  canBranch = true,
   isPinned,
   hasSelection,
   onPick,
@@ -98,7 +103,7 @@ export function MessageContextMenu({
     }
   }, [onClose])
 
-  const items: Array<{
+  const rows: Array<{
     action: MessageMenuAction
     label: string
     hint?: string
@@ -137,7 +142,6 @@ export function MessageContextMenu({
       action: isPinned ? 'unpin' : 'pin',
       label: isPinned ? 'unpin' : 'pin',
       hint: isPinned ? 'allow compaction again' : 'keep through compactions',
-      disabled: busy,
     },
     {
       action: 'delete',
@@ -149,9 +153,9 @@ export function MessageContextMenu({
       action: 'branch',
       label: 'branch',
       hint: 'fork into new session',
-      disabled: busy,
     },
   ]
+  const items = canBranch ? rows : rows.filter((row) => row.action !== 'branch')
 
   return createPortal(
     <div

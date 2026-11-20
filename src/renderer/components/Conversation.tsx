@@ -141,6 +141,7 @@ export function Conversation() {
   const toggleEntryPin = useHarness((s) => s.toggleEntryPin)
   const branchSessionFrom = useHarness((s) => s.branchSessionFrom)
   const activeSessionId = useHarness((s) => s.activeSessionId)
+  const runtime = useHarness((s) => s.runtime)
   const scrollerRef = useRef<HTMLDivElement>(null)
   // Scroll lock + "new messages" tracking. The user can scroll up to
   // read while the agent streams; the auto-scroll effect stops forcing
@@ -699,6 +700,7 @@ export function Conversation() {
           y={menuState.y}
           isUserMessage={menuState.role === 'user'}
           busy={isStreaming}
+          canBranch={runtime === 'native'}
           isPinned={Boolean(
             messages.find((m) => m.id === menuState.messageId)?.pinned,
           )}
