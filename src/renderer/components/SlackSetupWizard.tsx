@@ -20,6 +20,7 @@ import type {
   LlmKeysProbeResult,
   SlackVerifyResult,
 } from '../../shared/events'
+import { useEscapeClose } from '../lib/useEscapeClose'
 
 declare global {
   interface Window {
@@ -63,6 +64,8 @@ export function SlackSetupWizard({ open, onClose }: Props) {
   const [verifyError, setVerifyError] = useState<string>('')
   const [allowlistMode, setAllowlistMode] = useState<'workspace' | 'specific'>('specific')
   const [allowlistUsers, setAllowlistUsers] = useState('')
+  const [allowlistSaving, setAllowlistSaving] = useState(false)
+  const [allowlistError, setAllowlistError] = useState('')
   const [installing, setInstalling] = useState(false)
   const [installResult, setInstallResult] = useState<string>('')
   const [installError, setInstallError] = useState<string>('')
@@ -99,6 +102,7 @@ export function SlackSetupWizard({ open, onClose }: Props) {
       setVerifyError('')
       setInstallResult('')
       setInstallError('')
+      setAllowlistError('')
       setLlmKeys(null)
       void refreshStatus()
       // Probe LLM keys at open time so the verify step has the result
@@ -128,18 +132,9 @@ export function SlackSetupWizard({ open, onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, step])
 
-  // ESC closes
-  useEffect(() => {
-    if (!open) return
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [open, onClose])
+  // Esc closes. On the shared Esc stack, so App's Escape does not also act
+  // on the same press (ending a voice exchange, closing a view under it).
+  useEscapeClose(open, onClose)
 
   async function refreshStatus() {
     try {
@@ -234,7 +229,7 @@ export function SlackSetupWizard({ open, onClose }: Props) {
   }
 
   async function saveAllowlistAndContinue() {
-    if (!verifyResult?.teamId) return
+    if (!verifyResult?.teamId || allowlistSaving) return
     // '*' lets in every member of this workspace; an empty list lets
     // in no one, so the open choice has to be written out.
     let userIds: string[] = ['*']
@@ -244,10 +239,21 @@ export function SlackSetupWizard({ open, onClose }: Props) {
         .map((u) => u.trim())
         .filter((u) => u.length > 0)
     }
-    const res = await window.harness.slackSetAllowlist(
-      verifyResult.teamId, userIds, true,
-    )
-    if (res.ok) setStep('install')
+    // A refused save used to leave the step as it was, with no word why.
+    setAllowlistSaving(true)
+    setAllowlistError('')
+    try {
+      const res = await window.harness.slackSetAllowlist(
+        verifyResult.teamId, userIds, true,
+      )
+      if (!liveRef.current) return
+      if (res?.ok) setStep('install')
+      else setAllowlistError(res?.error || 'saving the allowlist failed')
+    } catch (err) {
+      if (liveRef.current) setAllowlistError(String(err))
+    } finally {
+      if (liveRef.current) setAllowlistSaving(false)
+    }
   }
 
   async function installGateway() {
@@ -263,6 +269,8 @@ export function SlackSetupWizard({ open, onClose }: Props) {
       } else {
         setInstallError(res.error || 'install failed')
       }
+    } catch (err) {
+      setInstallError(String(err))
     } finally {
       setInstalling(false)
     }
@@ -369,6 +377,8 @@ export function SlackSetupWizard({ open, onClose }: Props) {
               onModeChange={setAllowlistMode}
               users={allowlistUsers}
               onUsersChange={setAllowlistUsers}
+              saving={allowlistSaving}
+              error={allowlistError}
               onContinue={saveAllowlistAndContinue}
               onBack={() => setStep('verify')}
             />
@@ -784,13 +794,15 @@ function VerifyStep({
 }
 
 function AllowlistStep({
-  result, mode, onModeChange, users, onUsersChange, onContinue, onBack,
+  result, mode, onModeChange, users, onUsersChange, saving, error, onContinue, onBack,
 }: {
   result: SlackVerifyResult
   mode: 'workspace' | 'specific'
   onModeChange: (m: 'workspace' | 'specific') => void
   users: string
   onUsersChange: (v: string) => void
+  saving: boolean
+  error: string
   onContinue: () => void
   onBack: () => void
 }) {
@@ -853,11 +865,19 @@ function AllowlistStep({
           </span>
         </div>
       )}
+      {error && (
+        <div className="rounded-md border border-warn/[0.22] bg-warn/[0.05] p-3 font-mono text-[12.5px] text-fg-1">
+          <div className="mb-1 font-mono text-[10.5px] uppercase tracking-[0.14em] text-warn">
+            save failed
+          </div>
+          <p className="m-0 select-text">{error}</p>
+        </div>
+      )}
       <NavRow
         onBack={onBack}
         onContinue={onContinue}
-        continueLabel="save →"
-        continueDisabled={mode === 'specific' && users.trim().length === 0}
+        continueLabel={saving ? 'saving…' : 'save →'}
+        continueDisabled={saving || (mode === 'specific' && users.trim().length === 0)}
       />
     </div>
   )
