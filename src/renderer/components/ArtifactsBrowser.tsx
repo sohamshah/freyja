@@ -130,10 +130,6 @@ export function ArtifactsBrowser() {
   const searchRef = useRef<HTMLInputElement>(null)
   const suppressHover = useRef(false)
   // The source pane parks a handler here so it gets first refusal on Escape.
-  // It cannot register its own useEscapeClose: that hook wins by registering
-  // EARLIER in capture order, and the source pane mounts later than this
-  // always-mounted shell, so its listener would run second and never see the
-  // event — this shell swallows it with stopImmediatePropagation.
   const innerEscape = useRef<(() => boolean) | null>(null)
   // The selection is a PATH, not an index. A save re-queries and, under the
   // default newest-first sort, moves the edited row to the top — holding an
@@ -417,11 +413,17 @@ export function ArtifactsBrowser() {
     setQuery('')
   }, [resetPaging])
 
+  // The list locks while the source pane holds an unsaved edit, but a
+  // filter, sort or close moved off it all the same and dropped the text.
+  // They ask first now; the search box waits for a save or discard.
+  const discardOk = () => !unsaved || window.confirm('Discard your unsaved edit?')
+
   const openOwningSession = useCallback(() => {
     if (!active?.sessionId) return
+    if (unsaved && !window.confirm('Discard your unsaved edit?')) return
     toggle(false)
     openSessionPane(active.sessionId, 'replace').catch(() => {})
-  }, [active?.sessionId, toggle, openSessionPane])
+  }, [active?.sessionId, unsaved, toggle, openSessionPane])
 
   if (!open) return null
 
@@ -467,6 +469,8 @@ export function ArtifactsBrowser() {
             ref={searchRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            readOnly={unsaved}
+            title={unsaved ? 'Save or discard the edit to search' : undefined}
             placeholder="Search every artifact… (⌘F)"
             className="w-[300px] rounded-md bg-white/[0.04] py-1 pl-7 pr-2.5 font-mono text-[11px] text-fg-0 ring-hairline placeholder:text-fg-3 focus:outline-none focus:ring-1 focus:ring-accent/40"
           />
@@ -476,7 +480,7 @@ export function ArtifactsBrowser() {
           {SORTS.map((s) => (
             <button
               key={s.key}
-              onClick={() => chooseSort(s.key)}
+              onClick={() => discardOk() && chooseSort(s.key)}
               className={`rounded px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.08em] ring-hairline ${
                 sort === s.key
                   ? 'bg-accent/15 text-accent ring-1 ring-accent/30'
@@ -499,7 +503,7 @@ export function ArtifactsBrowser() {
           rescan
         </button>
         <button
-          onClick={() => toggle(false)}
+          onClick={() => discardOk() && toggle(false)}
           className="no-drag rounded bg-white/[0.04] px-2 py-[3px] font-mono text-[9px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
         >
           esc close
@@ -521,11 +525,11 @@ export function ArtifactsBrowser() {
           creators={creators}
           onlyExisting={onlyExisting}
           hasFilters={hasFilters}
-          onToggleType={(k) => toggleIn(setTypes, k)}
-          onToggleSession={(k) => toggleIn(setSessionIds, k)}
-          onToggleCreator={(k) => toggleIn(setCreators, k)}
-          onToggleExisting={toggleExisting}
-          onClear={clearFilters}
+          onToggleType={(k) => discardOk() && toggleIn(setTypes, k)}
+          onToggleSession={(k) => discardOk() && toggleIn(setSessionIds, k)}
+          onToggleCreator={(k) => discardOk() && toggleIn(setCreators, k)}
+          onToggleExisting={() => discardOk() && toggleExisting()}
+          onClear={() => discardOk() && clearFilters()}
         />
 
         {/* Result list */}

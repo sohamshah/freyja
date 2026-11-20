@@ -122,6 +122,13 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
     whenToStop !== persistedBrief.whenToStop ||
     JSON.stringify(judgeTools) !== JSON.stringify(persistedBrief.judgeTools ?? [])
 
+  // Esc, the close button and the backdrop ask before dropping edits: on
+  // reopen the brief reloads the saved rules, so they were gone.
+  const close = () => {
+    if (dirty && !window.confirm('Discard your unsaved changes to the brief?')) return
+    onClose()
+  }
+
   // Reset the just-opened flag whenever the modal opens.
   useEffect(() => {
     if (open) justOpenedRef.current = true
@@ -187,7 +194,7 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
   return (
     <BriefMemo
       open={open}
-      onClose={onClose}
+      onClose={close}
       to="judge"
       toRole={goalState.lastVerdict?.done ? 'last verdict: done' : 'acting as judge'}
       re={`${goalState.goal} · turn ${goalState.turnsUsed}`}
