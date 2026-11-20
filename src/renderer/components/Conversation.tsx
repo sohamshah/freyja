@@ -796,6 +796,9 @@ function UserMessageEditor({
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
+            // An input method's keys are its own while it composes (see
+            // the composer): Esc there cancels the candidate, not the edit.
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return
             if (e.key === 'Escape') {
               e.preventDefault()
               onCancel()

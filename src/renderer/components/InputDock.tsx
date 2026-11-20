@@ -538,6 +538,11 @@ export function InputDock() {
   }, [draft, slashToken])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // While an input method (Japanese, Chinese) composes, its keys are its
+    // own: Enter commits the candidate and the arrows walk the candidates.
+    // They used to send the message and recall history. keyCode 229 marks
+    // an IME key where isComposing is not set.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return
     if (slashSuggestions.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
