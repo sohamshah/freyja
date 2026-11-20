@@ -1,5 +1,6 @@
 import { useHarness } from '../state/store'
 import { relativeTime } from '../lib/format'
+import { useEscapeClose } from '../lib/useEscapeClose'
 
 export function DebugDrawer() {
   const open = useHarness((s) => s.debugOpen)
@@ -8,11 +9,15 @@ export function DebugDrawer() {
   const mode = useHarness((s) => s.mode)
   const tools = useHarness((s) => s.toolCatalog)
   const subagents = useHarness((s) => s.subagents)
+  // On the Esc stack, so one Esc closes the drawer and nothing under it.
+  useEscapeClose(open, () => toggle(false))
 
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-30 flex justify-end">
+    // z-[46]: above the Morning Room (z-45), which it opened under at
+    // z-30; below the dashboards (z-50).
+    <div className="fixed inset-0 z-[46] flex justify-end">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px]" onClick={() => toggle(false)} />
       <div className="relative flex h-full w-[480px] flex-col glass-strong ring-hairline-strong">
         <div className="flex items-center justify-between px-4 py-3 hairline-b">
