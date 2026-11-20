@@ -384,8 +384,9 @@ export function InputDock() {
     inputRef.current?.focus()
   }, [])
 
-  // A finished appshot asks for the composer, so the operator can type the
-  // question straight away. Skips the first render: the effect above already
+  // Something asked for the composer (focusComposer): a finished appshot, so
+  // the operator can type the question straight away, or a find bar, picker
+  // or dialog that closed. Skips the first render: the effect above already
   // focused it, and a nonce of 0 means nobody asked.
   useEffect(() => {
     if (composerFocusNonce > 0) inputRef.current?.focus()

@@ -38,12 +38,17 @@ export function ConversationSearch({
     el.select()
   }, [focusNonce])
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  // Esc closes from anywhere in the bar: after a click on ↑ or ↓ the focus
+  // is on that button, and Esc there did nothing when only the input
+  // listened for it.
+  const onBarKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Escape') {
       e.preventDefault()
       onClose()
-      return
     }
+  }
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault()
       if (e.shiftKey) onPrev()
@@ -69,6 +74,7 @@ export function ConversationSearch({
         // and the match count read against the busy transcript scrolling
         // behind it; it is restated per theme, so no inline background here.
         className="find-bar pointer-events-auto flex w-full max-w-[520px] items-center gap-2 rounded-lg glass-strong px-3 py-2 ring-hairline-strong"
+        onKeyDown={onBarKeyDown}
       >
         <span className="label text-fg-2">find</span>
         <input

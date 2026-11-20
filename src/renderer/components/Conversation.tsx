@@ -142,6 +142,7 @@ export function Conversation() {
   const branchSessionFrom = useHarness((s) => s.branchSessionFrom)
   const activeSessionId = useHarness((s) => s.activeSessionId)
   const runtime = useHarness((s) => s.runtime)
+  const focusComposer = useHarness((s) => s.focusComposer)
   const scrollerRef = useRef<HTMLDivElement>(null)
   // Scroll lock + "new messages" tracking. The user can scroll up to
   // read while the agent streams; the auto-scroll effect stops forcing
@@ -233,14 +234,21 @@ export function Conversation() {
     [menuState, messages, rerunUserMessage, deleteMessagesFrom, toggleEntryPin],
   )
 
+  // Closing the inline editor, the find bar or the branch dialog unmounts
+  // the field that had focus. Focus then fell to <body> and typing went
+  // nowhere until the composer was clicked; it goes back to the composer.
   const beginEdit = useCallback((id: string) => setEditingId(id), [])
-  const cancelEdit = useCallback(() => setEditingId(null), [])
+  const cancelEdit = useCallback(() => {
+    setEditingId(null)
+    focusComposer()
+  }, [focusComposer])
   const saveEdit = useCallback(
     (id: string, text: string) => {
       setEditingId(null)
+      focusComposer()
       void editUserMessage(id, text)
     },
-    [editUserMessage],
+    [editUserMessage, focusComposer],
   )
 
   const messageActionsValue = useMemo<MessageActionsValue>(
@@ -281,10 +289,11 @@ export function Conversation() {
     setSearchQuery('')
     setActiveMatchIdx(0)
     setTotalMatches(0)
-  }, [])
+    focusComposer()
+  }, [focusComposer])
 
   // Global ⌘F / Ctrl+F — open the search bar, or (if already open) re-focus the
-  // input and select its contents. Esc inside the input closes (handled there).
+  // input and select its contents. Esc in the bar closes it (handled there).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey
@@ -714,9 +723,13 @@ export function Conversation() {
           mode="before-message"
           defaultName={`branch @ msg ${branchHumanIndex}`}
           branchAtHumanIndex={branchHumanIndex}
-          onCancel={() => setBranchFor(null)}
+          onCancel={() => {
+            setBranchFor(null)
+            focusComposer()
+          }}
           onConfirm={(name) => {
             setBranchFor(null)
+            focusComposer()
             void branchSessionFrom(branchFor, name)
           }}
         />

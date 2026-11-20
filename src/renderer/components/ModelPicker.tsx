@@ -142,6 +142,14 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
   const setReasoningLevel = useHarness((s) => s.setReasoningLevel)
   const newSession = useHarness((s) => s.newSession)
   const toggle = useHarness((s) => s.toggleModelPicker)
+  const focusComposer = useHarness((s) => s.focusComposer)
+
+  // The modal picker hands the caret back to the composer when it closes.
+  // Focus used to fall to <body>, so typing went nowhere.
+  const closePicker = () => {
+    toggle(false)
+    focusComposer()
+  }
 
   const models = useMemo(
     () => (available.length > 0 ? available : FALLBACK_MODELS),
@@ -245,7 +253,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
     const picked = models.find((m) => m.id === id)
     setModel(id, picked ? normalizeLevel(picked, reasoningLevel) : reasoningLevel)
     onSelect?.(id)
-    if (close && !inline) toggle(false)
+    if (close && !inline) closePicker()
   }
 
   const onPickHarness = (harness: HarnessChoice) => {
@@ -261,7 +269,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
     // matters: the bridge will spawn `claude --acp --stdio` etc.
     void newSession(undefined, undefined, harness.id as SessionRuntime)
     onSelect?.(harness.id)
-    if (!inline) toggle(false)
+    if (!inline) closePicker()
   }
 
   const activateModel = (m: ModelChoice) => {
@@ -297,15 +305,20 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
     if (e.key === 'Enter') {
       e.preventDefault()
       activateRow(selected)
-    } else if (e.key === 'Escape') {
-      if (query) {
-        // First Escape clears the filter; keep the picker open.
-        e.stopPropagation()
-        setQuery('')
-      } else if (!inline) {
-        toggle(false)
-      }
+    } else if (e.key === 'Escape' && query) {
+      // First Escape clears the filter; keep the picker open. The second
+      // reaches the modal, which closes (onModalKeyDown).
+      e.stopPropagation()
+      setQuery('')
     }
+  }
+
+  // Esc anywhere in the modal closes it, also from a row or an effort
+  // button that took focus from a click.
+  const onModalKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Escape') return
+    e.preventDefault()
+    closePicker()
   }
 
   const onHoverRow = (index: number) => {
@@ -319,7 +332,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
         <span>choose model</span>
         {!inline && (
           <button
-            onClick={() => toggle(false)}
+            onClick={closePicker}
             className="text-[10px] text-fg-2 hover:text-fg-0"
           >
             esc
@@ -545,7 +558,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
                             if (isActive) {
                               setReasoningLevel(level)
                               onSelect?.(m.id)
-                              if (!inline) toggle(false)
+                              if (!inline) closePicker()
                             } else {
                               onPick(m.id, level)
                             }
@@ -594,9 +607,12 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
     <div className="fixed inset-0 z-40 flex items-start justify-center pt-[14vh]">
       <div
         className="absolute inset-0 bg-black/56 backdrop-blur-[2px]"
-        onClick={() => toggle(false)}
+        onClick={closePicker}
       />
-      <div className="relative w-[560px] overflow-hidden rounded-2xl menu-opaque shadow-2xl ring-hairline-strong">
+      <div
+        className="relative w-[560px] overflow-hidden rounded-2xl menu-opaque shadow-2xl ring-hairline-strong"
+        onKeyDown={onModalKeyDown}
+      >
         {content}
       </div>
     </div>

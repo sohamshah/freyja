@@ -451,7 +451,7 @@ export interface HarnessState extends SessionSlice {
    *  when every candidate was taken. Read by the composer's hint. */
   appshotHotkeyLabel: string | null
   /** Bumped when something wants the composer focused (a finished appshot,
-   *  so the operator can type the question at once). */
+   *  so the operator can type the question at once; see focusComposer). */
   composerFocusNonce: number
   /** Operator messages sent while a session's turn was running, keyed by
    *  session id, waiting for the bridge to slide them in. They render as
@@ -701,6 +701,10 @@ export interface HarnessActions {
    *  The result arrives as an `appshot_captured` event and lands in the
    *  composer tray. The global hotkey sends the same command from main. */
   captureAppshot(source: 'button' | 'palette'): Promise<void>
+  /** Put the caret back in the composer. For a find bar, picker, dialog or
+   *  inline editor that closes: focus would otherwise drop to <body>, and
+   *  typing would go nowhere. */
+  focusComposer(): void
   /** Edit a user message in place — local state truncates to before the
    *  message and reinserts a new user message; bridge truncates the
    *  engine transcript and runs a fresh turn. */
@@ -5812,6 +5816,10 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       requestId: nextId('appshot'),
       source,
     })
+  },
+
+  focusComposer() {
+    set((prev) => ({ composerFocusNonce: prev.composerFocusNonce + 1 }))
   },
 
   async editUserMessage(messageId, content) {
