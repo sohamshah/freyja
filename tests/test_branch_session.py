@@ -936,6 +936,37 @@ async def test_live_commands_still_act_on_the_first_kept_message(sessions_dir, m
     assert not [e for e in events if e["type"] == "error"]
 
 
+async def test_an_edit_keeps_the_images_of_the_message_it_edits(sessions_dir, monkeypatch):
+    """An edit ran the new text alone, so the message's image was gone from
+    the agent's copy. It goes with the new text, and only the typed words
+    change: the window text before them and the refs note after stay."""
+    from engine.types import ImageBlock
+
+    window = "<appshot>what is in this?</appshot>"
+    note = "\n\n[Image references available to tools: `img_1`.]"
+    u2 = _entry("u2", "user", 102.0)
+    u2["message"]["content"] = [
+        {"type": "image", "data": "aGk=", "media_type": "image/png"},
+        {"type": "text", "text": f"{window}\n\nwhat is in this?{note}"},
+    ]
+    fb, sess, state, events = _live(monkeypatch, [*BEFORE[:2], u2, BEFORE[3]])
+    await _send(
+        fb,
+        sess,
+        state,
+        {
+            "type": "edit_user_message",
+            "content": "and the colours?",
+            "previousContent": "what is in this?",
+            "messageCreatedAt": ON_U2 * 1000,
+        },
+    )
+    ((image, text),) = sess.turns
+    assert isinstance(image, ImageBlock) and image.data == "aGk="
+    assert text.text == f"{window}\n\nand the colours?{note}"
+    assert [e.id for e in sess.session.transcript.entries] == ["u1", "a1"]
+
+
 @pytest.mark.parametrize("cmd", REWINDS[:2])
 async def test_an_edit_or_rerun_whose_turn_raises_tells_the_app(sessions_dir, monkeypatch, cmd):
     """A turn that raises past run_turn's own handler sends turn_failed, which ends the turn in the app. The edit and rerun tasks only logged it, so the app went on showing the turn running, or showed nothing."""

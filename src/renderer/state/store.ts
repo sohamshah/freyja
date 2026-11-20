@@ -5827,7 +5827,8 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     const requestId = nextId('rewind')
     // Local truncate: drop everything from the edited message onward and
     // re-insert a new user message with the new content. Streaming
-    // response will append a fresh assistant turn.
+    // response will append a fresh assistant turn. The edited message keeps
+    // its images and videos; the bridge keeps them in the agent's copy.
     set((prev) => {
       const idx = prev.messages.findIndex((m) => m.id === messageId)
       if (idx < 0) return {}
@@ -5841,6 +5842,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         role: 'user',
         parts: [{ type: 'text', text: trimmed }],
         createdAt: Date.now(),
+        ...(anchor?.attachments?.length ? { attachments: anchor.attachments } : {}),
       }
       return {
         messages: [...before, newMessage],
@@ -5858,6 +5860,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       messageFingerprint: messageFingerprint(state.messages, messageId),
       requestId,
       content: trimmed,
+      previousContent: anchor?.parts.filter((p) => p.type === 'text').map((p) => p.text ?? '').join(''),
     })
   },
 

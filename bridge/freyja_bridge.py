@@ -14462,6 +14462,43 @@ def _refuse_rewind(session_id: str, cmd: dict[str, Any], reason: str | None = No
     emit({"type": "rewind_refused", "sessionId": session_id, "requestId": cmd.get("requestId")})
 
 
+def _edited_user_content(original: Any, new_text: str, old_text: str = "") -> Any:
+    """The user message an edit runs: the new text, with what the original
+    message carried besides the operator's words. Its images, videos and
+    documents stay, and so do the labels in front of images. The original's
+    last text block is what was typed plus what the bridge put around it
+    (an appshot's window text before it, the image refs note after it);
+    when the old text is found there, only it is replaced. A message that
+    was text alone becomes the new text."""
+    from engine.types import DocumentBlock, ImageBlock, TextBlock, VideoBlock
+
+    if not isinstance(original, list):
+        return new_text
+    blocks = [b for b in original if isinstance(b, (TextBlock, ImageBlock, VideoBlock, DocumentBlock))]
+    if all(isinstance(b, TextBlock) for b in blocks):
+        return new_text
+    if not isinstance(blocks[-1], TextBlock):
+        return [*blocks, TextBlock(text=new_text)]
+    text = blocks[-1].text
+    span = _typed_text_span(text, old_text) if old_text else None
+    text = text[: span[0]] + new_text + text[span[1] :] if span else new_text
+    return [*blocks[:-1], TextBlock(text=text)]
+
+
+def _typed_text_span(text: str, typed: str) -> tuple[int, int] | None:
+    """Where ``typed`` sits in the text of a user message the bridge built
+    (_build_user_message_with_attachments): the whole text, or set off by a
+    blank line from the window text before it and the bracketed notes after
+    it. The last such place, since the window text comes first."""
+    at = text.rfind(typed)
+    while at >= 0:
+        end = at + len(typed)
+        if (at == 0 or text.startswith("\n\n", at - 2)) and (end == len(text) or text.startswith("\n\n[", end)):
+            return at, end
+        at = text.rfind(typed, 0, end - 1)
+    return None
+
+
 def _truncate_session_at_message_ordinal(
     session: Any,
     ordinal: int,
@@ -17389,11 +17426,23 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         except Exception:  # noqa: BLE001
             pass
         attachments = cmd.get("attachments") or None
+        # The images and videos of the message being edited go with the new
+        # text, as the engine stored them. The edit used to send the text
+        # alone, so they were gone from the agent's copy.
+        original = getattr(target, "message", None)
+        edited: Any = new_content
+        if not attachments and original is not None and original.role == "user":
+            edited = _edited_user_content(
+                original.content, new_content, str(cmd.get("previousContent") or "")
+            )
 
         async def _run_edit() -> None:
             cancelled = False
             try:
-                await sess.run_turn(new_content, attachments)
+                if isinstance(edited, list):
+                    await sess.run_turn(new_content, None, pre_formed_message=edited)
+                else:
+                    await sess.run_turn(new_content, attachments)
             except asyncio.CancelledError:
                 cancelled = True
                 _uncancel_current_task()

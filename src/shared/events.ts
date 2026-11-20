@@ -838,6 +838,10 @@ export type BridgeCommand =
       /** Echoed by `rewind_refused`. */
       requestId?: string
       content: string
+      /** The message's text before the edit. The bridge keeps the
+       *  message's images and videos, and replaces only this text in the
+       *  text block it built around it. */
+      previousContent?: string
       attachments?: CommandAttachment[]
     }
   | {
