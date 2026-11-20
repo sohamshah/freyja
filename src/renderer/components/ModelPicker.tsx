@@ -272,7 +272,12 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
     if (!inline) closePicker()
   }
 
-  const activateModel = (m: ModelChoice) => {
+  /** A click on a model with effort levels picks it and leaves the picker
+   *  open for an effort button. From the keyboard (Enter, or Space on a
+   *  row) it picks and closes; Enter used to leave the picker open. Either
+   *  way the model keeps the effort it has now when it is the active one,
+   *  and gets its default otherwise. */
+  const activateModel = (m: ModelChoice, fromKeyboard = false) => {
     if (m.available === false) {
       useHarness
         .getState()
@@ -282,7 +287,8 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
     const levels = m.reasoningLevels ?? []
     const needsReasoningChoice =
       levels.length > 1 && (m.reasoningMode ?? 'none') !== 'none'
-    onPick(m.id, undefined, !needsReasoningChoice)
+    const level = m.id === activeModel ? activeReasoningLevel : undefined
+    onPick(m.id, level, fromKeyboard || !needsReasoningChoice)
   }
 
   const activateRow = (index: number) => {
@@ -291,7 +297,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
       return
     }
     const model = filteredModels[index - filteredHarnesses.length]
-    if (model) activateModel(model)
+    if (model) activateModel(model, true)
   }
 
   const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -469,9 +475,12 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
               onMouseEnter={() => onHoverRow(index)}
               onClick={() => activateModel(m)}
               onKeyDown={(e) => {
+                // A key on an effort button inside the row is the button's:
+                // taking it here stopped Enter and Space from pressing it.
+                if (e.target !== e.currentTarget) return
                 if (e.key !== 'Enter' && e.key !== ' ') return
                 e.preventDefault()
-                activateModel(m)
+                activateModel(m, true)
               }}
               className={`group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
                 isActive
