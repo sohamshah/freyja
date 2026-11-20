@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Receipt } from '@shared/events'
 import { useVoiceStore } from '../../state/voice-store'
+import { useHarness } from '../../state/store'
 import type { VoiceEngineState } from '../../voice/engine'
 import { VoiceSigil } from './VoiceSigil'
 
@@ -38,6 +39,12 @@ function VoiceHudBody() {
   const typedCommand = useVoiceStore((s) => s.typedCommand)
   const confirmPending = useVoiceStore((s) => s.confirmPending)
   const undo = useVoiceStore((s) => s.undo)
+  const endVoice = useVoiceStore((s) => s.endVoice)
+  // App leaves Esc alone while a computer-use run is going (the agent's own
+  // injected Esc lands in this window), so the hint must not promise it.
+  const computerRunning = useHarness((s) =>
+    Object.values(s.computerSessions).some((c) => c.status === 'running'),
+  )
 
   // Inline floor-command input — null = closed, string = current draft.
   const [typed, setTyped] = useState<string | null>(null)
@@ -264,7 +271,15 @@ function VoiceHudBody() {
                 <span className="text-fg-4"> · {formatTokens(usage.totalTokens)}</span>
               </span>
             )}
-            <span className="font-mono text-[10px] text-fg-3">{hotkeyLabel ? `esc to end · ${hotkeyLabel}` : 'esc to end'}</span>
+            <button
+              type="button"
+              onClick={() => endVoice('hud')}
+              title="End the voice session"
+              className="font-mono text-[10px] text-fg-3 hover:text-fg-0"
+            >
+              {computerRunning ? 'end' : 'esc to end'}
+              {hotkeyLabel ? ` · ${hotkeyLabel}` : ''}
+            </button>
           </div>
         </div>
       </div>
