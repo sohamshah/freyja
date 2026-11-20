@@ -4,6 +4,7 @@ import { useEscapeClose } from '../lib/useEscapeClose'
 import { useVirtualList } from '../lib/useVirtualList'
 import { scrollToReveal, stepSelection } from '../lib/listNavigation'
 import { relativeTime } from '../lib/format'
+import { openLocalFile } from '../lib/openLocalFile'
 import { ArtifactPreview } from './ArtifactPreview'
 import { ArtifactSource } from './ArtifactSource'
 import type {
@@ -964,10 +965,7 @@ function DetailPane({
             </button>
           ))}
           <button
-            onClick={() => {
-              const api = (window as any).harness
-              api?.openExternal?.(`file://${row.path}`)
-            }}
+            onClick={() => void openLocalFile(row.path)}
             className="ml-auto rounded bg-white/[0.04] px-2 py-[3px] font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
           >
             open externally ↗

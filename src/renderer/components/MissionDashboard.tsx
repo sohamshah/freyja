@@ -11,6 +11,7 @@ import type {
 } from '@shared/events'
 import { formatCost, formatDuration, formatTokens, relativeTime } from '../lib/format'
 import { Spinner } from '../lib/spinner'
+import { openLocalFile } from '../lib/openLocalFile'
 import { AgentTypeTag } from './SubagentCard'
 import { TasksListRailView } from './views/TasksListRailView'
 import { GoalStudioView } from './views/GoalStudioView'
@@ -2022,8 +2023,7 @@ function toolStatusClass(status: ToolCallRecord['status']): string {
 }
 
 function openExternal(path: string) {
-  const api = (window as any).harness
-  if (api?.openExternal) api.openExternal(`file://${path}`)
+  void openLocalFile(path)
 }
 
 function copyFinding(

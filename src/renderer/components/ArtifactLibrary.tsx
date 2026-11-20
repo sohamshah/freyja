@@ -6,6 +6,8 @@ import { ArtifactPreview } from './ArtifactPreview'
 import { useArtifactMeta } from '../lib/useArtifactMeta'
 import type { ArtifactMeta } from '../lib/artifactMeta'
 import { relativeTime } from '../lib/format'
+import { openLocalFile } from '../lib/openLocalFile'
+import { useEscapeClose } from '../lib/useEscapeClose'
 import { FileChangeCard } from './FileChangeCard'
 
 /**
@@ -92,6 +94,15 @@ export function ArtifactLibrary({
   const { byPath, loading } = useArtifactMeta(artifacts)
 
   // ── Keyboard ──────────────────────────────────────────────────
+  // Esc goes through the shared stack: it closes the preview, then the
+  // library, and nothing under it. A plain window listener let App's
+  // Escape act on the same press too (ending a voice exchange, closing a
+  // drawer). The stack also leaves Esc to the Artifacts browser when that
+  // opened over the library.
+  useEscapeClose(true, () => {
+    if (previewPath) setPreviewPath(null)
+    else onClose()
+  })
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // The global Artifacts browser is the same shape of overlay and claims
@@ -99,12 +110,6 @@ export function ArtifactLibrary({
       // owns the keyboard; this session-scoped viewer stands down rather than
       // both of them switching views on one keypress.
       if (useHarness.getState().artifactsBrowserOpen) return
-      if (e.key === 'Escape') {
-        if (previewPath) setPreviewPath(null)
-        else onClose()
-        e.stopPropagation()
-        return
-      }
       const isMac = navigator.platform.toLowerCase().includes('mac')
       const mod = isMac ? e.metaKey : e.ctrlKey
       if (mod && e.key === 'f') {
@@ -119,7 +124,7 @@ export function ArtifactLibrary({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, previewPath])
+  }, [])
 
   // ── Filter aggregations ───────────────────────────────────────
   const typeBuckets = useMemo(() => {
@@ -247,10 +252,7 @@ export function ArtifactLibrary({
 
   const hasActiveFilters = selectedTypes.size > 0 || selectedCreators.size > 0 || search.length > 0
 
-  const openExternal = (path: string) => {
-    const api = (window as any).harness
-    if (api?.openExternal) api.openExternal(`file://${path}`)
-  }
+  const openExternal = (path: string) => void openLocalFile(path)
 
   const jumpToTool = (toolCallId: string) => {
     onClose()

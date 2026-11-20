@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { renderMarkdown } from '../lib/markdown'
+import { openLocalFile } from '../lib/openLocalFile'
 import type { ArtifactReadResult } from '@shared/events'
 
 /**
@@ -239,7 +240,7 @@ function MediaUnavailable({ path, size, what }: { path: string; size: number; wh
         </div>
         <div className="mb-3 break-all font-mono text-[10px] text-fg-3">{path}</div>
         <button
-          onClick={() => (window as any).harness?.openExternal?.(`file://${path}`)}
+          onClick={() => void openLocalFile(path)}
           className="rounded bg-white/[0.05] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-1 ring-hairline hover:bg-white/[0.1]"
         >
           open externally ↗ · {formatBytes(size)}
