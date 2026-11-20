@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { activeSessionScope, aggregateSessionCost, useHarness, type SystemEventRecord } from '../state/store'
 import { formatTokens, formatCost, relativeTime } from '../lib/format'
 import { ComputerLiveView } from './ComputerLiveView'
@@ -87,8 +87,13 @@ export function ActivityPanel() {
     }
   }, [])
 
+  // Open on the first warning, not on every new one: the count changes
+  // with each log line, and a section you folded kept opening again.
+  const hadAttention = useRef(false)
   useEffect(() => {
-    if (diagnosticAttention > 0) setDiagnosticsOpen(true)
+    const has = diagnosticAttention > 0
+    if (has && !hadAttention.current) setDiagnosticsOpen(true)
+    hadAttention.current = has
   }, [diagnosticAttention])
 
   const contextKnown = usage.currentContextTokens > 0 || usage.totalInputTokens <= usage.contextWindow
