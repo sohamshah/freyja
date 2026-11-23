@@ -51,7 +51,7 @@ window.harness = {
 }
 const { useHarness } = await import('./src/renderer/state/store.ts')
 const { layoutSeam } = await import('./src/renderer/lib/seam.ts')
-const { stepWords, wordsText, stretchPhrase, humanTool } = await import('./src/renderer/components/seam/stepWords.ts')
+const { stepWords, shortWords, wordsText, stretchPhrase, humanTool } = await import('./src/renderer/components/seam/stepWords.ts')
 const { WorkStretch } = await import('./src/renderer/components/seam/WorkStretch.tsx')
 
 const h = () => useHarness.getState()
@@ -98,6 +98,25 @@ await check('a step reads in plain words', () => {
   assert.equal(humanTool('mcp__slack__slack_read_thread'), 'slack read thread')
   // An unknown tool never shows its list of argument names.
   assert.ok(!wordsText(stepWords(call('mystery', { action: 'go', target: 'x' }))).includes(','))
+})
+
+await check('a Codex MCP call reads as the inner tool and its values, not its wrapper', () => {
+  const call = (name, args) => ({ id: 'x', name, status: 'success', startedAt: 0, arguments: args })
+  // The Codex adapter records `{server, tool, arguments}`; a crowd of these
+  // used to read "server, tool, arguments" for every call.
+  const pr = (n) => call('mcp.codex_apps.github.get_pr_info', { server: 'codex_apps', tool: 'github.get_pr_info', arguments: { repository_full_name: 'acme/app', pr_number: n } })
+  assert.equal(shortWords(pr(1353)), 'acme/app 1353')
+  assert.notEqual(shortWords(pr(1353)), shortWords(pr(1354)))
+  assert.equal(wordsText(stepWords(pr(1353))), 'github get pr info acme/app 1353')
+  assert.equal(humanTool('mcp.codex_apps.slack.slack_read_thread'), 'slack read thread')
+  assert.equal(humanTool('mcp.freyja.load_skill'), 'freyja load skill')
+  // Codex's shell calls show the command, not the shell that runs it.
+  assert.equal(wordsText(stepWords(call('exec_command', { command: '/bin/zsh -lc "git status --short"', cwd: '/r' }))), '$ git status --short')
+  assert.equal(shortWords(call('exec_command', { command: '/bin/zsh -lc "rg -n foo"', cwd: '/r' })), 'rg -n foo')
+  // Any tool we do not know shows a value in a crowd, never its argument names.
+  assert.equal(shortWords(call('mystery', { target_id: 'abc', count: 3 })), 'abc 3')
+  // A paging setting is not what the call is about.
+  assert.equal(shortWords(call('mcp.codex_apps.slack.slack_list_workspaces', { server: 'codex_apps', tool: 'slack.slack_list_workspaces', arguments: { limit: 20 } })), 'slack list workspaces')
 })
 
 await check('a step carries a drawing of what it does, and unknown tools keep the ring', async () => {

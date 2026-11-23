@@ -66,11 +66,12 @@ function host(url: string): string {
 export function stepWords(call: ToolCallRecord): Words {
   const shown = resolveToolCall(call)
   const name = shown.name
-  const args = (shown.arguments ?? undefined) as Record<string, unknown> | undefined
-  if (!args) {
+  const raw = (shown.arguments ?? undefined) as Record<string, unknown> | undefined
+  if (!raw) {
     const partial = summarizePartialJson(name, shown.partialJson)
     return partial ? [{ t: `${name} `, dim: true }, { t: partial }] : [{ t: name, dim: true }]
   }
+  const args = ownArguments(name, raw)
   const described = describeCall(name, args)
   if (described) return [{ t: described }]
   const path = str(args.path) || str(args.file_path)
@@ -89,16 +90,57 @@ export function stepWords(call: ToolCallRecord): Words {
     const q = str(args.query) || str(args.prompt)
     if (q) return [{ t: 'Research ' }, { t: q.slice(0, 120) }]
   }
-  if (name === 'bash') {
-    const cmd = str(args.command).split('\n')[0]
+  if (name === 'bash' || name === 'exec_command') {
+    const cmd = shellLine(str(args.command))
     if (cmd) return [{ t: '$ ', dim: true }, { t: cmd.slice(0, 120) }]
   }
   const known = knownWords(name, args)
   if (known) return known
   if (name === 'kanban') return [{ t: 'Board ', dim: true }, { t: summarizeArgs(name, args) }]
-  const value = telling(args)
+  const value = telling(args) || argValues(args)
   const label = humanTool(name)
   return value ? [{ t: `${label} `, dim: true }, { t: value }] : [{ t: label, dim: true }]
+}
+
+/** Codex names its MCP tools `mcp.<server>.<tool>`, and the Codex adapter
+ *  (bridge/runtimes/codex_adapter.py) records each call's arguments as the
+ *  wrapper `{server, tool, arguments}`. The step is the inner call: read
+ *  from the wrapper, twenty-five `get_pr_info` calls all said "server, tool,
+ *  arguments". The tool card still shows the whole record. */
+function ownArguments(name: string, args: Record<string, unknown>): Record<string, unknown> {
+  if (!name.startsWith('mcp.') || typeof args.tool !== 'string' || !('arguments' in args)) return args
+  const inner = args.arguments
+  return inner && typeof inner === 'object' && !Array.isArray(inner) ? (inner as Record<string, unknown>) : {}
+}
+
+/** The first line of a command. Codex runs each one as
+ *  `/bin/zsh -lc "<command>"`; the command is the part worth reading. */
+function shellLine(command: string): string {
+  const m = command.match(/^\/bin\/(?:ba|z)?sh\s+-l?c\s+(["'])([\s\S]*)\1$/)
+  const inner = m ? (m[1] === '"' ? m[2].replace(/\\(["\\$`])/g, '$1') : m[2]) : command
+  return inner.split('\n')[0].trim()
+}
+
+/** Paging and format settings: the same on every call, so they tell
+ *  nothing about which call this is. */
+const KNOB_KEYS = new Set(['limit', 'topn', 'top_n', 'page', 'per_page', 'page_size', 'offset', 'cursor', 'max_results', 'response_format', 'sort', 'order', 'sort_dir', 'direction'])
+
+/** The first few plain values, for a tool whose arguments we do not know.
+ *  "acme/app 1353" tells two calls apart; their argument names
+ *  ("repository_full_name, pr_number") are the same for every call. A
+ *  number alone ("20") says nothing, so it needs a text value beside it. */
+function argValues(args: Record<string, unknown>): string {
+  const out: string[] = []
+  let text = false
+  for (const [k, v] of Object.entries(args)) {
+    if (KNOB_KEYS.has(k)) continue
+    if (typeof v === 'string' && v.trim()) {
+      out.push(v.replace(/\s+/g, ' ').trim())
+      text = true
+    } else if (typeof v === 'number' && Number.isFinite(v)) out.push(String(v))
+    if (out.length === 3) break
+  }
+  return text ? out.join(' ').slice(0, 100) : ''
 }
 
 /** Words for tools that take no summary of their own. */
@@ -167,8 +209,18 @@ function telling(args: Record<string, unknown>): string {
   return ''
 }
 
-/** `mcp__slack__slack_read_thread` → "slack read thread". */
+/** `mcp__slack__slack_read_thread` → "slack read thread". Codex's
+ *  `mcp.<server>.<tool>` reads the same way, without the server when it is
+ *  `codex_apps` (Codex's gateway to the apps connected to ChatGPT, where the
+ *  tool already names its app): `mcp.codex_apps.github.get_pr_info` →
+ *  "github get pr info". */
 export function humanTool(name: string): string {
+  const codex = name.match(/^mcp\.([^.]+)\.(.+)$/)
+  if (codex) {
+    const [, server, tool] = codex
+    const own = tool.replace(/^([^.]+)\.\1_/, '$1.')
+    return `${server === 'codex_apps' ? '' : `${server} `}${own}`.replace(/[._]/g, ' ')
+  }
   const m = name.match(/^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/)
   const server = m ? m[1] : ''
   let tool = m ? m[2] : name
@@ -186,15 +238,25 @@ function searchQuery(args: Record<string, unknown>): string {
 /** A few words for a call among many (the queries of a search crowd). */
 export function shortWords(call: ToolCallRecord): string {
   const shown = resolveToolCall(call)
-  const args = (shown.arguments ?? undefined) as Record<string, unknown> | undefined
-  if (!args) return summarizePartialJson(shown.name, shown.partialJson) || shown.name
+  const raw = (shown.arguments ?? undefined) as Record<string, unknown> | undefined
+  if (!raw) return summarizePartialJson(shown.name, shown.partialJson) || shown.name
+  const args = ownArguments(shown.name, raw)
   const q = searchQuery(args) || str(args.pattern)
   if (q) return q.slice(0, 64)
   const path = str(args.path) || str(args.file_path)
   if (path) return splitPath(path).file || path
   const url = str(args.url)
   if (url) return host(url).slice(0, 48)
-  return (describeCall(shown.name, args) || summarizeArgs(shown.name, args) || shown.name).slice(0, 64)
+  // Never the list of argument names: in a crowd of one tool it is the same
+  // for every call.
+  return (
+    describeCall(shown.name, args) ||
+    (shown.name === 'kanban' ? summarizeArgs(shown.name, args) : '') ||
+    shellLine(str(args.command)) ||
+    telling(args) ||
+    argValues(args) ||
+    humanTool(shown.name)
+  ).slice(0, 64)
 }
 
 /** The last command line of a running bash call, shown faintly under it. */
