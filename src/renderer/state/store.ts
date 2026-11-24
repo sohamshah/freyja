@@ -293,6 +293,10 @@ export interface SessionSlice {
   /** Opaque harness sessionId echoed back from session/new. Persisted
    *  so resume can attempt session/load on the next bridge incarnation. */
   harnessSessionId?: string
+  /** What the harness itself runs, as it last said (`harness_model`). A
+   *  Codex session runs Codex's model, not `model`: one set to Claude
+   *  Opus 5.5 ran GPT-6 Astra while the app named Opus. */
+  harnessModel?: { model: string; reasoningEffort?: string }
   /** System prompt sent to the model. Captured from the bridge's
    *  `system_prompt_set` event for session export / training data. */
   systemPrompt?: string
@@ -1852,8 +1856,50 @@ function sliceFromState(s: HarnessState): SessionSlice {
     coordinationStrategy: s.coordinationStrategy,
     runtime: s.runtime,
     harnessSessionId: s.harnessSessionId,
+    harnessModel: s.harnessModel,
     systemPrompt: s.systemPrompt,
   }
+}
+
+const HARNESS_EVENTS = new Set(['session_switched', 'harness_session_ready', 'harness_session_recreated', 'harness_model'])
+const RUNTIMES = new Set<string>(['native', 'claude_code', 'codex_app_server'])
+
+/**
+ * The runtime a session runs on, its harness thread and the harness's
+ * model, as the session's own system events last reported them.
+ *
+ * The bridge echoes the runtime and thread on every switch and names a new
+ * thread when it opens one, but the saved fields went stale: a Codex
+ * session saved itself as `native` and kept the id of a thread Codex had
+ * replaced, so the next restart would have moved it to Freyja's own loop,
+ * or back to the old thread. The events are kept with the session, so a
+ * saved session repairs itself on load.
+ */
+export function harnessFromEvents(events: readonly SystemEventRecord[] | undefined): {
+  runtime?: import('@shared/events').SessionRuntime
+  harnessSessionId?: string
+  harnessModel?: { model: string; reasoningEffort?: string }
+} {
+  const out: ReturnType<typeof harnessFromEvents> = {}
+  for (let i = (events?.length ?? 0) - 1; i >= 0; i--) {
+    const e = events![i]
+    if (!HARNESS_EVENTS.has(e.subtype)) continue
+    const d = e.details ?? {}
+    if (!out.runtime && typeof d.runtime === 'string' && RUNTIMES.has(d.runtime)) {
+      out.runtime = d.runtime as import('@shared/events').SessionRuntime
+    }
+    if (!out.harnessSessionId && typeof d.harnessSessionId === 'string' && d.harnessSessionId) {
+      out.harnessSessionId = d.harnessSessionId
+    }
+    if (!out.harnessModel && e.subtype === 'harness_model' && typeof d.model === 'string' && d.model) {
+      out.harnessModel = {
+        model: d.model,
+        ...(typeof d.reasoningEffort === 'string' && d.reasoningEffort ? { reasoningEffort: d.reasoningEffort } : {}),
+      }
+    }
+    if (out.runtime && out.harnessSessionId && out.harnessModel) break
+  }
+  return out
 }
 
 type PersistedSessionMetaPayload = {
@@ -2904,11 +2950,15 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       // the slice so the next save round-trips it through the sidecar
       // (renderer-side resume relies on the persisted id being there
       // before we re-issue switch_session on app restart).
-      if (
-        ev.subtype === 'harness_session_ready' &&
-        typeof ev.details?.harnessSessionId === 'string'
-      ) {
-        next.harnessSessionId = ev.details.harnessSessionId as string
+      // The bridge says what it runs this session on (session_switched),
+      // which thread (ready, and recreated: the id the next restart must
+      // resume) and the harness's model. Only ready was read, so after a
+      // new thread the saved id named the old one.
+      if (HARNESS_EVENTS.has(ev.subtype)) {
+        const h = harnessFromEvents([{ id: '', subtype: ev.subtype, message: '', at: 0, details: ev.details }])
+        if (h.runtime) next.runtime = h.runtime
+        if (h.harnessSessionId) next.harnessSessionId = h.harnessSessionId
+        if (h.harnessModel) next.harnessModel = h.harnessModel
       }
       // Track autopilot state per session so the dashboard toggle can
       // reflect the bridge's actual `auto_dispatch_enabled` flag. The
@@ -5536,8 +5586,16 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       return
     }
     const targetSnapshot = prev.sessions.find((s) => s.id === sessionId)
+    // The session's own events say which runtime and thread it is on; its
+    // saved fields can be stale (harnessFromEvents).
+    const harness = harnessFromEvents(archivedSlice.systemEvents)
+    const runtime = harness.runtime ?? targetSnapshot?.runtime ?? archivedSlice.runtime ?? 'native'
     archivedSlice = {
       ...archivedSlice,
+      runtime,
+      harnessSessionId:
+        harness.harnessSessionId ?? archivedSlice.harnessSessionId ?? targetSnapshot?.harnessSessionId,
+      harnessModel: archivedSlice.harnessModel ?? harness.harnessModel,
       reasoningLevel: normalizeReasoningFor(
         archivedSlice.model,
         archivedSlice.reasoningLevel || targetSnapshot?.reasoningLevel,
@@ -5579,6 +5637,10 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         ...archivedSlice,
         activeSessionId: sessionId,
         sessionArchive: newArchive,
+        // The row says the same runtime as the slice, so the index saves it.
+        sessions: p.sessions.map((row) =>
+          row.id === sessionId && row.runtime !== runtime ? { ...row, runtime } : row,
+        ),
         sessionMRU: nextMRU,
         sessionPanes,
         activePaneId,
@@ -5610,10 +5672,12 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
     const strategyForBridge = normalizeCoordinationStrategy(
       sessionSnapshot?.coordinationStrategy || restoredStrategy,
     )
+    // From the slice just made active, repaired above; the row's copy
+    // could be stale.
     const runtimeForBridge: import('@shared/events').SessionRuntime =
-      sessionSnapshot?.runtime ?? archivedSlice?.runtime ?? 'native'
+      archivedSlice?.runtime ?? sessionSnapshot?.runtime ?? 'native'
     const harnessSessionIdForBridge =
-      sessionSnapshot?.harnessSessionId ?? archivedSlice?.harnessSessionId
+      archivedSlice?.harnessSessionId ?? sessionSnapshot?.harnessSessionId
     // Forward the persisted autopilot flag so the bridge can re-arm
     // its dispatcher loop after a restart. Without this, a kanban
     // session whose slice had autopilot=true comes back to a bridge

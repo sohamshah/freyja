@@ -37,6 +37,7 @@ export function TitleBar() {
   const reasoningLevel = useHarness((s) => s.reasoningLevel)
   const coordinationStrategy = useHarness((s) => s.coordinationStrategy)
   const runtime = useHarness((s) => s.runtime)
+  const harnessModel = useHarness((s) => s.harnessModel)
   const availableHarnesses = useHarness((s) => s.availableHarnesses)
   const activeHarness =
     runtime !== 'native'
@@ -156,7 +157,9 @@ export function TitleBar() {
         onClick={() => useHarness.getState().toggleModelPicker(true)}
         title={
           activeHarness
-            ? `Driven by ${activeHarness.label} (${activeHarness.command})`
+            ? `Driven by ${activeHarness.label} (${activeHarness.command})${
+                harnessModel ? `, which runs ${harnessModel.model}` : ''
+              }`
             : 'Switch model'
         }
       >
@@ -167,6 +170,13 @@ export function TitleBar() {
         <span className="ml-2 min-w-[10ch] truncate font-mono text-fg-0">
           {activeHarness ? activeHarness.label : model}
         </span>
+        {/* What the harness runs: the session's own model never reaches it. */}
+        {activeHarness && harnessModel && (
+          <span className="title-effort ml-2 truncate font-mono text-[10px]">
+            {harnessModel.model}
+            {harnessModel.reasoningEffort ? ` ${harnessModel.reasoningEffort}` : ''}
+          </span>
+        )}
         {!activeHarness && reasoningLevel && reasoningLevel !== 'none' && (
           <span className="title-effort ml-2 font-mono text-[10px]">{reasoningLevel}</span>
         )}

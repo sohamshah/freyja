@@ -250,7 +250,15 @@ export function InputDock() {
     ).length
   }, [sessions, subagents])
   const workspaceLabel = compactPath(activeSession?.workspace || '~/')
-  const modelLabel = activeSession?.model || model
+  const runtime = useHarness((s) => s.runtime)
+  const harnessModel = useHarness((s) => s.harnessModel)
+  const availableHarnesses = useHarness((s) => s.availableHarnesses)
+  // A harness session runs the harness's model, not the session's: name
+  // the harness and what it says it runs ("Codex · gpt-6-astra xhigh").
+  const modelLabel =
+    runtime !== 'native'
+      ? harnessRunsLabel(availableHarnesses.find((h) => h.id === runtime)?.label ?? runtime, harnessModel)
+      : activeSession?.model || model
   // Gemini-only feature gate for video drag/drop/paste. We look up the
   // active session's model in availableModels (preferred — carries
   // server-side family metadata) and fall back to the `gemini-` prefix
@@ -1202,4 +1210,13 @@ function Hint({
 
 function compactPath(path: string): string {
   return path.replace(/^\/Users\/[^/]+/, '~')
+}
+
+/** "Codex · gpt-6-astra xhigh": a harness and the model it says it runs. */
+export function harnessRunsLabel(
+  harness: string,
+  model: { model: string; reasoningEffort?: string } | undefined,
+): string {
+  if (!model) return harness
+  return `${harness} · ${model.model}${model.reasoningEffort ? ` ${model.reasoningEffort}` : ''}`
 }

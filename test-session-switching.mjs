@@ -151,6 +151,41 @@ await check('a pasted screenshot stays with its caption across switches', async 
   assert.deepEqual(H().pendingAttachments, [shot])
 })
 
+await check('a Codex session saved as native goes back to Codex and its newest thread', async () => {
+  // How a Codex session was saved (2026-11-24): runtime "native" and the id of
+  // a thread Codex had replaced, with the truth only in its own events.
+  seed({ active: 'a', extraRows: ['codex'] })
+  const sent = []
+  window.harness.sendCommand = async (cmd) => {
+    if (cmd.type === 'switch_session') sent.push(cmd)
+    return { ok: true }
+  }
+  const ev = (subtype, details, at) => ({ id: `e${at}`, subtype, message: '', at, details })
+  const saved = {
+    ...slice('codex'),
+    runtime: 'native',
+    harnessSessionId: 'thread-old',
+    systemEvents: [
+      ev('session_switched', { runtime: 'codex_app_server', harnessSessionId: 'thread-old' }, 1),
+      ev('harness_session_recreated', { runtime: 'codex_app_server', harnessSessionId: 'thread-new' }, 2),
+      ev('harness_model', { runtime: 'codex_app_server', model: 'gpt-6-astra', reasoningEffort: 'xhigh' }, 3),
+    ],
+  }
+  const switching = H().switchSession('codex')
+  loads.get('codex')({ ok: true, session: { slice: saved } })
+  await switching
+  assert.equal(sent[0].runtime, 'codex_app_server')
+  assert.equal(sent[0].harnessSessionId, 'thread-new')
+  assert.equal(H().runtime, 'codex_app_server')
+  assert.equal(H().sessions.find((r) => r.id === 'codex').runtime, 'codex_app_server')
+  const { harnessRunsLabel } = await import('./src/renderer/components/InputDock.tsx')
+  assert.equal(harnessRunsLabel('Codex', H().harnessModel), 'Codex · gpt-6-astra xhigh')
+
+  // A new thread named later is the one the next restart resumes.
+  H().handleEvent({ type: 'system_event', sessionId: 'codex', subtype: 'harness_session_recreated', message: '', details: { runtime: 'codex_app_server', harnessSessionId: 'thread-3' } })
+  assert.equal(H().harnessSessionId, 'thread-3')
+})
+
 fs.rmSync(home, { recursive: true, force: true })
 if (failures) {
   console.log(`\n${failures} failed`)
