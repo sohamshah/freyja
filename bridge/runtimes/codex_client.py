@@ -11,11 +11,15 @@ Protocol (verified against Hermes §27.2 / Codex CLI 0.135):
     → initialized (notification)
 
   Thread
-    → thread/start { cwd }
-    ← thread/start.result { thread: { id } }
+    → thread/resume { threadId, cwd, excludeTurns } (when a thread is known)
+    → thread/start { cwd }                           (otherwise, or on failure)
+    ← result { thread: { id }, model, reasoningEffort }
+
+  Models
+    → model/list { includeHidden } ← { data: [{ model, supportedReasoningEfforts }] }
 
   Per turn
-    → turn/start { threadId, input: [{type:"text", text}] }
+    → turn/start { threadId, input: [{type:"text", text}], model?, effort? }
     ← turn/start.result { turn: { id } }
     ← (notifications) item/started, item/<type>/delta, item/completed, turn/completed
     ← (server-initiated requests) item/commandExecution/requestApproval,
@@ -54,7 +58,14 @@ _DEFAULT_TURN_TIMEOUT_S = 600.0
 # `_POST_TOOL_QUIET_TIMEOUT_S` measured silence since the last
 # *tool completion* — which silently killed turns where the
 # agent was actively streaming text or reasoning after a tool.
-_SILENT_TIMEOUT_S = 90.0
+#
+# It was 90 s, and that killed working turns: Codex streams nothing
+# while the model thinks unless reasoning summaries are on, and a model
+# at xhigh effort over a 200k-token context thought for 103 s between
+# two browser steps (2026-11-23). Stop now interrupts a Codex turn, so a
+# hung one can be ended by hand; this only catches a subprocess that
+# has really gone quiet.
+_SILENT_TIMEOUT_S = 600.0
 
 
 @dataclass
@@ -80,6 +91,20 @@ ServerRequestHandler = Callable[[str, dict], Awaitable[dict]]
 
 class CodexClientError(RuntimeError):
     pass
+
+
+def _explain_error(message: str) -> str:
+    """Codex's error, with what to do about it when Codex does not say.
+
+    A 429 reached the app as "exceeded retry limit, last status: 429 Too
+    Many Requests" and nothing else; the same message sent again a few
+    minutes later ran (2026-11-24)."""
+    if "429" in message and "try again" not in message.lower():
+        return (
+            f"{message}. OpenAI turned the request away for now. "
+            "Send the message again in a minute; the thread keeps everything so far."
+        )
+    return message
 
 
 class CodexClient:
@@ -134,6 +159,19 @@ class CodexClient:
         # subprocess (see `_SILENT_TIMEOUT_S`).
         self._turn_last_activity_at: Optional[float] = None
         self._turn_error: Optional[str] = None
+        # The turn in flight, so a stop can interrupt it.
+        self._current_turn_id: Optional[str] = None
+        # Turns we interrupted. Codex confirms each with a turn/completed
+        # that can land after the next turn has started, and would end it.
+        self._interrupted_turns: set[str] = set()
+        # What the thread runs on, from thread/start or thread/resume and
+        # kept current by model/rerouted and our own turn overrides.
+        self.model: Optional[str] = None
+        self.reasoning_effort: Optional[str] = None
+        # True when ensure_thread picked up an existing thread.
+        self.resumed = False
+        # model id → the reasoning efforts it takes (model/list).
+        self._models: Optional[dict[str, list[str]]] = None
 
     # ────────────────────────────────────────────────────────────────────
     # Lifecycle
@@ -249,15 +287,47 @@ class CodexClient:
         await self._notification("initialized", {})
         self._initialized = True
 
-    async def ensure_thread(self) -> str:
+    async def ensure_thread(self, resume_thread_id: Optional[str] = None) -> str:
+        """Open the thread this client's turns go to.
+
+        With `resume_thread_id`, pick that thread up again (thread/resume):
+        Codex keeps every thread on disk, so a new app-server process can
+        carry on a conversation an earlier one held. Without it, or when
+        the resume fails (thread gone, unreadable), start a new thread;
+        `resumed` says which happened."""
         if not self._initialized:
             await self.start()
         if self._thread_id:
             return self._thread_id
-        result = await asyncio.wait_for(
-            self._request("thread/start", {"cwd": self._cwd}),
-            timeout=30.0,
-        )
+        result: dict | None = None
+        if resume_thread_id:
+            try:
+                result = await asyncio.wait_for(
+                    self._request(
+                        "thread/resume",
+                        {
+                            "threadId": resume_thread_id,
+                            "cwd": self._cwd,
+                            # The reply would otherwise carry every turn of
+                            # the thread, tool output and all.
+                            "excludeTurns": True,
+                        },
+                    ),
+                    timeout=60.0,
+                )
+                self.resumed = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Codex thread/resume %s failed; starting a new thread: %s",
+                    resume_thread_id[:8],
+                    exc,
+                )
+                result = None
+        if result is None:
+            result = await asyncio.wait_for(
+                self._request("thread/start", {"cwd": self._cwd}),
+                timeout=30.0,
+            )
         thread_obj = result.get("thread") or {}
         tid = (
             thread_obj.get("id")
@@ -271,13 +341,57 @@ class CodexClient:
                 f"{sorted(result.keys())})"
             )
         self._thread_id = str(tid)
-        logger.info("Codex thread/start: id=%s cwd=%s", self._thread_id[:8], self._cwd)
+        self.model = str(result.get("model") or "") or None
+        self.reasoning_effort = str(result.get("reasoningEffort") or "") or None
+        logger.info(
+            "Codex thread/%s: id=%s model=%s effort=%s cwd=%s",
+            "resume" if self.resumed else "start",
+            self._thread_id[:8],
+            self.model,
+            self.reasoning_effort,
+            self._cwd,
+        )
         return self._thread_id
+
+    async def list_models(self) -> dict[str, list[str]]:
+        """The models this Codex offers, each with the reasoning efforts it
+        takes. Asked once per process; empty when Codex would not say."""
+        if self._models is not None:
+            return self._models
+        models: dict[str, list[str]] = {}
+        try:
+            cursor: Optional[str] = None
+            for _ in range(10):
+                params: dict = {"includeHidden": True}
+                if cursor:
+                    params["cursor"] = cursor
+                res = await asyncio.wait_for(self._request("model/list", params), timeout=15.0)
+                for m in res.get("data") or []:
+                    if not isinstance(m, dict):
+                        continue
+                    efforts = [
+                        str(e.get("reasoningEffort"))
+                        for e in (m.get("supportedReasoningEfforts") or [])
+                        if isinstance(e, dict) and e.get("reasoningEffort")
+                    ]
+                    for key in ("model", "id"):
+                        mid = str(m.get(key) or "")
+                        if mid:
+                            models[mid] = efforts
+                cursor = res.get("nextCursor")
+                if not cursor:
+                    break
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Codex model/list failed: %s", exc)
+        self._models = models
+        return models
 
     async def prompt(
         self,
         text: str,
         *,
+        model: Optional[str] = None,
+        effort: Optional[str] = None,
         on_event: EventHandler | None = None,
         timeout_s: float = _DEFAULT_TURN_TIMEOUT_S,
         silent_timeout_s: float = _SILENT_TIMEOUT_S,
@@ -311,15 +425,18 @@ class CodexClient:
             (self._thread_id or "?")[:8],
             text[:60],
         )
+        params: dict = {
+            "threadId": self._thread_id,
+            "input": [{"type": "text", "text": text}],
+        }
+        # Codex keeps an override for the turns after it too.
+        if model:
+            params["model"] = model
+        if effort:
+            params["effort"] = effort
         try:
             ts = await asyncio.wait_for(
-                self._request(
-                    "turn/start",
-                    {
-                        "threadId": self._thread_id,
-                        "input": [{"type": "text", "text": text}],
-                    },
-                ),
+                self._request("turn/start", params),
                 timeout=10.0,
             )
         except Exception as exc:
@@ -330,6 +447,11 @@ class CodexClient:
             return result
 
         result.turn_id = (ts.get("turn") or {}).get("id")
+        self._current_turn_id = result.turn_id
+        if model:
+            self.model = model
+        if effort:
+            self.reasoning_effort = effort
         logger.info(
             "Codex turn started: id=%s, waiting for completion (timeout=%.0fs)",
             (result.turn_id or "?")[:8],
@@ -380,9 +502,19 @@ class CodexClient:
             result.interrupted = True
             result.should_retire = True
             result.error = f"Codex never started the turn within {timeout_s:.0f}s"
+        except asyncio.CancelledError:
+            # Stopped. Without this the Codex process worked on: only our
+            # wait for it was cancelled, and the next message steered the
+            # turn that was meant to be over.
+            try:
+                await asyncio.shield(self._issue_interrupt(result.turn_id))
+            except BaseException:  # noqa: BLE001
+                pass
+            raise
         finally:
             self._turn_active = False
             self._turn_on_event = None
+            self._current_turn_id = None
 
         result.text = "".join(self._turn_text_parts)
         result.reasoning = "".join(self._turn_reasoning_parts)
@@ -394,12 +526,11 @@ class CodexClient:
         return result
 
     async def cancel(self) -> None:
+        """Interrupt the turn in flight. It was a no-op, so Stop left
+        Codex working on the turn."""
         if not self.is_alive or not self._thread_id or not self._turn_active:
             return
-        # We don't know the turn id outside of prompt; if a turn is
-        # active, the cancel will be issued by the prompt's watchdog
-        # path. Best-effort no-op here.
-        return
+        await self._issue_interrupt(self._current_turn_id)
 
     async def close(self) -> None:
         if self._closed:
@@ -460,6 +591,7 @@ class CodexClient:
     async def _issue_interrupt(self, turn_id: Optional[str]) -> None:
         if not (self._thread_id and turn_id):
             return
+        self._interrupted_turns.add(turn_id)
         try:
             await asyncio.wait_for(
                 self._request(
@@ -604,10 +736,13 @@ class CodexClient:
             # Always prefer a turn.error.message over earlier generic
             # markers (systemError, etc.) — it's the most specific.
             turn = params.get("turn") or {}
+            if turn.get("id") in self._interrupted_turns and turn.get("id") != self._current_turn_id:
+                self._interrupted_turns.discard(turn.get("id"))
+                return
             status = (turn.get("status") or "").strip()
             err = turn.get("error") or {}
             if err:
-                self._turn_error = str(err.get("message") or err)
+                self._turn_error = _explain_error(str(err.get("message") or err))
             elif status and status not in {"completed", "interrupted"}:
                 self._turn_error = self._turn_error or f"turn ended status={status}"
             self._turn_completed.set()
@@ -632,8 +767,20 @@ class CodexClient:
                     f"Original: {msg}"
                 )
             else:
-                self._turn_error = str(msg)
+                self._turn_error = _explain_error(str(msg))
             self._turn_completed.set()
+            return
+
+        if method == "model/rerouted":
+            to_model = params.get("toModel")
+            if isinstance(to_model, str) and to_model:
+                logger.info(
+                    "Codex rerouted %s → %s (%s)",
+                    params.get("fromModel"),
+                    to_model,
+                    params.get("reason"),
+                )
+                self.model = to_model
             return
 
         # Thread-level system error: record as a fallback marker but

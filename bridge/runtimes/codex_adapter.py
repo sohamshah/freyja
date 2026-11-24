@@ -34,6 +34,7 @@ class CodexAdapter:
         session_id: str,
         workspace: str,
         emit: EmitFn,
+        resume_harness_session_id: Optional[str] = None,
         mcp_config: Optional[dict] = None,
     ) -> None:
         self._runtime_id = runtime_id
@@ -43,15 +44,17 @@ class CodexAdapter:
         self._emit = emit
         self._client: Optional[CodexClient] = None
         self._mcp_config = mcp_config
-        # Note: Codex doesn't expose a documented thread-resume RPC.
-        # The previous incarnation kept a `_resume_harness_session_id`
-        # field but it was a best-effort guess at re-using a prior
-        # thread — and silently dropped to a fresh thread when the
-        # guess failed. The bridge now treats every Codex spawn as a
-        # fresh thread (with no memory of prior turns) and emits a
-        # visible `harness_session_recreated` event so the operator
-        # knows continuity broke. See the bridge-side comment near
-        # the harness_session_ready emit.
+        # The thread to pick up when the next Codex process starts: the
+        # one the session last ran on (saved by the app), then whichever
+        # thread this adapter itself last held. Every spawn used to open a
+        # new thread, so a retired process (the silence watchdog) or an app
+        # restart left the agent with no memory of the session.
+        self._resume_thread_id: Optional[str] = resume_harness_session_id or None
+        # The model and effort the session asks for (prefer_model). Applied
+        # when Codex offers that model; otherwise Codex keeps its own.
+        self._wanted: tuple[Optional[str], Optional[str]] = (None, None)
+        # The (model, effort) last reported to the app.
+        self._reported: tuple[Optional[str], Optional[str]] = (None, None)
 
     @property
     def runtime_id(self) -> str:
@@ -64,6 +67,48 @@ class CodexAdapter:
     @property
     def harness_session_id(self) -> Optional[str]:
         return self._client.thread_id if self._client is not None else None
+
+    @property
+    def model(self) -> Optional[str]:
+        return self._client.model if self._client is not None else None
+
+    @property
+    def reasoning_effort(self) -> Optional[str]:
+        return self._client.reasoning_effort if self._client is not None else None
+
+    def prefer_model(self, model: Optional[str], reasoning_level: Optional[str]) -> None:
+        """The session's model and reasoning level. Codex runs only its own
+        models: one it lists is passed on the next turn, with the level when
+        that model takes it; any other leaves Codex on what it runs now."""
+        self._wanted = (model or None, reasoning_level or None)
+
+    def _report_model(self, *, resumed: bool = False) -> None:
+        """Tell the app what Codex runs, when that changed. The app showed
+        the session's own model, which Codex never got: a session set to
+        Claude Opus 5.5 ran GPT-6 Astra for ten turns."""
+        client = self._client
+        if client is None or not client.model:
+            return
+        now = (client.model, client.reasoning_effort)
+        if now == self._reported:
+            return
+        self._reported = now
+        effort = f" ({client.reasoning_effort})" if client.reasoning_effort else ""
+        self._emit(
+            {
+                "type": "system_event",
+                "sessionId": self._session_id,
+                "subtype": "harness_model",
+                "message": f"{self._spec.label} runs {client.model}{effort}",
+                "details": {
+                    "runtime": self._runtime_id,
+                    "model": client.model,
+                    "reasoningEffort": client.reasoning_effort,
+                    "harnessSessionId": client.thread_id,
+                    "resumed": resumed,
+                },
+            }
+        )
 
     async def ensure_started(
         self,
@@ -111,10 +156,12 @@ class CodexAdapter:
         )
         try:
             await self._client.start()
-            # Always start a fresh thread. Codex has no reliable resume
-            # RPC — the bridge surfaces the discontinuity via
-            # harness_session_recreated when this happens mid-session.
-            await self._client.ensure_thread()
+            # Pick the session's thread up again; a new one only when
+            # there is none or Codex cannot resume it (the bridge then
+            # says so with harness_session_recreated).
+            await self._client.ensure_thread(resume_thread_id=self._resume_thread_id)
+            self._resume_thread_id = self._client.thread_id
+            self._report_model(resumed=self._client.resumed)
         except CodexClientError as exc:
             self._emit(
                 {
@@ -136,12 +183,20 @@ class CodexAdapter:
     ) -> CodexTurnResult:
         await self.ensure_started(mcp_servers=mcp_servers)
         assert self._client is not None
+        override_model, override_effort = await self._overrides()
 
         async def on_event(msg: dict) -> None:
             try:
                 method = str(msg.get("method") or "")
                 params = msg.get("params") or {}
                 item = params.get("item") or {}
+                if method == "model/rerouted":
+                    # The client takes the new model after this handler.
+                    to_model = params.get("toModel")
+                    if isinstance(to_model, str) and to_model and self._client is not None:
+                        self._client.model = to_model
+                        self._report_model()
+                    return
                 # Stream agent text + reasoning via delta events for live UI
                 if method.endswith("/delta"):
                     delta_text = (
@@ -314,7 +369,12 @@ class CodexAdapter:
                 logger.exception("Codex on_event projection failed")
 
         try:
-            result = await self._client.prompt(user_text, on_event=on_event)
+            result = await self._client.prompt(
+                user_text,
+                model=override_model,
+                effort=override_effort,
+                on_event=on_event,
+            )
         except CodexClientError as exc:
             self._emit(
                 {
@@ -332,9 +392,28 @@ class CodexAdapter:
                 should_retire=True,
             )
 
+        self._report_model()
         if result.should_retire:
             await self.close()
         return result
+
+    async def _overrides(self) -> tuple[Optional[str], Optional[str]]:
+        """The model and effort to send with the next turn, if they differ
+        from what the thread runs now."""
+        client = self._client
+        want_model, want_level = self._wanted
+        if client is None or not want_model:
+            return None, None
+        models = await client.list_models()
+        if want_model not in models:
+            return None, None
+        model = want_model if want_model != client.model else None
+        effort = (
+            want_level
+            if want_level and want_level in models[want_model] and want_level != client.reasoning_effort
+            else None
+        )
+        return model, effort
 
     async def cancel(self) -> None:
         if self._client is None:
@@ -344,6 +423,9 @@ class CodexAdapter:
     async def close(self) -> None:
         if self._client is None:
             return
+        # The next process picks this thread up again.
+        if self._client.thread_id:
+            self._resume_thread_id = self._client.thread_id
         try:
             await self._client.close()
         finally:

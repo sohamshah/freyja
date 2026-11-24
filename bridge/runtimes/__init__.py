@@ -45,16 +45,15 @@ def build_adapter(
     if runtime_id == "codex_app_server":
         from bridge.runtimes.codex_adapter import CodexAdapter
 
-        # `resume_harness_session_id` is intentionally dropped on this
-        # path: Codex has no working thread-resume RPC, so the adapter
-        # always opens a fresh thread on spawn. The bridge emits a
-        # `harness_session_recreated` event when this loses continuity
-        # mid-session so the operator can see what happened.
+        # The adapter resumes this thread (thread/resume). When Codex
+        # cannot, it starts a new one and the bridge says so with
+        # `harness_session_recreated`.
         return CodexAdapter(
             runtime_id=runtime_id,
             session_id=session_id,
             workspace=workspace,
             emit=emit,
+            resume_harness_session_id=resume_harness_session_id,
             mcp_config=mcp_config,
         )
     raise ValueError(f"unknown harness runtime: {runtime_id!r}")

@@ -12128,6 +12128,11 @@ class _BridgeSession:
             return
 
         log("info", f"harness adapter ready, dispatching turn to {adapter.label}")
+        # Codex runs the session's model when it offers that model, and its
+        # own otherwise (the adapter reports which with harness_model).
+        prefer = getattr(adapter, "prefer_model", None)
+        if callable(prefer):
+            prefer(self.model_id, self.reasoning_level)
         try:
             result = await adapter.run_turn(
                 user_content,
@@ -12168,13 +12173,12 @@ class _BridgeSession:
         # Persist the harness sessionId on the bridge session so the
         # renderer round-trips it through the sidecar. Distinguish
         # first-time-ready from a mid-session restart — Codex's
-        # subprocess can die (silent-timeout retire, crash, OS kill)
-        # and a fresh thread doesn't remember the prior turns.
-        # Surface that to the operator as a visible chip instead of
-        # silently letting them think nothing happened. The same logic
-        # applies on Freyja restart: the prior thread is gone, the new
-        # adapter spawn opens a fresh thread, and we want the chat to
-        # reflect that.
+        # subprocess can die (silent-timeout retire, crash, OS kill).
+        # A new process resumes the session's thread, so the id stays the
+        # same; only when that fails does a fresh thread, which remembers
+        # none of the prior turns, take its place. Surface that to the
+        # operator as a visible chip instead of silently letting them
+        # think nothing happened.
         new_harness_id = adapter.harness_session_id
         if new_harness_id and new_harness_id != self.harness_session_id:
             prior_harness_id = self.harness_session_id
@@ -16218,6 +16222,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         ):
             return
         held = False
+        # What Codex runs now, before the change below closes its process.
+        prior_adapter = getattr(state.sessions.get(session_id), "harness_adapter", None) if session_id else None
+        codex_running = getattr(prior_adapter, "model", None)
         if session_id:
             sess = await state.ensure_session(
                 session_id,
@@ -16261,6 +16268,26 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "details": {"model": new_model, "reasoningLevel": effective_reasoning},
             }
         )
+        # Codex runs OpenAI models only. Picked for a Codex session, any
+        # other model was stored and shown while Codex ran its own: a
+        # session set to Claude Opus 5.5 ran GPT-6 Astra for ten turns.
+        if sess is not None and getattr(sess, "runtime", "native") == "codex_app_server":
+            if _family_for_model(new_model) != "openai":
+                running = codex_running or "the model set in Codex"
+                label = next((m["label"] for m in AVAILABLE_MODELS if m["id"] == new_model), new_model)
+                emit(
+                    {
+                        "type": "system_event",
+                        "sessionId": session_id,
+                        "subtype": "harness_model_unsupported",
+                        "message": (
+                            f"This session runs on Codex, which runs only OpenAI models, so it "
+                            f"stays on {running}. To use {label}, start a new session that "
+                            "runs on Freyja instead of Codex."
+                        ),
+                        "details": {"model": new_model, "runtime": sess.runtime, "chatVisible": True},
+                    }
+                )
         return
 
     if ctype == "set_coordination_strategy":
